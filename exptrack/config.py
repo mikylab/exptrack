@@ -66,7 +66,7 @@ def load() -> dict:
             _cache = _deep_merge(DEFAULTS, user)
             return _cache
         except Exception as e:
-            print(f"[exptrack] ⚠️  Config error: {e} — using defaults")
+            print(f"[exptrack] Config error: {e} — using defaults")
     _cache = dict(DEFAULTS)
     return _cache
 
@@ -76,6 +76,13 @@ def save(cfg: dict):
     p.write_text(json.dumps(cfg, indent=2))
     global _cache
     _cache = cfg
+
+
+def reload():
+    """Force reload config from disk (used after upgrade)."""
+    global _cache
+    _cache = None
+    return load()
 
 
 def init(project_name: str = ""):
@@ -89,7 +96,7 @@ def init(project_name: str = ""):
         if project_name:
             cfg["project"] = project_name
         save(cfg)
-        print(f"[exptrack] ✅ Created {p.relative_to(root)}")
+        print(f"[exptrack] Created {p.relative_to(root)}")
     else:
         print(f"[exptrack] Config already exists at {p.relative_to(root)}")
 
@@ -99,6 +106,8 @@ def init(project_name: str = ""):
         "",
         "# exptrack — local only (db + snapshots); config.json is safe to commit",
         ".exptrack/experiments.db",
+        ".exptrack/experiments.db-wal",
+        ".exptrack/experiments.db-shm",
         ".exptrack/notebook_history/",
         "outputs/",
     ]
@@ -107,7 +116,7 @@ def init(project_name: str = ""):
     if to_add:
         with gitignore.open("a") as f:
             f.write("\n".join(to_add) + "\n")
-        print(f"[exptrack] ✅ Updated .gitignore")
+        print(f"[exptrack] Updated .gitignore")
 
     print(f"\n  Project root : {root}")
     print(f"  DB           : .exptrack/experiments.db  (local, gitignored)")

@@ -12,6 +12,8 @@ exptrack tag <id> <tag>       add tag
 exptrack note <id> <text>     add note
 exptrack rm <id>              delete experiment
 exptrack clean                remove all failed runs
+exptrack stale --hours N      mark killed runs as failed
+exptrack upgrade              run schema migrations
 exptrack ui                   launch web dashboard
 """
 from __future__ import annotations
@@ -30,19 +32,19 @@ from . import config as cfg
 G = "\033[92m"; R = "\033[91m"; Y = "\033[93m"; C = "\033[96m"
 M = "\033[95m"; W = "\033[97m"; DIM = "\033[2m"; B = "\033[1m"; RST = "\033[0m"
 STATUS_C = {"done": G, "running": Y, "failed": R}
-STATUS_I = {"done": "✅", "running": "⏳", "failed": "❌"}
+STATUS_I = {"done": "+", "running": "~", "failed": "x"}
 def col(t, c): return f"{c}{t}{RST}"
 def dim(t): return f"{DIM}{t}{RST}"
 def bold(t): return f"{B}{t}{RST}"
 
 
 def fmt_dt(iso):
-    if not iso: return dim("—")
+    if not iso: return dim("--")
     try: return datetime.fromisoformat(iso).strftime("%m/%d %H:%M")
-    except: return iso
+    except Exception: return iso
 
 def fmt_dur(s):
-    if s is None: return dim("—")
+    if s is None: return dim("--")
     return f"{int(s//60)}m{int(s%60)}s" if s >= 60 else f"{s:.1f}s"
 
 
@@ -58,7 +60,6 @@ def cmd_run(args):
     # Rebuild sys.argv so the wrapped script sees its own args
     sys.argv = [script] + args.script_args
     from . import __main__ as m
-    # Re-enter main() with the adjusted argv
     m.main()
 
 
@@ -91,14 +92,14 @@ def cmd_ls(args):
     cols =  [(6,"ID"),(30,"NAME"),(8,"STATUS"),(12,"STARTED"),(7,"TIME"),(10,"BRANCH")]
     cols += [(11, k.upper()[:10]) for k in shown_m]
     hdr = "  ".join(bold(col(h.ljust(w), W)) for w, h in cols)
-    print(); print(hdr); print(dim("─" * 100))
+    print(); print(hdr); print(dim("-" * 100))
 
     for r in rows:
         sc = STATUS_C.get(r["status"], W)
         si = STATUS_I.get(r["status"], "?")
         tags = json.loads(r["tags"] or "[]")
         m = metrics_by_exp.get(r["id"], {})
-        mvals = [f"{m[k]:.4g}" if k in m else dim("—") for k in shown_m]
+        mvals = [f"{m[k]:.4g}" if k in m else dim("--") for k in shown_m]
 
         vals = [
             col(r["id"][:6], C),
@@ -106,13 +107,13 @@ def cmd_ls(args):
             col(f"{si} {r['status']}", sc),
             fmt_dt(r["created_at"]),
             fmt_dur(r["duration_s"]),
-            dim(r["git_branch"] or "—"),
+            dim(r["git_branch"] or "--"),
         ] + mvals
 
         line = "  ".join(str(v).ljust(w) for v, (w, _) in zip(vals, cols))
         print(line)
         if tags:
-            print("  " + dim("   └ " + " ".join(f"#{t}" for t in tags)))
+            print("  " + dim("   tags: " + " ".join(f"#{t}" for t in tags)))
     print()
 
 
@@ -125,23 +126,23 @@ def cmd_show(args):
 
     print()
     print(bold(col(f"  {STATUS_I.get(exp['status'],'')} {exp['name']}", W)))
-    print(dim(f"  id={exp['id']}  project={exp['project'] or '—'}  status={exp['status']}"))
+    print(dim(f"  id={exp['id']}  project={exp['project'] or '--'}  status={exp['status']}"))
     print()
 
-    def sec(t): print(bold(col(f"  ── {t} ", C)) + dim("─"*32))
+    def sec(t): print(bold(col(f"  -- {t} ", C)) + dim("-"*32))
 
     sec("Info")
     for k, v in [("Created", fmt_dt(exp["created_at"])),
                  ("Duration", fmt_dur(exp["duration_s"])),
-                 ("Script", exp["script"] or "—"),
-                 ("Command", exp["command"] or "—"),
-                 ("Branch", exp["git_branch"] or "—"),
-                 ("Commit", exp["git_commit"] or "—"),
+                 ("Script", exp["script"] or "--"),
+                 ("Command", exp["command"] or "--"),
+                 ("Branch", exp["git_branch"] or "--"),
+                 ("Commit", exp["git_commit"] or "--"),
                  ("Diff lines", str(len((exp["git_diff"] or "").splitlines())) + " lines"),
-                 ("Host", exp["hostname"] or "—"),
-                 ("Python", exp["python_ver"] or "—"),
-                 ("Notes", exp["notes"] or "—"),
-                 ("Tags", ", ".join(json.loads(exp["tags"] or "[]")) or "—")]:
+                 ("Host", exp["hostname"] or "--"),
+                 ("Python", exp["python_ver"] or "--"),
+                 ("Notes", exp["notes"] or "--"),
+                 ("Tags", ", ".join(json.loads(exp["tags"] or "[]")) or "--")]:
         print(f"    {col(k+':', Y):<22} {v}")
     print()
 
@@ -163,7 +164,7 @@ def cmd_show(args):
     if metrics:
         sec("Metrics")
         print(f"    {'KEY':<24} {'LAST':>10} {'MIN':>10} {'MAX':>10} {'STEPS':>6}")
-        print(dim("    " + "─"*62))
+        print(dim("    " + "-"*62))
         for m in metrics:
             print(f"    {col(m['key'], G):<32} {m['last_v']:>10.4g}"
                   f" {m['min_v']:>10.4g} {m['max_v']:>10.4g} {m['n']:>6}")
@@ -174,7 +175,7 @@ def cmd_show(args):
     if arts:
         sec("Outputs")
         for a in arts:
-            exists = "✅" if Path(a["path"]).exists() else dim("✗ missing")
+            exists = "[ok]" if Path(a["path"]).exists() else dim("[missing]")
             print(f"    {col(a['label'] or 'file', Y):<30} {a['path']}  {exists}")
         print()
 
@@ -224,26 +225,26 @@ def cmd_compare(args):
 
     print()
     print(f"  {'':26} {bold(col(e1['name'][:26], C)):<36} {bold(col(e2['name'][:26], M))}")
-    print(dim("  " + "─" * 82))
+    print(dim("  " + "-" * 82))
 
     if p1 or p2:
         print(bold(col("  Params", Y)))
         for k in sorted(set(p1) | set(p2)):
-            v1 = str(p1.get(k, dim("—")))
-            v2 = str(p2.get(k, dim("—")))
-            marker = col("  ◀ differs", Y) if p1.get(k) != p2.get(k) else ""
+            v1 = str(p1.get(k, dim("--")))
+            v2 = str(p2.get(k, dim("--")))
+            marker = col("  < differs", Y) if p1.get(k) != p2.get(k) else ""
             print(f"  {k:<26} {v1:<30} {v2:<30}{marker}")
         print()
 
     if m1 or m2:
         print(bold(col("  Metrics (last)", G)))
         for k in sorted(set(m1) | set(m2)):
-            sv1 = f"{m1[k]:.4g}" if k in m1 else dim("—")
-            sv2 = f"{m2[k]:.4g}" if k in m2 else dim("—")
+            sv1 = f"{m1[k]:.4g}" if k in m1 else dim("--")
+            sv2 = f"{m2[k]:.4g}" if k in m2 else dim("--")
             marker = ""
             if k in m1 and k in m2:
                 d = m1[k] - m2[k]
-                marker = col(f"  {'▲' if d>0 else '▼'}{abs(d):.3g}", G if d < 0 else R)
+                marker = col(f"  {'>' if d>0 else '<'}{abs(d):.3g}", G if d < 0 else R)
             print(f"  {k:<26} {sv1:<30} {sv2:<30}{marker}")
         print()
 
@@ -272,7 +273,7 @@ def cmd_history(args):
 
     print()
     print(bold(f"  Notebook history: {nb}") + (f"  (exp {exp_id[:6]})" if exp_id else ""))
-    print(dim("  " + "─"*70))
+    print(dim("  " + "-"*70))
 
     for f in files:
         try:
@@ -281,7 +282,7 @@ def cmd_history(args):
             continue
 
         changed = bool(snap.get("source_diff")) or bool(snap.get("changed_vars"))
-        icon = "📝" if changed else "·"
+        icon = "*" if changed else "."
         ts   = fmt_dt(snap.get("ts", ""))
         ex   = snap.get("exec_num", "?")
 
@@ -297,7 +298,7 @@ def cmd_history(args):
         if cv:
             print(col("    Changed vars:", Y))
             for k, d in list(cv.items())[:8]:
-                print(f"      {k}: {d.get('from')} → {d.get('to')}")
+                print(f"      {k}: {d.get('from')} -> {d.get('to')}")
 
         # Source diff
         diff = snap.get("source_diff")
@@ -320,7 +321,7 @@ def cmd_history(args):
 def _snap_exp_id(f: Path) -> str:
     try:
         return json.loads(f.read_text()).get("exp_id", "")
-    except:
+    except Exception:
         return ""
 
 
@@ -377,9 +378,13 @@ def cmd_clean(args):
 
 
 def cmd_ui(args):
-    dashboard = Path(__file__).parent.parent / "dashboard" / "app.py"
-    print(col("Launching dashboard → http://localhost:7331", C))
-    os.execvp(sys.executable, [sys.executable, str(dashboard)])
+    dashboard = Path(__file__).parent / "dashboard" / "app.py"
+    if not dashboard.exists():
+        print(col(f"Dashboard not found at {dashboard}", R))
+        return
+    port = args.port if hasattr(args, "port") else 7331
+    print(col(f"Launching dashboard -> http://localhost:{port}", C))
+    os.execvp(sys.executable, [sys.executable, str(dashboard), str(port)])
 
 
 # ── Shell pipeline commands ───────────────────────────────────────────────────
@@ -396,8 +401,7 @@ def cmd_run_start(args):
 
     Any --key value pairs become experiment params.
     """
-    from .core import Experiment, output_path
-    from .capture import capture_argv
+    from .core import Experiment
 
     # Parse free-form --key value pairs from remaining args
     params = {}
@@ -445,9 +449,8 @@ def cmd_run_start(args):
     )
 
     # The output directory — all steps of the pipeline write here
-    from . import config as cfg_mod
-    conf = cfg_mod.load()
-    out_dir = cfg_mod.project_root() / conf.get("outputs_dir", "outputs") / exp.name
+    conf = cfg.load()
+    out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Register the output dir as an artifact placeholder
@@ -473,9 +476,9 @@ def _coerce_str(v: str):
     if v.lower() == "true":  return True
     if v.lower() == "false": return False
     try:    return int(v)
-    except: pass
+    except Exception: pass
     try:    return float(v)
-    except: pass
+    except Exception: pass
     return v
 
 
@@ -485,10 +488,6 @@ def cmd_run_finish(args):
 
         exptrack run-finish $EXP_ID
         exptrack run-finish $EXP_ID --metrics results.json
-        exptrack run-finish $EXP_ID --metrics results.json --step 100
-
-    If --metrics points to a JSON file, all numeric values are logged as metrics.
-    Nested keys are flattened: {"val": {"loss": 0.3}} → "val/loss": 0.3
     """
     conn = get_db()
     exp_row = conn.execute(
@@ -551,12 +550,11 @@ def cmd_run_finish(args):
         """, (now, duration, exp_id))
 
     m, s = divmod(duration, 60)
-    print(f"[exptrack] ✅ {exp_row['name']}  ({int(m)}m {s:.0f}s)", file=sys.stderr)
+    print(f"[exptrack] done: {exp_row['name']}  ({int(m)}m {s:.0f}s)", file=sys.stderr)
 
     # Fire finish plugins
-    from .plugins import registry as plugins
-    from . import config as cfg_mod
-    plugins.load_from_config(cfg_mod.load())
+    from .plugins import registry as plugin_reg
+    plugin_reg.load_from_config(cfg.load())
 
     # Build a minimal Experiment-like object for plugins
     class _FakeExp:
@@ -574,7 +572,7 @@ def cmd_run_finish(args):
         SELECT key, value FROM metrics m WHERE exp_id=?
         GROUP BY key HAVING MAX(COALESCE(step,0))
     """, (exp_id,)).fetchall()}
-    plugins.on_finish(fake)
+    plugin_reg.on_finish(fake)
 
 
 def cmd_run_fail(args):
@@ -599,7 +597,7 @@ def cmd_run_fail(args):
         conn.execute("""
             UPDATE experiments SET status='failed', updated_at=?, duration_s=? WHERE id=?
         """, (now, duration, exp_row["id"]))
-    print(f"[exptrack] ❌ {exp_row['name']}  — {reason}", file=sys.stderr)
+    print(f"[exptrack] FAILED: {exp_row['name']}  -- {reason}", file=sys.stderr)
 
 
 def cmd_log_metric(args):
@@ -637,7 +635,7 @@ def cmd_log_metric(args):
         )
     for _, k, v, step, _ in rows:
         step_str = f" step={step}" if step is not None else ""
-        print(f"[exptrack] 📊 {k}={v}{step_str}", file=sys.stderr)
+        print(f"[exptrack] metric: {k}={v}{step_str}", file=sys.stderr)
 
 
 def cmd_log_artifact(args):
@@ -655,15 +653,13 @@ def cmd_log_artifact(args):
             "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
             (exp_row["id"], label, args.path, ts)
         )
-    print(f"[exptrack] 📎 Artifact: {label} → {args.path}", file=sys.stderr)
+    print(f"[exptrack] Artifact: {label} -> {args.path}", file=sys.stderr)
 
 
 def cmd_stale(args):
     """
     Mark experiments that have been 'running' longer than --hours as timed-out.
     Useful as a SLURM epilog or cron job to clean up killed runs.
-
-        exptrack stale --hours 24
     """
     from datetime import timedelta
     conn = get_db()
@@ -690,8 +686,47 @@ def cmd_stale(args):
         print(f"  {col(r['id'][:6], C)}  {r['name'][:50]}")
 
 
+def cmd_upgrade(args):
+    """Run schema migrations and optionally reinstall the package."""
+    conn = get_db()
+
+    # Get current columns
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(experiments)").fetchall()}
+
+    migrations = []
+
+    # Add columns that may be missing from older schemas
+    new_cols = {
+        "hostname":   "TEXT",
+        "python_ver": "TEXT",
+        "duration_s": "REAL",
+        "notes":      "TEXT",
+        "tags":       "TEXT",
+        "command":    "TEXT",
+    }
+    for col_name, col_type in new_cols.items():
+        if col_name not in cols:
+            conn.execute(f"ALTER TABLE experiments ADD COLUMN {col_name} {col_type}")
+            migrations.append(col_name)
+
+    conn.commit()
+
+    if migrations:
+        print(col(f"Added columns: {', '.join(migrations)}", G))
+    else:
+        print(dim("Schema is up to date."))
+
+    # Reinstall if requested
+    if args.reinstall:
+        root = cfg.project_root()
+        print("Reinstalling package...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-e", str(root)],
+                       check=True)
+        print(col("Reinstalled.", G))
+
+
 def _flatten_dict(d: dict, prefix: str = "") -> dict:
-    """Flatten nested dict: {"val": {"loss": 0.3}} → {"val/loss": 0.3}"""
+    """Flatten nested dict: {"val": {"loss": 0.3}} -> {"val/loss": 0.3}"""
     out = {}
     for k, v in d.items():
         key = f"{prefix}/{k}" if prefix else k
@@ -720,7 +755,7 @@ def main():
 
     p = argparse.ArgumentParser(
         prog="exptrack",
-        description="Experiment tracker — scripts, notebooks, and SLURM pipelines",
+        description="Experiment tracker -- scripts, notebooks, and SLURM pipelines",
     )
     sub = p.add_subparsers(dest="cmd")
 
@@ -771,6 +806,11 @@ def main():
     p_stale.add_argument("--hours", type=float, default=24,
                          help="Mark as timed-out if running longer than this (default: 24)")
 
+    # ── Schema management ────────────────────────────────────────────────────
+    p_up = sub.add_parser("upgrade", help="Run schema migrations")
+    p_up.add_argument("--reinstall", action="store_true",
+                      help="Also pip install -e . after migration")
+
     # ── Inspection ────────────────────────────────────────────────────────────
     p_ls = sub.add_parser("ls")
     p_ls.add_argument("-n", type=int, default=20)
@@ -793,7 +833,9 @@ def main():
 
     sub.add_parser("rm").add_argument("id")
     sub.add_parser("clean")
-    sub.add_parser("ui")
+
+    p_ui = sub.add_parser("ui")
+    p_ui.add_argument("--port", type=int, default=7331)
 
     args = p.parse_args()
     if not args.cmd:
@@ -808,6 +850,7 @@ def main():
         "log-metric":   cmd_log_metric,
         "log-artifact": cmd_log_artifact,
         "stale":        cmd_stale,
+        "upgrade":      cmd_upgrade,
         "ls":           cmd_ls,
         "show":         cmd_show,
         "diff":         cmd_diff,

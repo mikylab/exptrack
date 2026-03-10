@@ -1,13 +1,13 @@
 """
-exptrack/capture/__init__.py — Zero-friction parameter capture
+exptrack/capture — Zero-friction parameter capture
 
 Two capture modes:
-  1. argparse   — patches ArgumentParser.parse_args() so params are logged
-                  the moment the user's script calls it. No code changes needed.
+  1. argparse   — patches ArgumentParser.parse_args() AND parse_known_args()
+                  so params are logged the moment the user's script calls it.
   2. notebook   — IPython post_execute hook that after EVERY cell:
-                    • diffs the cell source against previous version
-                    • captures new/changed scalar variables
-                    • captures stdout/stderr output
+                    - diffs the cell source against previous version
+                    - captures new/changed scalar variables
+                    - captures stdout/stderr output
                   Stores snapshots in .exptrack/notebook_history/<nb_name>/
 """
 from __future__ import annotations
@@ -28,8 +28,8 @@ _patched = False
 
 def patch_argparse(exp: "Experiment"):
     """
-    Monkey-patch ArgumentParser.parse_args once.
-    When the user's script calls parser.parse_args(), params flow into exp automatically.
+    Monkey-patch ArgumentParser.parse_args AND parse_known_args once.
+    When the user's script calls either, params flow into exp automatically.
     After capture, the run name is refreshed to include real param values.
     """
     global _patched
@@ -38,30 +38,71 @@ def patch_argparse(exp: "Experiment"):
     _patched = True
 
     import argparse
-    _orig = argparse.ArgumentParser.parse_args
+    _orig_parse = argparse.ArgumentParser.parse_args
+    _orig_known = argparse.ArgumentParser.parse_known_args
 
-    def _hooked(self_ap, args=None, namespace=None):
-        ns = _orig(self_ap, args, namespace)
-        try:
-            params = {k: v for k, v in vars(ns).items()
-                      if not k.startswith("_") and v is not None}
-            exp.log_params(params)
-            # Now that we have real params, regenerate the run name
-            from ..core import make_run_name
-            exp._rename(make_run_name(exp.script, exp._params))
-        except Exception:
-            pass
+    def _hooked_parse(self_ap, args=None, namespace=None):
+        ns = _orig_parse(self_ap, args, namespace)
+        _capture_namespace(exp, ns)
         return ns
 
-    argparse.ArgumentParser.parse_args = _hooked
+    def _hooked_known(self_ap, args=None, namespace=None):
+        ns, remaining = _orig_known(self_ap, args, namespace)
+        _capture_namespace(exp, ns)
+        # Also capture unknown args as raw params
+        _capture_raw_args(exp, remaining)
+        return ns, remaining
+
+    argparse.ArgumentParser.parse_args = _hooked_parse
+    argparse.ArgumentParser.parse_known_args = _hooked_known
+
+
+def _capture_namespace(exp: "Experiment", ns):
+    try:
+        params = {k: v for k, v in vars(ns).items()
+                  if not k.startswith("_") and v is not None}
+        exp.log_params(params)
+        from ..core import make_run_name
+        exp._rename(make_run_name(exp.script, exp._params))
+    except Exception:
+        pass
+
+
+def _capture_raw_args(exp: "Experiment", args: list):
+    """Capture --key value pairs from a list of unknown args."""
+    params = {}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--"):
+            key = a[2:]
+            if "=" in key:
+                k, v = key.split("=", 1)
+                params[k] = _coerce(v)
+            elif i + 1 < len(args) and not args[i + 1].startswith("-"):
+                params[key] = _coerce(args[i + 1])
+                i += 1
+            else:
+                params[key] = True
+        elif a.startswith("-") and len(a) == 2:
+            # Single-dash flag: -l value
+            key = a[1:]
+            if i + 1 < len(args) and not args[i + 1].startswith("-"):
+                params[key] = _coerce(args[i + 1])
+                i += 1
+            else:
+                params[key] = True
+        i += 1
+    if params:
+        exp.log_params(params)
 
 
 # ── Raw argv fallback ─────────────────────────────────────────────────────────
 
 def capture_argv(exp: "Experiment"):
     """
-    Parse --key value / --key=value / --flag from sys.argv directly.
-    Used when the script doesn't use argparse at all.
+    Parse --key value / --key=value / -k value / --flag from sys.argv directly.
+    Used when the script doesn't use argparse at all (click, manual, etc.).
     """
     params = {}
     args = sys.argv[1:]
@@ -78,6 +119,13 @@ def capture_argv(exp: "Experiment"):
                 i += 1
             else:
                 params[key] = True
+        elif a.startswith("-") and len(a) == 2:
+            key = a[1:]
+            if i + 1 < len(args) and not args[i + 1].startswith("-"):
+                params[key] = _coerce(args[i + 1])
+                i += 1
+            else:
+                params[key] = True
         i += 1
     if params:
         exp.log_params(params)
@@ -87,9 +135,9 @@ def _coerce(v: str):
     if v.lower() == "true":  return True
     if v.lower() == "false": return False
     try:    return int(v)
-    except: pass
+    except Exception: pass
     try:    return float(v)
-    except: pass
+    except Exception: pass
     return v
 
 
@@ -217,7 +265,7 @@ def _post_execute():
             _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
                                 source_diff, new_vars, changed_vars, output)
 
-    except Exception as e:
+    except Exception:
         pass  # never break the user's notebook
 
 
@@ -252,7 +300,6 @@ def _simple_diff(old: str, new: str) -> list[dict]:
     old_lines = old.splitlines()
     new_lines = new.splitlines()
     result = []
-    # Simple LCS-free diff: mark removed and added lines
     old_set = set(old_lines)
     new_set = set(new_lines)
     for line in old_lines:

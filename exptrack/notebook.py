@@ -3,7 +3,7 @@ exptrack/notebook.py — Jupyter integration
 
 Two ways to use:
 
-─── Option A: Magic extension (zero friction) ────────────────────────────────
+--- Option A: Magic extension (zero friction) ----
 Load once at the top of your notebook:
 
     %load_ext exptrack
@@ -19,7 +19,7 @@ Magic commands:
     %exp_tag foo bar      add tags
     %exp_note "text"      add a note
 
-─── Option B: Explicit API ───────────────────────────────────────────────────
+--- Option B: Explicit API ----
     from exptrack.notebook import start, metric, out, done, current
 
     run = start(lr=0.001, bs=32)      # kwargs become params
@@ -128,13 +128,11 @@ def _detect_nb_name() -> str:
         import re as _re
         import urllib.request
 
-        # Ask the Jupyter server for the list of running kernels
-        kernel_id = re.search(
+        kernel_id = _re.search(
             r"kernel-(.+)\.json",
             ipykernel.connect.get_connection_file()
         ).group(1)
 
-        # This works when running inside classic Jupyter
         for port in [8888, 8889, 8890]:
             try:
                 url = f"http://localhost:{port}/api/sessions"
@@ -200,7 +198,7 @@ def load_ipython_extension(ip):
     except Exception:
         pass
 
-    print(f"[exptrack] ✅ Loaded. Use %exp_status, %exp_done, %exp_tag, %exp_note")
+    print(f"[exptrack] Loaded. Use %exp_status, %exp_done, %exp_tag, %exp_note")
 
 
 def _auto_start(nb_file: str = "", name: str = ""):

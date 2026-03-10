@@ -18,7 +18,6 @@ Config in .exptrack/config.json:
     }
 
 PAT scopes needed: repo > Contents (read + write)
-Create at: https://github.com/settings/tokens/new
 """
 from __future__ import annotations
 import base64
@@ -83,7 +82,7 @@ class GitHubSyncPlugin(Plugin):
                           json.dumps(record, default=str) + "\n"
             self._put_file(tok, new_content, sha,
                            msg=f"exptrack: {exp.status} {exp.name[:50]} [{exp.id[:6]}]")
-            print(f"[exptrack] 📤 Synced to {self.repo}/{self.file}")
+            print(f"[exptrack] Synced to {self.repo}/{self.file}")
         except Exception as e:
             print(f"[exptrack] github_sync failed: {e}")
 

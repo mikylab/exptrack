@@ -209,7 +209,7 @@ class Experiment:
         plugins.load_from_config(conf)
         plugins.on_start(self)
 
-        print(f"[exptrack] 🧪 {self.name}  ({self.id[:6]})", file=__import__("sys").stderr)
+        print(f"[exptrack] {self.name}  ({self.id[:6]})", file=sys.stderr)
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -247,7 +247,7 @@ class Experiment:
         with get_db() as conn:
             conn.execute("UPDATE experiments SET name=? WHERE id=?", (new_name, self.id))
             conn.commit()
-        print(f"[exptrack] ✏️  → {self.name}", file=__import__("sys").stderr)
+        print(f"[exptrack] -> {self.name}", file=sys.stderr)
 
     # ── Params ────────────────────────────────────────────────────────────────
 
@@ -332,8 +332,8 @@ class Experiment:
             """, (status, datetime.utcnow().isoformat(), self.duration_s, self.name, self.id))
             conn.commit()
         m, s = divmod(self.duration_s, 60)
-        icon = "✅" if status == "done" else "❌"
-        print(f"[exptrack] {icon} {self.name}  ({int(m)}m {s:.1f}s)", file=__import__("sys").stderr)
+        icon = "done" if status == "done" else "FAILED"
+        print(f"[exptrack] {icon}: {self.name}  ({int(m)}m {s:.1f}s)", file=sys.stderr)
         if status == "done":
             plugins.on_finish(self)
         else:
