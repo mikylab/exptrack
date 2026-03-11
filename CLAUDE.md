@@ -61,16 +61,23 @@ exptrack/
 ### Key modules
 
 - **`core.py`** -- `Experiment` class: DB schema (4 tables: experiments, params, metrics, artifacts), git state snapshot, run naming (`{script}__{params}__{date}_{uid}`), context manager support
-- **`capture/__init__.py`** -- Patches both `parse_args()` AND `parse_known_args()`, plus raw `sys.argv` fallback catches single-dash flags, click, manual parsing
-- **`cli.py`** -- ANSI-colored terminal UI. Shell pipeline commands (`run-start`/`run-finish`/`run-fail`) print to stdout for `eval $()` capture, everything else to stderr
+- **`capture/__init__.py`** -- Patches both `parse_args()` AND `parse_known_args()`, plus raw `sys.argv` fallback catches single-dash flags, click, manual parsing. Also handles:
+  - **Script code-change tracking**: diffs scripts against last git commit (`git diff HEAD -- file`), stores only changed lines as params (no full-source copies)
+  - **Notebook code-change tracking**: logs ALL variable changes (not just HP-named ones) as `_var/` params, logs cell diffs as `_code_change/` params. Snapshots store only diffs and hashes, not full cell source
+  - **Matplotlib savefig patching**: monkey-patches `plt.savefig()` and `Figure.savefig()` to auto-register saved plots as artifacts
+- **`cli.py`** -- ANSI-colored terminal UI. Shell pipeline commands (`run-start`/`run-finish`/`run-fail`) print to stdout for `eval $()` capture, everything else to stderr. Management: `tag`, `note`, `rm`, `clean`, `log-artifact`
 - **`notebook.py`** -- `%load_ext exptrack` magic + explicit API (`start()`, `metric()`, `out()`, `done()`). IPython `post_execute` hook captures cell diffs and auto-detects hyperparameters
+- **`__init__.py`** -- Exports `Experiment` and provides `load_ipython_extension()` / `unload_ipython_extension()` entry points so `%load_ext exptrack` works
 - **`plugins/__init__.py`** -- `Plugin` base class with lifecycle hooks (`on_start`, `on_finish`, `on_fail`, `on_metric`). `registry` singleton loads plugins from config
+- **`dashboard/app.py`** -- Web UI (`exptrack ui`): stats cards, experiment list with filters, detail view with Chart.js metric plots, git diff viewer, compare view. Stdlib `http.server`, default port 7331
 
 ## Key Design Patterns
 
 - **Zero-friction capture**: Argparse monkey-patching and IPython hooks intercept params without user code changes
+- **Diff-only storage**: Script changes are diffed against the last git commit (`git diff HEAD -- file`); notebook snapshots store only cell diffs and hashes — no full-source copies, keeps `.exptrack/` light
 - **Project root detection**: Walks parent directories looking for `.git` or `.exptrack/`
 - **stdout/stderr separation**: Shell pipeline commands (`run-start`) output `export` statements to stdout so `eval $()` works; all status messages go to stderr
+- **Auto artifact linking**: `plt.savefig()` is monkey-patched so saved plots auto-register as artifacts — linked to the experiment by name/id
 - **Plugin system**: Plugins loaded dynamically from `exptrack.plugins.<name>`, each module exports `plugin_class`
 - **Per-project storage**: DB + notebook history in `.exptrack/` (gitignored), config.json is committable
 

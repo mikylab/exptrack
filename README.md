@@ -100,6 +100,10 @@ exptrack automatically:
 - Captures argparse params the moment `parse_args()` is called
 - Names the run: `train__lr0.01_datatrain__0312_a3f2`
 - Snapshots `git diff HEAD` (catches uncommitted changes)
+- **Tracks code changes** — diffs the script against the last git commit and logs
+  only the changed lines (no full copies stored)
+- **Auto-links saved plots** — if your script calls `plt.savefig("plot.png")`,
+  the file is automatically registered as an artifact on the experiment
 - Marks done/failed when the script exits
 
 **Your script needs zero modifications.**
@@ -181,6 +185,14 @@ That's it. A new experiment starts automatically. Every cell execution is
 snapshotted: source diff, changed variables, output. Variables that look like
 hyperparams (`lr`, `batch_size`, `epochs`, etc.) are auto-captured as params.
 
+**Code changes are tracked too** — if you change `np.linspace(0, 10, 100)` to
+`np.linspace(0, 20, 200)`, exptrack logs the variable change and cell diff.
+Only diffs are stored, not full copies. The reference point is always the last
+git commit.
+
+**`plt.savefig()` is auto-linked** — any plot saved via `plt.savefig()` or
+`fig.savefig()` is automatically registered as an artifact on the experiment.
+
 Magic commands:
 ```
 %exp_status          show current experiment + params captured so far
@@ -207,6 +219,59 @@ exp.done()
 exptrack ls          # list all experiments
 exptrack show <id>   # full details for a run
 ```
+
+---
+
+## Web dashboard
+
+```bash
+exptrack ui                    # opens http://localhost:7331
+exptrack ui --port 8080        # custom port
+```
+
+The dashboard shows:
+- **Stats cards** — total runs, success rate, average duration
+- **Experiment list** — filterable by status (done/failed/running), click any row for details
+- **Experiment detail** — params, metrics with Chart.js plots, artifacts, git diff viewer
+- **Compare view** — side-by-side param + metric comparison of any two runs
+
+No external dependencies — uses stdlib `http.server` and Chart.js from CDN.
+
+---
+
+## Managing experiments
+
+### Delete a run
+
+```bash
+exptrack rm <id>               # interactive confirm, deletes run + all associated data
+exptrack clean                 # bulk-delete all failed runs
+```
+
+### Add notes
+
+```bash
+exptrack note <id> "tried higher dropout, worse results"
+```
+
+Notes are appended — you can call `note` multiple times. In notebooks: `%exp_note "text"`.
+
+### Add tags
+
+```bash
+exptrack tag <id> baseline
+```
+
+In notebooks: `%exp_tag baseline`.
+
+### Link a file you forgot to track
+
+```bash
+exptrack log-artifact <id> path/to/model.pt --label "best model"
+exptrack log-artifact <id> path/to/sine_plot.png --label "sine plot"
+```
+
+In notebooks: `exp.out("filename")` or explicit API `exp.log_artifact(path)`.
 
 ---
 
