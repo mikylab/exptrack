@@ -57,6 +57,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        content_len = int(self.headers.get('Content-Length', 0))
+        body = json.loads(self.rfile.read(content_len)) if content_len else {}
+
+        if path.startswith("/api/experiment/") and path.endswith("/note"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_add_note(exp_id, body))
+        elif path.startswith("/api/experiment/") and path.endswith("/tag"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_add_tag(exp_id, body))
+        elif path.startswith("/api/experiment/") and path.endswith("/rename"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_rename(exp_id, body))
+        elif path.startswith("/api/experiment/") and path.endswith("/delete"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_delete(exp_id))
+        else:
+            self.send_error(404)
+
     def _html(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -204,6 +225,67 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "exp2": self._api_experiment(id2),
         }
 
+    def _api_add_note(self, exp_id, body):
+        conn = get_db()
+        exp = conn.execute("SELECT id, notes FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        text = body.get("note", "").strip()
+        if not text:
+            return {"error": "empty note"}
+        existing = exp["notes"] or ""
+        new_notes = (existing + "\n" + text).strip() if existing else text
+        conn.execute("UPDATE experiments SET notes=?, updated_at=? WHERE id=?",
+                     (new_notes, __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+        conn.commit()
+        return {"ok": True, "notes": new_notes}
+
+    def _api_add_tag(self, exp_id, body):
+        conn = get_db()
+        exp = conn.execute("SELECT id, tags FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        tag = body.get("tag", "").strip()
+        if not tag:
+            return {"error": "empty tag"}
+        tags = json.loads(exp["tags"] or "[]")
+        if tag not in tags:
+            tags.append(tag)
+        conn.execute("UPDATE experiments SET tags=?, updated_at=? WHERE id=?",
+                     (json.dumps(tags), __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+        conn.commit()
+        return {"ok": True, "tags": tags}
+
+    def _api_rename(self, exp_id, body):
+        conn = get_db()
+        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        new_name = body.get("name", "").strip()
+        if not new_name:
+            return {"error": "empty name"}
+        conn.execute("UPDATE experiments SET name=?, updated_at=? WHERE id=?",
+                     (new_name, __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+        conn.commit()
+        return {"ok": True, "name": new_name}
+
+    def _api_delete(self, exp_id):
+        conn = get_db()
+        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        eid = exp["id"]
+        conn.execute("DELETE FROM metrics WHERE exp_id=?", (eid,))
+        conn.execute("DELETE FROM params WHERE exp_id=?", (eid,))
+        conn.execute("DELETE FROM artifacts WHERE exp_id=?", (eid,))
+        conn.execute("DELETE FROM experiments WHERE id=?", (eid,))
+        conn.commit()
+        return {"ok": True}
+
 
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -216,97 +298,125 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
-    --bg: #faf9f7; --fg: #1a1a1a; --muted: #888; --border: #ddd;
+    --bg: #faf9f7; --fg: #1a1a1a; --muted: #777; --border: #d0d0d0;
     --green: #2d7d46; --red: #c0392b; --yellow: #b8860b; --blue: #2c5aa0;
     --card-bg: #fff; --code-bg: #f5f3f0;
   }
   body {
     font-family: 'IBM Plex Mono', monospace;
     background: var(--bg); color: var(--fg);
-    max-width: 1200px; margin: 0 auto; padding: 20px;
-    font-size: 13px; line-height: 1.5;
+    max-width: 1400px; margin: 0 auto; padding: 28px 36px;
+    font-size: 15px; line-height: 1.6;
   }
-  h1 { font-size: 18px; font-weight: 600; margin-bottom: 20px; letter-spacing: -0.5px; }
-  h2 { font-size: 14px; font-weight: 600; margin: 20px 0 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 24px; letter-spacing: -0.5px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 28px; }
   .stat {
     background: var(--card-bg); border: 1px solid var(--border);
-    padding: 16px; text-align: center;
+    padding: 20px; text-align: center; border-radius: 4px;
   }
-  .stat .num { font-size: 28px; font-weight: 600; }
-  .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
-  .filters { margin-bottom: 16px; display: flex; gap: 8px; align-items: center; }
+  .stat .num { font-size: 34px; font-weight: 600; }
+  .stat .label { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+  .filters { margin-bottom: 18px; display: flex; gap: 10px; align-items: center; }
   .filters button {
-    font-family: inherit; font-size: 12px;
+    font-family: inherit; font-size: 14px;
     background: var(--card-bg); border: 1px solid var(--border);
-    padding: 4px 12px; cursor: pointer;
+    padding: 6px 16px; cursor: pointer; border-radius: 3px;
   }
+  .filters button:hover { background: var(--code-bg); }
   .filters button.active { background: var(--fg); color: var(--bg); }
   .filters .compare-selected {
     margin-left: auto; background: var(--blue); color: #fff; border: none;
-    padding: 4px 12px; font-family: inherit; font-size: 12px; cursor: pointer;
-    display: none;
+    padding: 6px 16px; font-family: inherit; font-size: 14px; cursor: pointer;
+    display: none; border-radius: 3px;
   }
   .filters .compare-selected.visible { display: inline-block; }
-  .cb-col { width: 30px; text-align: center; }
-  .cb-col input { cursor: pointer; }
-  table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); }
-  th { text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--fg); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
-  td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
+  .cb-col { width: 36px; text-align: center; }
+  .cb-col input { cursor: pointer; width: 16px; height: 16px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; }
+  th { text-align: left; padding: 12px 16px; border-bottom: 2px solid var(--fg); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+  td { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
   tr:hover { background: var(--code-bg); }
-  .status-done { color: var(--green); }
-  .status-failed { color: var(--red); }
-  .status-running { color: var(--yellow); }
-  .tag { background: var(--code-bg); padding: 1px 6px; font-size: 11px; margin-left: 4px; }
-  .detail { background: var(--card-bg); border: 1px solid var(--border); padding: 20px; margin-top: 16px; }
-  .detail-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }
-  .detail-header h2 { margin: 0; }
-  .close-btn { cursor: pointer; font-size: 16px; background: none; border: none; font-family: inherit; }
-  .info-grid { display: grid; grid-template-columns: 140px 1fr; gap: 4px 16px; margin-bottom: 16px; }
-  .info-grid .label { color: var(--muted); }
-  .params-table, .metrics-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-  .params-table td, .metrics-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  .status-done { color: var(--green); font-weight: 500; }
+  .status-failed { color: var(--red); font-weight: 500; }
+  .status-running { color: var(--yellow); font-weight: 500; }
+  .tag { background: var(--code-bg); padding: 2px 8px; font-size: 12px; margin-left: 6px; border-radius: 3px; }
+  .detail { background: var(--card-bg); border: 1px solid var(--border); padding: 28px; margin-top: 20px; border-radius: 4px; }
+  .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
+  .detail-header h2 { margin: 0; font-size: 18px; color: var(--fg); text-transform: none; letter-spacing: 0; }
+  .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .detail-actions button, .action-btn {
+    font-family: inherit; font-size: 13px;
+    background: var(--code-bg); border: 1px solid var(--border);
+    padding: 5px 14px; cursor: pointer; border-radius: 3px;
+  }
+  .detail-actions button:hover, .action-btn:hover { background: var(--border); }
+  .action-btn.danger { color: var(--red); border-color: var(--red); }
+  .action-btn.danger:hover { background: var(--red); color: #fff; }
+  .close-btn { cursor: pointer; font-size: 20px; background: none; border: none; font-family: inherit; padding: 4px 8px; }
+  .close-btn:hover { background: var(--code-bg); border-radius: 3px; }
+  .info-grid { display: grid; grid-template-columns: 150px 1fr; gap: 6px 20px; margin-bottom: 20px; font-size: 14px; }
+  .info-grid .label { color: var(--muted); font-weight: 500; }
+  .params-table, .metrics-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+  .params-table td, .metrics-table td { padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .params-table th, .metrics-table th { padding: 8px 12px; font-size: 13px; }
   .diff-view {
-    background: var(--code-bg); padding: 12px; font-size: 12px;
+    background: var(--code-bg); padding: 16px; font-size: 13px;
     overflow-x: auto; max-height: 500px; overflow-y: auto;
-    white-space: pre; border: 1px solid var(--border);
+    white-space: pre; border: 1px solid var(--border); border-radius: 4px;
   }
   .diff-add { color: var(--green); }
   .diff-del { color: var(--red); }
   .diff-hunk { color: var(--blue); font-weight: 600; }
-  .code-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 12px; margin-bottom: 16px; font-size: 12px; }
-  .code-changes .change-item { margin-bottom: 8px; }
-  .code-changes .change-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+  .code-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; margin-bottom: 20px; font-size: 13px; border-radius: 4px; }
+  .code-changes .change-item { margin-bottom: 10px; }
+  .code-changes .change-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
   .code-changes .change-diff { white-space: pre-wrap; }
-  .var-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 12px; margin-bottom: 16px; font-size: 12px; }
-  .var-changes td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  .var-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; margin-bottom: 20px; font-size: 13px; border-radius: 4px; }
+  .var-changes td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
   .var-changes .var-name { color: var(--blue); font-weight: 500; }
-  .var-changes .var-type { color: var(--muted); font-size: 11px; }
-  .var-section-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; }
-  .chart-container { max-width: 600px; margin: 16px 0; }
-  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  .compare-input { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+  .var-changes .var-type { color: var(--muted); font-size: 12px; }
+  .var-section-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
+  .chart-container { max-width: 700px; margin: 20px 0; }
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .compare-input { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
   .compare-input select, .compare-input input {
-    font-family: inherit; font-size: 12px;
-    border: 1px solid var(--border); padding: 4px 8px; min-width: 220px;
-    background: var(--card-bg);
+    font-family: inherit; font-size: 14px;
+    border: 1px solid var(--border); padding: 6px 12px; min-width: 260px;
+    background: var(--card-bg); border-radius: 3px;
   }
   .compare-input button {
-    font-family: inherit; font-size: 12px;
+    font-family: inherit; font-size: 14px;
     background: var(--fg); color: var(--bg); border: none;
-    padding: 4px 12px; cursor: pointer;
+    padding: 6px 16px; cursor: pointer; border-radius: 3px;
   }
   .compare-input .vs-label { font-weight: 600; color: var(--muted); }
   .differs { color: var(--yellow); font-weight: 600; }
-  .tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid var(--border); }
+  .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border); }
   .tab {
-    font-family: inherit; font-size: 12px;
-    background: none; border: none; padding: 8px 16px;
+    font-family: inherit; font-size: 14px;
+    background: none; border: none; padding: 10px 20px;
     cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
     border-bottom: 2px solid transparent; margin-bottom: -2px;
   }
+  .tab:hover { background: var(--code-bg); }
   .tab.active { border-bottom-color: var(--fg); font-weight: 600; }
   #view { min-height: 200px; }
+  /* Inline edit forms */
+  .inline-form { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; }
+  .inline-form input {
+    font-family: inherit; font-size: 13px; border: 1px solid var(--border);
+    padding: 3px 8px; border-radius: 3px; background: var(--card-bg);
+  }
+  .inline-form button {
+    font-family: inherit; font-size: 12px; padding: 3px 10px;
+    border: 1px solid var(--border); background: var(--code-bg);
+    cursor: pointer; border-radius: 3px;
+  }
+  .inline-form button:hover { background: var(--border); }
+  .notes-display { white-space: pre-wrap; background: var(--code-bg); padding: 10px; border-radius: 4px; margin: 4px 0; font-size: 13px; }
+  .tag-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .tag-removable { background: var(--code-bg); padding: 3px 10px; font-size: 13px; border-radius: 3px; display: inline-flex; align-items: center; gap: 4px; }
 </style>
 </head>
 <body>
@@ -550,11 +660,21 @@ async function showDetail(id) {
     }).join('\n');
   }
 
+  const tagsHtml = exp.tags.length
+    ? exp.tags.map(t => `<span class="tag-removable">#${esc(t)}</span>`).join('')
+    : '<span style="color:var(--muted)">none</span>';
+
   document.getElementById('detail-panel').innerHTML = `
     <div class="detail">
       <div class="detail-header">
-        <h2 style="color:var(--fg);text-transform:none;letter-spacing:0">${exp.name}</h2>
-        <button class="close-btn" onclick="document.getElementById('detail-panel').innerHTML=''">[close]</button>
+        <h2 id="detail-name">${esc(exp.name)}</h2>
+        <div class="detail-actions">
+          <button class="action-btn" onclick="renameExp('${exp.id}')">Rename</button>
+          <button class="action-btn" onclick="addTagUI('${exp.id}')">+ Tag</button>
+          <button class="action-btn" onclick="addNoteUI('${exp.id}')">+ Note</button>
+          <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name).replace(/'/g,"\\'")}')">Delete</button>
+          <button class="close-btn" onclick="document.getElementById('detail-panel').innerHTML=''">&times;</button>
+        </div>
       </div>
       <div class="info-grid">
         <span class="label">ID</span><span>${exp.id}</span>
@@ -565,8 +685,8 @@ async function showDetail(id) {
         <span class="label">Branch</span><span>${exp.git_branch||'--'} @ ${exp.git_commit||'--'}</span>
         <span class="label">Host</span><span>${exp.hostname||'--'}</span>
         <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
-        <span class="label">Notes</span><span>${exp.notes||'--'}</span>
-        <span class="label">Tags</span><span>${exp.tags.length?exp.tags.map(t=>'#'+t).join(' '):'--'}</span>
+        <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
+        <span class="label">Notes</span><span id="detail-notes">${exp.notes ? '<div class="notes-display">'+esc(exp.notes)+'</div>' : '<span style="color:var(--muted)">none</span>'}</span>
       </div>
       ${paramRows ? '<h2>Params</h2><table class="params-table">'+paramRows+'</table>' : ''}
       ${codeHtml}
@@ -685,6 +805,56 @@ async function doCompare() {
 
 function esc(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function renameExp(id) {
+  const name = prompt('New name:');
+  if (!name) return;
+  const r = await fetch(`/api/experiment/${id}/rename`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name})
+  });
+  const d = await r.json();
+  if (d.ok) { loadExperiments(); showDetail(id); }
+  else alert(d.error || 'Failed');
+}
+
+async function addTagUI(id) {
+  const tag = prompt('Tag name:');
+  if (!tag) return;
+  const r = await fetch(`/api/experiment/${id}/tag`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({tag: tag.trim()})
+  });
+  const d = await r.json();
+  if (d.ok) { loadExperiments(); showDetail(id); }
+  else alert(d.error || 'Failed');
+}
+
+async function addNoteUI(id) {
+  const note = prompt('Add note:');
+  if (!note) return;
+  const r = await fetch(`/api/experiment/${id}/note`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({note})
+  });
+  const d = await r.json();
+  if (d.ok) { showDetail(id); }
+  else alert(d.error || 'Failed');
+}
+
+async function deleteExp(id, name) {
+  if (!confirm(`Delete experiment "${name}"? This cannot be undone.`)) return;
+  const r = await fetch(`/api/experiment/${id}/delete`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({})
+  });
+  const d = await r.json();
+  if (d.ok) {
+    document.getElementById('detail-panel').innerHTML = '';
+    loadStats();
+    loadExperiments();
+  } else alert(d.error || 'Failed');
 }
 
 // Init
