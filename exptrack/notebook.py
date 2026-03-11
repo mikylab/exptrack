@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from .core import Experiment, output_path
-from .capture import attach_notebook, detach_notebook
+from .capture import attach_notebook, detach_notebook, patch_savefig
 
 _active: Experiment | None = None
 
@@ -58,6 +58,7 @@ def start(name: str = "", nb_file: str = "", **params) -> Experiment:
         _caller_depth=2,
     )
     attach_notebook(_active, nb_name=Path(nb_file).stem if nb_file else "notebook")
+    patch_savefig(_active)
     return _active
 
 
@@ -216,3 +217,4 @@ def _auto_start(nb_file: str = "", name: str = ""):
     )
     nb_name = Path(nb_file).stem if nb_file else "notebook"
     attach_notebook(_active, nb_name=nb_name)
+    patch_savefig(_active)

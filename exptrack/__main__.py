@@ -35,13 +35,16 @@ def main():
     sys.argv = sys.argv[1:]
 
     from .core import Experiment
-    from .capture import patch_argparse, capture_argv
+    from .capture import patch_argparse, capture_argv, capture_script_snapshot, patch_savefig
     from . import config as cfg
 
     conf = cfg.load()
 
     # Start the experiment before anything in the script runs
     exp = Experiment(script=str(script_path), _caller_depth=0)
+
+    # Snapshot the script source and diff against previous runs
+    capture_script_snapshot(exp, str(script_path))
 
     # Patch argparse BEFORE the script runs — so parse_args() auto-logs params
     if conf.get("auto_capture", {}).get("argparse", True):
@@ -50,6 +53,9 @@ def main():
     # Also capture raw argv now (catches --flags even if argparse isn't used)
     if conf.get("auto_capture", {}).get("argv", True):
         capture_argv(exp)
+
+    # Patch matplotlib.savefig so saved plots auto-register as artifacts
+    patch_savefig(exp)
 
     # Run the script in its own namespace
     try:

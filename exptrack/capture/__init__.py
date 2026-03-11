@@ -252,13 +252,31 @@ def _post_execute():
                not (isinstance(v, str) and len(v) > 200)
         }
 
-        # Log new HP variables as params
+        # Log HP variables as top-level params (used in run naming)
         hp_new = {k: v for k, v in new_vars.items() if _HP_RE.match(k)}
         hp_changed = {k: d["to"] for k, d in changed_vars.items() if _HP_RE.match(k)}
         if hp_new or hp_changed:
             exp.log_params({**hp_new, **hp_changed})
             from ..core import make_run_name
             exp._rename(make_run_name(exp.script, exp._params))
+
+        # Log ALL other changed variables as _var/ params so code tweaks
+        # (e.g. changing np.linspace(0,10,100) to (0,20,200)) are tracked
+        other_new = {f"_var/{k}": v for k, v in new_vars.items()
+                     if not _HP_RE.match(k)}
+        other_changed = {f"_var/{k}": d["to"] for k, d in changed_vars.items()
+                         if not _HP_RE.match(k)}
+        if other_new or other_changed:
+            exp.log_params({**other_new, **other_changed})
+
+        # Log code diffs as a param so they appear in `exptrack show`
+        if source_diff:
+            diff_summary = "; ".join(
+                f"{'+'if e['op']=='+'else '-'} {e['line'].strip()}"
+                for e in source_diff if e["op"] != "="
+            )[:500]
+            if diff_summary:
+                exp.log_param(f"_code_change/cell_{exec_num}", diff_summary)
 
         # ── 4. Save snapshot to .exptrack/notebook_history/ ───────────────────
         if source_changed or new_vars or changed_vars:
@@ -293,6 +311,102 @@ def _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
 
     fname = f"exec{exec_num:04d}_{cell_id}.json"
     (hist_dir / fname).write_text(json.dumps(snap, indent=2, default=str))
+
+
+# ── Matplotlib savefig patch ─────────────────────────────────────────────────
+
+_plt_patched = False
+
+def patch_savefig(exp: "Experiment"):
+    """
+    Monkey-patch matplotlib.pyplot.savefig and Figure.savefig so that every
+    saved plot is automatically registered as an artifact on the active
+    experiment.  Safe to call when matplotlib is not installed.
+    """
+    global _plt_patched
+    if _plt_patched:
+        return
+    _plt_patched = True
+
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.figure as mfig
+    except ImportError:
+        return
+
+    _orig_plt_savefig = plt.savefig
+    _orig_fig_savefig = mfig.Figure.savefig
+
+    def _hooked_plt_savefig(fname, *args, **kwargs):
+        result = _orig_plt_savefig(fname, *args, **kwargs)
+        try:
+            from pathlib import Path as _P
+            exp.log_artifact(str(_P(str(fname)).resolve()), label=_P(str(fname)).name)
+        except Exception:
+            pass
+        return result
+
+    def _hooked_fig_savefig(self_fig, fname, *args, **kwargs):
+        result = _orig_fig_savefig(self_fig, fname, *args, **kwargs)
+        try:
+            from pathlib import Path as _P
+            exp.log_artifact(str(_P(str(fname)).resolve()), label=_P(str(fname)).name)
+        except Exception:
+            pass
+        return result
+
+    plt.savefig = _hooked_plt_savefig
+    mfig.Figure.savefig = _hooked_fig_savefig
+
+
+# ── Script source tracking ───────────────────────────────────────────────────
+
+def capture_script_snapshot(exp: "Experiment", script_path: str):
+    """
+    Store a hash of the script source and compute a diff against the most
+    recent run of the same script.  Logs any code changes as a param so
+    they show up in `exptrack show`.
+    """
+    from pathlib import Path as _Path
+    try:
+        src = _Path(script_path).read_text()
+    except Exception:
+        return
+
+    src_hash = hashlib.md5(src.encode()).hexdigest()[:12]
+    exp.log_param("_script_hash", src_hash)
+
+    # Store source snapshot for future diffs
+    from .. import config as _cfg
+    snap_dir = _cfg.project_root() / _cfg.load().get(
+        "notebook_history_dir", ".exptrack/notebook_history") / "_scripts"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+
+    script_stem = _Path(script_path).stem
+
+    # Find the most recent snapshot of this script (if any)
+    prev_snaps = sorted(snap_dir.glob(f"{script_stem}_*.py.snapshot"))
+    if prev_snaps:
+        try:
+            prev_src = prev_snaps[-1].read_text()
+            if prev_src != src:
+                diff = _simple_diff(prev_src, src)
+                diff_lines = [e for e in diff if e["op"] != "="]
+                if diff_lines:
+                    summary = "; ".join(
+                        f"{'+'if e['op']=='+'else '-'} {e['line'].strip()}"
+                        for e in diff_lines
+                    )[:1000]
+                    exp.log_param("_code_changes", summary)
+        except Exception:
+            pass
+
+    # Save current snapshot
+    snap_file = snap_dir / f"{script_stem}_{exp.id}.py.snapshot"
+    try:
+        snap_file.write_text(src)
+    except Exception:
+        pass
 
 
 def _simple_diff(old: str, new: str) -> list[dict]:
