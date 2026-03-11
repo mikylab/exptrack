@@ -302,11 +302,14 @@ def _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
         "ts":           datetime.utcnow().isoformat(),
         "exec_num":     exec_num,
         "cell_id":      cell_id,
-        "source":       source,
+        # Only store the diff, not the full source — keeps snapshots light.
+        # The first execution of a cell stores a hash; subsequent ones store
+        # only what changed.
+        "source_hash":  hashlib.md5(source.encode()).hexdigest()[:12],
         "source_diff":  source_diff,
         "new_vars":     new_vars,
         "changed_vars": changed_vars,
-        "output":       str(output)[:4000] if output else None,
+        "output":       str(output)[:2000] if output else None,
     }
 
     fname = f"exec{exec_num:04d}_{cell_id}.json"
@@ -363,11 +366,14 @@ def patch_savefig(exp: "Experiment"):
 
 def capture_script_snapshot(exp: "Experiment", script_path: str):
     """
-    Store a hash of the script source and compute a diff against the most
-    recent run of the same script.  Logs any code changes as a param so
-    they show up in `exptrack show`.
+    Diff the script against the last git commit (HEAD) and log only the
+    changed lines.  No full-source copies are stored — the committed file
+    in git is always the reference point, keeping storage minimal.
     """
+    import subprocess
     from pathlib import Path as _Path
+    from .. import config as _cfg
+
     try:
         src = _Path(script_path).read_text()
     except Exception:
@@ -376,37 +382,34 @@ def capture_script_snapshot(exp: "Experiment", script_path: str):
     src_hash = hashlib.md5(src.encode()).hexdigest()[:12]
     exp.log_param("_script_hash", src_hash)
 
-    # Store source snapshot for future diffs
-    from .. import config as _cfg
-    snap_dir = _cfg.project_root() / _cfg.load().get(
-        "notebook_history_dir", ".exptrack/notebook_history") / "_scripts"
-    snap_dir.mkdir(parents=True, exist_ok=True)
-
-    script_stem = _Path(script_path).stem
-
-    # Find the most recent snapshot of this script (if any)
-    prev_snaps = sorted(snap_dir.glob(f"{script_stem}_*.py.snapshot"))
-    if prev_snaps:
-        try:
-            prev_src = prev_snaps[-1].read_text()
-            if prev_src != src:
-                diff = _simple_diff(prev_src, src)
-                diff_lines = [e for e in diff if e["op"] != "="]
-                if diff_lines:
-                    summary = "; ".join(
-                        f"{'+'if e['op']=='+'else '-'} {e['line'].strip()}"
-                        for e in diff_lines
-                    )[:1000]
-                    exp.log_param("_code_changes", summary)
-        except Exception:
-            pass
-
-    # Save current snapshot
-    snap_file = snap_dir / f"{script_stem}_{exp.id}.py.snapshot"
+    # Use `git diff HEAD -- <file>` to get changes vs. last commit.
+    # This is the same reference point core.py uses for git_diff but
+    # scoped to just this script file.
+    root = _cfg.project_root()
     try:
-        snap_file.write_text(src)
+        rel = _Path(script_path).resolve().relative_to(root.resolve())
+    except ValueError:
+        rel = _Path(script_path)
+    try:
+        r = subprocess.run(
+            ["git", "diff", "HEAD", "--", str(rel)],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(root),
+        )
+        script_diff = r.stdout.strip() if r.returncode == 0 else ""
     except Exception:
-        pass
+        script_diff = ""
+
+    if script_diff:
+        # Summarise the changed lines (skip diff headers)
+        changed = []
+        for line in script_diff.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                changed.append(f"+ {line[1:].strip()}")
+            elif line.startswith("-") and not line.startswith("---"):
+                changed.append(f"- {line[1:].strip()}")
+        if changed:
+            exp.log_param("_code_changes", "; ".join(changed)[:1000])
 
 
 def _simple_diff(old: str, new: str) -> list[dict]:
