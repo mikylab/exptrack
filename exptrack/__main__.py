@@ -61,7 +61,7 @@ def main():
     # Protect artifacts from previous runs that might be overwritten
     if conf.get("protect_on_rerun", True):
         from .core.artifact_protection import protect_previous_artifacts
-        protected = protect_previous_artifacts(exp.id, str(script_path))
+        protected = protect_previous_artifacts(exp.id)
         if protected:
             print(f"[exptrack] Archived {len(protected)} artifact(s) from previous runs",
                   file=sys.stderr)
@@ -97,6 +97,7 @@ _AUTO_DETECT_EXTS = {
     '.png', '.jpg', '.jpeg', '.pdf', '.svg', '.gif', '.bmp',
     '.csv', '.json', '.jsonl', '.tsv', '.parquet',
     '.pt', '.pth', '.h5', '.hdf5', '.onnx', '.pkl', '.safetensors',
+    '.ckpt', '.bin', '.tflite', '.pb', '.msgpack', '.joblib',
     '.log', '.npy', '.npz',
 }
 _SKIP_DIRS = {'.exptrack', '.git', '__pycache__', 'node_modules', '.venv', 'venv'}

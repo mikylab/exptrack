@@ -1,10 +1,14 @@
 """
 exptrack/core/artifact_protection.py — Pre-run conflict detection and archival
 
-Before a new run starts, checks if any artifacts from previous runs of the
-same script sit at paths that the new run might overwrite.  If so, moves the
-old file into ``outputs/<old_run_name>/`` and updates the DB record, so the
-original is never silently lost.
+Before a new run starts, checks if any artifacts from previous completed runs
+sit at paths that could be overwritten.  If so, moves the old file into
+``outputs/<old_run_name>/`` and updates the DB record, so the original is
+never silently lost.
+
+Protection is project-wide (not per-script) so it catches cross-script
+conflicts and default-parameter saves regardless of which script created
+the artifact.
 """
 from __future__ import annotations
 
@@ -17,11 +21,14 @@ from .db import get_db
 from .naming import output_path
 
 
-def protect_previous_artifacts(new_exp_id: str, script_path: str) -> list[str]:
+def protect_previous_artifacts(new_exp_id: str) -> list[str]:
     """Archive artifacts from earlier runs that would be overwritten.
 
-    Only considers artifacts from runs with status ``done`` or ``failed``
-    (never ``running``) whose paths are NOT already inside the managed
+    Checks ALL completed/failed experiments in the project — not just runs
+    of the same script — so that default-parameter saves and cross-script
+    path conflicts are caught.
+
+    Only considers artifacts whose paths are NOT already inside the managed
     ``outputs/`` directory (those are already run-namespaced).
 
     Returns a list of original paths that were archived.
@@ -44,11 +51,10 @@ def protect_previous_artifacts(new_exp_id: str, script_path: str) -> list[str]:
             SELECT a.id, a.path, a.content_hash, a.exp_id, e.name
             FROM artifacts a
             JOIN experiments e ON a.exp_id = e.id
-            WHERE e.script = ?
-              AND a.exp_id != ?
+            WHERE a.exp_id != ?
               AND e.status IN ('done', 'failed')
               AND a.path IS NOT NULL
-        """, (script_path, new_exp_id)).fetchall()
+        """, (new_exp_id,)).fetchall()
 
         for row in rows:
             art_path = row["path"]
