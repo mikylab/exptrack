@@ -595,13 +595,21 @@ def _post_run_cell(result=None):
             except NameError:
                 return
 
-        # ── 0. Get the cell source early (needed for deferred start check) ──
+        # ── 0. Get the cell source and output early ─────────────────────────
         source = None
         output = None
         if result is not None:
             try:
                 source = result.info.raw_cell
             except AttributeError:
+                pass
+            # Capture cell output (stdout) if available
+            try:
+                if hasattr(result, 'result') and result.result is not None:
+                    output = repr(result.result)
+                elif hasattr(result, 'info') and hasattr(result.info, 'result'):
+                    output = repr(result.info.result) if result.info.result is not None else None
+            except Exception:
                 pass
         if not source:
             try:
@@ -615,6 +623,17 @@ def _post_run_cell(result=None):
                 pass
         if not source:
             return
+        # Also try to capture last output from Out dict
+        if output is None:
+            try:
+                exec_count = ip.execution_count
+                out_dict = ip.user_ns.get("Out", {})
+                if exec_count in out_dict:
+                    output = repr(out_dict[exec_count])
+                elif exec_count - 1 in out_dict:
+                    output = repr(out_dict[exec_count - 1])
+            except Exception:
+                pass
 
         # ── 0b. Handle deferred start ────────────────────────────────────────
         # If we're in deferred mode (from %load_ext), skip magic-only cells
@@ -785,6 +804,8 @@ def _post_run_cell(result=None):
                 "parent_hash": parent_hash,
                 "is_rerun": already_seen and not code_changed and not new_vars and not changed_vars,
                 "source_preview": source[:200],
+                "has_output": output is not None,
+                "output_preview": str(output)[:200] if output else None,
             },
             source_diff=diff_str,
         )
@@ -850,11 +871,14 @@ def _post_run_cell(result=None):
             exp.log_param("_cells_ran", json.dumps(_nb_state["cells_ran"]))
 
         # ── 8. Save snapshot to .exptrack/notebook_history/ ───────────────────
-        # Only save full snapshots when there are actual changes to record
-        if code_is_new or code_changed or new_vars or changed_vars:
-            _save_cell_snapshot(exp, exec_num, ch, source,
-                                parent_source or "",
-                                source_diff, new_vars, changed_vars, output)
+        # Save snapshots for ALL cell executions so the full history is
+        # reconstructable.  Re-runs with no changes get a lightweight entry.
+        _save_cell_snapshot(exp, exec_num, ch, source,
+                            parent_source or "",
+                            source_diff, new_vars, changed_vars, output,
+                            is_rerun=(already_seen and not code_changed
+                                      and not new_vars and not changed_vars),
+                            is_observational=is_observational)
 
     except Exception as _e:
         print(f"[exptrack] cell capture error: {_e}", file=sys.stderr)
@@ -865,7 +889,8 @@ _post_execute = _post_run_cell
 
 
 def _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
-                        source_diff, new_vars, changed_vars, output):
+                        source_diff, new_vars, changed_vars, output,
+                        is_rerun=False, is_observational=False):
     from .. import config as cfg
     root = cfg.project_root()
     nb_name = _nb_state["nb_name"]
@@ -879,14 +904,16 @@ def _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
         "ts":           datetime.utcnow().isoformat(),
         "exec_num":     exec_num,
         "cell_id":      cell_id,
-        # Only store the diff, not the full source — keeps snapshots light.
-        # The first execution of a cell stores a hash; subsequent ones store
-        # only what changed.
         "source_hash":  hashlib.md5(source.encode()).hexdigest()[:12],
         "source_diff":  source_diff,
         "new_vars":     new_vars,
         "changed_vars": changed_vars,
         "output":       str(output)[:2000] if output else None,
+        "is_rerun":     is_rerun,
+        "is_observational": is_observational,
+        # Store full source for cells when no git commit or parent exists,
+        # so the original code can be reconstructed later
+        "source":       source if (not prev_source and source_diff) else None,
     }
 
     fname = f"exec{exec_num:04d}_{cell_id}.json"
@@ -903,8 +930,13 @@ def patch_savefig(exp: "Experiment"):
     saved plot is automatically registered as an artifact on the active
     experiment.  Also emits a timeline 'artifact' event linking the saved
     plot to the current variable context.
+
+    Uses _nb_state["exp"] dynamically so that when a new experiment starts,
+    artifacts are tagged to the CURRENT experiment, not a stale one.
     """
     global _plt_patched
+    # Always update the experiment reference so new experiments get tracked
+    _nb_state["exp"] = exp
     if _plt_patched:
         return
     _plt_patched = True
@@ -924,25 +956,31 @@ def patch_savefig(exp: "Experiment"):
         import shutil
         # Save to the original location first
         result = save_fn(fname, *args, **kwargs)
+        # Look up the CURRENT experiment dynamically — not a stale closure
+        cur_exp = _nb_state.get("exp")
+        if cur_exp is None:
+            return result
         try:
             orig_path = _P(str(fname)).resolve()
             # Also copy into the experiment's namespaced output directory
-            out_dir = exp.output_path(orig_path.name)
+            out_dir = cur_exp.output_path(orig_path.name)
             if out_dir.resolve() != orig_path:
                 shutil.copy2(str(orig_path), str(out_dir))
             # Emit timeline artifact event BEFORE registering
             # so the artifact row can reference the timeline seq
-            art_seq = exp.log_event(
+            art_seq = cur_exp.log_event(
                 event_type="artifact",
                 cell_hash=_nb_state.get("last_cell_hash"),
                 key=orig_path.name,
                 value=str(orig_path),
             )
             # Register artifact with experiment name as context
-            label = f"{exp.name}/{orig_path.name}" if exp.name else orig_path.name
-            exp.log_artifact(str(orig_path), label=label, timeline_seq=art_seq)
-        except Exception:
-            pass
+            label = f"{cur_exp.name}/{orig_path.name}" if cur_exp.name else orig_path.name
+            cur_exp.log_artifact(str(orig_path), label=label, timeline_seq=art_seq)
+        except Exception as _e:
+            import traceback
+            print(f"[exptrack] savefig artifact capture error: {_e}",
+                  file=sys.stderr)
         return result
 
     def _hooked_plt_savefig(fname, *args, **kwargs):

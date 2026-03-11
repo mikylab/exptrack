@@ -291,12 +291,22 @@ exptrack ui --port 8080        # custom port
 ```
 
 The dashboard shows:
-- **Stats cards** — total runs, success rate, average duration
-- **Experiment list** — filterable by status (done/failed/running), click any row for details
-- **Experiment detail** — params, metrics with Chart.js plots, artifacts, git diff viewer
-- **Compare view** — side-by-side param + metric comparison of any two runs
+- **Stats cards** — total runs, success rate, average duration (hover for descriptions)
+- **Experiment list** — filterable by status, searchable by name/tag/param, metric previews inline
+- **Experiment detail** — summary card, params, code changes, variables (grouped by type), metrics with Chart.js plots, artifacts with type badges, git diff viewer
+- **Timeline view** — chronological event log with "view source" to see full cell code (current + previous version). Filters by event type (Code, Variables, Artifacts, Observational)
+- **Compare view** — side-by-side param + variable + metric comparison with "show only differences" toggle
+- **Compare Within** — select two timeline points within a single experiment to diff variable state
+- **Export** — JSON or Markdown export for documentation and workflow integration
+- **Docs panel** — click "? Docs" button for a built-in reference explaining all concepts (params, metrics, variables, artifacts, code changes, timeline, tags, compare)
 
 No external dependencies — uses stdlib `http.server` and Chart.js from CDN.
+
+### Artifact tracking
+
+**plt.savefig() auto-links plots** — matplotlib's `savefig()` is monkey-patched so every saved plot is automatically registered as an artifact with a timeline event. Works across multiple experiments in the same session.
+
+Artifacts are shown with type badges (image, model, data, file) in both the detail view and timeline.
 
 ---
 
