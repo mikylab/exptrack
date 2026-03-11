@@ -85,8 +85,15 @@ def reload():
     return load()
 
 
-def init(project_name: str = ""):
-    """Called by `exptrack init` — writes config + .gitignore rules."""
+def init(project_name: str = "", here: bool = False):
+    """Called by `exptrack init` — writes config + .gitignore rules.
+
+    If here=True, forces .exptrack/ creation in the current working directory
+    instead of walking up to find a git root.
+    """
+    global _root_cache
+    if here:
+        _root_cache = Path.cwd()
     root = project_root()
     d = exptrack_dir()
     p = config_path()
