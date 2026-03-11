@@ -54,6 +54,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(self._api_diff(exp_id))
         elif path == "/api/compare":
             self._json_response(self._api_compare(qs))
+        elif path.startswith("/api/timeline/"):
+            exp_id = path.split("/")[-1]
+            self._json_response(self._api_timeline(exp_id, qs))
+        elif path.startswith("/api/vars-at/"):
+            # /api/vars-at/<exp_id>?seq=N
+            exp_id = path.split("/")[-1]
+            self._json_response(self._api_vars_at(exp_id, qs))
         else:
             self.send_error(404)
 
@@ -282,9 +289,63 @@ class DashboardHandler(BaseHTTPRequestHandler):
         conn.execute("DELETE FROM metrics WHERE exp_id=?", (eid,))
         conn.execute("DELETE FROM params WHERE exp_id=?", (eid,))
         conn.execute("DELETE FROM artifacts WHERE exp_id=?", (eid,))
+        conn.execute("DELETE FROM timeline WHERE exp_id=?", (eid,))
         conn.execute("DELETE FROM experiments WHERE id=?", (eid,))
         conn.commit()
         return {"ok": True}
+
+
+    def _api_timeline(self, exp_id, qs):
+        conn = get_db()
+        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        event_type = qs.get("type", "")
+        where = "WHERE exp_id=?"
+        params = [exp["id"]]
+        if event_type:
+            where += " AND event_type=?"
+            params.append(event_type)
+        rows = conn.execute(
+            f"""SELECT seq, event_type, cell_hash, cell_pos, key, value,
+                       prev_value, source_diff, ts
+                FROM timeline {where} ORDER BY seq""",
+            params
+        ).fetchall()
+        return [{
+            "seq": r["seq"],
+            "event_type": r["event_type"],
+            "cell_hash": r["cell_hash"],
+            "cell_pos": r["cell_pos"],
+            "key": r["key"],
+            "value": json.loads(r["value"]) if r["value"] else None,
+            "prev_value": json.loads(r["prev_value"]) if r["prev_value"] else None,
+            "source_diff": json.loads(r["source_diff"]) if r["source_diff"] else None,
+            "ts": r["ts"],
+        } for r in rows]
+
+    def _api_vars_at(self, exp_id, qs):
+        """Get variable state at a specific timeline seq point."""
+        conn = get_db()
+        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        seq = int(qs.get("seq", 999999))
+        rows = conn.execute("""
+            SELECT key, value FROM timeline
+            WHERE exp_id=? AND event_type='var_set' AND seq <= ?
+            ORDER BY seq DESC
+        """, (exp["id"], seq)).fetchall()
+        ctx = {}
+        for r in rows:
+            if r["key"] not in ctx:
+                try:
+                    ctx[r["key"]] = json.loads(r["value"]) if r["value"] else None
+                except Exception:
+                    ctx[r["key"]] = r["value"]
+        return ctx
 
 
 DASHBOARD_HTML = r"""<!DOCTYPE html>
@@ -378,6 +439,39 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .var-changes .var-type { color: var(--muted); font-size: 12px; }
   .var-section-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
   .chart-container { max-width: 700px; margin: 20px 0; }
+  /* Timeline styles */
+  .timeline { padding: 0; margin: 16px 0; }
+  .tl-event { display: flex; gap: 12px; padding: 8px 12px; border-left: 3px solid var(--border); margin-left: 8px; font-size: 13px; position: relative; }
+  .tl-event:hover { background: var(--code-bg); }
+  .tl-event.tl-cell_exec { border-left-color: var(--blue); }
+  .tl-event.tl-var_set { border-left-color: #9b59b6; }
+  .tl-event.tl-artifact { border-left-color: var(--green); }
+  .tl-event.tl-metric { border-left-color: var(--yellow); }
+  .tl-event.tl-observational { border-left-color: var(--border); opacity: 0.7; }
+  .tl-seq { color: var(--muted); min-width: 40px; font-size: 12px; }
+  .tl-icon { min-width: 20px; text-align: center; font-weight: 600; }
+  .tl-body { flex: 1; }
+  .tl-code-preview { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: pre-wrap; }
+  .tl-diff { margin-top: 4px; font-size: 12px; }
+  .tl-diff .diff-add { color: var(--green); }
+  .tl-diff .diff-del { color: var(--red); }
+  .tl-badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px; margin-left: 6px; }
+  .tl-badge-new { background: #d4edda; color: #155724; }
+  .tl-badge-edited { background: #fff3cd; color: #856404; }
+  .tl-badge-rerun { background: var(--code-bg); color: var(--muted); }
+  .tl-var-arrow { color: var(--muted); }
+  .tl-context { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .tl-filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tl-filters button { font-family: inherit; font-size: 12px; background: var(--card-bg); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; border-radius: 3px; }
+  .tl-filters button:hover { background: var(--code-bg); }
+  .tl-filters button.active { background: var(--fg); color: var(--bg); }
+  .tl-compare-bar { background: var(--code-bg); padding: 10px 14px; margin-bottom: 12px; border-radius: 4px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  .tl-compare-bar button { font-family: inherit; font-size: 12px; background: var(--blue); color: #fff; border: none; padding: 4px 12px; cursor: pointer; border-radius: 3px; }
+  .tl-seq-select { cursor: pointer; }
+  .tl-seq-select:hover { background: rgba(44,90,160,0.1); }
+  .tl-seq-select.selected { background: rgba(44,90,160,0.15); outline: 2px solid var(--blue); }
+  .within-compare { background: var(--card-bg); border: 1px solid var(--border); padding: 20px; border-radius: 4px; margin-top: 16px; }
+  .within-compare h3 { font-size: 14px; margin-bottom: 12px; }
   .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
   .compare-input { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
   .compare-input select, .compare-input input {
@@ -676,25 +770,37 @@ async function showDetail(id) {
           <button class="close-btn" onclick="document.getElementById('detail-panel').innerHTML=''">&times;</button>
         </div>
       </div>
-      <div class="info-grid">
-        <span class="label">ID</span><span>${exp.id}</span>
-        <span class="label">Status</span><span class="status-${exp.status}">${exp.status}</span>
-        <span class="label">Created</span><span>${fmtDt(exp.created_at)}</span>
-        <span class="label">Duration</span><span>${fmtDur(exp.duration_s)}</span>
-        <span class="label">Script</span><span>${exp.script||'--'}</span>
-        <span class="label">Branch</span><span>${exp.git_branch||'--'} @ ${exp.git_commit||'--'}</span>
-        <span class="label">Host</span><span>${exp.hostname||'--'}</span>
-        <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
-        <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
-        <span class="label">Notes</span><span id="detail-notes">${exp.notes ? '<div class="notes-display">'+esc(exp.notes)+'</div>' : '<span style="color:var(--muted)">none</span>'}</span>
+
+      <div class="tabs" id="detail-tabs">
+        <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
+        <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
+        <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
       </div>
-      ${paramRows ? '<h2>Params</h2><table class="params-table">'+paramRows+'</table>' : ''}
-      ${codeHtml}
-      ${varHtml}
-      ${metricRows ? '<h2>Metrics</h2><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table>' : ''}
-      <div id="charts-container"></div>
-      ${artRows ? '<h2>Artifacts</h2><table class="params-table">'+artRows+'</table>' : ''}
-      ${diffHtml ? '<h2>Git Diff ('+exp.diff_lines+' lines)</h2><div class="diff-view">'+diffHtml+'</div>' : ''}
+
+      <div id="detail-tab-overview">
+        <div class="info-grid">
+          <span class="label">ID</span><span>${exp.id}</span>
+          <span class="label">Status</span><span class="status-${exp.status}">${exp.status}</span>
+          <span class="label">Created</span><span>${fmtDt(exp.created_at)}</span>
+          <span class="label">Duration</span><span>${fmtDur(exp.duration_s)}</span>
+          <span class="label">Script</span><span>${exp.script||'--'}</span>
+          <span class="label">Branch</span><span>${exp.git_branch||'--'} @ ${exp.git_commit||'--'}</span>
+          <span class="label">Host</span><span>${exp.hostname||'--'}</span>
+          <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
+          <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
+          <span class="label">Notes</span><span id="detail-notes">${exp.notes ? '<div class="notes-display">'+esc(exp.notes)+'</div>' : '<span style="color:var(--muted)">none</span>'}</span>
+        </div>
+        ${paramRows ? '<h2>Params</h2><table class="params-table">'+paramRows+'</table>' : ''}
+        ${codeHtml}
+        ${varHtml}
+        ${metricRows ? '<h2>Metrics</h2><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table>' : ''}
+        <div id="charts-container"></div>
+        ${artRows ? '<h2>Artifacts</h2><table class="params-table">'+artRows+'</table>' : ''}
+        ${diffHtml ? '<h2>Git Diff ('+exp.diff_lines+' lines)</h2><div class="diff-view">'+diffHtml+'</div>' : ''}
+      </div>
+
+      <div id="detail-tab-timeline" style="display:none"></div>
+      <div id="detail-tab-compare-within" style="display:none"></div>
     </div>
   `;
 
@@ -747,9 +853,13 @@ async function doCompare() {
   const e1 = data.exp1, e2 = data.exp2;
   // Separate params, vars, and internal keys
   const isUserParam = k => !k.startsWith('_code_change') && k !== '_code_changes' && !k.startsWith('_var/') && k !== '_script_hash';
-  const isVar = k => k.startsWith('_var/');
   const allPKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isUserParam).sort();
-  const allVarKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isVar).sort();
+  // Fetch final variable state from timeline for richer comparison
+  const [tlVars1, tlVars2] = await Promise.all([
+    api(`/api/vars-at/${id1}?seq=999999`),
+    api(`/api/vars-at/${id2}?seq=999999`),
+  ]);
+  const allVarKeysFromTimeline = [...new Set([...Object.keys(tlVars1), ...Object.keys(tlVars2)])].sort();
   const allMKeys = [...new Set([...e1.metrics.map(m=>m.key), ...e2.metrics.map(m=>m.key)])].sort();
   const m1 = Object.fromEntries(e1.metrics.map(m => [m.key, m.last]));
   const m2 = Object.fromEntries(e2.metrics.map(m => [m.key, m.last]));
@@ -773,14 +883,13 @@ async function doCompare() {
     html += '</table>';
   }
 
-  if (allVarKeys.length) {
-    html += '<h2>Variables</h2><table class="params-table"><tr><th>Variable</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
-    for (const k of allVarKeys) {
-      const displayK = k.slice(5); // strip _var/ prefix
-      const v1 = String(e1.params[k] ?? '--');
-      const v2 = String(e2.params[k] ?? '--');
+  if (allVarKeysFromTimeline.length) {
+    html += '<h2>Variables (final state from timeline)</h2><table class="params-table"><tr><th>Variable</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
+    for (const k of allVarKeysFromTimeline) {
+      const v1 = String(tlVars1[k] ?? '--').slice(0, 50);
+      const v2 = String(tlVars2[k] ?? '--').slice(0, 50);
       const cls = v1 !== v2 ? ' class="differs"' : '';
-      html += `<tr><td class="var-name">${esc(displayK)}</td><td${cls}>${esc(v1)}</td><td${cls}>${esc(v2)}</td></tr>`;
+      html += `<tr><td class="var-name">${esc(k)}</td><td${cls}>${esc(v1)}</td><td${cls}>${esc(v2)}</td></tr>`;
     }
     html += '</table>';
   }
@@ -855,6 +964,216 @@ async function deleteExp(id, name) {
     loadStats();
     loadExperiments();
   } else alert(d.error || 'Failed');
+}
+
+// ── Detail sub-tabs ──────────────────────────────────────────────────────────
+
+let currentDetailTab = 'overview';
+let currentDetailExpId = '';
+
+function switchDetailTab(tab, expId) {
+  currentDetailTab = tab;
+  currentDetailExpId = expId;
+  document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
+    const tabs = ['overview','timeline','compare-within'];
+    t.classList.toggle('active', tabs[i] === tab);
+  });
+  ['overview','timeline','compare-within'].forEach(t => {
+    const el = document.getElementById('detail-tab-'+t);
+    if (el) el.style.display = t === tab ? '' : 'none';
+  });
+  if (tab === 'timeline') loadTimeline(expId);
+  if (tab === 'compare-within') loadCompareWithin(expId);
+}
+
+// ── Timeline visualization ───────────────────────────────────────────────────
+
+let timelineFilter = '';
+
+async function loadTimeline(expId, filter) {
+  if (filter !== undefined) timelineFilter = filter;
+  const url = timelineFilter
+    ? `/api/timeline/${expId}?type=${timelineFilter}`
+    : `/api/timeline/${expId}`;
+  const events = await api(url);
+  const container = document.getElementById('detail-tab-timeline');
+
+  // Filter buttons
+  let html = '<div class="tl-filters">';
+  const types = ['', 'cell_exec', 'var_set', 'artifact', 'observational'];
+  const labels = ['All', 'Code', 'Variables', 'Artifacts', 'Observational'];
+  types.forEach((t, i) => {
+    html += `<button class="${timelineFilter===t?'active':''}" onclick="loadTimeline('${expId}','${t}')">${labels[i]}</button>`;
+  });
+  html += '</div>';
+
+  if (!events.length) {
+    html += '<p style="color:var(--muted)">No timeline events recorded.</p>';
+    container.innerHTML = html;
+    return;
+  }
+
+  // Build variable state as we go (for artifact context)
+  const varState = {};
+
+  html += '<div class="timeline">';
+  for (const ev of events) {
+    const cls = 'tl-event tl-' + ev.event_type;
+    const ts = fmtDt(ev.ts);
+    const icons = {cell_exec:'&gt;&gt;', var_set:'=', artifact:'&#9633;', metric:'#', observational:'..'};
+    const colors = {cell_exec:'var(--blue)', var_set:'#9b59b6', artifact:'var(--green)', metric:'var(--yellow)', observational:'var(--muted)'};
+    const icon = icons[ev.event_type] || '?';
+    const iconColor = colors[ev.event_type] || 'var(--fg)';
+
+    if (ev.event_type === 'cell_exec' || ev.event_type === 'observational') {
+      const info = ev.value || {};
+      const preview = (info.source_preview || '').split('\n')[0].slice(0, 70);
+      let badges = '';
+      if (info.code_is_new) badges += '<span class="tl-badge tl-badge-new">new</span>';
+      if (info.code_changed) badges += '<span class="tl-badge tl-badge-edited">edited</span>';
+      if (info.is_rerun) badges += '<span class="tl-badge tl-badge-rerun">rerun</span>';
+
+      html += `<div class="${cls}">
+        <div class="tl-seq">${ev.seq}</div>
+        <div class="tl-icon" style="color:${iconColor}">${icon}</div>
+        <div class="tl-body">
+          <strong>${esc(ev.key||'')}</strong>${badges}
+          <span style="color:var(--muted);margin-left:8px">${ts}</span>
+          ${preview ? '<div class="tl-code-preview">' + esc(preview) + '</div>' : ''}`;
+
+      // Show diff if present
+      if (ev.source_diff && ev.source_diff.length) {
+        html += '<div class="tl-diff">';
+        for (const d of ev.source_diff.slice(0, 8)) {
+          if (d.op === '+') html += `<div class="diff-add">+ ${esc(d.line.slice(0,80))}</div>`;
+          else if (d.op === '-') html += `<div class="diff-del">- ${esc(d.line.slice(0,80))}</div>`;
+        }
+        if (ev.source_diff.length > 8) html += `<div style="color:var(--muted)">... ${ev.source_diff.length - 8} more lines</div>`;
+        html += '</div>';
+      }
+      html += '</div></div>';
+
+    } else if (ev.event_type === 'var_set') {
+      varState[ev.key] = ev.value;
+      const valStr = String(ev.value).slice(0, 60);
+      let prevHtml = '';
+      if (ev.prev_value !== null && ev.prev_value !== undefined) {
+        prevHtml = ` <span class="tl-var-arrow">&larr;</span> <span style="color:var(--muted);text-decoration:line-through">${esc(String(ev.prev_value).slice(0,40))}</span>`;
+      }
+      html += `<div class="${cls}">
+        <div class="tl-seq">${ev.seq}</div>
+        <div class="tl-icon" style="color:${iconColor}">${icon}</div>
+        <div class="tl-body">
+          <strong style="color:#9b59b6">${esc(ev.key)}</strong> = ${esc(valStr)}${prevHtml}
+          <span style="color:var(--muted);margin-left:8px">${ts}</span>
+        </div>
+      </div>`;
+
+    } else if (ev.event_type === 'artifact') {
+      // Show artifact with variable context at this point
+      html += `<div class="${cls}">
+        <div class="tl-seq">${ev.seq}</div>
+        <div class="tl-icon" style="color:${iconColor}">${icon}</div>
+        <div class="tl-body">
+          <strong style="color:var(--green)">artifact:</strong> ${esc(ev.key||'')} &rarr; ${esc(String(ev.value||'').slice(0,60))}
+          <span style="color:var(--muted);margin-left:8px">${ts}</span>`;
+      // Show context vars
+      const ctxKeys = Object.keys(varState).filter(k => !k.startsWith('_'));
+      if (ctxKeys.length) {
+        const ctx = ctxKeys.slice(0, 6).map(k => `${k}=${String(varState[k]).slice(0,15)}`).join(', ');
+        html += `<div class="tl-context">context: ${esc(ctx)}</div>`;
+      }
+      html += '</div></div>';
+
+    } else if (ev.event_type === 'metric') {
+      html += `<div class="${cls}">
+        <div class="tl-seq">${ev.seq}</div>
+        <div class="tl-icon" style="color:${iconColor}">${icon}</div>
+        <div class="tl-body">
+          <strong style="color:var(--yellow)">${esc(ev.key)}</strong> = ${ev.value}
+          <span style="color:var(--muted);margin-left:8px">${ts}</span>
+        </div>
+      </div>`;
+    }
+  }
+  html += '</div>';
+  html += `<p style="color:var(--muted);font-size:12px">${events.length} events</p>`;
+  container.innerHTML = html;
+}
+
+// ── Within-experiment comparison ─────────────────────────────────────────────
+
+let withinSeq1 = null, withinSeq2 = null;
+
+async function loadCompareWithin(expId) {
+  const events = await api(`/api/timeline/${expId}`);
+  const container = document.getElementById('detail-tab-compare-within');
+
+  // Show cell_exec events as selectable points
+  const cellEvents = events.filter(e => e.event_type === 'cell_exec' || e.event_type === 'artifact');
+
+  let html = `<p style="margin-bottom:12px">Select two timeline points to compare variable state:</p>`;
+  html += '<div class="tl-compare-bar">';
+  html += `<span>Point A: <strong id="cw-seq1">${withinSeq1 !== null ? 'seq='+withinSeq1 : 'click to select'}</strong></span>`;
+  html += `<span>Point B: <strong id="cw-seq2">${withinSeq2 !== null ? 'seq='+withinSeq2 : 'click to select'}</strong></span>`;
+  html += `<button onclick="doWithinCompare('${expId}')">Compare</button>`;
+  html += `<button onclick="withinSeq1=null;withinSeq2=null;loadCompareWithin('${expId}')" style="background:var(--muted)">Clear</button>`;
+  html += '</div>';
+
+  html += '<div class="timeline" style="max-height:400px;overflow-y:auto">';
+  for (const ev of cellEvents) {
+    const info = ev.value || {};
+    const preview = (info.source_preview || ev.key || '').split('\n')[0].slice(0, 60);
+    const sel1 = withinSeq1 === ev.seq ? ' selected' : '';
+    const sel2 = withinSeq2 === ev.seq ? ' selected' : '';
+    const selCls = (sel1 || sel2) ? ' tl-seq-select selected' : ' tl-seq-select';
+    html += `<div class="tl-event tl-${ev.event_type}${selCls}" onclick="selectWithinSeq(${ev.seq},'${expId}')" style="cursor:pointer">
+      <div class="tl-seq">${ev.seq}</div>
+      <div class="tl-body">
+        <strong>${esc(ev.key||'')}</strong>
+        <span style="color:var(--muted);margin-left:8px">${fmtDt(ev.ts)}</span>
+        ${preview ? '<div class="tl-code-preview">' + esc(preview) + '</div>' : ''}
+      </div>
+    </div>`;
+  }
+  html += '</div>';
+  html += '<div id="within-compare-result"></div>';
+  container.innerHTML = html;
+}
+
+function selectWithinSeq(seq, expId) {
+  if (withinSeq1 === null || (withinSeq1 !== null && withinSeq2 !== null)) {
+    withinSeq1 = seq;
+    withinSeq2 = null;
+  } else {
+    withinSeq2 = seq;
+  }
+  loadCompareWithin(expId);
+}
+
+async function doWithinCompare(expId) {
+  if (withinSeq1 === null || withinSeq2 === null) return;
+  const [vars1, vars2] = await Promise.all([
+    api(`/api/vars-at/${expId}?seq=${withinSeq1}`),
+    api(`/api/vars-at/${expId}?seq=${withinSeq2}`),
+  ]);
+
+  const allKeys = [...new Set([...Object.keys(vars1), ...Object.keys(vars2)])].sort();
+  let html = `<div class="within-compare">
+    <h3>Variable state: seq=${withinSeq1} vs seq=${withinSeq2}</h3>
+    <table class="params-table">
+    <tr><th>Variable</th><th>@seq=${withinSeq1}</th><th>@seq=${withinSeq2}</th></tr>`;
+
+  for (const k of allKeys) {
+    const v1 = vars1[k] !== undefined ? String(vars1[k]).slice(0, 40) : '--';
+    const v2 = vars2[k] !== undefined ? String(vars2[k]).slice(0, 40) : '--';
+    const differs = String(vars1[k]) !== String(vars2[k]);
+    const cls = differs ? ' class="differs"' : '';
+    html += `<tr><td class="var-name">${esc(k)}</td><td${cls}>${esc(v1)}</td><td${cls}>${esc(v2)}</td></tr>`;
+  }
+  html += '</table></div>';
+
+  document.getElementById('within-compare-result').innerHTML = html;
 }
 
 // Init
