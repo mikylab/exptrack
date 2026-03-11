@@ -29,6 +29,11 @@ def get_db():
     return _get_db()
 
 
+def _delete_exp(conn, exp_id):
+    from exptrack.core import delete_experiment
+    delete_experiment(conn, exp_id)
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # suppress request logs
@@ -98,6 +103,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/experiment/") and path.endswith("/delete"):
             exp_id = path.split("/")[-2]
             self._json_response(self._api_delete(exp_id))
+        elif path.startswith("/api/experiment/") and path.endswith("/finish"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_finish(exp_id))
         elif path.startswith("/api/experiment/") and path.endswith("/artifact"):
             exp_id = path.split("/")[-2]
             self._json_response(self._api_add_artifact(exp_id, body))
@@ -351,15 +359,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
         exp = self._find_exp(exp_id)
         if not exp:
             return {"error": "not found"}
-        eid = exp["id"]
-        conn.execute("DELETE FROM metrics WHERE exp_id=?", (eid,))
-        conn.execute("DELETE FROM params WHERE exp_id=?", (eid,))
-        conn.execute("DELETE FROM artifacts WHERE exp_id=?", (eid,))
-        conn.execute("DELETE FROM timeline WHERE exp_id=?", (eid,))
-        conn.execute("DELETE FROM experiments WHERE id=?", (eid,))
+        _delete_exp(conn, exp["id"])
         conn.commit()
         return {"ok": True}
 
+
+    def _api_finish(self, exp_id):
+        """Manually mark an experiment as done."""
+        conn = get_db()
+        exp = conn.execute(
+            "SELECT id, status, created_at FROM experiments WHERE id LIKE ?",
+            (exp_id + "%",)
+        ).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        if exp["status"] == "done":
+            return {"ok": True, "status": "done", "message": "already done"}
+        now = datetime.now(timezone.utc).isoformat()
+        duration = (datetime.fromisoformat(now) -
+                    datetime.fromisoformat(exp["created_at"])).total_seconds()
+        conn.execute("""
+            UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?
+        """, (now, duration, exp["id"]))
+        conn.commit()
+        return {"ok": True, "status": "done", "duration_s": duration}
 
     def _api_add_artifact(self, exp_id, body):
         conn = get_db()
@@ -475,12 +498,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         for exp_id in ids:
             exp = self._find_exp(exp_id)
             if exp:
-                eid = exp["id"]
-                conn.execute("DELETE FROM metrics WHERE exp_id=?", (eid,))
-                conn.execute("DELETE FROM params WHERE exp_id=?", (eid,))
-                conn.execute("DELETE FROM artifacts WHERE exp_id=?", (eid,))
-                conn.execute("DELETE FROM timeline WHERE exp_id=?", (eid,))
-                conn.execute("DELETE FROM experiments WHERE id=?", (eid,))
+                _delete_exp(conn, exp["id"])
                 deleted += 1
         conn.commit()
         return {"ok": True, "deleted": deleted}
