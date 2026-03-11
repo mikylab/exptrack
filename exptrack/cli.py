@@ -51,7 +51,7 @@ def fmt_dur(s):
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 def cmd_init(args):
-    cfg.init(project_name=args.name or "")
+    cfg.init(project_name=args.name or "", here=args.here)
 
 
 def cmd_run(args):
@@ -760,7 +760,10 @@ def main():
     sub = p.add_subparsers(dest="cmd")
 
     # ── Project setup ─────────────────────────────────────────────────────────
-    sub.add_parser("init").add_argument("name", nargs="?", default="")
+    p_init = sub.add_parser("init", help="Initialize exptrack in project directory")
+    p_init.add_argument("name", nargs="?", default="")
+    p_init.add_argument("--here", action="store_true",
+                        help="Create .exptrack/ in the current directory instead of the git root")
 
     # ── Python script wrapping ────────────────────────────────────────────────
     p_run = sub.add_parser("run", help="Run a Python script with tracking")
