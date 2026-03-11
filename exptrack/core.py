@@ -80,6 +80,15 @@ def _ensure_schema(conn):
         );
         CREATE INDEX IF NOT EXISTS idx_metrics_exp ON metrics(exp_id, key);
         CREATE INDEX IF NOT EXISTS idx_params_exp  ON params(exp_id);
+
+        CREATE TABLE IF NOT EXISTS code_baselines (
+            notebook    TEXT NOT NULL,
+            cell_seq    INTEGER NOT NULL,
+            source      TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            PRIMARY KEY (notebook, cell_seq)
+        );
     """)
     conn.commit()
 
