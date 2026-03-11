@@ -61,6 +61,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # /api/vars-at/<exp_id>?seq=N
             exp_id = path.split("/")[-1]
             self._json_response(self._api_vars_at(exp_id, qs))
+        elif path.startswith("/api/cell-source/"):
+            # /api/cell-source/<cell_hash>
+            cell_hash = path.split("/")[-1]
+            self._json_response(self._api_cell_source(cell_hash))
+        elif path.startswith("/api/export/"):
+            # /api/export/<exp_id>?format=json|markdown
+            exp_id = path.split("/")[-1]
+            self._json_response(self._api_export(exp_id, qs))
         else:
             self.send_error(404)
 
@@ -348,6 +356,133 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return ctx
 
 
+    def _api_cell_source(self, cell_hash):
+        """Return full source code for a cell by its content hash."""
+        conn = get_db()
+        row = conn.execute(
+            "SELECT source, parent_hash, notebook, created_at FROM cell_lineage WHERE cell_hash=?",
+            (cell_hash,)
+        ).fetchone()
+        if not row:
+            return {"error": "cell not found", "cell_hash": cell_hash}
+        # Also get parent source if available
+        parent_source = None
+        if row["parent_hash"]:
+            parent = conn.execute(
+                "SELECT source FROM cell_lineage WHERE cell_hash=?",
+                (row["parent_hash"],)
+            ).fetchone()
+            if parent:
+                parent_source = parent["source"]
+        return {
+            "cell_hash": cell_hash,
+            "source": row["source"],
+            "parent_hash": row["parent_hash"],
+            "parent_source": parent_source,
+            "notebook": row["notebook"],
+            "created_at": row["created_at"],
+        }
+
+    def _api_export(self, exp_id, qs):
+        """Export experiment data as structured JSON or markdown for workflow integration."""
+        conn = get_db()
+        exp = conn.execute("SELECT * FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        fmt = qs.get("format", "json")
+        params = conn.execute("SELECT key, value FROM params WHERE exp_id=? ORDER BY key",
+                              (exp["id"],)).fetchall()
+        metrics = conn.execute("""
+            SELECT key, value, step, ts FROM metrics WHERE exp_id=?
+            ORDER BY key, COALESCE(step, 0)
+        """, (exp["id"],)).fetchall()
+        artifacts = conn.execute("SELECT label, path, created_at FROM artifacts WHERE exp_id=?",
+                                 (exp["id"],)).fetchall()
+        timeline = conn.execute("""
+            SELECT seq, event_type, key, value, ts FROM timeline WHERE exp_id=?
+            ORDER BY seq
+        """, (exp["id"],)).fetchall()
+
+        data = {
+            "id": exp["id"],
+            "name": exp["name"],
+            "project": exp["project"],
+            "status": exp["status"],
+            "created_at": exp["created_at"],
+            "duration_s": exp["duration_s"],
+            "git_branch": exp["git_branch"],
+            "git_commit": exp["git_commit"],
+            "hostname": exp["hostname"],
+            "tags": json.loads(exp["tags"] or "[]"),
+            "notes": exp["notes"],
+            "params": {p["key"]: json.loads(p["value"]) for p in params},
+            "metrics_series": {},
+            "artifacts": [{"label": a["label"], "path": a["path"]} for a in artifacts],
+            "timeline_summary": {
+                "total_events": len(timeline),
+                "cell_executions": sum(1 for t in timeline if t["event_type"] == "cell_exec"),
+                "variable_sets": sum(1 for t in timeline if t["event_type"] == "var_set"),
+                "artifact_events": sum(1 for t in timeline if t["event_type"] == "artifact"),
+            },
+        }
+        for m in metrics:
+            data["metrics_series"].setdefault(m["key"], []).append({
+                "value": m["value"], "step": m["step"]
+            })
+        if fmt == "markdown":
+            md = self._export_markdown(data)
+            return {"markdown": md, "data": data}
+        return data
+
+    def _export_markdown(self, data):
+        """Generate a markdown summary of an experiment."""
+        lines = [
+            f"# {data['name']}",
+            f"",
+            f"**ID:** {data['id']}  ",
+            f"**Status:** {data['status']}  ",
+            f"**Created:** {data['created_at']}  ",
+            f"**Duration:** {data['duration_s']}s  " if data['duration_s'] else "",
+            f"**Git:** {data['git_branch']} @ {data['git_commit']}  " if data['git_branch'] else "",
+            f"**Tags:** {', '.join(data['tags'])}  " if data['tags'] else "",
+            f"",
+        ]
+        if data.get("notes"):
+            lines += [f"## Notes", f"", data["notes"], f""]
+        # Params
+        user_params = {k: v for k, v in data["params"].items() if not k.startswith("_")}
+        if user_params:
+            lines += [f"## Parameters", f"", "| Key | Value |", "| --- | --- |"]
+            for k, v in user_params.items():
+                lines.append(f"| {k} | {json.dumps(v)} |")
+            lines.append("")
+        # Metrics
+        if data["metrics_series"]:
+            lines += [f"## Metrics", f"", "| Key | Last | Steps |", "| --- | --- | --- |"]
+            for k, pts in data["metrics_series"].items():
+                last = pts[-1]["value"] if pts else "--"
+                lines.append(f"| {k} | {last} | {len(pts)} |")
+            lines.append("")
+        # Artifacts
+        if data["artifacts"]:
+            lines += [f"## Artifacts", f""]
+            for a in data["artifacts"]:
+                lines.append(f"- **{a['label']}**: `{a['path']}`")
+            lines.append("")
+        # Timeline summary
+        ts = data["timeline_summary"]
+        lines += [
+            f"## Timeline Summary",
+            f"",
+            f"- Total events: {ts['total_events']}",
+            f"- Cell executions: {ts['cell_executions']}",
+            f"- Variable changes: {ts['variable_sets']}",
+            f"- Artifacts saved: {ts['artifact_events']}",
+        ]
+        return "\n".join(lines)
+
+
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -361,7 +496,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   :root {
     --bg: #faf9f7; --fg: #1a1a1a; --muted: #777; --border: #d0d0d0;
     --green: #2d7d46; --red: #c0392b; --yellow: #b8860b; --blue: #2c5aa0;
-    --card-bg: #fff; --code-bg: #f5f3f0;
+    --purple: #7c3aed; --card-bg: #fff; --code-bg: #f5f3f0;
   }
   body {
     font-family: 'IBM Plex Mono', monospace;
@@ -369,16 +504,31 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     max-width: 1400px; margin: 0 auto; padding: 28px 36px;
     font-size: 15px; line-height: 1.6;
   }
-  h1 { font-size: 24px; font-weight: 600; margin-bottom: 24px; letter-spacing: -0.5px; }
+  /* Header bar */
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+  .header h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; margin: 0; }
+  .header-actions { display: flex; gap: 8px; align-items: center; }
+  .help-btn {
+    font-family: inherit; font-size: 13px; background: var(--code-bg);
+    border: 1px solid var(--border); padding: 5px 12px; cursor: pointer;
+    border-radius: 3px; color: var(--muted);
+  }
+  .help-btn:hover { background: var(--border); color: var(--fg); }
   h2 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+  h2 .help-icon { font-size: 13px; cursor: help; color: var(--blue); margin-left: 6px; font-weight: normal; text-transform: none; letter-spacing: 0; }
+  /* Stats cards */
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 28px; }
   .stat {
     background: var(--card-bg); border: 1px solid var(--border);
     padding: 20px; text-align: center; border-radius: 4px;
+    position: relative;
   }
   .stat .num { font-size: 34px; font-weight: 600; }
   .stat .label { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
-  .filters { margin-bottom: 18px; display: flex; gap: 10px; align-items: center; }
+  .stat .stat-hint { display: none; position: absolute; bottom: -30px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 4px 10px; border-radius: 3px; font-size: 11px; white-space: nowrap; z-index: 10; }
+  .stat:hover .stat-hint { display: block; }
+  /* Filters */
+  .filters { margin-bottom: 18px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .filters button {
     font-family: inherit; font-size: 14px;
     background: var(--card-bg); border: 1px solid var(--border);
@@ -392,16 +542,24 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     display: none; border-radius: 3px;
   }
   .filters .compare-selected.visible { display: inline-block; }
+  .filters .search-box {
+    font-family: inherit; font-size: 14px; border: 1px solid var(--border);
+    padding: 6px 12px; border-radius: 3px; background: var(--card-bg); min-width: 200px;
+  }
+  /* Table */
   .cb-col { width: 36px; text-align: center; }
   .cb-col input { cursor: pointer; width: 16px; height: 16px; }
   table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; }
   th { text-align: left; padding: 12px 16px; border-bottom: 2px solid var(--fg); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
   td { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
   tr:hover { background: var(--code-bg); }
+  tr.selected-row { background: rgba(44,90,160,0.08); }
   .status-done { color: var(--green); font-weight: 500; }
   .status-failed { color: var(--red); font-weight: 500; }
   .status-running { color: var(--yellow); font-weight: 500; }
   .tag { background: var(--code-bg); padding: 2px 8px; font-size: 12px; margin-left: 6px; border-radius: 3px; }
+  .exp-metrics-preview { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  /* Detail panel */
   .detail { background: var(--card-bg); border: 1px solid var(--border); padding: 28px; margin-top: 20px; border-radius: 4px; }
   .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
   .detail-header h2 { margin: 0; font-size: 18px; color: var(--fg); text-transform: none; letter-spacing: 0; }
@@ -414,13 +572,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .detail-actions button:hover, .action-btn:hover { background: var(--border); }
   .action-btn.danger { color: var(--red); border-color: var(--red); }
   .action-btn.danger:hover { background: var(--red); color: #fff; }
+  .action-btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .action-btn.primary:hover { opacity: 0.9; }
   .close-btn { cursor: pointer; font-size: 20px; background: none; border: none; font-family: inherit; padding: 4px 8px; }
   .close-btn:hover { background: var(--code-bg); border-radius: 3px; }
   .info-grid { display: grid; grid-template-columns: 150px 1fr; gap: 6px 20px; margin-bottom: 20px; font-size: 14px; }
   .info-grid .label { color: var(--muted); font-weight: 500; }
   .params-table, .metrics-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
   .params-table td, .metrics-table td { padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 14px; }
-  .params-table th, .metrics-table th { padding: 8px 12px; font-size: 13px; }
+  .params-table th, .metrics-table th { padding: 8px 12px; font-size: 13px; text-align: left; border-bottom: 2px solid var(--border); }
+  /* Diff view */
   .diff-view {
     background: var(--code-bg); padding: 16px; font-size: 13px;
     overflow-x: auto; max-height: 500px; overflow-y: auto;
@@ -429,22 +590,30 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .diff-add { color: var(--green); }
   .diff-del { color: var(--red); }
   .diff-hunk { color: var(--blue); font-weight: 600; }
+  /* Code changes */
   .code-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; margin-bottom: 20px; font-size: 13px; border-radius: 4px; }
   .code-changes .change-item { margin-bottom: 10px; }
   .code-changes .change-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
   .code-changes .change-diff { white-space: pre-wrap; }
+  /* Variables */
   .var-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; margin-bottom: 20px; font-size: 13px; border-radius: 4px; }
   .var-changes td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
   .var-changes .var-name { color: var(--blue); font-weight: 500; }
   .var-changes .var-type { color: var(--muted); font-size: 12px; }
   .var-section-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
   .chart-container { max-width: 700px; margin: 20px 0; }
+  /* Artifacts */
+  .artifact-row { display: flex; align-items: center; gap: 8px; }
+  .artifact-type-badge { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--code-bg); color: var(--muted); }
+  .artifact-type-badge.img { background: #d4edda; color: #155724; }
+  .artifact-type-badge.model { background: #cce5ff; color: #004085; }
+  .artifact-type-badge.data { background: #fff3cd; color: #856404; }
   /* Timeline styles */
   .timeline { padding: 0; margin: 16px 0; }
   .tl-event { display: flex; gap: 12px; padding: 8px 12px; border-left: 3px solid var(--border); margin-left: 8px; font-size: 13px; position: relative; }
   .tl-event:hover { background: var(--code-bg); }
   .tl-event.tl-cell_exec { border-left-color: var(--blue); }
-  .tl-event.tl-var_set { border-left-color: #9b59b6; }
+  .tl-event.tl-var_set { border-left-color: var(--purple); }
   .tl-event.tl-artifact { border-left-color: var(--green); }
   .tl-event.tl-metric { border-left-color: var(--yellow); }
   .tl-event.tl-observational { border-left-color: var(--border); opacity: 0.7; }
@@ -459,6 +628,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .tl-badge-new { background: #d4edda; color: #155724; }
   .tl-badge-edited { background: #fff3cd; color: #856404; }
   .tl-badge-rerun { background: var(--code-bg); color: var(--muted); }
+  .tl-badge-output { background: #cce5ff; color: #004085; }
   .tl-var-arrow { color: var(--muted); }
   .tl-context { font-size: 11px; color: var(--muted); margin-top: 3px; }
   .tl-filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -472,6 +642,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .tl-seq-select.selected { background: rgba(44,90,160,0.15); outline: 2px solid var(--blue); }
   .within-compare { background: var(--card-bg); border: 1px solid var(--border); padding: 20px; border-radius: 4px; margin-top: 16px; }
   .within-compare h3 { font-size: 14px; margin-bottom: 12px; }
+  /* Source viewer */
+  .source-view { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; font-size: 13px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; margin-top: 6px; }
+  .source-view .line-num { color: var(--muted); display: inline-block; min-width: 30px; text-align: right; margin-right: 12px; user-select: none; }
+  .view-source-btn { font-family: inherit; font-size: 11px; padding: 1px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; margin-left: 6px; color: var(--blue); }
+  .view-source-btn:hover { background: var(--code-bg); }
+  /* Compare */
   .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
   .compare-input { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
   .compare-input select, .compare-input input {
@@ -486,6 +662,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .compare-input .vs-label { font-weight: 600; color: var(--muted); }
   .differs { color: var(--yellow); font-weight: 600; }
+  .only-differs-toggle { font-family: inherit; font-size: 12px; margin-left: 12px; cursor: pointer; }
+  /* Tabs */
   .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border); }
   .tab {
     font-family: inherit; font-size: 14px;
@@ -496,7 +674,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .tab:hover { background: var(--code-bg); }
   .tab.active { border-bottom-color: var(--fg); font-weight: 600; }
   #view { min-height: 200px; }
-  /* Inline edit forms */
+  /* Inline forms */
   .inline-form { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; }
   .inline-form input {
     font-family: inherit; font-size: 13px; border: 1px solid var(--border);
@@ -511,10 +689,100 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .notes-display { white-space: pre-wrap; background: var(--code-bg); padding: 10px; border-radius: 4px; margin: 4px 0; font-size: 13px; }
   .tag-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .tag-removable { background: var(--code-bg); padding: 3px 10px; font-size: 13px; border-radius: 3px; display: inline-flex; align-items: center; gap: 4px; }
+  /* Help/docs panel */
+  .help-panel { display: none; background: var(--card-bg); border: 1px solid var(--border); padding: 24px; border-radius: 4px; margin-bottom: 20px; }
+  .help-panel.visible { display: block; }
+  .help-panel h3 { font-size: 15px; margin: 16px 0 8px; }
+  .help-panel h3:first-child { margin-top: 0; }
+  .help-panel p { color: var(--muted); font-size: 13px; margin-bottom: 8px; line-height: 1.5; }
+  .help-panel .help-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 12px 0; }
+  .help-panel .help-item { background: var(--code-bg); padding: 12px; border-radius: 4px; }
+  .help-panel .help-item strong { display: block; margin-bottom: 4px; font-size: 13px; }
+  .help-panel .help-item span { font-size: 12px; color: var(--muted); }
+  .help-close { float: right; cursor: pointer; font-size: 18px; background: none; border: none; font-family: inherit; color: var(--muted); }
+  .help-close:hover { color: var(--fg); }
+  /* Export panel */
+  .export-panel { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; border-radius: 4px; margin-top: 16px; }
+  .export-panel pre { white-space: pre-wrap; font-size: 12px; max-height: 400px; overflow-y: auto; }
+  .export-panel .export-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+  /* Summary section */
+  .summary-card { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; border-radius: 4px; margin-bottom: 20px; }
+  .summary-card .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .summary-card .summary-item { text-align: center; }
+  .summary-card .summary-item .val { font-size: 20px; font-weight: 600; }
+  .summary-card .summary-item .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  /* Tooltip */
+  .tooltip { position: relative; display: inline-block; }
+  .tooltip .tooltip-text {
+    visibility: hidden; background: var(--fg); color: var(--bg);
+    text-align: center; border-radius: 3px; padding: 5px 10px;
+    position: absolute; z-index: 1; bottom: 125%; left: 50%;
+    transform: translateX(-50%); font-size: 11px; white-space: nowrap;
+  }
+  .tooltip:hover .tooltip-text { visibility: visible; }
 </style>
 </head>
 <body>
-<h1>exptrack</h1>
+
+<div class="header">
+  <h1>exptrack</h1>
+  <div class="header-actions">
+    <button class="help-btn" onclick="toggleHelp()">? Docs</button>
+  </div>
+</div>
+
+<div class="help-panel" id="help-panel">
+  <button class="help-close" onclick="toggleHelp()">&times;</button>
+  <h3>What is exptrack?</h3>
+  <p>A zero-friction experiment tracker for ML workflows. It captures parameters, metrics, variables, code changes, and artifacts automatically — no code changes needed.</p>
+
+  <h3>Key Concepts</h3>
+  <div class="help-grid">
+    <div class="help-item">
+      <strong>Params</strong>
+      <span>Hyperparameters and config values captured from argparse, CLI flags, or notebook variables (lr, batch_size, etc). These define WHAT you ran.</span>
+    </div>
+    <div class="help-item">
+      <strong>Metrics</strong>
+      <span>Numeric values logged during training (loss, accuracy, etc). Tracked per step with min/max/last. These measure HOW it performed.</span>
+    </div>
+    <div class="help-item">
+      <strong>Variables</strong>
+      <span>All notebook variable values captured automatically — scalars, arrays, DataFrames, tensors. Prefixed with _var/ in params. Shows the full state of your experiment.</span>
+    </div>
+    <div class="help-item">
+      <strong>Artifacts</strong>
+      <span>Output files (plots, models, CSVs) auto-captured via plt.savefig() or manually via exptrack.notebook.out(). Linked to the experiment timeline.</span>
+    </div>
+    <div class="help-item">
+      <strong>Code Changes</strong>
+      <span>Diffs of your code vs. the last git commit (scripts) or previous cell version (notebooks). Only changed lines are stored. Prefixed with _code_change/.</span>
+    </div>
+    <div class="help-item">
+      <strong>Timeline</strong>
+      <span>Ordered log of every cell execution, variable change, and artifact save. Each event has a sequence number (seq) so you can reconstruct the full execution history.</span>
+    </div>
+    <div class="help-item">
+      <strong>Tags &amp; Notes</strong>
+      <span>Manual labels (tags) and free-text annotations (notes) you add to organize experiments. Use tags like "baseline", "best", "ablation".</span>
+    </div>
+    <div class="help-item">
+      <strong>Compare</strong>
+      <span>Side-by-side comparison of two experiments (params, variables, metrics) or two points within the same experiment (variable state at different timeline positions).</span>
+    </div>
+  </div>
+
+  <h3>Dashboard Views</h3>
+  <p><strong>Experiments tab:</strong> List of all runs. Click a row to see details. Use checkboxes to select 2 experiments for comparison. Use search to filter by name or tag.</p>
+  <p><strong>Compare tab:</strong> Select two experiments to see param/variable/metric differences. Yellow highlighting = values differ between runs.</p>
+  <p><strong>Detail panel (click a row):</strong></p>
+  <p style="margin-left:16px">
+    <strong>Overview</strong> — Run info, params, code changes, variables (grouped by type), metrics with charts, artifacts, git diff<br>
+    <strong>Timeline</strong> — Chronological event log. Filter by type. Click "view source" on cells to see full code.<br>
+    <strong>Compare Within</strong> — Select two timeline points to diff variable state within a single run.
+  </p>
+  <p><strong>Export:</strong> Use the Export button on any experiment to get JSON or Markdown for documentation and workflow integration.</p>
+</div>
 
 <div class="stats" id="stats"></div>
 
@@ -545,8 +813,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
 <script>
 let currentFilter = '';
+let searchQuery = '';
 let charts = {};
 let selectedForCompare = new Set();
+let allExperiments = [];
 
 async function api(path) {
   const r = await fetch(path);
@@ -555,6 +825,7 @@ async function api(path) {
 
 function fmtDur(s) {
   if (!s) return '--';
+  if (s >= 3600) return Math.floor(s/3600) + 'h' + Math.floor((s%3600)/60) + 'm';
   if (s >= 60) return Math.floor(s/60) + 'm' + Math.floor(s%60) + 's';
   return s.toFixed(1) + 's';
 }
@@ -566,41 +837,67 @@ function fmtDt(iso) {
          String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
 }
 
+function toggleHelp() {
+  document.getElementById('help-panel').classList.toggle('visible');
+}
+
 async function loadStats() {
   const s = await api('/api/stats');
   document.getElementById('stats').innerHTML = `
-    <div class="stat"><div class="num">${s.total}</div><div class="label">Total Runs</div></div>
-    <div class="stat"><div class="num status-done">${s.done}</div><div class="label">Done</div></div>
-    <div class="stat"><div class="num status-failed">${s.failed}</div><div class="label">Failed</div></div>
-    <div class="stat"><div class="num status-running">${s.running}</div><div class="label">Running</div></div>
-    <div class="stat"><div class="num">${s.success_rate}%</div><div class="label">Success Rate</div></div>
-    <div class="stat"><div class="num">${fmtDur(s.avg_duration_s)}</div><div class="label">Avg Duration</div></div>
+    <div class="stat"><div class="num">${s.total}</div><div class="label">Total Runs</div><div class="stat-hint">All experiments tracked in this project</div></div>
+    <div class="stat"><div class="num status-done">${s.done}</div><div class="label">Done</div><div class="stat-hint">Completed successfully</div></div>
+    <div class="stat"><div class="num status-failed">${s.failed}</div><div class="label">Failed</div><div class="stat-hint">Ended with an error</div></div>
+    <div class="stat"><div class="num status-running">${s.running}</div><div class="label">Running</div><div class="stat-hint">Currently in progress</div></div>
+    <div class="stat"><div class="num">${s.success_rate}%</div><div class="label">Success Rate</div><div class="stat-hint">done / total</div></div>
+    <div class="stat"><div class="num">${fmtDur(s.avg_duration_s)}</div><div class="label">Avg Duration</div><div class="stat-hint">Mean run time (completed only)</div></div>
   `;
-  // Filters
   document.getElementById('filters').innerHTML = `
     <button class="${!currentFilter?'active':''}" onclick="filterExps('')">All</button>
     <button class="${currentFilter==='done'?'active':''}" onclick="filterExps('done')">Done</button>
     <button class="${currentFilter==='failed'?'active':''}" onclick="filterExps('failed')">Failed</button>
     <button class="${currentFilter==='running'?'active':''}" onclick="filterExps('running')">Running</button>
+    <input class="search-box" type="text" placeholder="Search name, tag, param..." value="${esc(searchQuery)}" oninput="searchQuery=this.value;renderExperiments()">
     <button class="compare-selected ${selectedForCompare.size===2?'visible':''}" onclick="compareSelected()">Compare Selected (${selectedForCompare.size}/2)</button>
   `;
 }
 
 async function loadExperiments() {
-  const url = currentFilter ? `/api/experiments?status=${currentFilter}` : '/api/experiments';
-  const exps = await api(url);
+  const url = currentFilter ? '/api/experiments?status=' + currentFilter : '/api/experiments';
+  allExperiments = await api(url);
+  renderExperiments();
+}
+
+function renderExperiments() {
+  let exps = allExperiments;
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    exps = exps.filter(e =>
+      e.name.toLowerCase().includes(q) ||
+      e.id.toLowerCase().includes(q) ||
+      (e.tags || []).some(t => t.toLowerCase().includes(q)) ||
+      Object.keys(e.params || {}).some(k => k.toLowerCase().includes(q)) ||
+      (e.git_branch || '').toLowerCase().includes(q)
+    );
+  }
   const tbody = document.getElementById('exp-body');
-  tbody.innerHTML = exps.map(e => `
-    <tr>
-      <td class="cb-col"><input type="checkbox" ${selectedForCompare.has(e.id)?'checked':''} onclick="event.stopPropagation();toggleCompare('${e.id}')" title="Select for compare"></td>
+  tbody.innerHTML = exps.map(e => {
+    const metricsPreview = Object.entries(e.metrics || {}).slice(0, 3)
+      .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v))
+      .join(', ');
+    const isSelected = selectedForCompare.has(e.id);
+    return `<tr class="${isSelected ? 'selected-row' : ''}">
+      <td class="cb-col"><input type="checkbox" ${isSelected?'checked':''} onclick="event.stopPropagation();toggleCompare('${e.id}')" title="Select for compare"></td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.id.slice(0,6)}</td>
-      <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.name.slice(0,40)}${e.tags.map(t=>'<span class="tag">#'+t+'</span>').join('')}</td>
+      <td onclick="showDetail('${e.id}')" style="cursor:pointer">
+        ${esc(e.name.slice(0,45))}${e.tags.map(t=>'<span class="tag">#'+esc(t)+'</span>').join('')}
+        ${metricsPreview ? '<div class="exp-metrics-preview">' + esc(metricsPreview) + '</div>' : ''}
+      </td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer" class="status-${e.status}">${e.status}</td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer">${fmtDt(e.created_at)}</td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer">${fmtDur(e.duration_s)}</td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.git_branch||'--'}</td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
 }
 
 function toggleCompare(id) {
@@ -608,14 +905,13 @@ function toggleCompare(id) {
     selectedForCompare.delete(id);
   } else {
     if (selectedForCompare.size >= 2) {
-      // Remove oldest selection
       const first = selectedForCompare.values().next().value;
       selectedForCompare.delete(first);
     }
     selectedForCompare.add(id);
   }
-  loadStats();  // refresh compare button visibility
-  loadExperiments();  // refresh checkboxes
+  loadStats();
+  renderExperiments();
 }
 
 async function compareSelected() {
@@ -635,7 +931,7 @@ function filterExps(status) {
 }
 
 function switchTab(tab) {
-  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', i === (tab==='list'?0:1)));
+  document.querySelectorAll('.tabs > .tab').forEach((t,i) => t.classList.toggle('active', i === (tab==='list'?0:1)));
   document.getElementById('list-view').style.display = tab==='list' ? '' : 'none';
   document.getElementById('compare-view').style.display = tab==='compare' ? '' : 'none';
   document.getElementById('detail-panel').innerHTML = '';
@@ -651,7 +947,6 @@ async function populateCompareDropdowns() {
     exps.map(e => `<option value="${e.id}">${e.id.slice(0,6)} | ${esc(e.name.slice(0,35))} | ${e.status} | ${fmtDt(e.created_at)}</option>`).join('');
   sel1.innerHTML = makeOpts(exps);
   sel2.innerHTML = makeOpts(exps);
-  // Restore previous selections or pre-fill from checkboxes
   if (prev1) sel1.value = prev1;
   if (prev2) sel2.value = prev2;
   if (!prev1 && !prev2 && selectedForCompare.size === 2) {
@@ -659,6 +954,14 @@ async function populateCompareDropdowns() {
     sel1.value = ids[0];
     sel2.value = ids[1];
   }
+}
+
+function artifactTypeBadge(path) {
+  const ext = (path || '').split('.').pop().toLowerCase();
+  if (['png','jpg','jpeg','svg','gif','bmp','tiff'].includes(ext)) return '<span class="artifact-type-badge img">image</span>';
+  if (['pt','pth','h5','hdf5','onnx','pkl','joblib','safetensors'].includes(ext)) return '<span class="artifact-type-badge model">model</span>';
+  if (['csv','json','jsonl','parquet','tsv','npy','npz'].includes(ext)) return '<span class="artifact-type-badge data">data</span>';
+  return '<span class="artifact-type-badge">file</span>';
 }
 
 async function showDetail(id) {
@@ -669,17 +972,19 @@ async function showDetail(id) {
   ]);
   if (exp.error) return;
 
-  // Separate params into regular, code changes, and variable tracking
   const regularParams = {};
   const codeChanges = {};
   const varChanges = {};
+  let cellsRan = null;
   for (const [k, v] of Object.entries(exp.params)) {
     if (k === '_code_changes' || k.startsWith('_code_change/')) {
       codeChanges[k] = v;
     } else if (k.startsWith('_var/')) {
-      varChanges[k.slice(5)] = v;  // strip _var/ prefix for display
-    } else if (k.startsWith('_script_hash')) {
-      // skip internal hash, not useful to show
+      varChanges[k.slice(5)] = v;
+    } else if (k === '_script_hash' || k === '_cells_ran') {
+      if (k === '_cells_ran') cellsRan = v;
+    } else if (k === '_tags') {
+      // skip, shown elsewhere
     } else {
       regularParams[k] = v;
     }
@@ -690,31 +995,31 @@ async function showDetail(id) {
   ).join('');
 
   const metricRows = exp.metrics.map(m =>
-    `<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4)}</td><td>${m.min?.toFixed(4)}</td><td>${m.max?.toFixed(4)}</td><td>${m.n}</td></tr>`
+    `<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td></tr>`
   ).join('');
 
   const artRows = exp.artifacts.map(a =>
-    `<tr><td>${esc(a.label)}</td><td>${esc(a.path)}</td></tr>`
+    `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td></tr>`
   ).join('');
 
-  // Code changes HTML — render diff-style with +/- coloring
+  // Code changes
   let codeHtml = '';
   if (Object.keys(codeChanges).length) {
-    codeHtml = '<h2>Code Changes</h2><div class="code-changes">';
+    codeHtml = '<h2>Code Changes <span class="help-icon" title="Diffs of your code vs. the last git commit (scripts) or the previous cell version (notebooks). Only changed lines are stored.">?</span></h2><div class="code-changes">';
     for (const [k, v] of Object.entries(codeChanges)) {
       const label = k === '_code_changes' ? 'Script diff vs. last commit' : k.replace('_code_change/','Cell ');
       const parts = String(v).split('; ').map(part => {
         const trimmed = part.trim();
-        if (trimmed.startsWith('+')) return `<span class="diff-add">${esc(trimmed)}</span>`;
-        if (trimmed.startsWith('-')) return `<span class="diff-del">${esc(trimmed)}</span>`;
+        if (trimmed.startsWith('+')) return '<span class="diff-add">' + esc(trimmed) + '</span>';
+        if (trimmed.startsWith('-')) return '<span class="diff-del">' + esc(trimmed) + '</span>';
         return esc(trimmed);
       }).join('\n');
-      codeHtml += `<div class="change-item"><div class="change-label">${esc(label)}</div><div class="change-diff">${parts}</div></div>`;
+      codeHtml += '<div class="change-item"><div class="change-label">' + esc(label) + '</div><div class="change-diff">' + parts + '</div></div>';
     }
     codeHtml += '</div>';
   }
 
-  // Variable changes HTML — categorize into scalars, arrays/tensors, and other
+  // Variable changes
   let varHtml = '';
   if (Object.keys(varChanges).length) {
     const scalars = {}, arrays = {}, other = {};
@@ -728,12 +1033,12 @@ async function showDetail(id) {
         other[k] = v;
       }
     }
-    varHtml = '<h2>Variables</h2><div class="var-changes">';
+    varHtml = '<h2>Variables <span class="help-icon" title="All notebook variable values captured automatically. Scalars = simple values, Arrays = numpy/torch/pandas, Other = everything else.">?</span></h2><div class="var-changes">';
     const renderGroup = (title, vars) => {
       if (!Object.keys(vars).length) return '';
-      let h = `<div class="var-section-title">${title}</div><table>`;
+      let h = '<div class="var-section-title">' + title + ' (' + Object.keys(vars).length + ')</div><table>';
       for (const [k, v] of Object.entries(vars)) {
-        h += `<tr><td class="var-name">${esc(k)}</td><td>= ${esc(String(v))}</td></tr>`;
+        h += '<tr><td class="var-name">' + esc(k) + '</td><td>= ' + esc(String(v)) + '</td></tr>';
       }
       return h + '</table>';
     };
@@ -743,19 +1048,33 @@ async function showDetail(id) {
     varHtml += '</div>';
   }
 
-  // Diff HTML
+  // Summary card
+  const totalMetricSteps = exp.metrics.reduce((s,m) => s + m.n, 0);
+  const numVars = Object.keys(varChanges).length;
+  const numArt = exp.artifacts.length;
+  const numCodeChanges = Object.keys(codeChanges).length;
+  let summaryHtml = '<div class="summary-card"><div class="summary-grid">';
+  summaryHtml += '<div class="summary-item"><div class="val">' + Object.keys(regularParams).length + '</div><div class="lbl">Params</div></div>';
+  summaryHtml += '<div class="summary-item"><div class="val">' + exp.metrics.length + '</div><div class="lbl">Metric Keys</div></div>';
+  summaryHtml += '<div class="summary-item"><div class="val">' + totalMetricSteps + '</div><div class="lbl">Metric Points</div></div>';
+  summaryHtml += '<div class="summary-item"><div class="val">' + numVars + '</div><div class="lbl">Variables</div></div>';
+  summaryHtml += '<div class="summary-item"><div class="val">' + numArt + '</div><div class="lbl">Artifacts</div></div>';
+  summaryHtml += '<div class="summary-item"><div class="val">' + numCodeChanges + '</div><div class="lbl">Code Changes</div></div>';
+  summaryHtml += '</div></div>';
+
+  // Diff
   let diffHtml = '';
   if (diffData.diff) {
     diffHtml = diffData.diff.split('\n').map(line => {
-      if (line.startsWith('+') && !line.startsWith('+++')) return `<span class="diff-add">${esc(line)}</span>`;
-      if (line.startsWith('-') && !line.startsWith('---')) return `<span class="diff-del">${esc(line)}</span>`;
-      if (line.startsWith('@@')) return `<span class="diff-hunk">${esc(line)}</span>`;
+      if (line.startsWith('+') && !line.startsWith('+++')) return '<span class="diff-add">' + esc(line) + '</span>';
+      if (line.startsWith('-') && !line.startsWith('---')) return '<span class="diff-del">' + esc(line) + '</span>';
+      if (line.startsWith('@@')) return '<span class="diff-hunk">' + esc(line) + '</span>';
       return esc(line);
     }).join('\n');
   }
 
   const tagsHtml = exp.tags.length
-    ? exp.tags.map(t => `<span class="tag-removable">#${esc(t)}</span>`).join('')
+    ? exp.tags.map(t => '<span class="tag-removable">#' + esc(t) + '</span>').join('')
     : '<span style="color:var(--muted)">none</span>';
 
   document.getElementById('detail-panel').innerHTML = `
@@ -766,6 +1085,7 @@ async function showDetail(id) {
           <button class="action-btn" onclick="renameExp('${exp.id}')">Rename</button>
           <button class="action-btn" onclick="addTagUI('${exp.id}')">+ Tag</button>
           <button class="action-btn" onclick="addNoteUI('${exp.id}')">+ Note</button>
+          <button class="action-btn primary" onclick="exportExp('${exp.id}')">Export</button>
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name).replace(/'/g,"\\'")}')">Delete</button>
           <button class="close-btn" onclick="document.getElementById('detail-panel').innerHTML=''">&times;</button>
         </div>
@@ -778,29 +1098,31 @@ async function showDetail(id) {
       </div>
 
       <div id="detail-tab-overview">
+        ${summaryHtml}
         <div class="info-grid">
           <span class="label">ID</span><span>${exp.id}</span>
           <span class="label">Status</span><span class="status-${exp.status}">${exp.status}</span>
           <span class="label">Created</span><span>${fmtDt(exp.created_at)}</span>
           <span class="label">Duration</span><span>${fmtDur(exp.duration_s)}</span>
-          <span class="label">Script</span><span>${exp.script||'--'}</span>
+          <span class="label">Script</span><span>${esc(exp.script||'--')}</span>
           <span class="label">Branch</span><span>${exp.git_branch||'--'} @ ${exp.git_commit||'--'}</span>
           <span class="label">Host</span><span>${exp.hostname||'--'}</span>
           <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
           <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
           <span class="label">Notes</span><span id="detail-notes">${exp.notes ? '<div class="notes-display">'+esc(exp.notes)+'</div>' : '<span style="color:var(--muted)">none</span>'}</span>
         </div>
-        ${paramRows ? '<h2>Params</h2><table class="params-table">'+paramRows+'</table>' : ''}
+        ${paramRows ? '<h2>Params <span class="help-icon" title="Hyperparameters and config values captured from argparse, CLI flags, or notebook variable assignments.">?</span></h2><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table>' : ''}
         ${codeHtml}
         ${varHtml}
-        ${metricRows ? '<h2>Metrics</h2><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table>' : ''}
+        ${metricRows ? '<h2>Metrics <span class="help-icon" title="Numeric values logged during training. Last = most recent value, Min/Max = range, Steps = number of data points.">?</span></h2><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table>' : ''}
         <div id="charts-container"></div>
-        ${artRows ? '<h2>Artifacts</h2><table class="params-table">'+artRows+'</table>' : ''}
-        ${diffHtml ? '<h2>Git Diff ('+exp.diff_lines+' lines)</h2><div class="diff-view">'+diffHtml+'</div>' : ''}
+        ${artRows ? '<h2>Artifacts <span class="help-icon" title="Output files auto-captured from plt.savefig() or manually via exptrack.notebook.out(). Badge shows file type.">?</span></h2><table class="params-table"><tr><th>File</th><th>Path</th></tr>'+artRows+'</table>' : ''}
+        ${diffHtml ? '<h2>Git Diff <span class="help-icon" title="All uncommitted changes in the repo when this experiment started. This is the traceability link to reproduce exactly what code ran.">?</span> ('+exp.diff_lines+' lines)</h2><div class="diff-view">'+diffHtml+'</div>' : ''}
       </div>
 
       <div id="detail-tab-timeline" style="display:none"></div>
       <div id="detail-tab-compare-within" style="display:none"></div>
+      <div id="export-container"></div>
     </div>
   `;
 
@@ -824,9 +1146,7 @@ async function showDetail(id) {
           data: points.map(p => p.value),
           borderColor: '#2c5aa0',
           backgroundColor: 'rgba(44,90,160,0.1)',
-          fill: true,
-          tension: 0.3,
-          pointRadius: 2,
+          fill: true, tension: 0.3, pointRadius: 2,
         }]
       },
       options: {
@@ -841,23 +1161,53 @@ async function showDetail(id) {
   }
 }
 
+// ── Export ──────────────────────────────────────────────────────────────────────
+
+async function exportExp(id) {
+  const container = document.getElementById('export-container');
+  container.innerHTML = '<div class="export-panel"><div class="export-actions"><button class="action-btn" onclick="doExport(\'' + id + '\',\'json\')">JSON</button><button class="action-btn" onclick="doExport(\'' + id + '\',\'markdown\')">Markdown</button><button class="action-btn" onclick="copyExport()">Copy to Clipboard</button><button class="action-btn" onclick="this.closest(\'.export-panel\').remove()">Close</button></div><pre id="export-content">Select a format above...</pre></div>';
+}
+
+async function doExport(id, fmt) {
+  const data = await api('/api/export/' + id + '?format=' + fmt);
+  const pre = document.getElementById('export-content');
+  if (fmt === 'markdown') {
+    pre.textContent = data.markdown || JSON.stringify(data, null, 2);
+  } else {
+    pre.textContent = JSON.stringify(data, null, 2);
+  }
+}
+
+function copyExport() {
+  const pre = document.getElementById('export-content');
+  if (pre) {
+    navigator.clipboard.writeText(pre.textContent).then(() => {
+      const btn = event.target;
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = 'Copy to Clipboard', 1500);
+    });
+  }
+}
+
+// ── Compare ────────────────────────────────────────────────────────────────────
+
+let onlyDiffers = false;
+
 async function doCompare() {
   const id1 = document.getElementById('cmp-id1').value.trim();
   const id2 = document.getElementById('cmp-id2').value.trim();
   if (!id1 || !id2) return;
-  const data = await api(`/api/compare?id1=${id1}&id2=${id2}`);
+  const data = await api('/api/compare?id1=' + id1 + '&id2=' + id2);
   if (data.error || data.exp1?.error || data.exp2?.error) {
     document.getElementById('compare-result').innerHTML = '<p>One or both experiments not found.</p>';
     return;
   }
   const e1 = data.exp1, e2 = data.exp2;
-  // Separate params, vars, and internal keys
-  const isUserParam = k => !k.startsWith('_code_change') && k !== '_code_changes' && !k.startsWith('_var/') && k !== '_script_hash';
+  const isUserParam = k => !k.startsWith('_code_change') && k !== '_code_changes' && !k.startsWith('_var/') && k !== '_script_hash' && k !== '_cells_ran' && k !== '_tags';
   const allPKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isUserParam).sort();
-  // Fetch final variable state from timeline for richer comparison
   const [tlVars1, tlVars2] = await Promise.all([
-    api(`/api/vars-at/${id1}?seq=999999`),
-    api(`/api/vars-at/${id2}?seq=999999`),
+    api('/api/vars-at/' + id1 + '?seq=999999'),
+    api('/api/vars-at/' + id2 + '?seq=999999'),
   ]);
   const allVarKeysFromTimeline = [...new Set([...Object.keys(tlVars1), ...Object.keys(tlVars2)])].sort();
   const allMKeys = [...new Set([...e1.metrics.map(m=>m.key), ...e2.metrics.map(m=>m.key)])].sort();
@@ -867,29 +1217,34 @@ async function doCompare() {
   const n1 = e1.name.length > 25 ? e1.name.slice(0,22) + '...' : e1.name;
   const n2 = e2.name.length > 25 ? e2.name.slice(0,22) + '...' : e2.name;
 
-  let html = `<div class="compare-grid">
-    <div><h2>${esc(n1)}</h2><p class="status-${e1.status}">${e1.status} - ${fmtDur(e1.duration_s)}</p></div>
-    <div><h2>${esc(n2)}</h2><p class="status-${e2.status}">${e2.status} - ${fmtDur(e2.duration_s)}</p></div>
-  </div>`;
+  let html = '<div class="compare-grid">';
+  html += '<div><h2>' + esc(n1) + '</h2><p class="status-' + e1.status + '">' + e1.status + ' - ' + fmtDur(e1.duration_s) + '</p></div>';
+  html += '<div><h2>' + esc(n2) + '</h2><p class="status-' + e2.status + '">' + e2.status + ' - ' + fmtDur(e2.duration_s) + '</p></div>';
+  html += '</div>';
+  html += '<label class="only-differs-toggle"><input type="checkbox" ' + (onlyDiffers ? 'checked' : '') + ' onchange="onlyDiffers=this.checked;doCompare()"> Show only differences</label>';
 
   if (allPKeys.length) {
     html += '<h2>Params</h2><table class="params-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
     for (const k of allPKeys) {
       const v1 = JSON.stringify(e1.params[k] ?? '--');
       const v2 = JSON.stringify(e2.params[k] ?? '--');
-      const cls = v1 !== v2 ? ' class="differs"' : '';
-      html += `<tr><td>${esc(k)}</td><td${cls}>${esc(v1)}</td><td${cls}>${esc(v2)}</td></tr>`;
+      const differs = v1 !== v2;
+      if (onlyDiffers && !differs) continue;
+      const cls = differs ? ' class="differs"' : '';
+      html += '<tr><td>' + esc(k) + '</td><td' + cls + '>' + esc(v1) + '</td><td' + cls + '>' + esc(v2) + '</td></tr>';
     }
     html += '</table>';
   }
 
   if (allVarKeysFromTimeline.length) {
-    html += '<h2>Variables (final state from timeline)</h2><table class="params-table"><tr><th>Variable</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
+    html += '<h2>Variables <span class="help-icon" title="Final variable state from the execution timeline of each experiment.">?</span></h2><table class="params-table"><tr><th>Variable</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
     for (const k of allVarKeysFromTimeline) {
-      const v1 = String(tlVars1[k] ?? '--').slice(0, 50);
-      const v2 = String(tlVars2[k] ?? '--').slice(0, 50);
-      const cls = v1 !== v2 ? ' class="differs"' : '';
-      html += `<tr><td class="var-name">${esc(k)}</td><td${cls}>${esc(v1)}</td><td${cls}>${esc(v2)}</td></tr>`;
+      const v1 = String(tlVars1[k] ?? '--').slice(0, 60);
+      const v2 = String(tlVars2[k] ?? '--').slice(0, 60);
+      const differs = v1 !== v2;
+      if (onlyDiffers && !differs) continue;
+      const cls = differs ? ' class="differs"' : '';
+      html += '<tr><td class="var-name">' + esc(k) + '</td><td' + cls + '>' + esc(v1) + '</td><td' + cls + '>' + esc(v2) + '</td></tr>';
     }
     html += '</table>';
   }
@@ -903,9 +1258,10 @@ async function doCompare() {
       let delta = '';
       if (v1 !== undefined && v2 !== undefined) {
         const d = v1 - v2;
-        delta = `<span style="color:${d>0?'var(--red)':'var(--green)'}">${d>0?'+':''}${d.toFixed(4)}</span>`;
+        if (onlyDiffers && Math.abs(d) < 0.0001) continue;
+        delta = '<span style="color:' + (d>0?'var(--red)':'var(--green)') + '">' + (d>0?'+':'') + d.toFixed(4) + '</span>';
       }
-      html += `<tr><td>${esc(k)}</td><td>${sv1}</td><td>${sv2}</td><td>${delta}</td></tr>`;
+      html += '<tr><td>' + esc(k) + '</td><td>' + sv1 + '</td><td>' + sv2 + '</td><td>' + delta + '</td></tr>';
     }
     html += '</table>';
   }
@@ -913,13 +1269,14 @@ async function doCompare() {
 }
 
 function esc(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 async function renameExp(id) {
   const name = prompt('New name:');
   if (!name) return;
-  const r = await fetch(`/api/experiment/${id}/rename`, {
+  const r = await fetch('/api/experiment/' + id + '/rename', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({name})
   });
@@ -929,9 +1286,9 @@ async function renameExp(id) {
 }
 
 async function addTagUI(id) {
-  const tag = prompt('Tag name:');
+  const tag = prompt('Tag name (e.g. baseline, best, ablation):');
   if (!tag) return;
-  const r = await fetch(`/api/experiment/${id}/tag`, {
+  const r = await fetch('/api/experiment/' + id + '/tag', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({tag: tag.trim()})
   });
@@ -943,7 +1300,7 @@ async function addTagUI(id) {
 async function addNoteUI(id) {
   const note = prompt('Add note:');
   if (!note) return;
-  const r = await fetch(`/api/experiment/${id}/note`, {
+  const r = await fetch('/api/experiment/' + id + '/note', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({note})
   });
@@ -953,8 +1310,8 @@ async function addNoteUI(id) {
 }
 
 async function deleteExp(id, name) {
-  if (!confirm(`Delete experiment "${name}"? This cannot be undone.`)) return;
-  const r = await fetch(`/api/experiment/${id}/delete`, {
+  if (!confirm('Delete experiment "' + name + '"? This cannot be undone.')) return;
+  const r = await fetch('/api/experiment/' + id + '/delete', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({})
   });
@@ -993,17 +1350,16 @@ let timelineFilter = '';
 async function loadTimeline(expId, filter) {
   if (filter !== undefined) timelineFilter = filter;
   const url = timelineFilter
-    ? `/api/timeline/${expId}?type=${timelineFilter}`
-    : `/api/timeline/${expId}`;
+    ? '/api/timeline/' + expId + '?type=' + timelineFilter
+    : '/api/timeline/' + expId;
   const events = await api(url);
   const container = document.getElementById('detail-tab-timeline');
 
-  // Filter buttons
   let html = '<div class="tl-filters">';
   const types = ['', 'cell_exec', 'var_set', 'artifact', 'observational'];
   const labels = ['All', 'Code', 'Variables', 'Artifacts', 'Observational'];
   types.forEach((t, i) => {
-    html += `<button class="${timelineFilter===t?'active':''}" onclick="loadTimeline('${expId}','${t}')">${labels[i]}</button>`;
+    html += '<button class="' + (timelineFilter===t?'active':'') + '" onclick="loadTimeline(\'' + expId + '\',\'' + t + '\')">' + labels[i] + '</button>';
   });
   html += '</div>';
 
@@ -1013,7 +1369,8 @@ async function loadTimeline(expId, filter) {
     return;
   }
 
-  // Build variable state as we go (for artifact context)
+  html += '<p style="color:var(--muted);font-size:12px;margin-bottom:8px">' + events.length + ' events. Click "view source" on cells to see full code.</p>';
+
   const varState = {};
 
   html += '<div class="timeline">';
@@ -1021,34 +1378,40 @@ async function loadTimeline(expId, filter) {
     const cls = 'tl-event tl-' + ev.event_type;
     const ts = fmtDt(ev.ts);
     const icons = {cell_exec:'&gt;&gt;', var_set:'=', artifact:'&#9633;', metric:'#', observational:'..'};
-    const colors = {cell_exec:'var(--blue)', var_set:'#9b59b6', artifact:'var(--green)', metric:'var(--yellow)', observational:'var(--muted)'};
+    const colors = {cell_exec:'var(--blue)', var_set:'var(--purple)', artifact:'var(--green)', metric:'var(--yellow)', observational:'var(--muted)'};
     const icon = icons[ev.event_type] || '?';
     const iconColor = colors[ev.event_type] || 'var(--fg)';
 
     if (ev.event_type === 'cell_exec' || ev.event_type === 'observational') {
       const info = ev.value || {};
-      const preview = (info.source_preview || '').split('\n')[0].slice(0, 70);
+      const preview = (info.source_preview || '').split('\n')[0].slice(0, 80);
       let badges = '';
       if (info.code_is_new) badges += '<span class="tl-badge tl-badge-new">new</span>';
       if (info.code_changed) badges += '<span class="tl-badge tl-badge-edited">edited</span>';
       if (info.is_rerun) badges += '<span class="tl-badge tl-badge-rerun">rerun</span>';
+      if (info.has_output) badges += '<span class="tl-badge tl-badge-output">output</span>';
 
-      html += `<div class="${cls}">
-        <div class="tl-seq">${ev.seq}</div>
-        <div class="tl-icon" style="color:${iconColor}">${icon}</div>
-        <div class="tl-body">
-          <strong>${esc(ev.key||'')}</strong>${badges}
-          <span style="color:var(--muted);margin-left:8px">${ts}</span>
-          ${preview ? '<div class="tl-code-preview">' + esc(preview) + '</div>' : ''}`;
+      // View source button - uses cell_hash to fetch from lineage
+      const viewSrcBtn = ev.cell_hash ? ' <button class="view-source-btn" onclick="event.stopPropagation();viewCellSource(\'' + ev.cell_hash + '\',this)">view source</button>' : '';
 
-      // Show diff if present
+      html += '<div class="' + cls + '">';
+      html += '<div class="tl-seq">' + ev.seq + '</div>';
+      html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
+      html += '<div class="tl-body">';
+      html += '<strong>' + esc(ev.key||'') + '</strong>' + badges + viewSrcBtn;
+      html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
+      if (preview) html += '<div class="tl-code-preview">' + esc(preview) + '</div>';
+      if (info.output_preview) {
+        html += '<div style="margin-top:3px;font-size:11px;color:var(--green)">output: ' + esc(String(info.output_preview).slice(0,80)) + '</div>';
+      }
+
       if (ev.source_diff && ev.source_diff.length) {
         html += '<div class="tl-diff">';
         for (const d of ev.source_diff.slice(0, 8)) {
-          if (d.op === '+') html += `<div class="diff-add">+ ${esc(d.line.slice(0,80))}</div>`;
-          else if (d.op === '-') html += `<div class="diff-del">- ${esc(d.line.slice(0,80))}</div>`;
+          if (d.op === '+') html += '<div class="diff-add">+ ' + esc(d.line.slice(0,80)) + '</div>';
+          else if (d.op === '-') html += '<div class="diff-del">- ' + esc(d.line.slice(0,80)) + '</div>';
         }
-        if (ev.source_diff.length > 8) html += `<div style="color:var(--muted)">... ${ev.source_diff.length - 8} more lines</div>`;
+        if (ev.source_diff.length > 8) html += '<div style="color:var(--muted)">... ' + (ev.source_diff.length - 8) + ' more lines</div>';
         html += '</div>';
       }
       html += '</div></div>';
@@ -1058,47 +1421,79 @@ async function loadTimeline(expId, filter) {
       const valStr = String(ev.value).slice(0, 60);
       let prevHtml = '';
       if (ev.prev_value !== null && ev.prev_value !== undefined) {
-        prevHtml = ` <span class="tl-var-arrow">&larr;</span> <span style="color:var(--muted);text-decoration:line-through">${esc(String(ev.prev_value).slice(0,40))}</span>`;
+        prevHtml = ' <span class="tl-var-arrow">&larr;</span> <span style="color:var(--muted);text-decoration:line-through">' + esc(String(ev.prev_value).slice(0,40)) + '</span>';
       }
-      html += `<div class="${cls}">
-        <div class="tl-seq">${ev.seq}</div>
-        <div class="tl-icon" style="color:${iconColor}">${icon}</div>
-        <div class="tl-body">
-          <strong style="color:#9b59b6">${esc(ev.key)}</strong> = ${esc(valStr)}${prevHtml}
-          <span style="color:var(--muted);margin-left:8px">${ts}</span>
-        </div>
-      </div>`;
+      html += '<div class="' + cls + '">';
+      html += '<div class="tl-seq">' + ev.seq + '</div>';
+      html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
+      html += '<div class="tl-body">';
+      html += '<strong style="color:var(--purple)">' + esc(ev.key) + '</strong> = ' + esc(valStr) + prevHtml;
+      html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
+      html += '</div></div>';
 
     } else if (ev.event_type === 'artifact') {
-      // Show artifact with variable context at this point
-      html += `<div class="${cls}">
-        <div class="tl-seq">${ev.seq}</div>
-        <div class="tl-icon" style="color:${iconColor}">${icon}</div>
-        <div class="tl-body">
-          <strong style="color:var(--green)">artifact:</strong> ${esc(ev.key||'')} &rarr; ${esc(String(ev.value||'').slice(0,60))}
-          <span style="color:var(--muted);margin-left:8px">${ts}</span>`;
-      // Show context vars
+      html += '<div class="' + cls + '">';
+      html += '<div class="tl-seq">' + ev.seq + '</div>';
+      html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
+      html += '<div class="tl-body">';
+      html += '<strong style="color:var(--green)">artifact:</strong> ' + artifactTypeBadge(String(ev.value||'')) + ' ' + esc(ev.key||'') + ' &rarr; ' + esc(String(ev.value||'').slice(0,60));
+      html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
       const ctxKeys = Object.keys(varState).filter(k => !k.startsWith('_'));
       if (ctxKeys.length) {
-        const ctx = ctxKeys.slice(0, 6).map(k => `${k}=${String(varState[k]).slice(0,15)}`).join(', ');
-        html += `<div class="tl-context">context: ${esc(ctx)}</div>`;
+        const ctx = ctxKeys.slice(0, 6).map(k => k + '=' + String(varState[k]).slice(0,15)).join(', ');
+        html += '<div class="tl-context">context: ' + esc(ctx) + '</div>';
       }
       html += '</div></div>';
 
     } else if (ev.event_type === 'metric') {
-      html += `<div class="${cls}">
-        <div class="tl-seq">${ev.seq}</div>
-        <div class="tl-icon" style="color:${iconColor}">${icon}</div>
-        <div class="tl-body">
-          <strong style="color:var(--yellow)">${esc(ev.key)}</strong> = ${ev.value}
-          <span style="color:var(--muted);margin-left:8px">${ts}</span>
-        </div>
-      </div>`;
+      html += '<div class="' + cls + '">';
+      html += '<div class="tl-seq">' + ev.seq + '</div>';
+      html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
+      html += '<div class="tl-body">';
+      html += '<strong style="color:var(--yellow)">' + esc(ev.key) + '</strong> = ' + ev.value;
+      html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
+      html += '</div></div>';
     }
   }
   html += '</div>';
-  html += `<p style="color:var(--muted);font-size:12px">${events.length} events</p>`;
   container.innerHTML = html;
+}
+
+async function viewCellSource(cellHash, btnEl) {
+  // Toggle: if source is already showing, hide it
+  const existing = btnEl.parentElement.querySelector('.source-view');
+  if (existing) {
+    existing.remove();
+    btnEl.textContent = 'view source';
+    return;
+  }
+  btnEl.textContent = 'loading...';
+  const data = await api('/api/cell-source/' + cellHash);
+  btnEl.textContent = 'hide source';
+  if (data.error) {
+    const div = document.createElement('div');
+    div.className = 'source-view';
+    div.textContent = 'Source not available (cell hash: ' + cellHash + ')';
+    btnEl.parentElement.appendChild(div);
+    return;
+  }
+  let html = '<div class="source-view">';
+  // Show current source with line numbers
+  html += '<div style="margin-bottom:8px;color:var(--blue);font-size:11px;text-transform:uppercase">Current cell source (hash: ' + cellHash + ')</div>';
+  const lines = data.source.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    html += '<span class="line-num">' + (i+1) + '</span>' + esc(lines[i]) + '\n';
+  }
+  // If there's a parent, show it too
+  if (data.parent_source) {
+    html += '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px;color:var(--muted);font-size:11px;text-transform:uppercase">Previous version (hash: ' + data.parent_hash + ')</div>';
+    const plines = data.parent_source.split('\n');
+    for (let i = 0; i < plines.length; i++) {
+      html += '<span class="line-num">' + (i+1) + '</span><span style="color:var(--muted)">' + esc(plines[i]) + '</span>\n';
+    }
+  }
+  html += '</div>';
+  btnEl.parentElement.insertAdjacentHTML('beforeend', html);
 }
 
 // ── Within-experiment comparison ─────────────────────────────────────────────
@@ -1106,35 +1501,31 @@ async function loadTimeline(expId, filter) {
 let withinSeq1 = null, withinSeq2 = null;
 
 async function loadCompareWithin(expId) {
-  const events = await api(`/api/timeline/${expId}`);
+  const events = await api('/api/timeline/' + expId);
   const container = document.getElementById('detail-tab-compare-within');
 
-  // Show cell_exec events as selectable points
   const cellEvents = events.filter(e => e.event_type === 'cell_exec' || e.event_type === 'artifact');
 
-  let html = `<p style="margin-bottom:12px">Select two timeline points to compare variable state:</p>`;
+  let html = '<p style="margin-bottom:12px">Select two timeline points to compare variable state. <span class="help-icon" title="Click two events to see how variables changed between them. Useful for tracking how a variable (e.g. learning rate, model weights) evolved during the experiment.">?</span></p>';
   html += '<div class="tl-compare-bar">';
-  html += `<span>Point A: <strong id="cw-seq1">${withinSeq1 !== null ? 'seq='+withinSeq1 : 'click to select'}</strong></span>`;
-  html += `<span>Point B: <strong id="cw-seq2">${withinSeq2 !== null ? 'seq='+withinSeq2 : 'click to select'}</strong></span>`;
-  html += `<button onclick="doWithinCompare('${expId}')">Compare</button>`;
-  html += `<button onclick="withinSeq1=null;withinSeq2=null;loadCompareWithin('${expId}')" style="background:var(--muted)">Clear</button>`;
+  html += '<span>Point A: <strong id="cw-seq1">' + (withinSeq1 !== null ? 'seq='+withinSeq1 : 'click to select') + '</strong></span>';
+  html += '<span>Point B: <strong id="cw-seq2">' + (withinSeq2 !== null ? 'seq='+withinSeq2 : 'click to select') + '</strong></span>';
+  html += '<button onclick="doWithinCompare(\'' + expId + '\')">Compare</button>';
+  html += '<button onclick="withinSeq1=null;withinSeq2=null;loadCompareWithin(\'' + expId + '\')" style="background:var(--muted)">Clear</button>';
   html += '</div>';
 
   html += '<div class="timeline" style="max-height:400px;overflow-y:auto">';
   for (const ev of cellEvents) {
     const info = ev.value || {};
     const preview = (info.source_preview || ev.key || '').split('\n')[0].slice(0, 60);
-    const sel1 = withinSeq1 === ev.seq ? ' selected' : '';
-    const sel2 = withinSeq2 === ev.seq ? ' selected' : '';
-    const selCls = (sel1 || sel2) ? ' tl-seq-select selected' : ' tl-seq-select';
-    html += `<div class="tl-event tl-${ev.event_type}${selCls}" onclick="selectWithinSeq(${ev.seq},'${expId}')" style="cursor:pointer">
-      <div class="tl-seq">${ev.seq}</div>
-      <div class="tl-body">
-        <strong>${esc(ev.key||'')}</strong>
-        <span style="color:var(--muted);margin-left:8px">${fmtDt(ev.ts)}</span>
-        ${preview ? '<div class="tl-code-preview">' + esc(preview) + '</div>' : ''}
-      </div>
-    </div>`;
+    const selCls = (withinSeq1 === ev.seq || withinSeq2 === ev.seq) ? ' tl-seq-select selected' : ' tl-seq-select';
+    html += '<div class="tl-event tl-' + ev.event_type + selCls + '" onclick="selectWithinSeq(' + ev.seq + ',\'' + expId + '\')" style="cursor:pointer">';
+    html += '<div class="tl-seq">' + ev.seq + '</div>';
+    html += '<div class="tl-body">';
+    html += '<strong>' + esc(ev.key||'') + '</strong>';
+    html += ' <span style="color:var(--muted);margin-left:8px">' + fmtDt(ev.ts) + '</span>';
+    if (preview) html += '<div class="tl-code-preview">' + esc(preview) + '</div>';
+    html += '</div></div>';
   }
   html += '</div>';
   html += '<div id="within-compare-result"></div>';
@@ -1154,22 +1545,22 @@ function selectWithinSeq(seq, expId) {
 async function doWithinCompare(expId) {
   if (withinSeq1 === null || withinSeq2 === null) return;
   const [vars1, vars2] = await Promise.all([
-    api(`/api/vars-at/${expId}?seq=${withinSeq1}`),
-    api(`/api/vars-at/${expId}?seq=${withinSeq2}`),
+    api('/api/vars-at/' + expId + '?seq=' + withinSeq1),
+    api('/api/vars-at/' + expId + '?seq=' + withinSeq2),
   ]);
 
   const allKeys = [...new Set([...Object.keys(vars1), ...Object.keys(vars2)])].sort();
-  let html = `<div class="within-compare">
-    <h3>Variable state: seq=${withinSeq1} vs seq=${withinSeq2}</h3>
-    <table class="params-table">
-    <tr><th>Variable</th><th>@seq=${withinSeq1}</th><th>@seq=${withinSeq2}</th></tr>`;
+  let html = '<div class="within-compare">';
+  html += '<h3>Variable state: seq=' + withinSeq1 + ' vs seq=' + withinSeq2 + '</h3>';
+  html += '<table class="params-table">';
+  html += '<tr><th>Variable</th><th>@seq=' + withinSeq1 + '</th><th>@seq=' + withinSeq2 + '</th></tr>';
 
   for (const k of allKeys) {
-    const v1 = vars1[k] !== undefined ? String(vars1[k]).slice(0, 40) : '--';
-    const v2 = vars2[k] !== undefined ? String(vars2[k]).slice(0, 40) : '--';
+    const v1 = vars1[k] !== undefined ? String(vars1[k]).slice(0, 50) : '--';
+    const v2 = vars2[k] !== undefined ? String(vars2[k]).slice(0, 50) : '--';
     const differs = String(vars1[k]) !== String(vars2[k]);
     const cls = differs ? ' class="differs"' : '';
-    html += `<tr><td class="var-name">${esc(k)}</td><td${cls}>${esc(v1)}</td><td${cls}>${esc(v2)}</td></tr>`;
+    html += '<tr><td class="var-name">' + esc(k) + '</td><td' + cls + '>' + esc(v1) + '</td><td' + cls + '>' + esc(v2) + '</td></tr>';
   }
   html += '</table></div>';
 
@@ -1183,7 +1574,6 @@ loadExperiments();
 </body>
 </html>
 """
-
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 7331
