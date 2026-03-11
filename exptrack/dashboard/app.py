@@ -81,6 +81,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         content_len = int(self.headers.get('Content-Length', 0))
+        if content_len > 10 * 1024 * 1024:  # 10MB limit
+            self.send_error(413, "Request body too large")
+            return
         body = json.loads(self.rfile.read(content_len)) if content_len else {}
 
         if path.startswith("/api/experiment/") and path.endswith("/note"):
@@ -135,6 +138,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _find_exp(self, exp_id, columns="id"):
+        """Look up experiment by prefix match. Returns row or None."""
+        conn = get_db()
+        return conn.execute(f"SELECT {columns} FROM experiments WHERE id LIKE ?",
+                            (exp_id + "%",)).fetchone()
 
     def _api_stats(self):
         conn = get_db()
@@ -295,8 +304,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_add_note(self, exp_id, body):
         conn = get_db()
-        exp = conn.execute("SELECT id, notes FROM experiments WHERE id LIKE ?",
-                           (exp_id + "%",)).fetchone()
+        exp = self._find_exp(exp_id, "id, notes")
         if not exp:
             return {"error": "not found"}
         text = body.get("note", "").strip()
@@ -311,8 +319,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_add_tag(self, exp_id, body):
         conn = get_db()
-        exp = conn.execute("SELECT id, tags FROM experiments WHERE id LIKE ?",
-                           (exp_id + "%",)).fetchone()
+        exp = self._find_exp(exp_id, "id, tags")
         if not exp:
             return {"error": "not found"}
         tag = body.get("tag", "").strip()
@@ -328,8 +335,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_rename(self, exp_id, body):
         conn = get_db()
-        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
-                           (exp_id + "%",)).fetchone()
+        exp = self._find_exp(exp_id)
         if not exp:
             return {"error": "not found"}
         new_name = body.get("name", "").strip()
@@ -342,8 +348,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_delete(self, exp_id):
         conn = get_db()
-        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
-                           (exp_id + "%",)).fetchone()
+        exp = self._find_exp(exp_id)
         if not exp:
             return {"error": "not found"}
         eid = exp["id"]
@@ -358,8 +363,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_add_artifact(self, exp_id, body):
         conn = get_db()
-        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
-                           (exp_id + "%",)).fetchone()
+        exp = self._find_exp(exp_id)
         if not exp:
             return {"error": "not found"}
         label = body.get("label", "").strip()
@@ -378,8 +382,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_delete_tag(self, exp_id, body):
         conn = get_db()
-        exp = conn.execute("SELECT id, tags FROM experiments WHERE id LIKE ?",
-                           (exp_id + "%",)).fetchone()
+        exp = self._find_exp(exp_id, "id, tags")
         if not exp:
             return {"error": "not found"}
         tag = body.get("tag", "").strip()
@@ -394,8 +397,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_edit_tag(self, exp_id, body):
         conn = get_db()
-        exp = conn.execute("SELECT id, tags FROM experiments WHERE id LIKE ?",
-                           (exp_id + "%",)).fetchone()
+        exp = self._find_exp(exp_id, "id, tags")
         if not exp:
             return {"error": "not found"}
         old_tag = body.get("old_tag", "").strip()
@@ -411,8 +413,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_edit_notes(self, exp_id, body):
         conn = get_db()
-        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
-                           (exp_id + "%",)).fetchone()
+        exp = self._find_exp(exp_id)
         if not exp:
             return {"error": "not found"}
         notes = body.get("notes", "")
@@ -423,8 +424,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_delete_artifact(self, exp_id, body):
         conn = get_db()
-        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
-                           (exp_id + "%",)).fetchone()
+        exp = self._find_exp(exp_id)
         if not exp:
             return {"error": "not found"}
         label = body.get("label", "")
@@ -445,8 +445,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_edit_artifact(self, exp_id, body):
         conn = get_db()
-        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
-                           (exp_id + "%",)).fetchone()
+        exp = self._find_exp(exp_id)
         if not exp:
             return {"error": "not found"}
         old_label = body.get("old_label", "")
@@ -474,8 +473,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         conn = get_db()
         deleted = 0
         for exp_id in ids:
-            exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
-                               (exp_id + "%",)).fetchone()
+            exp = self._find_exp(exp_id)
             if exp:
                 eid = exp["id"]
                 conn.execute("DELETE FROM metrics WHERE exp_id=?", (eid,))
@@ -516,9 +514,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         conf = cfg.load()
         return {"timezone": conf.get("timezone", "")}
 
+    _VALID_TIMEZONES = {
+        "", "UTC", "America/New_York", "America/Chicago", "America/Denver",
+        "America/Los_Angeles", "Europe/London", "Europe/Berlin", "Europe/Paris",
+        "Asia/Tokyo", "Asia/Shanghai", "Asia/Kolkata", "Australia/Sydney",
+    }
+
     def _api_set_timezone(self, body):
         from exptrack import config as cfg
         tz = body.get("timezone", "").strip()
+        if tz not in self._VALID_TIMEZONES:
+            return {"error": "invalid timezone"}
         conf = cfg.load()
         conf["timezone"] = tz
         cfg.save(conf)
@@ -1189,28 +1195,33 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .detail-notes-inline { cursor: text; min-height: 24px; padding: 4px; border-radius: 3px; }
   .detail-notes-inline:hover { background: rgba(44,90,160,0.05); }
   /* Owl mascot */
-  .owl-mascot { cursor: pointer; transition: transform 0.2s; display: inline-block; }
-  .owl-mascot:hover { transform: scale(1.15); }
+  .owl-mascot { cursor: pointer; transition: transform 0.3s; display: inline-block; }
+  .owl-mascot:hover { transform: scale(1.2) rotate(-5deg); }
+  .owl-mascot:active { transform: scale(0.95); }
   .owl-mascot.owl-blink svg rect.owl-eye-white { animation: owlBlink 3s infinite; }
+  .owl-mascot.owl-bounce { animation: owlBounce 0.5s ease; }
+  .owl-mascot.owl-wiggle { animation: owlWiggle 0.4s ease; }
   @keyframes owlBlink { 0%,92%,100% { height: 1; } 94%,98% { height: 0; } }
-  .owl-speech { position: absolute; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 11px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 100; bottom: 44px; left: 50%; transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity 0.3s; }
+  @keyframes owlBounce { 0%,100% { transform: translateY(0); } 40% { transform: translateY(-8px); } 60% { transform: translateY(-4px); } }
+  @keyframes owlWiggle { 0%,100% { transform: rotate(0deg); } 25% { transform: rotate(-8deg); } 75% { transform: rotate(8deg); } }
+  .owl-speech { position: absolute; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 100; bottom: 56px; left: 50%; transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity 0.3s; }
   .owl-speech.visible { opacity: 1; }
   .owl-speech::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: var(--border); }
   .owl-container { position: relative; display: inline-block; }
   /* Timezone setting */
-  .tz-setting { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; }
-  .tz-setting select { font-family: inherit; font-size: 11px; border: 1px solid var(--border); padding: 2px 6px; border-radius: 3px; background: var(--card-bg); color: var(--fg); }
+  .tz-setting { display: inline-flex; align-items: center; gap: 6px; }
+  .tz-setting select { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px; background: var(--code-bg); color: var(--muted); cursor: pointer; }
+  .tz-setting select:hover { background: var(--border); color: var(--fg); }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak()"><svg width="32" height="32" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:8px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
+  <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak('click')"><svg width="48" height="48" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:8px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
   <div class="header-actions">
     <span class="tz-setting" title="Set timezone for displaying timestamps">
-      <span style="font-size:12px;color:var(--muted)">TZ:</span>
       <select id="tz-select" onchange="setTimezone(this.value)">
-        <option value="">Browser local</option>
+        <option value="">TZ: Browser local</option>
         <option value="UTC">UTC</option>
         <option value="America/New_York">US Eastern</option>
         <option value="America/Chicago">US Central</option>
@@ -1381,13 +1392,21 @@ function renderTagFilterBar() {
   let html = '<span style="font-size:11px;color:var(--muted);margin-right:4px">Filter:</span>';
   html += '<span class="tag-chip' + (tagFilter===''?' active':'') + '" onclick="tagFilter=\'\';renderExperiments();renderExpList();renderTagFilterBar()">All</span>';
   for (const t of [...allTags].sort()) {
-    html += '<span class="tag-chip' + (tagFilter===t?' active':'') + '" onclick="tagFilter=\'' + esc(t).replace(/'/g,"\\'") + '\';renderExperiments();renderExpList();renderTagFilterBar()">#' + esc(t) + '</span>';
+    html += '<span class="tag-chip' + (tagFilter===t?' active':'') + '" onclick="tagFilter=\'' + esc(t) + '\';renderExperiments();renderExpList();renderTagFilterBar()">#' + esc(t) + '</span>';
   }
   bar.innerHTML = html;
 }
 
 async function api(path) {
   const r = await fetch(path);
+  return r.json();
+}
+
+async function postApi(path, body = {}) {
+  const r = await fetch(path, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
   return r.json();
 }
 
@@ -1438,10 +1457,10 @@ function fmtDtFull(iso) {
 async function setTimezone(tz) {
   currentTimezone = tz;
   localStorage.setItem('exptrack-tz', tz);
-  try { await fetch('/api/config/timezone', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({timezone: tz}) }); } catch(e) {}
+  try { await postApi('/api/config/timezone', {timezone: tz}); } catch(e) {}
   renderExperiments();
   renderExpList();
-  if (currentDetailId) showDetail(currentDetailId);
+  if (currentDetailId) refreshDetail(currentDetailId);
   owlSay(tz ? 'Timezone set to ' + tz + '!' : 'Using your browser timezone!');
 }
 
@@ -1483,29 +1502,47 @@ const owlPhrases = [
   'Reproducibility is a superpower!',
   'Git diff captured. You\'re welcome.',
   'Have you tried turning it off and on again?',
+  'Every experiment teaches something!',
+  'Science is organized curiosity.',
+  'Log it or lose it!',
+  'Hyperparameters are just suggestions.',
 ];
 const owlContextPhrases = {
-  delete: ['Are you sure? I\'ll miss that one...', 'Cleaning house? Smart owl.'],
-  compare: ['Let\'s see who wins!', 'Side by side, insight arrives.'],
-  export: ['Sharing is caring!', 'Data to go!'],
-  tag: ['Good labeling, wise human!', 'Tags make finding things a hoot!'],
-  empty: ['No experiments yet? Go run something!', 'An empty lab is full of potential.'],
-  welcome: ['Welcome back! What shall we track today?', 'Hoo! Good to see you!'],
+  delete: ['Are you sure? I\'ll miss that one...', 'Cleaning house? Smart owl.', 'Gone but not forgotten... actually, gone.'],
+  compare: ['Let\'s see who wins!', 'Side by side, insight arrives.', 'May the best model win!'],
+  export: ['Sharing is caring!', 'Data to go!', 'Knowledge wants to be free!'],
+  tag: ['Good labeling, wise human!', 'Tags make finding things a hoot!', 'Organized minds run better experiments.'],
+  empty: ['No experiments yet? Go run something!', 'An empty lab is full of potential.', 'The best experiment is the next one!'],
+  welcome: ['Welcome back! What shall we track today?', 'Hoo! Good to see you!', 'Ready to science? Let\'s go!'],
+  rename: ['A good name tells a story.', 'Identity matters!'],
+  note: ['Write it down before you forget!', 'Future you will thank present you.'],
+  artifact: ['Artifacts secured!', 'Saving your treasures.'],
+  filter: ['Narrowing it down? Smart move.', 'Finding the needle in the haystack!'],
+  click: ['Hoo?', '*tilts head*', '*blinks curiously*', 'Yes?', '*ruffles feathers*', '*does a little dance*'],
 };
 let owlSpeechTimer = null;
 
-function owlSay(msg) {
+function owlSay(msg, anim) {
   const el = document.getElementById('owl-speech');
   if (!el) return;
   el.textContent = msg;
   el.classList.add('visible');
   if (owlSpeechTimer) clearTimeout(owlSpeechTimer);
-  owlSpeechTimer = setTimeout(() => el.classList.remove('visible'), 3000);
+  owlSpeechTimer = setTimeout(() => el.classList.remove('visible'), 3500);
+  // Trigger animation
+  const mascot = document.querySelector('.owl-mascot');
+  if (mascot && anim) {
+    mascot.classList.remove('owl-bounce', 'owl-wiggle');
+    void mascot.offsetWidth; // force reflow
+    mascot.classList.add(anim);
+    setTimeout(() => mascot.classList.remove(anim), 600);
+  }
 }
 
 function owlSpeak(context) {
   const phrases = context && owlContextPhrases[context] ? owlContextPhrases[context] : owlPhrases;
-  owlSay(phrases[Math.floor(Math.random() * phrases.length)]);
+  const anim = context === 'delete' ? 'owl-wiggle' : 'owl-bounce';
+  owlSay(phrases[Math.floor(Math.random() * phrases.length)], anim);
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -1654,11 +1691,7 @@ async function sidebarBulkDelete() {
   owlSpeak('delete');
   if (!confirm('Delete ' + selectedIds.size + ' experiments? This cannot be undone.')) return;
   const ids = [...selectedIds];
-  const r = await fetch('/api/bulk-delete', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ids})
-  });
-  const d = await r.json();
+  const d = await postApi('/api/bulk-delete', {ids});
   if (d.ok) {
     selectedIds.clear();
     showWelcome();
@@ -1670,11 +1703,7 @@ async function sidebarBulkDelete() {
 async function sidebarExport() {
   owlSpeak('export');
   const ids = [...selectedIds];
-  const r = await fetch('/api/bulk-export', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ids, format: 'json'})
-  });
-  const data = await r.json();
+  const data = await postApi('/api/bulk-export', {ids, format: 'json'});
   const text = JSON.stringify(data, null, 2);
   await navigator.clipboard.writeText(text);
   alert('Exported ' + data.length + ' experiments to clipboard (JSON)');
@@ -1902,7 +1931,7 @@ function renderExperiments() {
     if (groupBy === 'git_commit' && items[0].git_branch) {
       groupLabel = key + ' <span class="group-meta">' + esc(items[0].git_branch) + '</span>';
     }
-    html += '<tr class="group-header" onclick="toggleGroup(\'' + esc(key).replace(/'/g, "\\'") + '\')"><td colspan="10">';
+    html += '<tr class="group-header" onclick="toggleGroup(\'' + esc(key) + '\')"><td colspan="10">';
     html += '<span class="group-toggle">' + (isCollapsed ? '\u25B6' : '\u25BC') + '</span> ';
     html += '<span class="group-label">' + groupLabel + '</span>';
     html += '<span class="group-meta"> \u2014 ' + items.length + ' run' + (items.length > 1 ? 's' : '') + '</span>';
@@ -1931,11 +1960,7 @@ function startInlineRename(id, el) {
     saved = true;
     const newName = input.value.trim();
     if (newName && newName !== currentName) {
-      const r = await fetch('/api/experiment/' + id + '/rename', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name: newName})
-      });
-      const d = await r.json();
+      const d = await postApi('/api/experiment/' + id + '/rename', {name: newName});
       if (d.ok) {
         const exp = allExperiments.find(e => e.id === id);
         if (exp) exp.name = newName;
@@ -1999,10 +2024,7 @@ function createTagInput(id, tags, exp, onUpdate, opts = {}) {
 
   async function selectTag(val) {
     if (!val) return;
-    await fetch('/api/experiment/' + id + '/tag', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({tag: val})
-    });
+    await postApi('/api/experiment/' + id + '/tag', {tag: val});
     if (!tags.includes(val)) tags.push(val);
     if (exp) exp.tags = [...tags];
     input.value = '';
@@ -2050,10 +2072,7 @@ function startInlineTag(id, el) {
       x.style.cssText = 'cursor:pointer;margin-left:2px;color:var(--red);font-weight:bold';
       x.onclick = async (ev) => {
         ev.stopPropagation();
-        await fetch('/api/experiment/' + id + '/delete-tag', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({tag: t})
-        });
+        await postApi('/api/experiment/' + id + '/delete-tag', {tag: t});
         tags.splice(i, 1);
         if (exp) exp.tags = [...tags];
         render();
@@ -2092,10 +2111,7 @@ function startInlineNote(id, el) {
     if (saved) return;
     saved = true;
     const newNotes = textarea.value.trim();
-    await fetch('/api/experiment/' + id + '/edit-notes', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({notes: newNotes})
-    });
+    await postApi('/api/experiment/' + id + '/edit-notes', {notes: newNotes});
     if (exp) exp.notes = newNotes;
     renderExperiments();
     renderExpList();
@@ -2123,6 +2139,7 @@ async function compareSelected() {
 }
 
 function filterExps(status) {
+  if (status) owlSpeak('filter');
   currentFilter = status;
   renderStatusChips();
   loadExperiments();
@@ -2160,6 +2177,10 @@ async function showDetail(id) {
     showWelcome();
     return;
   }
+  return refreshDetail(id);
+}
+
+async function refreshDetail(id) {
   currentDetailId = id;
   showDetailView();
   document.getElementById('exp-sidebar').classList.remove('collapsed');
@@ -2199,7 +2220,7 @@ async function showDetail(id) {
   ).join('');
 
   const artRows = exp.artifacts.map(a =>
-    `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td><td><div class="artifact-actions"><button onclick="editArtifact('${exp.id}','${esc(a.label).replace(/'/g,"\\'")}','${esc(a.path).replace(/'/g,"\\'")}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label).replace(/'/g,"\\'")}','${esc(a.path).replace(/'/g,"\\'")}')">del</button></div></td></tr>`
+    `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td><td><div class="artifact-actions"><button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`
   ).join('');
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
@@ -2287,7 +2308,7 @@ async function showDetail(id) {
   const tagsHtml = '<span class="detail-tags-inline" id="detail-tags-area">' +
     (exp.tags.length
       ? exp.tags.map(t => '<span class="tag-removable">#' + esc(t) +
-        ' <span class="tag-delete" onclick="event.stopPropagation();deleteTagInline(\'' + exp.id + '\',\'' + esc(t).replace(/'/g,"\\'") + '\')" title="Remove">&times;</span>' +
+        ' <span class="tag-delete" onclick="event.stopPropagation();deleteTagInline(\'' + exp.id + '\',\'' + esc(t) + '\')" title="Remove">&times;</span>' +
         '</span>').join('')
       : '') +
     '<span class="tag-input-area" id="detail-tag-input-area"></span>' +
@@ -2314,7 +2335,7 @@ async function showDetail(id) {
       <div class="detail-header">
         <h2 id="detail-name" class="editable-hint" ondblclick="startInlineRename('${exp.id}',this)" title="Double-click to rename">${esc(exp.name)}</h2>
         <div class="detail-actions">
-          <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name).replace(/'/g,"\\'")}')">Delete</button>
+          <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name)}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
         </div>
       </div>
@@ -2373,7 +2394,7 @@ async function showDetail(id) {
   if (tagInputArea) {
     const detailTags = [...(exp.tags || [])];
     const { wrapper, input } = createTagInput(exp.id, detailTags, null, () => {
-      loadExperiments().then(() => showDetail(exp.id));
+      loadExperiments().then(() => refreshDetail(exp.id));
     }, { placeholder: '+ add tag', style: 'width:100px;font-size:12px;padding:2px 6px' });
     tagInputArea.appendChild(wrapper);
   }
@@ -2587,53 +2608,37 @@ async function doCompare() {
 
 function esc(s) {
   if (s == null) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 async function renameExp(id) {
   const name = prompt('New name:');
   if (!name) return;
-  const r = await fetch('/api/experiment/' + id + '/rename', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name})
-  });
-  const d = await r.json();
-  if (d.ok) { loadExperiments(); showDetail(id); }
+  const d = await postApi('/api/experiment/' + id + '/rename', {name});
+  if (d.ok) { loadExperiments(); refreshDetail(id); }
   else alert(d.error || 'Failed');
 }
 
 async function addTagUI(id) {
   const tag = prompt('Tag name (e.g. baseline, best, ablation):');
   if (!tag) return;
-  const r = await fetch('/api/experiment/' + id + '/tag', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({tag: tag.trim()})
-  });
-  const d = await r.json();
-  if (d.ok) { loadExperiments(); showDetail(id); }
+  const d = await postApi('/api/experiment/' + id + '/tag', {tag: tag.trim()});
+  if (d.ok) { loadExperiments(); refreshDetail(id); }
   else alert(d.error || 'Failed');
 }
 
 async function addNoteUI(id) {
   const note = prompt('Add note:');
   if (!note) return;
-  const r = await fetch('/api/experiment/' + id + '/note', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({note})
-  });
-  const d = await r.json();
-  if (d.ok) { showDetail(id); }
+  const d = await postApi('/api/experiment/' + id + '/note', {note});
+  if (d.ok) { refreshDetail(id); }
   else alert(d.error || 'Failed');
 }
 
 async function deleteExp(id, name) {
   owlSpeak('delete');
   if (!confirm('Delete experiment "' + name + '"? This cannot be undone.')) return;
-  const r = await fetch('/api/experiment/' + id + '/delete', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({})
-  });
-  const d = await r.json();
+  const d = await postApi('/api/experiment/' + id + '/delete');
   if (d.ok) {
     showWelcome();
     loadStats();
@@ -2647,12 +2652,8 @@ async function addArtifact(id) {
   const label = document.getElementById('art-label-' + id).value.trim();
   const path = document.getElementById('art-path-' + id).value.trim();
   if (!label && !path) { alert('Provide a label or path'); return; }
-  const r = await fetch('/api/experiment/' + id + '/artifact', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({label, path})
-  });
-  const d = await r.json();
-  if (d.ok) { showDetail(id); }
+  const d = await postApi('/api/experiment/' + id + '/artifact', {label, path});
+  if (d.ok) { refreshDetail(id); }
   else alert(d.error || 'Failed');
 }
 
@@ -2660,34 +2661,22 @@ async function addArtifact(id) {
 
 async function deleteTag(id, tag) {
   if (!confirm('Remove tag "' + tag + '"?')) return;
-  const r = await fetch('/api/experiment/' + id + '/delete-tag', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({tag})
-  });
-  const d = await r.json();
-  if (d.ok) { loadExperiments(); showDetail(id); }
+  const d = await postApi('/api/experiment/' + id + '/delete-tag', {tag});
+  if (d.ok) { loadExperiments(); refreshDetail(id); }
   else alert(d.error || 'Failed');
 }
 
 async function editTag(id, oldTag) {
   const newTag = prompt('Edit tag:', oldTag);
   if (!newTag || newTag === oldTag) return;
-  const r = await fetch('/api/experiment/' + id + '/edit-tag', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({old_tag: oldTag, new_tag: newTag.trim()})
-  });
-  const d = await r.json();
-  if (d.ok) { loadExperiments(); showDetail(id); }
+  const d = await postApi('/api/experiment/' + id + '/edit-tag', {old_tag: oldTag, new_tag: newTag.trim()});
+  if (d.ok) { loadExperiments(); refreshDetail(id); }
   else alert(d.error || 'Failed');
 }
 
 async function deleteTagInline(id, tag) {
-  const r = await fetch('/api/experiment/' + id + '/delete-tag', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({tag})
-  });
-  const d = await r.json();
-  if (d.ok) { loadAllTags(); loadExperiments().then(() => showDetail(id)); }
+  const d = await postApi('/api/experiment/' + id + '/delete-tag', {tag});
+  if (d.ok) { loadAllTags(); loadExperiments().then(() => refreshDetail(id)); }
 }
 
 function startDetailNoteEdit(id, el) {
@@ -2696,7 +2685,7 @@ function startDetailNoteEdit(id, el) {
   const textarea = document.createElement('textarea');
   textarea.className = 'notes-edit-area';
   textarea.value = isPlaceholder ? '' : currentText;
-  textarea.style.cssText = 'width:100%;min-height:60px;font-size:13px;font-family:inherit';
+  textarea.style.cssText = 'width:100%;min-height:60px;font-size:13px;font-family:inherit;border:1px solid var(--blue);border-radius:3px;padding:4px 6px';
   el.innerHTML = '';
   el.appendChild(textarea);
   textarea.focus();
@@ -2706,18 +2695,15 @@ function startDetailNoteEdit(id, el) {
     if (saved) return;
     saved = true;
     const notes = textarea.value;
-    await fetch('/api/experiment/' + id + '/edit-notes', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({notes})
-    });
+    await postApi('/api/experiment/' + id + '/edit-notes', {notes});
     const exp = allExperiments.find(e => e.id === id);
     if (exp) exp.notes = notes;
-    showDetail(id);
+    refreshDetail(id);
   }
   textarea.addEventListener('blur', doSave);
   textarea.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter' && ev.ctrlKey) { ev.preventDefault(); textarea.blur(); }
-    if (ev.key === 'Escape') { saved = true; showDetail(id); }
+    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); textarea.blur(); }
+    if (ev.key === 'Escape') { saved = true; refreshDetail(id); }
   });
 }
 
@@ -2729,7 +2715,7 @@ async function editNotes(id) {
   notesEl.innerHTML = '<div><textarea class="notes-edit-area" id="notes-edit-area">' + esc(currentText) + '</textarea>' +
     '<div style="margin-top:4px;display:flex;gap:6px">' +
     '<button class="action-btn" onclick="saveNotes(\'' + id + '\')">Save</button>' +
-    '<button class="action-btn" onclick="showDetail(\'' + id + '\')">Cancel</button>' +
+    '<button class="action-btn" onclick="refreshDetail(\'' + id + '\')">Cancel</button>' +
     '</div></div>';
   document.getElementById('notes-edit-area').focus();
 }
@@ -2737,24 +2723,15 @@ async function editNotes(id) {
 async function saveNotes(id) {
   const area = document.getElementById('notes-edit-area');
   if (!area) return;
-  const notes = area.value;
-  const r = await fetch('/api/experiment/' + id + '/edit-notes', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({notes})
-  });
-  const d = await r.json();
-  if (d.ok) { showDetail(id); }
+  const d = await postApi('/api/experiment/' + id + '/edit-notes', {notes: area.value});
+  if (d.ok) { refreshDetail(id); }
   else alert(d.error || 'Failed');
 }
 
 async function deleteArtifact(id, label, path) {
   if (!confirm('Delete artifact "' + label + '"?')) return;
-  const r = await fetch('/api/experiment/' + id + '/delete-artifact', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({label, path})
-  });
-  const d = await r.json();
-  if (d.ok) { showDetail(id); }
+  const d = await postApi('/api/experiment/' + id + '/delete-artifact', {label, path});
+  if (d.ok) { refreshDetail(id); }
   else alert(d.error || 'Failed');
 }
 
@@ -2763,12 +2740,8 @@ async function editArtifact(id, oldLabel, oldPath) {
   if (newLabel === null) return;
   const newPath = prompt('Edit path:', oldPath);
   if (newPath === null) return;
-  const r = await fetch('/api/experiment/' + id + '/edit-artifact', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({old_label: oldLabel, old_path: oldPath, new_label: newLabel.trim(), new_path: newPath.trim()})
-  });
-  const d = await r.json();
-  if (d.ok) { showDetail(id); }
+  const d = await postApi('/api/experiment/' + id + '/edit-artifact', {old_label: oldLabel, old_path: oldPath, new_label: newLabel.trim(), new_path: newPath.trim()});
+  if (d.ok) { refreshDetail(id); }
   else alert(d.error || 'Failed');
 }
 
@@ -3042,8 +3015,9 @@ loadExperiments().then(() => {
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 7331
-    server = HTTPServer(("0.0.0.0", port), DashboardHandler)
-    print(f"[exptrack] Dashboard running at http://localhost:{port}")
+    host = "127.0.0.1"
+    server = HTTPServer((host, port), DashboardHandler)
+    print(f"[exptrack] Dashboard running at http://{host}:{port}")
     print(f"[exptrack] Press Ctrl+C to stop")
     try:
         server.serve_forever()
