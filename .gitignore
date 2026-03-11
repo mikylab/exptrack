@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# exptrack — local only (db + snapshots); config.json is safe to commit
+.exptrack/experiments.db
+.exptrack/experiments.db-wal
+.exptrack/experiments.db-shm
+.exptrack/notebook_history/
+outputs/
