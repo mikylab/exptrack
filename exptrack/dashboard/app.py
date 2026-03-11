@@ -734,12 +734,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     overflow: hidden; height: 100vh;
   }
   /* Header bar */
-  .header { display: flex; justify-content: space-between; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--border); background: var(--card-bg); flex-shrink: 0; height: 44px; }
-  .header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.5px; margin: 0; cursor: pointer; }
+  .header { display: flex; justify-content: space-between; align-items: center; padding: 10px 24px; border-bottom: 1px solid var(--border); background: var(--card-bg); flex-shrink: 0; height: 64px; }
+  .header h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; margin: 0; cursor: pointer; }
   .header h1:hover { color: var(--blue); }
-  .header-actions { display: flex; gap: 8px; align-items: center; }
+  .header-actions { display: flex; gap: 10px; align-items: center; }
   /* IDE layout */
-  #app-layout { display: flex; height: calc(100vh - 44px); overflow: hidden; }
+  #app-layout { display: flex; height: calc(100vh - 64px); overflow: hidden; }
   #exp-sidebar {
     width: 280px; min-width: 280px; border-right: 1px solid var(--border);
     display: flex; flex-direction: column; overflow: hidden;
@@ -798,17 +798,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     #exp-sidebar { display: none; }
   }
   .help-btn {
-    font-family: inherit; font-size: 13px; background: var(--code-bg);
-    border: 1px solid var(--border); padding: 5px 12px; cursor: pointer;
-    border-radius: 3px; color: var(--muted);
+    font-family: inherit; font-size: 15px; background: var(--code-bg);
+    border: 1px solid var(--border); padding: 8px 16px; cursor: pointer;
+    border-radius: 4px; color: var(--muted);
   }
   .help-btn:hover { background: var(--border); color: var(--fg); }
-  .theme-btn { font-family: inherit; font-size: 16px; background: var(--code-bg); border: 1px solid var(--border); padding: 4px 10px; cursor: pointer; border-radius: 3px; color: var(--muted); line-height: 1; }
+  .theme-btn { font-family: inherit; font-size: 20px; background: var(--code-bg); border: 1px solid var(--border); padding: 6px 14px; cursor: pointer; border-radius: 4px; color: var(--muted); line-height: 1; }
   .theme-btn:hover { background: var(--border); color: var(--fg); }
   h2 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
   h2 .help-icon { font-size: 13px; cursor: help; color: var(--blue); margin-left: 6px; font-weight: normal; text-transform: none; letter-spacing: 0; }
   /* Stats cards */
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stats { margin-bottom: 20px; }
+  .stats-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+  .stats-row { display: grid; gap: 12px; margin-bottom: 12px; }
+  .stats-row.runs { grid-template-columns: repeat(4, 1fr); }
+  .stats-row.additional { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
   .stat {
     background: var(--card-bg); border: 1px solid var(--border);
     padding: 20px; text-align: center; border-radius: 4px;
@@ -837,6 +841,27 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     font-family: inherit; font-size: 14px; border: 1px solid var(--border);
     padding: 6px 12px; border-radius: 3px; background: var(--card-bg); min-width: 200px;
   }
+  /* Table toolbar */
+  .table-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .main-search-input {
+    font-family: inherit; font-size: 14px; border: 1px solid var(--border);
+    padding: 8px 14px; border-radius: 4px; background: var(--card-bg); min-width: 260px; color: var(--fg);
+  }
+  .main-search-input:focus { outline: none; border-color: var(--blue); }
+  .table-actions-bar {
+    display: flex; gap: 8px; align-items: center; padding: 8px 12px; margin-bottom: 8px;
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+  }
+  .table-actions-bar .sel-count { font-size: 13px; color: var(--muted); margin-right: 8px; }
+  .table-actions-bar button {
+    font-family: inherit; font-size: 12px; border: 1px solid var(--border); padding: 5px 14px;
+    cursor: pointer; border-radius: 3px; background: var(--card-bg); color: var(--fg);
+  }
+  .table-actions-bar button:hover { background: var(--code-bg); }
+  .table-actions-bar button.danger { background: var(--red); color: #fff; border-color: var(--red); }
+  .table-actions-bar button.danger:hover { opacity: 0.85; }
+  .table-actions-bar button.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .table-actions-bar button.primary:hover { opacity: 0.85; }
   /* Table */
   .cb-col { width: 36px; text-align: center; }
   .cb-col input { cursor: pointer; width: 16px; height: 16px; }
@@ -857,6 +882,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Detail panel */
   .detail { background: var(--card-bg); border: 1px solid var(--border); padding: 28px; margin-top: 20px; border-radius: 4px; }
   .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
+  .detail-export-bar { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
   .detail-header h2 { margin: 0; font-size: 18px; color: var(--fg); text-transform: none; letter-spacing: 0; }
   .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .detail-actions button, .action-btn {
@@ -1113,9 +1139,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <body>
 
 <div class="header">
-  <h1 onclick="showWelcome()"><svg width="22" height="22" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect x="5" y="4" width="2" height="1" fill="#fff"/><rect x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg>exptrack</h1>
+  <h1 onclick="showWelcome()" title="Back to dashboard home"><svg width="32" height="32" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:8px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect x="5" y="4" width="2" height="1" fill="#fff"/><rect x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg>exptrack</h1>
   <div class="header-actions">
-    <button class="home-btn" onclick="showWelcome()" title="Back to dashboard home">Home</button>
     <button class="theme-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
     <button class="help-btn" onclick="toggleHelp()">? Docs</button>
   </div>
@@ -1192,7 +1217,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <!-- Welcome state: shown when no experiment selected -->
     <div id="welcome-state">
       <div class="stats" id="stats"></div>
-      <div class="tag-filter-bar" id="tag-filter-bar"></div>
+      <div class="table-toolbar">
+        <input type="text" id="main-search" class="main-search-input" placeholder="Search experiments..." oninput="searchQuery=this.value;renderExperiments();renderExpList()">
+        <div class="tag-filter-bar" id="tag-filter-bar" style="display:inline"></div>
+      </div>
       <div class="group-bar" id="group-bar">
         <span>Group by:</span>
         <button data-group="git_commit" onclick="setGroup('git_commit')" class="active">Git Commit</button>
@@ -1200,6 +1228,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <button data-group="status" onclick="setGroup('status')">Status</button>
         <button data-group="" onclick="setGroup('')">None</button>
       </div>
+      <div id="table-actions-bar" class="table-actions-bar" style="display:none"></div>
       <table id="exp-table"><thead><tr>
         <th style="width:28px"></th><th class="cb-col"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th><th class="sortable" onclick="toggleSort('id')">ID<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('name')">Name<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('status')">Status<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('tags')">Tags<span class="sort-arrow"></span></th><th>Notes</th><th>Key Metrics</th><th>Changes</th><th class="sortable" onclick="toggleSort('created_at')">Started<span class="sort-arrow"></span></th>
       </tr></thead><tbody id="exp-body"></tbody></table>
@@ -1236,6 +1265,7 @@ let sortCol = 'created_at';
 let sortDir = 'desc';
 let groupBy = 'git_commit';
 let collapsedGroups = new Set();
+let clickTimer = null;
 
 // Dark mode
 function toggleTheme() {
@@ -1425,6 +1455,26 @@ function selectAllVisible() {
   renderExperiments();
 }
 
+function renderTableActionsBar() {
+  const bar = document.getElementById('table-actions-bar');
+  if (!bar) return;
+  const n = selectedIds.size;
+  if (n === 0) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = 'flex';
+  let html = '<span class="sel-count">' + n + ' selected</span>';
+  html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
+  html += '<button onclick="sidebarExport()">Export JSON (' + n + ')</button>';
+  html += '<button onclick="sidebarCopyText()">Copy Text (' + n + ')</button>';
+  if (n === 2) {
+    html += '<button class="primary" onclick="compareSelected()">Compare</button>';
+  }
+  html += '<button onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear</button>';
+  bar.innerHTML = html;
+}
+
 async function sidebarBulkDelete() {
   if (!confirm('Delete ' + selectedIds.size + ' experiments? This cannot be undone.')) return;
   const ids = [...selectedIds];
@@ -1548,17 +1598,23 @@ async function loadStats() {
   if (statsEl) {
     const timeAgo = s.most_recent ? fmtTimeAgo(s.most_recent) : '--';
     statsEl.innerHTML = `
-      <div class="stat"><div class="num">${s.total}</div><div class="label">Total Runs</div><div class="stat-hint">All experiments tracked in this project</div></div>
-      <div class="stat"><div class="num status-done">${s.done}</div><div class="label">Done</div><div class="stat-hint">Completed successfully</div></div>
-      <div class="stat"><div class="num status-failed">${s.failed}</div><div class="label">Failed</div><div class="stat-hint">Ended with an error</div></div>
-      <div class="stat"><div class="num status-running">${s.running}</div><div class="label">Running</div><div class="stat-hint">Currently in progress</div></div>
-      <div class="stat"><div class="num">${s.success_rate}%</div><div class="label">Success Rate</div><div class="stat-hint">done / total</div></div>
-      <div class="stat"><div class="num">${fmtDur(s.avg_duration_s)}</div><div class="label">Avg Duration</div><div class="stat-hint">Mean run time (completed only)</div></div>
-      <div class="stat"><div class="num">${timeAgo}</div><div class="label">Latest Run</div><div class="stat-hint">Time since most recent experiment</div></div>
-      <div class="stat"><div class="num">${fmtDur(s.longest_run_s)}</div><div class="label">Longest Run</div><div class="stat-hint">Maximum run duration</div></div>
-      <div class="stat"><div class="num">${s.unique_tags}</div><div class="label">Tags</div><div class="stat-hint">Unique tags across all experiments</div></div>
-      <div class="stat"><div class="num">${s.total_artifacts}</div><div class="label">Artifacts</div><div class="stat-hint">Total artifacts saved</div></div>
-      <div class="stat"><div class="num">${s.unique_branches}</div><div class="label">Branches</div><div class="stat-hint">Unique git branches used</div></div>
+      <div class="stats-label">Runs</div>
+      <div class="stats-row runs">
+        <div class="stat"><div class="num">${s.total}</div><div class="label">Total Runs</div><div class="stat-hint">All experiments tracked in this project</div></div>
+        <div class="stat"><div class="num status-done">${s.done}</div><div class="label">Done</div><div class="stat-hint">Completed successfully</div></div>
+        <div class="stat"><div class="num status-failed">${s.failed}</div><div class="label">Failed</div><div class="stat-hint">Ended with an error</div></div>
+        <div class="stat"><div class="num status-running">${s.running}</div><div class="label">Running</div><div class="stat-hint">Currently in progress</div></div>
+      </div>
+      <div class="stats-label">Additional Stats</div>
+      <div class="stats-row additional">
+        <div class="stat"><div class="num">${s.success_rate}%</div><div class="label">Success Rate</div><div class="stat-hint">done / total</div></div>
+        <div class="stat"><div class="num">${fmtDur(s.avg_duration_s)}</div><div class="label">Avg Duration</div><div class="stat-hint">Mean run time (completed only)</div></div>
+        <div class="stat"><div class="num">${timeAgo}</div><div class="label">Latest Run</div><div class="stat-hint">Time since most recent experiment</div></div>
+        <div class="stat"><div class="num">${fmtDur(s.longest_run_s)}</div><div class="label">Longest Run</div><div class="stat-hint">Maximum run duration</div></div>
+        <div class="stat"><div class="num">${s.unique_tags}</div><div class="label">Tags</div><div class="stat-hint">Unique tags across all experiments</div></div>
+        <div class="stat"><div class="num">${s.total_artifacts}</div><div class="label">Artifacts</div><div class="stat-hint">Total artifacts saved</div></div>
+        <div class="stat"><div class="num">${s.unique_branches}</div><div class="label">Branches</div><div class="stat-hint">Unique git branches used</div></div>
+      </div>
     `;
   }
   renderStatusChips();
@@ -1569,6 +1625,15 @@ async function loadExperiments() {
   allExperiments = await api(url);
   renderExperiments();
   renderExpList();
+}
+
+function onRowClick(id) {
+  if (clickTimer) clearTimeout(clickTimer);
+  clickTimer = setTimeout(() => { clickTimer = null; showDetail(id); }, 250);
+}
+
+function cancelRowClick() {
+  if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
 }
 
 function renderExpRow(e) {
@@ -1596,18 +1661,18 @@ function renderExpRow(e) {
     if (added || removed) codeStatHtml += ' <span class="lines-added">+' + added + '</span> <span class="lines-removed">-' + removed + '</span>';
     codeStatHtml += '</span>';
   }
-  return `<tr class="${rowCls}" onclick="showDetail('${e.id}')">
+  return `<tr class="${rowCls}" onclick="onRowClick('${e.id}')">
     <td onclick="event.stopPropagation()"><button class="pin-btn${isPinned?' pinned':''}" onclick="togglePin('${e.id}')" title="${isPinned?'Unpin':'Pin'}">${isPinned?'\u2605':'\u2606'}</button></td>
     <td onclick="event.stopPropagation()">
       <input type="checkbox" ${isSelected?'checked':''} onclick="toggleSelection('${e.id}')" title="Select" style="cursor:pointer">
     </td>
     <td>${e.id.slice(0,6)}</td>
     <td>
-      <span class="editable-name" ondblclick="event.stopPropagation();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}</span>
+      <span class="editable-name" ondblclick="event.stopPropagation();cancelRowClick();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}</span>
     </td>
     <td class="status-${e.status}">${e.status}</td>
-    <td class="tags-cell" ondblclick="event.stopPropagation();startInlineTag('${e.id}',this)">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
-    <td class="notes-cell-expanded" title="${esc(e.notes||'')}" ondblclick="event.stopPropagation();startInlineNote('${e.id}',this)">${notesPreview}</td>
+    <td class="tags-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineTag('${e.id}',this)">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
+    <td class="notes-cell-expanded" title="${esc(e.notes||'')}" ondblclick="event.stopPropagation();cancelRowClick();startInlineNote('${e.id}',this)">${notesPreview}</td>
     <td style="font-size:12px">${metricsHtml || '<span style="color:var(--muted)">--</span>'}</td>
     <td>${codeStatHtml}</td>
     <td>${fmtDt(e.created_at)}</td>
@@ -1620,6 +1685,7 @@ function renderExperiments() {
   if (!tbody) return;
   renderTagFilterBar();
   updateSortHeaders();
+  renderTableActionsBar();
 
   if (!groupBy) {
     tbody.innerHTML = exps.map(renderExpRow).join('');
@@ -1667,7 +1733,10 @@ function startInlineRename(id, el) {
   input.focus();
   input.select();
 
+  let saved = false;
   async function doRename() {
+    if (saved) return;
+    saved = true;
     const newName = input.value.trim();
     if (newName && newName !== currentName) {
       const r = await fetch('/api/experiment/' + id + '/rename', {
@@ -1676,12 +1745,19 @@ function startInlineRename(id, el) {
       });
       const d = await r.json();
       if (d.ok) {
-        loadExperiments();
-        if (currentDetailId === id) showDetail(id);
+        const exp = allExperiments.find(e => e.id === id);
+        if (exp) exp.name = newName;
+        renderExperiments();
+        renderExpList();
+        if (currentDetailId === id) {
+          const nameEl = document.getElementById('detail-name');
+          if (nameEl) nameEl.textContent = newName;
+        }
         return;
       }
     }
-    loadExperiments();
+    renderExperiments();
+    renderExpList();
   }
 
   input.addEventListener('blur', doRename);
@@ -1717,8 +1793,9 @@ function startInlineTag(id, el) {
           body: JSON.stringify({tag: t})
         });
         tags.splice(i, 1);
+        if (exp) exp.tags = [...tags];
         render();
-        loadExperiments();
+        renderExpList();
       };
       chip.appendChild(x);
       container.appendChild(chip);
@@ -1738,12 +1815,13 @@ function startInlineTag(id, el) {
             body: JSON.stringify({tag: val})
           });
           tags.push(val);
+          if (exp) exp.tags = [...tags];
           input.value = '';
           render();
-          loadExperiments();
+          renderExpList();
         }
       }
-      if (ev.key === 'Escape') { loadExperiments(); }
+      if (ev.key === 'Escape') { renderExperiments(); renderExpList(); }
     });
     container.appendChild(input);
     setTimeout(() => input.focus(), 0);
@@ -1766,18 +1844,27 @@ function startInlineNote(id, el) {
   el.appendChild(textarea);
   textarea.focus();
 
+  let saved = false;
   async function doSave() {
+    if (saved) return;
+    saved = true;
     const newNotes = textarea.value.trim();
     await fetch('/api/experiment/' + id + '/edit-notes', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({notes: newNotes})
     });
-    loadExperiments();
+    if (exp) exp.notes = newNotes;
+    renderExperiments();
+    renderExpList();
+    if (currentDetailId === id) {
+      const notesEl = document.getElementById('detail-notes');
+      if (notesEl) notesEl.innerHTML = newNotes ? '<div class="notes-display">'+esc(newNotes)+'<button class="notes-edit-btn" onclick="editNotes(\''+id+'\')">edit</button></div>' : '<span style="color:var(--muted)">none</span>';
+    }
   }
   textarea.addEventListener('blur', doSave);
   textarea.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter' && ev.ctrlKey) { ev.preventDefault(); textarea.blur(); }
-    if (ev.key === 'Escape') { loadExperiments(); }
+    if (ev.key === 'Escape') { saved = true; renderExperiments(); renderExpList(); }
   });
 }
 
@@ -1984,10 +2071,14 @@ async function showDetail(id) {
           <button class="action-btn" onclick="renameExp('${exp.id}')">Rename</button>
           <button class="action-btn" onclick="addTagUI('${exp.id}')">+ Tag</button>
           <button class="action-btn" onclick="addNoteUI('${exp.id}')">+ Note</button>
-          <button class="action-btn primary" onclick="exportExp('${exp.id}')">Export</button>
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name).replace(/'/g,"\\'")}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
         </div>
+      </div>
+
+      <div class="detail-export-bar">
+        <button class="action-btn primary" onclick="exportExp('${exp.id}')">Export</button>
+        <div id="export-container"></div>
       </div>
 
       <div class="tabs" id="detail-tabs">
@@ -2031,7 +2122,6 @@ async function showDetail(id) {
 
       <div id="detail-tab-timeline" style="display:none"></div>
       <div id="detail-tab-compare-within" style="display:none"></div>
-      <div id="export-container" style="margin-top:16px"></div>
     </div>
   `;
 
@@ -2484,10 +2574,18 @@ async function loadTimeline(expId, filter) {
 
     } else if (ev.event_type === 'var_set') {
       varState[ev.key] = ev.value;
-      const valStr = String(ev.value).slice(0, 60);
+      let cleanVal = String(ev.value);
+      if (cleanVal.startsWith(ev.key + ' = ')) {
+        cleanVal = cleanVal.slice(ev.key.length + 3);
+      }
+      const valStr = cleanVal.slice(0, 60);
       let prevHtml = '';
       if (ev.prev_value !== null && ev.prev_value !== undefined) {
-        prevHtml = ' <span class="tl-var-arrow">&larr;</span> <span style="color:var(--muted);text-decoration:line-through">' + esc(String(ev.prev_value).slice(0,40)) + '</span>';
+        let cleanPrev = String(ev.prev_value);
+        if (cleanPrev.startsWith(ev.key + ' = ')) {
+          cleanPrev = cleanPrev.slice(ev.key.length + 3);
+        }
+        prevHtml = ' <span class="tl-var-arrow">&larr;</span> <span style="color:var(--muted);text-decoration:line-through">' + esc(cleanPrev.slice(0,40)) + '</span>';
       }
       html += '<div class="' + cls + '">';
       html += '<div class="tl-seq">' + ev.seq + '</div>';
