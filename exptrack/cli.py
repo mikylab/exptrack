@@ -364,6 +364,22 @@ def cmd_rm(args):
 
 def cmd_clean(args):
     conn = get_db()
+
+    # --baselines: wipe code_baselines table (next run re-records full code)
+    if getattr(args, "baselines", False):
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM code_baselines").fetchone()[0]
+        except Exception:
+            n = 0
+        if not n:
+            print(dim("No code baselines stored.")); return
+        print(f"Found {n} code baseline(s).")
+        if input("Delete all code baselines? [y/N] ").lower() == "y":
+            conn.execute("DELETE FROM code_baselines")
+            conn.commit()
+            print(col(f"Cleared {n} code baseline(s).", G))
+        return
+
     rows = conn.execute("SELECT id, name FROM experiments WHERE status='failed'").fetchall()
     if not rows: print(dim("No failed experiments.")); return
     print(f"Found {len(rows)} failed:")
@@ -835,7 +851,9 @@ def main():
     p_note.add_argument("id"); p_note.add_argument("text")
 
     sub.add_parser("rm").add_argument("id")
-    sub.add_parser("clean")
+    p_clean = sub.add_parser("clean")
+    p_clean.add_argument("--baselines", action="store_true",
+                         help="Delete code baselines (next run re-records full code)")
 
     p_ui = sub.add_parser("ui")
     p_ui.add_argument("--port", type=int, default=7331)
