@@ -6,12 +6,55 @@ Local-first experiment tracker. Zero changes to your existing scripts.
 
 ## Installation
 
+exptrack has **zero external dependencies** — it uses only the Python standard
+library (sqlite3, argparse, json, etc.). No requirements file is needed.
+
 ```bash
 pip install -e /path/to/exptrack
 ```
 
 **Important:** Install using the same Python that your tools use. If you use Jupyter,
 install into the Jupyter kernel's Python (see [Notebook setup](#notebooks) below).
+
+### Installing in a virtual environment (recommended)
+
+```bash
+# Create and activate a venv in your project
+cd your_project/
+python -m venv .venv
+source .venv/bin/activate        # Linux/macOS
+# .venv\Scripts\activate         # Windows
+
+# Install exptrack into the venv
+pip install -e /path/to/exptrack
+
+# Now 'exptrack' CLI and 'import exptrack' both work in this venv
+exptrack init
+```
+
+All scripts and notebooks should run inside this activated venv so they can
+find exptrack. If you use Jupyter with a venv, register the venv as a kernel:
+
+```bash
+source .venv/bin/activate
+pip install ipykernel
+python -m ipykernel install --user --name=myproject
+```
+
+Then select the "myproject" kernel in Jupyter. This ensures `import exptrack`
+works in your notebooks.
+
+### Does exptrack affect other packages?
+
+No. exptrack only activates when you explicitly use it:
+
+- **`exptrack run`** / **`python -m exptrack`**: Patches argparse temporarily
+  for the wrapped script only. The patch lives in that process and is gone when
+  the script exits. Other Python processes are not affected.
+- **`%load_ext exptrack`** / **`exptrack.notebook.start()`**: Registers an
+  IPython hook in the current notebook session only.
+- **`import exptrack`**: Does nothing on its own — just makes the `Experiment`
+  class available. No patches, no hooks, no side effects.
 
 ---
 
