@@ -187,7 +187,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         params = (status, limit) if status else (limit,)
         query = f"""
             SELECT id, project, name, status, created_at, duration_s,
-                   git_branch, git_commit, tags, notes
+                   git_branch, git_commit, tags, notes, output_dir
             FROM experiments {where}
             ORDER BY created_at DESC LIMIT ?
         """
@@ -212,6 +212,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "git_commit": r["git_commit"],
                 "tags": json.loads(r["tags"] or "[]"),
                 "notes": r["notes"] or "",
+                "output_dir": r["output_dir"] or "",
                 "metrics": {m["key"]: m["value"] for m in metrics},
                 "params": {p["key"]: json.loads(p["value"]) for p in ps},
             })
@@ -251,6 +252,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "python_ver": exp["python_ver"],
             "notes": exp["notes"],
             "tags": json.loads(exp["tags"] or "[]"),
+            "output_dir": exp["output_dir"] or "",
             "params": {p["key"]: json.loads(p["value"]) for p in params},
             "metrics": [{
                 "key": m["key"], "last": m["last_v"],
@@ -330,14 +332,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_rename(self, exp_id, body):
         conn = get_db()
-        exp = self._find_exp(exp_id)
+        exp = self._find_exp(exp_id, "id, name")
         if not exp:
             return {"error": "not found"}
         new_name = body.get("name", "").strip()
         if not new_name:
             return {"error": "empty name"}
+        old_name = exp["name"]
         conn.execute("UPDATE experiments SET name=?, updated_at=? WHERE id=?",
                      (new_name, datetime.now(timezone.utc).isoformat(), exp["id"]))
+        from exptrack.core.db import rename_output_folder
+        rename_output_folder(conn, exp["id"], old_name, new_name)
         conn.commit()
         return {"ok": True, "name": new_name}
 
@@ -657,6 +662,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "hostname": exp["hostname"],
             "tags": json.loads(exp["tags"] or "[]"),
             "notes": exp["notes"],
+            "output_dir": exp["output_dir"] or "",
             "params": user_params,
             "variables": variables,
             "code_changes": code_changes,
