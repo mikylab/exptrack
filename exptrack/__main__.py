@@ -58,6 +58,14 @@ def main():
     # Patch matplotlib.savefig so saved plots auto-register as artifacts
     patch_savefig(exp)
 
+    # Protect artifacts from previous runs that might be overwritten
+    if conf.get("protect_on_rerun", True):
+        from .core.artifact_protection import protect_previous_artifacts
+        protected = protect_previous_artifacts(exp.id, str(script_path))
+        if protected:
+            print(f"[exptrack] Archived {len(protected)} artifact(s) from previous runs",
+                  file=sys.stderr)
+
     # Record start time for auto-detecting new output files
     start_ts = exp._start
 

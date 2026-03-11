@@ -36,9 +36,8 @@ def patch_savefig(exp: "Experiment"):
     _savefig_in_progress = [False]
 
     def _namespace_and_save(fname, save_fn, *args, **kwargs):
-        """Save the file, copy to experiment output dir, and register artifact."""
+        """Save the file and register as artifact (reference-only, no copy)."""
         from pathlib import Path as _P
-        import shutil
         if _savefig_in_progress[0]:
             return save_fn(fname, *args, **kwargs)
         _savefig_in_progress[0] = True
@@ -67,13 +66,6 @@ def patch_savefig(exp: "Experiment"):
                         if candidate.exists():
                             orig_path = candidate
                             break
-
-            try:
-                out_dir = cur_exp.output_path(orig_path.name)
-                if out_dir.resolve() != orig_path:
-                    shutil.copy2(str(orig_path), str(out_dir))
-            except Exception:
-                pass
 
             art_seq = None
             try:
