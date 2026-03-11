@@ -974,8 +974,14 @@ def patch_savefig(exp: "Experiment"):
                 key=orig_path.name,
                 value=str(orig_path),
             )
-            # Register artifact with experiment name as context
-            label = f"{cur_exp.name}/{orig_path.name}" if cur_exp.name else orig_path.name
+            # Register artifact with experiment name and figure title as context
+            fig_title = _nb_state.pop("_last_fig_title", "")
+            if fig_title:
+                label = f"{fig_title} ({orig_path.name})"
+            elif cur_exp.name:
+                label = f"{cur_exp.name}/{orig_path.name}"
+            else:
+                label = orig_path.name
             cur_exp.log_artifact(str(orig_path), label=label, timeline_seq=art_seq)
         except Exception as _e:
             import traceback
@@ -987,6 +993,19 @@ def patch_savefig(exp: "Experiment"):
         return _namespace_and_save(fname, _orig_plt_savefig, *args, **kwargs)
 
     def _hooked_fig_savefig(self_fig, fname, *args, **kwargs):
+        # Capture figure title/label for better artifact naming
+        try:
+            fig_title = self_fig._suptitle.get_text() if self_fig._suptitle else ""
+            if not fig_title:
+                for ax in self_fig.axes:
+                    t = ax.get_title()
+                    if t:
+                        fig_title = t
+                        break
+            if fig_title:
+                _nb_state["_last_fig_title"] = fig_title
+        except Exception:
+            pass
         return _namespace_and_save(fname, lambda f, *a, **kw: _orig_fig_savefig(self_fig, f, *a, **kw), *args, **kwargs)
 
     plt.savefig = _hooked_plt_savefig

@@ -90,6 +90,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/experiment/") and path.endswith("/delete"):
             exp_id = path.split("/")[-2]
             self._json_response(self._api_delete(exp_id))
+        elif path.startswith("/api/experiment/") and path.endswith("/artifact"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_add_artifact(exp_id, body))
+        elif path == "/api/bulk-delete":
+            self._json_response(self._api_bulk_delete(body))
+        elif path == "/api/bulk-export":
+            self._json_response(self._api_bulk_export(body))
         else:
             self.send_error(404)
 
@@ -131,7 +138,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         params = (status, limit) if status else (limit,)
         query = f"""
             SELECT id, project, name, status, created_at, duration_s,
-                   git_branch, git_commit, tags
+                   git_branch, git_commit, tags, notes
             FROM experiments {where}
             ORDER BY created_at DESC LIMIT ?
         """
@@ -155,6 +162,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "git_branch": r["git_branch"],
                 "git_commit": r["git_commit"],
                 "tags": json.loads(r["tags"] or "[]"),
+                "notes": r["notes"] or "",
                 "metrics": {m["key"]: m["value"] for m in metrics},
                 "params": {p["key"]: json.loads(p["value"]) for p in ps},
             })
@@ -302,6 +310,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
         conn.commit()
         return {"ok": True}
 
+
+    def _api_add_artifact(self, exp_id, body):
+        conn = get_db()
+        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        label = body.get("label", "").strip()
+        path = body.get("path", "").strip()
+        if not label and not path:
+            return {"error": "provide label or path"}
+        if not label:
+            label = Path(path).name
+        ts = __import__('datetime').datetime.utcnow().isoformat()
+        conn.execute(
+            "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
+            (exp["id"], label, path, ts)
+        )
+        conn.commit()
+        return {"ok": True, "label": label, "path": path}
+
+    def _api_bulk_delete(self, body):
+        ids = body.get("ids", [])
+        if not ids:
+            return {"error": "no ids provided"}
+        conn = get_db()
+        deleted = 0
+        for exp_id in ids:
+            exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
+                               (exp_id + "%",)).fetchone()
+            if exp:
+                eid = exp["id"]
+                conn.execute("DELETE FROM metrics WHERE exp_id=?", (eid,))
+                conn.execute("DELETE FROM params WHERE exp_id=?", (eid,))
+                conn.execute("DELETE FROM artifacts WHERE exp_id=?", (eid,))
+                conn.execute("DELETE FROM timeline WHERE exp_id=?", (eid,))
+                conn.execute("DELETE FROM experiments WHERE id=?", (eid,))
+                deleted += 1
+        conn.commit()
+        return {"ok": True, "deleted": deleted}
+
+    def _api_bulk_export(self, body):
+        ids = body.get("ids", [])
+        fmt = body.get("format", "json")
+        if not ids:
+            return {"error": "no ids provided"}
+        results = []
+        for exp_id in ids:
+            data = self._api_export(exp_id, {"format": fmt})
+            if not data.get("error"):
+                results.append(data)
+        return results
 
     def _api_timeline(self, exp_id, qs):
         conn = get_db()
@@ -497,6 +557,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     --bg: #faf9f7; --fg: #1a1a1a; --muted: #777; --border: #d0d0d0;
     --green: #2d7d46; --red: #c0392b; --yellow: #b8860b; --blue: #2c5aa0;
     --purple: #7c3aed; --card-bg: #fff; --code-bg: #f5f3f0;
+    --tl-cell: #2c5aa0; --tl-var: #7c3aed; --tl-artifact: #2d7d46;
+    --tl-metric: #d4820f; --tl-obs: #999;
   }
   body {
     font-family: 'IBM Plex Mono', monospace;
@@ -720,6 +782,43 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     transform: translateX(-50%); font-size: 11px; white-space: nowrap;
   }
   .tooltip:hover .tooltip-text { visibility: visible; }
+  /* Side panel layout */
+  .layout-side { display: flex; gap: 0; }
+  .layout-side #list-view { flex: 1; min-width: 0; }
+  .layout-side #detail-panel { width: 55%; min-width: 500px; border-left: 1px solid var(--border); max-height: calc(100vh - 140px); overflow-y: auto; position: sticky; top: 28px; }
+  .layout-side #detail-panel .detail { margin-top: 0; border: none; border-radius: 0; }
+  .layout-mode-btn { font-family: inherit; font-size: 12px; background: var(--code-bg); border: 1px solid var(--border); padding: 4px 10px; cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .layout-mode-btn:hover { background: var(--border); color: var(--fg); }
+  .layout-mode-btn.active { background: var(--fg); color: var(--bg); }
+  /* Select mode / bulk actions */
+  .bulk-bar { display: flex; gap: 8px; align-items: center; padding: 8px 16px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 12px; }
+  .bulk-bar .bulk-count { font-weight: 600; }
+  .bulk-bar button { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 12px; cursor: pointer; border-radius: 3px; background: var(--card-bg); }
+  .bulk-bar button.danger { color: var(--red); border-color: var(--red); }
+  .bulk-bar button.danger:hover { background: var(--red); color: #fff; }
+  /* Editable name */
+  .editable-name { cursor: default; padding: 2px 4px; border-radius: 3px; }
+  .editable-name:hover { background: rgba(44,90,160,0.08); }
+  .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 2px 6px; border-radius: 3px; background: var(--card-bg); width: 100%; max-width: 300px; }
+  /* Tag/note columns */
+  .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+  .tags-cell .tag { font-size: 11px; padding: 1px 6px; }
+  /* Timeline enhanced colors */
+  .tl-event.tl-cell_exec { border-left-color: var(--tl-cell); border-left-width: 4px; }
+  .tl-event.tl-var_set { border-left-color: var(--tl-var); border-left-width: 4px; }
+  .tl-event.tl-artifact { border-left-color: var(--tl-artifact); border-left-width: 4px; background: rgba(45,125,70,0.03); }
+  .tl-event.tl-metric { border-left-color: var(--tl-metric); border-left-width: 4px; }
+  .tl-event.tl-observational { border-left-color: var(--tl-obs); border-left-width: 2px; opacity: 0.6; }
+  .tl-type-label { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-right: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .tl-type-label.tl-type-cell_exec { background: rgba(44,90,160,0.12); color: var(--tl-cell); }
+  .tl-type-label.tl-type-var_set { background: rgba(124,58,237,0.12); color: var(--tl-var); }
+  .tl-type-label.tl-type-artifact { background: rgba(45,125,70,0.12); color: var(--tl-artifact); }
+  .tl-type-label.tl-type-metric { background: rgba(212,130,15,0.12); color: var(--tl-metric); }
+  .tl-type-label.tl-type-observational { background: rgba(153,153,153,0.12); color: var(--tl-obs); }
+  /* Artifact add form */
+  .artifact-add-form { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+  .artifact-add-form input { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; background: var(--card-bg); }
+  .artifact-add-form button { font-family: inherit; font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); background: var(--code-bg); cursor: pointer; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -727,6 +826,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div class="header">
   <h1>exptrack</h1>
   <div class="header-actions">
+    <button class="layout-mode-btn" id="layout-bottom-btn" onclick="setLayout('bottom')" title="Detail panel below table">&#9881; Below</button>
+    <button class="layout-mode-btn" id="layout-side-btn" onclick="setLayout('side')" title="Detail panel on the side">&#9881; Side</button>
     <button class="help-btn" onclick="toggleHelp()">? Docs</button>
   </div>
 </div>
@@ -792,11 +893,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 </div>
 
 <div id="view">
-  <div id="list-view">
-    <div class="filters" id="filters"></div>
-    <table id="exp-table"><thead><tr>
-      <th class="cb-col"></th><th>ID</th><th>Name</th><th>Status</th><th>Started</th><th>Duration</th><th>Branch</th>
-    </tr></thead><tbody id="exp-body"></tbody></table>
+  <div id="main-layout">
+    <div id="list-view">
+      <div class="filters" id="filters"></div>
+      <div id="bulk-bar-container"></div>
+      <table id="exp-table"><thead><tr>
+        <th class="cb-col"></th><th>ID</th><th>Name</th><th>Status</th><th>Tags</th><th>Notes</th><th>Started</th><th>Duration</th><th>Branch</th>
+      </tr></thead><tbody id="exp-body"></tbody></table>
+    </div>
+    <div id="detail-panel"></div>
   </div>
   <div id="compare-view" style="display:none">
     <div class="compare-input">
@@ -809,14 +914,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<div id="detail-panel"></div>
-
 <script>
 let currentFilter = '';
 let searchQuery = '';
 let charts = {};
 let selectedForCompare = new Set();
+let selectedForBulk = new Set();
+let selectMode = false;
 let allExperiments = [];
+let layoutMode = localStorage.getItem('exptrack-layout') || 'bottom';
 
 async function api(path) {
   const r = await fetch(path);
@@ -841,6 +947,123 @@ function toggleHelp() {
   document.getElementById('help-panel').classList.toggle('visible');
 }
 
+// ── Layout mode ──────────────────────────────────────────────────────────────
+function setLayout(mode) {
+  layoutMode = mode;
+  localStorage.setItem('exptrack-layout', mode);
+  const layout = document.getElementById('main-layout');
+  document.getElementById('layout-bottom-btn').classList.toggle('active', mode === 'bottom');
+  document.getElementById('layout-side-btn').classList.toggle('active', mode === 'side');
+  if (mode === 'side') {
+    layout.classList.add('layout-side');
+  } else {
+    layout.classList.remove('layout-side');
+  }
+}
+
+// ── Select/bulk mode ─────────────────────────────────────────────────────────
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  if (!selectMode) selectedForBulk.clear();
+  renderBulkBar();
+  renderExperiments();
+}
+
+function toggleBulkSelect(id) {
+  if (selectedForBulk.has(id)) selectedForBulk.delete(id);
+  else selectedForBulk.add(id);
+  renderBulkBar();
+  renderExperiments();
+}
+
+function selectAllVisible() {
+  const visibleExps = getFilteredExperiments();
+  if (selectedForBulk.size === visibleExps.length) {
+    selectedForBulk.clear();
+  } else {
+    visibleExps.forEach(e => selectedForBulk.add(e.id));
+  }
+  renderBulkBar();
+  renderExperiments();
+}
+
+function renderBulkBar() {
+  const container = document.getElementById('bulk-bar-container');
+  if (!selectMode || selectedForBulk.size === 0) {
+    container.innerHTML = '';
+    return;
+  }
+  container.innerHTML = `<div class="bulk-bar">
+    <span class="bulk-count">${selectedForBulk.size} selected</span>
+    <button onclick="bulkExport()">Export</button>
+    <button onclick="bulkCopyPlainText()">Copy as Text</button>
+    <button class="danger" onclick="bulkDelete()">Delete</button>
+    <button onclick="selectedForBulk.clear();renderBulkBar();renderExperiments()">Clear</button>
+  </div>`;
+}
+
+async function bulkDelete() {
+  if (!confirm('Delete ' + selectedForBulk.size + ' experiments? This cannot be undone.')) return;
+  const ids = [...selectedForBulk];
+  const r = await fetch('/api/bulk-delete', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ids})
+  });
+  const d = await r.json();
+  if (d.ok) {
+    selectedForBulk.clear();
+    document.getElementById('detail-panel').innerHTML = '';
+    loadStats();
+    loadExperiments();
+    renderBulkBar();
+  } else alert(d.error || 'Failed');
+}
+
+async function bulkExport() {
+  const ids = [...selectedForBulk];
+  const r = await fetch('/api/bulk-export', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ids, format: 'json'})
+  });
+  const data = await r.json();
+  const text = JSON.stringify(data, null, 2);
+  await navigator.clipboard.writeText(text);
+  alert('Exported ' + data.length + ' experiments to clipboard (JSON)');
+}
+
+async function bulkCopyPlainText() {
+  const ids = [...selectedForBulk];
+  const exps = allExperiments.filter(e => ids.includes(e.id));
+  let lines = [];
+  for (const e of exps) {
+    lines.push(e.name + ' (' + e.id.slice(0,6) + ') [' + e.status + ']');
+    const params = Object.entries(e.params || {}).filter(([k]) => !k.startsWith('_'));
+    if (params.length) lines.push('  Params: ' + params.map(([k,v]) => k + '=' + JSON.stringify(v)).join(', '));
+    const metrics = Object.entries(e.metrics || {});
+    if (metrics.length) lines.push('  Metrics: ' + metrics.map(([k,v]) => k + '=' + (typeof v === 'number' ? v.toFixed(4) : v)).join(', '));
+    if (e.tags && e.tags.length) lines.push('  Tags: ' + e.tags.join(', '));
+    if (e.notes) lines.push('  Notes: ' + e.notes.split('\n')[0].slice(0,80));
+    lines.push('');
+  }
+  await navigator.clipboard.writeText(lines.join('\n'));
+  alert('Copied ' + exps.length + ' experiments to clipboard (plain text)');
+}
+
+function getFilteredExperiments() {
+  let exps = allExperiments;
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    exps = exps.filter(e =>
+      e.name.toLowerCase().includes(q) ||
+      e.id.toLowerCase().includes(q) ||
+      (e.tags || []).some(t => t.toLowerCase().includes(q)) ||
+      Object.keys(e.params || {}).some(k => k.toLowerCase().includes(q)) ||
+      (e.git_branch || '').toLowerCase().includes(q)
+    );
+  }
+  return exps;
+}
+
 async function loadStats() {
   const s = await api('/api/stats');
   document.getElementById('stats').innerHTML = `
@@ -857,6 +1080,7 @@ async function loadStats() {
     <button class="${currentFilter==='failed'?'active':''}" onclick="filterExps('failed')">Failed</button>
     <button class="${currentFilter==='running'?'active':''}" onclick="filterExps('running')">Running</button>
     <input class="search-box" type="text" placeholder="Search name, tag, param..." value="${esc(searchQuery)}" oninput="searchQuery=this.value;renderExperiments()">
+    <button class="${selectMode?'active':''}" style="margin-left:auto" onclick="toggleSelectMode()">${selectMode ? 'Exit Select' : 'Select'}</button>
     <button class="compare-selected ${selectedForCompare.size===2?'visible':''}" onclick="compareSelected()">Compare Selected (${selectedForCompare.size}/2)</button>
   `;
 }
@@ -868,36 +1092,70 @@ async function loadExperiments() {
 }
 
 function renderExperiments() {
-  let exps = allExperiments;
-  if (searchQuery) {
-    const q = searchQuery.toLowerCase();
-    exps = exps.filter(e =>
-      e.name.toLowerCase().includes(q) ||
-      e.id.toLowerCase().includes(q) ||
-      (e.tags || []).some(t => t.toLowerCase().includes(q)) ||
-      Object.keys(e.params || {}).some(k => k.toLowerCase().includes(q)) ||
-      (e.git_branch || '').toLowerCase().includes(q)
-    );
-  }
+  const exps = getFilteredExperiments();
   const tbody = document.getElementById('exp-body');
   tbody.innerHTML = exps.map(e => {
     const metricsPreview = Object.entries(e.metrics || {}).slice(0, 3)
       .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v))
       .join(', ');
-    const isSelected = selectedForCompare.has(e.id);
-    return `<tr class="${isSelected ? 'selected-row' : ''}">
-      <td class="cb-col"><input type="checkbox" ${isSelected?'checked':''} onclick="event.stopPropagation();toggleCompare('${e.id}')" title="Select for compare"></td>
+    const isCompare = selectedForCompare.has(e.id);
+    const isBulk = selectedForBulk.has(e.id);
+    const rowCls = isCompare || isBulk ? 'selected-row' : '';
+    const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
+    const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,40)) : '<span style="color:var(--muted)">--</span>';
+    return `<tr class="${rowCls}">
+      <td class="cb-col">${selectMode
+        ? '<input type="checkbox" '+(isBulk?'checked':'')+' onclick="event.stopPropagation();toggleBulkSelect(\''+e.id+'\')" title="Select for bulk action">'
+        : '<input type="checkbox" '+(isCompare?'checked':'')+' onclick="event.stopPropagation();toggleCompare(\''+e.id+'\')" title="Select for compare">'
+      }</td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.id.slice(0,6)}</td>
-      <td onclick="showDetail('${e.id}')" style="cursor:pointer">
-        ${esc(e.name.slice(0,45))}${e.tags.map(t=>'<span class="tag">#'+esc(t)+'</span>').join('')}
+      <td style="cursor:pointer">
+        <span class="editable-name" onclick="showDetail('${e.id}')" ondblclick="event.stopPropagation();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}</span>
         ${metricsPreview ? '<div class="exp-metrics-preview">' + esc(metricsPreview) + '</div>' : ''}
       </td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer" class="status-${e.status}">${e.status}</td>
+      <td class="tags-cell" onclick="showDetail('${e.id}')" style="cursor:pointer">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
+      <td class="notes-cell" onclick="showDetail('${e.id}')" style="cursor:pointer" title="${esc(e.notes||'')}">${notesPreview}</td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer">${fmtDt(e.created_at)}</td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer">${fmtDur(e.duration_s)}</td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.git_branch||'--'}</td>
     </tr>`;
   }).join('');
+  renderBulkBar();
+}
+
+// ── Inline rename on double-click ────────────────────────────────────────────
+function startInlineRename(id, el) {
+  const currentName = el.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'name-edit-input';
+  input.value = currentName;
+  el.replaceWith(input);
+  input.focus();
+  input.select();
+
+  async function doRename() {
+    const newName = input.value.trim();
+    if (newName && newName !== currentName) {
+      const r = await fetch('/api/experiment/' + id + '/rename', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: newName})
+      });
+      const d = await r.json();
+      if (d.ok) {
+        loadExperiments();
+        return;
+      }
+    }
+    loadExperiments();
+  }
+
+  input.addEventListener('blur', doRename);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = currentName; input.blur(); }
+  });
 }
 
 function toggleCompare(id) {
@@ -932,7 +1190,7 @@ function filterExps(status) {
 
 function switchTab(tab) {
   document.querySelectorAll('.tabs > .tab').forEach((t,i) => t.classList.toggle('active', i === (tab==='list'?0:1)));
-  document.getElementById('list-view').style.display = tab==='list' ? '' : 'none';
+  document.getElementById('main-layout').style.display = tab==='list' ? '' : 'none';
   document.getElementById('compare-view').style.display = tab==='compare' ? '' : 'none';
   document.getElementById('detail-panel').innerHTML = '';
   if (tab === 'compare') populateCompareDropdowns();
@@ -1001,6 +1259,12 @@ async function showDetail(id) {
   const artRows = exp.artifacts.map(a =>
     `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td></tr>`
   ).join('');
+
+  const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
+    <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:150px">
+    <input type="text" id="art-path-${exp.id}" placeholder="Path (e.g. outputs/model.pt)" style="width:250px">
+    <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
+  </div>`;
 
   // Code changes
   let codeHtml = '';
@@ -1116,7 +1380,9 @@ async function showDetail(id) {
         ${varHtml}
         ${metricRows ? '<h2>Metrics <span class="help-icon" title="Numeric values logged during training. Last = most recent value, Min/Max = range, Steps = number of data points.">?</span></h2><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table>' : ''}
         <div id="charts-container"></div>
-        ${artRows ? '<h2>Artifacts <span class="help-icon" title="Output files auto-captured from plt.savefig() or manually via exptrack.notebook.out(). Badge shows file type.">?</span></h2><table class="params-table"><tr><th>File</th><th>Path</th></tr>'+artRows+'</table>' : ''}
+        <h2>Artifacts <span class="help-icon" title="Output files auto-captured from plt.savefig() or manually added. Badge shows file type.">?</span></h2>
+        ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
+        ${addArtifactForm}
         ${diffHtml ? '<h2>Git Diff <span class="help-icon" title="All uncommitted changes in the repo when this experiment started. This is the traceability link to reproduce exactly what code ran.">?</span> ('+exp.diff_lines+' lines)</h2><div class="diff-view">'+diffHtml+'</div>' : ''}
       </div>
 
@@ -1165,14 +1431,54 @@ async function showDetail(id) {
 
 async function exportExp(id) {
   const container = document.getElementById('export-container');
-  container.innerHTML = '<div class="export-panel"><div class="export-actions"><button class="action-btn" onclick="doExport(\'' + id + '\',\'json\')">JSON</button><button class="action-btn" onclick="doExport(\'' + id + '\',\'markdown\')">Markdown</button><button class="action-btn" onclick="copyExport()">Copy to Clipboard</button><button class="action-btn" onclick="this.closest(\'.export-panel\').remove()">Close</button></div><pre id="export-content">Select a format above...</pre></div>';
+  container.innerHTML = '<div class="export-panel"><div class="export-actions">' +
+    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'json\')">JSON</button>' +
+    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'markdown\')">Markdown</button>' +
+    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'plain\')">Plain Text</button>' +
+    '<button class="action-btn" onclick="copyExport()">Copy to Clipboard</button>' +
+    '<button class="action-btn" onclick="this.closest(\'.export-panel\').remove()">Close</button>' +
+    '</div><pre id="export-content">Select a format above...</pre></div>';
 }
 
 async function doExport(id, fmt) {
-  const data = await api('/api/export/' + id + '?format=' + fmt);
+  const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt));
   const pre = document.getElementById('export-content');
   if (fmt === 'markdown') {
     pre.textContent = data.markdown || JSON.stringify(data, null, 2);
+  } else if (fmt === 'plain') {
+    // Plain text format for easy copying
+    let lines = [];
+    lines.push('Experiment: ' + (data.name || data.data?.name || ''));
+    lines.push('ID: ' + (data.id || data.data?.id || ''));
+    lines.push('Status: ' + (data.status || data.data?.status || ''));
+    const d = data.data || data;
+    if (d.created_at) lines.push('Created: ' + d.created_at);
+    if (d.duration_s) lines.push('Duration: ' + fmtDur(d.duration_s));
+    if (d.git_branch) lines.push('Git: ' + d.git_branch + ' @ ' + (d.git_commit || ''));
+    if (d.tags && d.tags.length) lines.push('Tags: ' + d.tags.join(', '));
+    if (d.notes) lines.push('Notes: ' + d.notes);
+    lines.push('');
+    const params = d.params || {};
+    const userParams = Object.entries(params).filter(([k]) => !k.startsWith('_'));
+    if (userParams.length) {
+      lines.push('Parameters:');
+      userParams.forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
+      lines.push('');
+    }
+    const ms = d.metrics_series || {};
+    if (Object.keys(ms).length) {
+      lines.push('Metrics:');
+      Object.entries(ms).forEach(([k,pts]) => {
+        const last = pts.length ? pts[pts.length-1].value : '--';
+        lines.push('  ' + k + ' = ' + last + ' (' + pts.length + ' steps)');
+      });
+      lines.push('');
+    }
+    if (d.artifacts && d.artifacts.length) {
+      lines.push('Artifacts:');
+      d.artifacts.forEach(a => lines.push('  ' + a.label + ': ' + a.path));
+    }
+    pre.textContent = lines.join('\n');
   } else {
     pre.textContent = JSON.stringify(data, null, 2);
   }
@@ -1323,6 +1629,21 @@ async function deleteExp(id, name) {
   } else alert(d.error || 'Failed');
 }
 
+// ── Add artifact ─────────────────────────────────────────────────────────────
+
+async function addArtifact(id) {
+  const label = document.getElementById('art-label-' + id).value.trim();
+  const path = document.getElementById('art-path-' + id).value.trim();
+  if (!label && !path) { alert('Provide a label or path'); return; }
+  const r = await fetch('/api/experiment/' + id + '/artifact', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({label, path})
+  });
+  const d = await r.json();
+  if (d.ok) { showDetail(id); }
+  else alert(d.error || 'Failed');
+}
+
 // ── Detail sub-tabs ──────────────────────────────────────────────────────────
 
 let currentDetailTab = 'overview';
@@ -1378,9 +1699,11 @@ async function loadTimeline(expId, filter) {
     const cls = 'tl-event tl-' + ev.event_type;
     const ts = fmtDt(ev.ts);
     const icons = {cell_exec:'&gt;&gt;', var_set:'=', artifact:'&#9633;', metric:'#', observational:'..'};
-    const colors = {cell_exec:'var(--blue)', var_set:'var(--purple)', artifact:'var(--green)', metric:'var(--yellow)', observational:'var(--muted)'};
+    const colors = {cell_exec:'var(--tl-cell)', var_set:'var(--tl-var)', artifact:'var(--tl-artifact)', metric:'var(--tl-metric)', observational:'var(--tl-obs)'};
+    const typeLabels = {cell_exec:'code', var_set:'var', artifact:'artifact', metric:'metric', observational:'observe'};
     const icon = icons[ev.event_type] || '?';
     const iconColor = colors[ev.event_type] || 'var(--fg)';
+    const typeLabel = '<span class="tl-type-label tl-type-' + ev.event_type + '">' + (typeLabels[ev.event_type]||ev.event_type) + '</span>';
 
     if (ev.event_type === 'cell_exec' || ev.event_type === 'observational') {
       const info = ev.value || {};
@@ -1398,7 +1721,7 @@ async function loadTimeline(expId, filter) {
       html += '<div class="tl-seq">' + ev.seq + '</div>';
       html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
       html += '<div class="tl-body">';
-      html += '<strong>' + esc(ev.key||'') + '</strong>' + badges + viewSrcBtn;
+      html += typeLabel + '<strong>' + esc(ev.key||'') + '</strong>' + badges + viewSrcBtn;
       html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
       if (preview) html += '<div class="tl-code-preview">' + esc(preview) + '</div>';
       if (info.output_preview) {
@@ -1427,7 +1750,7 @@ async function loadTimeline(expId, filter) {
       html += '<div class="tl-seq">' + ev.seq + '</div>';
       html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
       html += '<div class="tl-body">';
-      html += '<strong style="color:var(--purple)">' + esc(ev.key) + '</strong> = ' + esc(valStr) + prevHtml;
+      html += typeLabel + '<strong style="color:var(--tl-var)">' + esc(ev.key) + '</strong> = ' + esc(valStr) + prevHtml;
       html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
       html += '</div></div>';
 
@@ -1436,7 +1759,7 @@ async function loadTimeline(expId, filter) {
       html += '<div class="tl-seq">' + ev.seq + '</div>';
       html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
       html += '<div class="tl-body">';
-      html += '<strong style="color:var(--green)">artifact:</strong> ' + artifactTypeBadge(String(ev.value||'')) + ' ' + esc(ev.key||'') + ' &rarr; ' + esc(String(ev.value||'').slice(0,60));
+      html += typeLabel + artifactTypeBadge(String(ev.value||'')) + ' <strong>' + esc(ev.key||'') + '</strong> &rarr; ' + esc(String(ev.value||'').slice(0,60));
       html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
       const ctxKeys = Object.keys(varState).filter(k => !k.startsWith('_'));
       if (ctxKeys.length) {
@@ -1450,7 +1773,7 @@ async function loadTimeline(expId, filter) {
       html += '<div class="tl-seq">' + ev.seq + '</div>';
       html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
       html += '<div class="tl-body">';
-      html += '<strong style="color:var(--yellow)">' + esc(ev.key) + '</strong> = ' + ev.value;
+      html += typeLabel + '<strong style="color:var(--tl-metric)">' + esc(ev.key) + '</strong> = ' + ev.value;
       html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
       html += '</div></div>';
     }
@@ -1568,6 +1891,7 @@ async function doWithinCompare(expId) {
 }
 
 // Init
+setLayout(layoutMode);
 loadStats();
 loadExperiments();
 </script>
