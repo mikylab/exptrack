@@ -279,20 +279,24 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .code-changes .change-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
   .code-changes .change-diff { white-space: pre-wrap; }
   .var-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 12px; margin-bottom: 16px; font-size: 12px; }
-  .var-changes td { padding: 2px 8px; border: none; }
-  .var-changes .var-name { color: var(--blue); }
+  .var-changes td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  .var-changes .var-name { color: var(--blue); font-weight: 500; }
+  .var-changes .var-type { color: var(--muted); font-size: 11px; }
+  .var-section-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; }
   .chart-container { max-width: 600px; margin: 16px 0; }
   .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  .compare-input { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
-  .compare-input input {
+  .compare-input { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+  .compare-input select, .compare-input input {
     font-family: inherit; font-size: 12px;
-    border: 1px solid var(--border); padding: 4px 8px; width: 120px;
+    border: 1px solid var(--border); padding: 4px 8px; min-width: 220px;
+    background: var(--card-bg);
   }
   .compare-input button {
     font-family: inherit; font-size: 12px;
     background: var(--fg); color: var(--bg); border: none;
     padding: 4px 12px; cursor: pointer;
   }
+  .compare-input .vs-label { font-weight: 600; color: var(--muted); }
   .differs { color: var(--yellow); font-weight: 600; }
   .tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid var(--border); }
   .tab {
@@ -324,8 +328,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
   <div id="compare-view" style="display:none">
     <div class="compare-input">
-      <span>ID 1:</span><input id="cmp-id1" placeholder="abc123">
-      <span>ID 2:</span><input id="cmp-id2" placeholder="def456">
+      <select id="cmp-id1"><option value="">-- Select experiment 1 --</option></select>
+      <span class="vs-label">vs</span>
+      <select id="cmp-id2"><option value="">-- Select experiment 2 --</option></select>
       <button onclick="doCompare()">Compare</button>
     </div>
     <div id="compare-result"></div>
@@ -409,12 +414,13 @@ function toggleCompare(id) {
   loadExperiments();  // refresh checkboxes
 }
 
-function compareSelected() {
+async function compareSelected() {
   if (selectedForCompare.size !== 2) return;
+  switchTab('compare');
+  await populateCompareDropdowns();
   const ids = [...selectedForCompare];
   document.getElementById('cmp-id1').value = ids[0];
   document.getElementById('cmp-id2').value = ids[1];
-  switchTab('compare');
   doCompare();
 }
 
@@ -429,6 +435,26 @@ function switchTab(tab) {
   document.getElementById('list-view').style.display = tab==='list' ? '' : 'none';
   document.getElementById('compare-view').style.display = tab==='compare' ? '' : 'none';
   document.getElementById('detail-panel').innerHTML = '';
+  if (tab === 'compare') populateCompareDropdowns();
+}
+
+async function populateCompareDropdowns() {
+  const exps = await api('/api/experiments?limit=100');
+  const sel1 = document.getElementById('cmp-id1');
+  const sel2 = document.getElementById('cmp-id2');
+  const prev1 = sel1.value, prev2 = sel2.value;
+  const makeOpts = (exps) => '<option value="">-- Select experiment --</option>' +
+    exps.map(e => `<option value="${e.id}">${e.id.slice(0,6)} | ${esc(e.name.slice(0,35))} | ${e.status} | ${fmtDt(e.created_at)}</option>`).join('');
+  sel1.innerHTML = makeOpts(exps);
+  sel2.innerHTML = makeOpts(exps);
+  // Restore previous selections or pre-fill from checkboxes
+  if (prev1) sel1.value = prev1;
+  if (prev2) sel2.value = prev2;
+  if (!prev1 && !prev2 && selectedForCompare.size === 2) {
+    const ids = [...selectedForCompare];
+    sel1.value = ids[0];
+    sel2.value = ids[1];
+  }
 }
 
 async function showDetail(id) {
@@ -484,14 +510,33 @@ async function showDetail(id) {
     codeHtml += '</div>';
   }
 
-  // Variable changes HTML
+  // Variable changes HTML — categorize into scalars, arrays/tensors, and other
   let varHtml = '';
   if (Object.keys(varChanges).length) {
-    varHtml = '<h2>Variable Changes</h2><div class="var-changes"><table>';
+    const scalars = {}, arrays = {}, other = {};
     for (const [k, v] of Object.entries(varChanges)) {
-      varHtml += `<tr><td class="var-name">${esc(k)}</td><td>= ${esc(JSON.stringify(v))}</td></tr>`;
+      const sv = String(v);
+      if (sv.startsWith('ndarray(') || sv.startsWith('Tensor(') || sv.startsWith('DataFrame(') || sv.startsWith('Series(')) {
+        arrays[k] = v;
+      } else if (sv.startsWith("'") || sv.startsWith('"') || !isNaN(Number(sv)) || sv === 'True' || sv === 'False') {
+        scalars[k] = v;
+      } else {
+        other[k] = v;
+      }
     }
-    varHtml += '</table></div>';
+    varHtml = '<h2>Variables</h2><div class="var-changes">';
+    const renderGroup = (title, vars) => {
+      if (!Object.keys(vars).length) return '';
+      let h = `<div class="var-section-title">${title}</div><table>`;
+      for (const [k, v] of Object.entries(vars)) {
+        h += `<tr><td class="var-name">${esc(k)}</td><td>= ${esc(String(v))}</td></tr>`;
+      }
+      return h + '</table>';
+    };
+    varHtml += renderGroup('Scalars', scalars);
+    varHtml += renderGroup('Arrays & Tensors', arrays);
+    varHtml += renderGroup('Other', other);
+    varHtml += '</div>';
   }
 
   // Diff HTML
@@ -580,31 +625,48 @@ async function doCompare() {
     return;
   }
   const e1 = data.exp1, e2 = data.exp2;
-  // Filter out internal keys from compare view — show only user-facing params
+  // Separate params, vars, and internal keys
   const isUserParam = k => !k.startsWith('_code_change') && k !== '_code_changes' && !k.startsWith('_var/') && k !== '_script_hash';
+  const isVar = k => k.startsWith('_var/');
   const allPKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isUserParam).sort();
+  const allVarKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isVar).sort();
   const allMKeys = [...new Set([...e1.metrics.map(m=>m.key), ...e2.metrics.map(m=>m.key)])].sort();
   const m1 = Object.fromEntries(e1.metrics.map(m => [m.key, m.last]));
   const m2 = Object.fromEntries(e2.metrics.map(m => [m.key, m.last]));
 
+  const n1 = e1.name.length > 25 ? e1.name.slice(0,22) + '...' : e1.name;
+  const n2 = e2.name.length > 25 ? e2.name.slice(0,22) + '...' : e2.name;
+
   let html = `<div class="compare-grid">
-    <div><h2>${e1.name.slice(0,30)}</h2><p class="status-${e1.status}">${e1.status} - ${fmtDur(e1.duration_s)}</p></div>
-    <div><h2>${e2.name.slice(0,30)}</h2><p class="status-${e2.status}">${e2.status} - ${fmtDur(e2.duration_s)}</p></div>
+    <div><h2>${esc(n1)}</h2><p class="status-${e1.status}">${e1.status} - ${fmtDur(e1.duration_s)}</p></div>
+    <div><h2>${esc(n2)}</h2><p class="status-${e2.status}">${e2.status} - ${fmtDur(e2.duration_s)}</p></div>
   </div>`;
 
   if (allPKeys.length) {
-    html += '<h2>Params</h2><table class="params-table"><tr><th>Key</th><th>' + e1.name.slice(0,20) + '</th><th>' + e2.name.slice(0,20) + '</th></tr>';
+    html += '<h2>Params</h2><table class="params-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
     for (const k of allPKeys) {
       const v1 = JSON.stringify(e1.params[k] ?? '--');
       const v2 = JSON.stringify(e2.params[k] ?? '--');
       const cls = v1 !== v2 ? ' class="differs"' : '';
-      html += `<tr><td>${k}</td><td${cls}>${v1}</td><td${cls}>${v2}</td></tr>`;
+      html += `<tr><td>${esc(k)}</td><td${cls}>${esc(v1)}</td><td${cls}>${esc(v2)}</td></tr>`;
+    }
+    html += '</table>';
+  }
+
+  if (allVarKeys.length) {
+    html += '<h2>Variables</h2><table class="params-table"><tr><th>Variable</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
+    for (const k of allVarKeys) {
+      const displayK = k.slice(5); // strip _var/ prefix
+      const v1 = String(e1.params[k] ?? '--');
+      const v2 = String(e2.params[k] ?? '--');
+      const cls = v1 !== v2 ? ' class="differs"' : '';
+      html += `<tr><td class="var-name">${esc(displayK)}</td><td${cls}>${esc(v1)}</td><td${cls}>${esc(v2)}</td></tr>`;
     }
     html += '</table>';
   }
 
   if (allMKeys.length) {
-    html += '<h2>Metrics (last)</h2><table class="metrics-table"><tr><th>Key</th><th>' + e1.name.slice(0,20) + '</th><th>' + e2.name.slice(0,20) + '</th><th>Delta</th></tr>';
+    html += '<h2>Metrics (last)</h2><table class="metrics-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th><th>Delta</th></tr>';
     for (const k of allMKeys) {
       const v1 = m1[k], v2 = m2[k];
       const sv1 = v1 !== undefined ? v1.toFixed(4) : '--';
@@ -614,7 +676,7 @@ async function doCompare() {
         const d = v1 - v2;
         delta = `<span style="color:${d>0?'var(--red)':'var(--green)'}">${d>0?'+':''}${d.toFixed(4)}</span>`;
       }
-      html += `<tr><td>${k}</td><td>${sv1}</td><td>${sv2}</td><td>${delta}</td></tr>`;
+      html += `<tr><td>${esc(k)}</td><td>${sv1}</td><td>${sv2}</td><td>${delta}</td></tr>`;
     }
     html += '</table>';
   }
