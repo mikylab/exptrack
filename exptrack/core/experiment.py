@@ -311,15 +311,34 @@ class Experiment:
         return seq
 
     def log_artifact(self, path: str | Path, label: str = "",
-                     timeline_seq: int = None):
+                     timeline_seq: int = None, content_hash: str = None):
         """Register an output file path (the file itself stays local).
 
         Deduplicates by resolved path — if the same file is already registered
         on this experiment the call is a no-op (prevents double-logging from
         savefig patch + auto-detect).
+
+        Computes a SHA-256 content hash for integrity verification.  For very
+        large files the hash covers only the first ``hash_max_mb`` MB (see
+        config) and is prefixed with ``partial:``.
         """
         resolved = str(Path(str(path)).resolve())
         ts = datetime.now(timezone.utc).isoformat()
+
+        # Compute content hash if not provided and file exists
+        size_bytes = None
+        if content_hash is None:
+            rp = Path(resolved)
+            if rp.is_file():
+                try:
+                    from .hashing import file_hash
+                    from .. import config as _cfg
+                    conf = _cfg.load()
+                    max_bytes = int(conf.get("hash_max_mb", 500)) * 1024 * 1024
+                    content_hash, size_bytes = file_hash(rp, max_bytes=max_bytes)
+                except Exception:
+                    pass
+
         with get_db() as conn:
             existing = conn.execute(
                 "SELECT id FROM artifacts WHERE exp_id=? AND path=?",
@@ -329,9 +348,11 @@ class Experiment:
                 return
             conn.execute(
                 """INSERT INTO artifacts
-                   (exp_id, label, path, created_at, timeline_seq)
-                   VALUES (?,?,?,?,?)""",
-                (self.id, label or Path(path).name, resolved, ts, timeline_seq)
+                   (exp_id, label, path, created_at, timeline_seq,
+                    content_hash, size_bytes)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (self.id, label or Path(path).name, resolved, ts,
+                 timeline_seq, content_hash, size_bytes)
             )
             conn.commit()
 

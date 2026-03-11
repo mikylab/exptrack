@@ -22,7 +22,7 @@ import sys
 
 from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_storage
 from .inspect_cmds import (cmd_ls, cmd_show, cmd_timeline, cmd_diff,
-                           cmd_compare, cmd_history, cmd_export)
+                           cmd_compare, cmd_history, cmd_export, cmd_verify)
 from .mutate_cmds import (cmd_tag, cmd_untag, cmd_note, cmd_edit_note,
                           cmd_rm, cmd_clean, cmd_finish)
 from .pipeline_cmds import (cmd_run_start, cmd_run_finish, cmd_run_fail,
@@ -166,6 +166,12 @@ def main():
 
     sub.add_parser("storage", help="Show data storage breakdown and tips")
 
+    p_verify = sub.add_parser("verify", help="Verify artifact file integrity")
+    p_verify.add_argument("id", nargs="?", default=None,
+                          help="Experiment ID (prefix match), or omit for all")
+    p_verify.add_argument("--backfill", action="store_true",
+                          help="Compute hashes for legacy artifacts missing them")
+
     p_finish = sub.add_parser("finish", help="Manually mark a running experiment as done")
     p_finish.add_argument("id")
 
@@ -196,6 +202,7 @@ def main():
         "note":         cmd_note,
         "edit-note":    cmd_edit_note,
         "export":       cmd_export,
+        "verify":       cmd_verify,
         "rm":           cmd_rm,
         "clean":        cmd_clean,
         "ui":           cmd_ui,

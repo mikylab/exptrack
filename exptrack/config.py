@@ -14,6 +14,9 @@ DEFAULTS: dict = {
     "outputs_dir":           "outputs",
     "notebook_history_dir":  ".exptrack/notebook_history",
     "max_git_diff_kb":       256,
+    "artifact_strategy":     "reference",   # "reference" (no copy) | "copy" (legacy)
+    "hash_max_mb":           500,            # partial-hash files larger than this
+    "protect_on_rerun":      True,           # archive old artifacts on path conflict
     "auto_capture": {
         "argparse": True,
         "argv":     True,

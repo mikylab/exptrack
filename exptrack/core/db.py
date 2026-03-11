@@ -109,11 +109,15 @@ def _ensure_schema(conn):
         );
     """)
 
-    # Add timeline_seq to artifacts if missing
+    # Add timeline_seq, content_hash, size_bytes to artifacts if missing
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(artifacts)").fetchall()}
         if "timeline_seq" not in cols:
             conn.execute("ALTER TABLE artifacts ADD COLUMN timeline_seq INTEGER")
+        if "content_hash" not in cols:
+            conn.execute("ALTER TABLE artifacts ADD COLUMN content_hash TEXT")
+        if "size_bytes" not in cols:
+            conn.execute("ALTER TABLE artifacts ADD COLUMN size_bytes INTEGER")
     except Exception:
         pass
 

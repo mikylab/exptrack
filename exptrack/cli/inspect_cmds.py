@@ -1,7 +1,7 @@
 """
 exptrack/cli/inspect_cmds.py — Read-only inspection commands
 
-ls, show, timeline, diff, compare, history, export
+ls, show, timeline, diff, compare, history, export, verify
 """
 from __future__ import annotations
 import json
@@ -575,3 +575,97 @@ def cmd_export(args):
             "artifacts": artifacts,
         }
         print(json.dumps(data, indent=2, default=str))
+
+
+def cmd_verify(args):
+    """Verify artifact file integrity against stored content hashes.
+
+    Reports each artifact as: ok, missing, modified, or no-hash (legacy).
+    With --backfill, computes hashes for legacy artifacts whose files exist.
+    """
+    from ..core.hashing import file_hash
+    from .. import config as _cfg
+
+    conn = get_db()
+    conf = _cfg.load()
+    max_bytes = int(conf.get("hash_max_mb", 500)) * 1024 * 1024
+
+    where = ""
+    params_q: list = []
+    if getattr(args, "id", None):
+        where = "AND a.exp_id LIKE ?"
+        params_q.append(args.id + "%")
+
+    rows = conn.execute(f"""
+        SELECT a.id, a.exp_id, a.label, a.path, a.content_hash, a.size_bytes,
+               e.name
+        FROM artifacts a
+        JOIN experiments e ON a.exp_id = e.id
+        WHERE a.path IS NOT NULL {where}
+        ORDER BY e.created_at DESC, a.id
+    """, params_q).fetchall()
+
+    if not rows:
+        print(dim("No artifacts found.")); return
+
+    backfill = getattr(args, "backfill", False)
+    counts = {"ok": 0, "missing": 0, "modified": 0, "no-hash": 0, "backfilled": 0}
+
+    print()
+    print(bold("  Artifact Integrity Report"))
+    print(dim("  " + "-" * 60))
+
+    cur_exp = None
+    for r in rows:
+        if r["name"] != cur_exp:
+            cur_exp = r["name"]
+            print(f"\n  {bold(cur_exp)}")
+
+        p = Path(r["path"])
+        label = r["label"] or p.name
+
+        if not p.exists():
+            status_str = col("[missing]", R)
+            counts["missing"] += 1
+        elif not r["content_hash"]:
+            if backfill:
+                try:
+                    h, sz = file_hash(p, max_bytes=max_bytes)
+                    conn.execute(
+                        "UPDATE artifacts SET content_hash=?, size_bytes=? WHERE id=?",
+                        (h, sz, r["id"])
+                    )
+                    status_str = col("[backfilled]", C)
+                    counts["backfilled"] += 1
+                except Exception:
+                    status_str = dim("[no-hash]")
+                    counts["no-hash"] += 1
+            else:
+                status_str = dim("[no-hash]")
+                counts["no-hash"] += 1
+        else:
+            try:
+                h, sz = file_hash(p, max_bytes=max_bytes)
+                if h == r["content_hash"]:
+                    status_str = col("[ok]", G)
+                    counts["ok"] += 1
+                else:
+                    status_str = col("[modified]", Y)
+                    counts["modified"] += 1
+            except Exception:
+                status_str = col("[error]", R)
+                counts["missing"] += 1
+
+        print(f"    {label:<30} {status_str}")
+
+    if backfill:
+        conn.commit()
+
+    print()
+    print(dim("  Summary: ") +
+          col(f"{counts['ok']} ok", G) + "  " +
+          col(f"{counts['missing']} missing", R) + "  " +
+          col(f"{counts['modified']} modified", Y) + "  " +
+          dim(f"{counts['no-hash']} no-hash") +
+          (f"  {col(str(counts['backfilled']) + ' backfilled', C)}" if backfill else ""))
+    print()
