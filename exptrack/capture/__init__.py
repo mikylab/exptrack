@@ -266,6 +266,40 @@ def _var_fingerprint(val) -> str:
     return f"{tname}:{id(val)}"
 
 
+# ── Code baseline helpers ────────────────────────────────────────────────────
+
+def _get_cell_baseline(notebook: str, cell_seq: int) -> str | None:
+    """Get the baseline source for a cell position from the DB."""
+    try:
+        from ..core import get_db
+        conn = get_db()
+        row = conn.execute(
+            "SELECT source FROM code_baselines WHERE notebook=? AND cell_seq=?",
+            (notebook, cell_seq),
+        ).fetchone()
+        return row["source"] if row else None
+    except Exception:
+        return None
+
+
+def _update_cell_baseline(notebook: str, cell_seq: int, source: str):
+    """Store or update the baseline source for a cell position."""
+    try:
+        from ..core import get_db
+        source_hash = hashlib.md5(source.encode()).hexdigest()[:12]
+        with get_db() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO code_baselines
+                   (notebook, cell_seq, source, source_hash, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (notebook, cell_seq, source, source_hash,
+                 datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
 # State per notebook session
 _nb_state: dict = {
     "exp":          None,     # active Experiment
@@ -274,6 +308,7 @@ _nb_state: dict = {
     "cell_history": {},       # cell_id -> last source seen
     "var_snapshot": {},       # varname -> last fingerprint seen
     "exec_count":   0,
+    "cells_ran":    [],       # cell numbers that ran unchanged (no code/var changes)
     "first_run":    True,     # True until first cell is processed
     "deferred":     False,    # True when waiting for first real cell
     "deferred_start_fn": None,  # function to call to create the experiment
@@ -298,6 +333,7 @@ def attach_notebook(exp: "Experiment", nb_name: str = "notebook", ip=None):
     _nb_state["cell_history"] = {}
     _nb_state["var_snapshot"] = {}
     _nb_state["exec_count"]   = 0
+    _nb_state["cells_ran"]    = []
     _nb_state["first_run"]    = True
     if ip is None:
         try:
@@ -321,6 +357,7 @@ def attach_notebook_deferred(nb_file: str = "", ip=None, start_fn=None):
     _nb_state["cell_history"] = {}
     _nb_state["var_snapshot"] = {}
     _nb_state["exec_count"] = 0
+    _nb_state["cells_ran"]  = []
     _nb_state["first_run"] = True
     _nb_state["exp"] = None
 
@@ -473,18 +510,33 @@ def _post_run_cell(result=None):
         exec_num = _nb_state["exec_count"]
         cell_id = hashlib.md5(source.encode()).hexdigest()[:8]
 
-        # ── 2. Diff cell source against last seen version ─────────────────────
-        prev_source = _nb_state["cell_history"].get(cell_id, "")
-        source_changed = source != prev_source
-        _nb_state["cell_history"][cell_id] = source
+        # ── 2. Compare cell source against DB baseline ────────────────────────
+        # The baseline stores the canonical version of each cell position,
+        # independent of any experiment.  On the first-ever run the full
+        # source is stored; subsequent experiments only log diffs against it.
+        # Deleting experiments never touches baselines, so the reference
+        # code is always preserved.
+        notebook = _nb_state["nb_name"]
+        baseline_source = _get_cell_baseline(notebook, exec_num)
 
+        code_is_new = baseline_source is None
+        code_changed = False
         source_diff = None
-        if source_changed:
-            if prev_source:
-                source_diff = _simple_diff(prev_source, source)
-            else:
-                source_diff = [{"op": "+", "line": line}
-                               for line in source.splitlines() if line.strip()]
+
+        if code_is_new:
+            # First time this cell position is seen — store as baseline
+            _update_cell_baseline(notebook, exec_num, source)
+            source_diff = [{"op": "+", "line": line}
+                           for line in source.splitlines() if line.strip()]
+        elif source != baseline_source:
+            # Cell source differs from baseline — compute diff, update baseline
+            code_changed = True
+            source_diff = _simple_diff(baseline_source, source)
+            _update_cell_baseline(notebook, exec_num, source)
+        # else: cell unchanged from baseline — no code logging needed
+
+        # Update session-local history for snapshot deduplication
+        _nb_state["cell_history"][cell_id] = source
 
         # ── 3. Extract assignment expressions from cell source ────────────────
         cell_assignments = _extract_assignments(source)
@@ -508,7 +560,7 @@ def _post_run_cell(result=None):
             if not isinstance(val, _SCALAR) and name in cell_assignments:
                 expr = cell_assignments[name]
                 if len(expr) <= 500:
-                    display = f"{expr}  # {summary}"
+                    display = f"{name} = {expr}  # {summary}"
 
             if name not in prev_snap:
                 new_vars[name] = display
@@ -547,8 +599,8 @@ def _post_run_cell(result=None):
         if all_new_var or all_changed_var:
             exp.log_params({**all_new_var, **all_changed_var})
 
-        # Log code diffs as a param so they appear in `exptrack show`
-        if source_diff:
+        # Log code diffs only for new or changed cells (not unchanged ones)
+        if source_diff and (code_is_new or code_changed):
             diff_summary = "; ".join(
                 f"{'+'if e['op']=='+'else '-'} {e['line'].strip()}"
                 for e in source_diff if e["op"] != "="
@@ -556,9 +608,16 @@ def _post_run_cell(result=None):
             if diff_summary:
                 exp.log_param(f"_code_change/cell_{exec_num}", diff_summary)
 
+        # If cell ran unchanged with no variable changes, just note it ran
+        if not code_is_new and not code_changed and not new_vars and not changed_vars:
+            _nb_state["cells_ran"].append(exec_num)
+            exp.log_param("_cells_ran", json.dumps(_nb_state["cells_ran"]))
+
         # ── 5. Save snapshot to .exptrack/notebook_history/ ───────────────────
-        if source_changed or new_vars or changed_vars:
-            _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
+        # Only save full snapshots when there are actual changes to record
+        if code_is_new or code_changed or new_vars or changed_vars:
+            _save_cell_snapshot(exp, exec_num, cell_id, source,
+                                baseline_source or "",
                                 source_diff, new_vars, changed_vars, output)
 
     except Exception as _e:
