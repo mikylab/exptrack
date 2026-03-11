@@ -772,12 +772,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     overflow: hidden; height: 100vh;
   }
   /* Header bar */
-  .header { display: flex; justify-content: space-between; align-items: center; padding: 10px 24px; border-bottom: 1px solid var(--border); background: var(--card-bg); flex-shrink: 0; height: 64px; }
-  .header h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; margin: 0; cursor: pointer; }
+  .header { display: flex; justify-content: space-between; align-items: center; padding: 6px 20px; border-bottom: 1px solid var(--border); background: var(--card-bg); flex-shrink: 0; height: 48px; }
+  .header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.5px; margin: 0; cursor: pointer; }
   .header h1:hover { color: var(--blue); }
-  .header-actions { display: flex; gap: 10px; align-items: center; }
+  .header-actions { display: flex; gap: 8px; align-items: center; }
   /* IDE layout */
-  #app-layout { display: flex; height: calc(100vh - 64px); overflow: hidden; }
+  #app-layout { display: flex; height: calc(100vh - 48px); overflow: hidden; }
   #exp-sidebar {
     width: 280px; min-width: 280px; border-right: 1px solid var(--border);
     display: flex; flex-direction: column; overflow: hidden;
@@ -821,14 +821,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .sidebar-actions-bar button.danger { background: var(--card-bg); border: 1px solid var(--red); color: var(--red); }
   .sidebar-actions-bar button.danger:hover { background: var(--red); color: #fff; }
   .sidebar-actions-bar .action-count { font-size: 11px; color: var(--muted); text-align: center; }
-  #main-content { flex: 1; overflow-y: auto; min-width: 0; padding: 20px 28px; }
+  #main-content { flex: 1; overflow-y: auto; min-width: 0; padding: 14px 20px; }
   /* Detail summary bar */
-  .detail-summary { display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 16px; align-items: center; }
-  .detail-summary .sum-item { font-size: 13px; color: var(--muted); }
+  .detail-summary { display: flex; gap: 12px; flex-wrap: wrap; padding: 8px 12px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 12px; align-items: center; }
+  .detail-summary .sum-item { font-size: 12px; color: var(--muted); }
   .detail-summary .sum-item strong { color: var(--fg); }
   .detail-summary .sum-sep { color: var(--border); }
   /* Two-column detail grid */
-  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .detail-grid > div { }
   .detail-grid-full { grid-column: 1 / -1; }
   @media (max-width: 900px) {
@@ -836,28 +836,28 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     #exp-sidebar { display: none; }
   }
   .help-btn {
-    font-family: inherit; font-size: 15px; background: var(--code-bg);
-    border: 1px solid var(--border); padding: 8px 16px; cursor: pointer;
+    font-family: inherit; font-size: 12px; background: var(--code-bg);
+    border: 1px solid var(--border); padding: 4px 10px; cursor: pointer;
     border-radius: 4px; color: var(--muted);
   }
   .help-btn:hover { background: var(--border); color: var(--fg); }
-  .theme-btn { font-family: inherit; font-size: 20px; background: var(--code-bg); border: 1px solid var(--border); padding: 6px 14px; cursor: pointer; border-radius: 4px; color: var(--muted); line-height: 1; }
+  .theme-btn { font-family: inherit; font-size: 16px; background: var(--code-bg); border: 1px solid var(--border); padding: 4px 10px; cursor: pointer; border-radius: 4px; color: var(--muted); line-height: 1; }
   .theme-btn:hover { background: var(--border); color: var(--fg); }
-  h2 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+  h2 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
   h2 .help-icon { font-size: 13px; cursor: help; color: var(--blue); margin-left: 6px; font-weight: normal; text-transform: none; letter-spacing: 0; }
   /* Stats cards */
-  .stats { margin-bottom: 20px; }
-  .stats-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
-  .stats-row { display: grid; gap: 12px; margin-bottom: 12px; }
+  .stats { margin-bottom: 14px; }
+  .stats-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+  .stats-row { display: grid; gap: 8px; margin-bottom: 8px; }
   .stats-row.runs { grid-template-columns: repeat(4, 1fr); }
   .stats-row.additional { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
   .stat {
     background: var(--card-bg); border: 1px solid var(--border);
-    padding: 20px; text-align: center; border-radius: 4px;
+    padding: 10px 12px; text-align: center; border-radius: 4px;
     position: relative;
   }
-  .stat .num { font-size: 34px; font-weight: 600; }
-  .stat .label { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+  .stat .num { font-size: 22px; font-weight: 600; }
+  .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
   .stat .stat-hint { display: none; position: absolute; bottom: -30px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 4px 10px; border-radius: 3px; font-size: 11px; white-space: nowrap; z-index: 10; }
   .stat:hover .stat-hint { display: block; }
   /* Filters */
@@ -918,10 +918,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .tag { background: var(--code-bg); padding: 2px 8px; font-size: 12px; margin-left: 6px; border-radius: 3px; }
   .exp-metrics-preview { font-size: 12px; color: var(--muted); margin-top: 2px; }
   /* Detail panel */
-  .detail { background: var(--card-bg); border: 1px solid var(--border); padding: 28px; margin-top: 20px; border-radius: 4px; }
+  .detail { background: var(--card-bg); border: 1px solid var(--border); padding: 16px; margin-top: 12px; border-radius: 4px; }
   .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
   .detail-export-bar { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-  .detail-header h2 { margin: 0; font-size: 18px; color: var(--fg); text-transform: none; letter-spacing: 0; }
+  .detail-header h2 { margin: 0; font-size: 15px; color: var(--fg); text-transform: none; letter-spacing: 0; }
   .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .detail-actions button, .action-btn {
     font-family: inherit; font-size: 13px;
@@ -962,7 +962,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .var-changes .var-name { color: var(--blue); font-weight: 500; }
   .var-changes .var-type { color: var(--muted); font-size: 12px; }
   .var-section-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
-  .chart-container { max-width: 700px; margin: 20px 0; }
+  .chart-container { max-width: 550px; margin: 12px 0; }
   /* Artifacts */
   .artifact-row { display: flex; align-items: center; gap: 8px; }
   .artifact-type-badge { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--code-bg); color: var(--muted); }
@@ -1084,7 +1084,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .summary-card { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; border-radius: 4px; margin-bottom: 20px; }
   .summary-card .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
   .summary-card .summary-item { text-align: center; }
-  .summary-card .summary-item .val { font-size: 20px; font-weight: 600; }
+  .summary-card .summary-item .val { font-size: 16px; font-weight: 600; }
   .summary-card .summary-item .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
   /* Tooltip */
   .tooltip { position: relative; display: inline-block; }
@@ -1095,10 +1095,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     transform: translateX(-50%); font-size: 11px; white-space: nowrap;
   }
   .tooltip:hover .tooltip-text { visibility: visible; }
-  /* Legacy side panel (kept for compat) */
-  .layout-mode-btn { font-family: inherit; font-size: 12px; background: var(--code-bg); border: 1px solid var(--border); padding: 4px 10px; cursor: pointer; border-radius: 3px; color: var(--muted); }
-  .layout-mode-btn:hover { background: var(--border); color: var(--fg); }
-  .layout-mode-btn.active { background: var(--fg); color: var(--bg); }
   /* Select mode / bulk actions */
   .bulk-bar { display: flex; gap: 8px; align-items: center; padding: 8px 16px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 12px; }
   .bulk-bar .bulk-count { font-weight: 600; }
@@ -1204,20 +1200,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   @keyframes owlBlink { 0%,92%,100% { height: 1; } 94%,98% { height: 0; } }
   @keyframes owlBounce { 0%,100% { transform: translateY(0); } 40% { transform: translateY(-8px); } 60% { transform: translateY(-4px); } }
   @keyframes owlWiggle { 0%,100% { transform: rotate(0deg); } 25% { transform: rotate(-8deg); } 75% { transform: rotate(8deg); } }
-  .owl-speech { position: absolute; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 100; bottom: 56px; left: 50%; transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity 0.3s; }
+  .owl-speech { position: absolute; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 11px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 100; bottom: 40px; left: 50%; transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity 0.3s; }
   .owl-speech.visible { opacity: 1; }
   .owl-speech::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: var(--border); }
   .owl-container { position: relative; display: inline-block; }
   /* Timezone setting */
   .tz-setting { display: inline-flex; align-items: center; gap: 6px; }
-  .tz-setting select { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px; background: var(--code-bg); color: var(--muted); cursor: pointer; }
+  .tz-setting select { font-family: inherit; font-size: 11px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 4px; background: var(--code-bg); color: var(--muted); cursor: pointer; }
   .tz-setting select:hover { background: var(--border); color: var(--fg); }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak('click')"><svg width="48" height="48" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:8px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
+  <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak('click')"><svg width="28" height="28" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
   <div class="header-actions">
     <span class="tz-setting" title="Set timezone for displaying timestamps">
       <select id="tz-select" onchange="setTimezone(this.value)">
@@ -2611,29 +2607,6 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-async function renameExp(id) {
-  const name = prompt('New name:');
-  if (!name) return;
-  const d = await postApi('/api/experiment/' + id + '/rename', {name});
-  if (d.ok) { loadExperiments(); refreshDetail(id); }
-  else alert(d.error || 'Failed');
-}
-
-async function addTagUI(id) {
-  const tag = prompt('Tag name (e.g. baseline, best, ablation):');
-  if (!tag) return;
-  const d = await postApi('/api/experiment/' + id + '/tag', {tag: tag.trim()});
-  if (d.ok) { loadExperiments(); refreshDetail(id); }
-  else alert(d.error || 'Failed');
-}
-
-async function addNoteUI(id) {
-  const note = prompt('Add note:');
-  if (!note) return;
-  const d = await postApi('/api/experiment/' + id + '/note', {note});
-  if (d.ok) { refreshDetail(id); }
-  else alert(d.error || 'Failed');
-}
 
 async function deleteExp(id, name) {
   owlSpeak('delete');
@@ -2659,20 +2632,7 @@ async function addArtifact(id) {
 
 // ── Edit/delete tags, notes, artifacts ────────────────────────────────────────
 
-async function deleteTag(id, tag) {
-  if (!confirm('Remove tag "' + tag + '"?')) return;
-  const d = await postApi('/api/experiment/' + id + '/delete-tag', {tag});
-  if (d.ok) { loadExperiments(); refreshDetail(id); }
-  else alert(d.error || 'Failed');
-}
 
-async function editTag(id, oldTag) {
-  const newTag = prompt('Edit tag:', oldTag);
-  if (!newTag || newTag === oldTag) return;
-  const d = await postApi('/api/experiment/' + id + '/edit-tag', {old_tag: oldTag, new_tag: newTag.trim()});
-  if (d.ok) { loadExperiments(); refreshDetail(id); }
-  else alert(d.error || 'Failed');
-}
 
 async function deleteTagInline(id, tag) {
   const d = await postApi('/api/experiment/' + id + '/delete-tag', {tag});
@@ -2707,26 +2667,6 @@ function startDetailNoteEdit(id, el) {
   });
 }
 
-async function editNotes(id) {
-  const notesEl = document.getElementById('detail-notes');
-  if (!notesEl) return;
-  const current = notesEl.querySelector('.notes-display');
-  const currentText = current ? current.textContent.replace(/edit$/, '').trim() : '';
-  notesEl.innerHTML = '<div><textarea class="notes-edit-area" id="notes-edit-area">' + esc(currentText) + '</textarea>' +
-    '<div style="margin-top:4px;display:flex;gap:6px">' +
-    '<button class="action-btn" onclick="saveNotes(\'' + id + '\')">Save</button>' +
-    '<button class="action-btn" onclick="refreshDetail(\'' + id + '\')">Cancel</button>' +
-    '</div></div>';
-  document.getElementById('notes-edit-area').focus();
-}
-
-async function saveNotes(id) {
-  const area = document.getElementById('notes-edit-area');
-  if (!area) return;
-  const d = await postApi('/api/experiment/' + id + '/edit-notes', {notes: area.value});
-  if (d.ok) { refreshDetail(id); }
-  else alert(d.error || 'Failed');
-}
 
 async function deleteArtifact(id, label, path) {
   if (!confirm('Delete artifact "' + label + '"?')) return;
@@ -3013,16 +2953,23 @@ loadExperiments().then(() => {
 </html>
 """
 
-def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 7331
-    host = "127.0.0.1"
+def main(host: str = "127.0.0.1", port: int = 7331):
+    # Parse CLI args when run directly
+    if len(sys.argv) > 1:
+        for i, arg in enumerate(sys.argv[1:], 1):
+            if arg == "--host" and i + 1 < len(sys.argv):
+                host = sys.argv[i + 1]
+            elif arg == "--port" and i + 1 < len(sys.argv):
+                port = int(sys.argv[i + 1])
+            elif arg.isdigit():
+                port = int(arg)
     server = HTTPServer((host, port), DashboardHandler)
-    print(f"[exptrack] Dashboard running at http://{host}:{port}")
-    print(f"[exptrack] Press Ctrl+C to stop")
+    print(f"[exptrack] Dashboard running at http://{host}:{port}", file=sys.stderr)
+    print(f"[exptrack] Press Ctrl+C to stop", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[exptrack] Dashboard stopped.")
+        print("\n[exptrack] Dashboard stopped.", file=sys.stderr)
         server.server_close()
 
 
