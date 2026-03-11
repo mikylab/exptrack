@@ -421,6 +421,27 @@ class Experiment:
             )
             conn.commit()
 
+    def log_file(self, path, label="", category=""):
+        """Log any output file as an artifact with auto-detected category."""
+        p = Path(str(path)).resolve()
+        if not p.exists():
+            return
+        if not category:
+            ext = p.suffix.lower()
+            if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.pdf', '.bmp', '.tiff'):
+                category = 'image'
+            elif ext in ('.pt', '.pth', '.h5', '.hdf5', '.onnx', '.pkl', '.joblib', '.safetensors'):
+                category = 'model'
+            elif ext in ('.csv', '.json', '.jsonl', '.parquet', '.tsv', '.npy', '.npz'):
+                category = 'data'
+            elif ext in ('.log', '.txt', '.out', '.err'):
+                category = 'log'
+            else:
+                category = 'file'
+        if not label:
+            label = f"[{category}] {p.name}"
+        self.log_artifact(str(p), label=label)
+
     def get_variable_context(self, at_seq: int = None) -> dict:
         """
         Reconstruct the variable state at a given timeline seq by walking

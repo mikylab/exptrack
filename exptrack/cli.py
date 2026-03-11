@@ -907,6 +907,18 @@ def cmd_log_artifact(args):
     ).fetchone()
     if not exp_row:
         print(f"[exptrack] log-artifact: not found: {args.id}", file=sys.stderr); sys.exit(1)
+
+    # Support piped content via --stdin or path='-'
+    if getattr(args, 'stdin', False) or args.path == '-':
+        content = sys.stdin.buffer.read()
+        from . import config as _cfg
+        out_dir = _cfg.project_root() / '.exptrack' / 'outputs'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        label = args.label or 'stdin_capture'
+        out_path = out_dir / f"{exp_row['id'][:8]}_{label}"
+        out_path.write_bytes(content)
+        args.path = str(out_path)
+
     ts = datetime.utcnow().isoformat()
     label = args.label or Path(args.path).name
     with conn:
@@ -1108,8 +1120,10 @@ def main():
 
     p_la = sub.add_parser("log-artifact", help="Register an output file")
     p_la.add_argument("id")
-    p_la.add_argument("path")
+    p_la.add_argument("path", nargs="?", default="-")
     p_la.add_argument("--label", default="")
+    p_la.add_argument("--stdin", action="store_true",
+                       help="Read content from stdin and save as artifact")
 
     p_stale = sub.add_parser("stale", help="Mark killed/timed-out runs as failed")
     p_stale.add_argument("--hours", type=float, default=24,

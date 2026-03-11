@@ -960,21 +960,31 @@ def patch_savefig(exp: "Experiment"):
         cur_exp = _nb_state.get("exp")
         if cur_exp is None:
             return result
+
+        orig_path = _P(str(fname)).resolve()
+
+        # Step 1: Copy to output dir (optional, non-blocking)
         try:
-            orig_path = _P(str(fname)).resolve()
-            # Also copy into the experiment's namespaced output directory
             out_dir = cur_exp.output_path(orig_path.name)
             if out_dir.resolve() != orig_path:
                 shutil.copy2(str(orig_path), str(out_dir))
-            # Emit timeline artifact event BEFORE registering
-            # so the artifact row can reference the timeline seq
+        except Exception:
+            pass
+
+        # Step 2: Timeline event (optional, non-blocking)
+        art_seq = None
+        try:
             art_seq = cur_exp.log_event(
                 event_type="artifact",
                 cell_hash=_nb_state.get("last_cell_hash"),
                 key=orig_path.name,
                 value=str(orig_path),
             )
-            # Register artifact with experiment name and figure title as context
+        except Exception:
+            pass
+
+        # Step 3: Register artifact (critical — always attempt)
+        try:
             fig_title = _nb_state.pop("_last_fig_title", "")
             if fig_title:
                 label = f"{fig_title} ({orig_path.name})"
@@ -984,9 +994,9 @@ def patch_savefig(exp: "Experiment"):
                 label = orig_path.name
             cur_exp.log_artifact(str(orig_path), label=label, timeline_seq=art_seq)
         except Exception as _e:
-            import traceback
-            print(f"[exptrack] savefig artifact capture error: {_e}",
+            print(f"[exptrack] savefig artifact error: {_e}",
                   file=sys.stderr)
+
         return result
 
     def _hooked_plt_savefig(fname, *args, **kwargs):
