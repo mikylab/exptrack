@@ -160,10 +160,12 @@ def _detect_nb_name() -> str:
 
 def load_ipython_extension(ip):
     """Called by %load_ext exptrack"""
+    from .capture import attach_notebook_deferred
 
-    # Auto-start on load — pass ip directly so the hook is reliably registered
+    # Don't create an experiment yet — defer until the first real cell runs.
+    # This prevents %load_ext exptrack from being counted as its own run.
     nb_file = _detect_nb_name()
-    _auto_start(nb_file, ip=ip)
+    attach_notebook_deferred(nb_file=nb_file, ip=ip, start_fn=_auto_start)
 
     def exp_start(line):
         """Start or restart experiment. Optional: %exp_start my_run_name"""

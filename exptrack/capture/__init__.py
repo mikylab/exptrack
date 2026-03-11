@@ -275,6 +275,9 @@ _nb_state: dict = {
     "var_snapshot": {},       # varname -> last fingerprint seen
     "exec_count":   0,
     "first_run":    True,     # True until first cell is processed
+    "deferred":     False,    # True when waiting for first real cell
+    "deferred_start_fn": None,  # function to call to create the experiment
+    "deferred_nb_file":  "",    # notebook file for deferred start
 }
 
 
@@ -306,6 +309,43 @@ def attach_notebook(exp: "Experiment", nb_name: str = "notebook", ip=None):
     ip.events.register("post_run_cell", _post_run_cell)
 
 
+def attach_notebook_deferred(nb_file: str = "", ip=None, start_fn=None):
+    """
+    Install the post_run_cell hook but DON'T create an experiment yet.
+    The experiment is created on the first real (non-magic) cell execution,
+    so that `%load_ext exptrack` itself is never counted as a run.
+    """
+    _nb_state["deferred"] = True
+    _nb_state["deferred_start_fn"] = start_fn
+    _nb_state["deferred_nb_file"] = nb_file
+    _nb_state["cell_history"] = {}
+    _nb_state["var_snapshot"] = {}
+    _nb_state["exec_count"] = 0
+    _nb_state["first_run"] = True
+    _nb_state["exp"] = None
+
+    if ip is None:
+        try:
+            ip = get_ipython()  # noqa
+        except NameError:
+            return
+    _nb_state["ip"] = ip
+    _unregister_hook(ip)
+    ip.events.register("post_run_cell", _post_run_cell)
+
+
+def _is_magic_only(source: str) -> bool:
+    """Return True if source consists only of IPython magic commands or blank lines."""
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        if stripped.startswith('%') or stripped.startswith('!'):
+            continue
+        return False
+    return True
+
+
 def detach_notebook():
     _nb_state["exp"] = None
     ip = _nb_state.get("ip")
@@ -330,11 +370,56 @@ def _unregister_hook(ip):
             pass
 
 
+def _extract_assignments(source: str) -> dict[str, str]:
+    """
+    Parse cell source to extract variable assignment expressions.
+    Returns {var_name: rhs_expression} for simple assignments like:
+        x = np.linspace(0, r, 100)  ->  {"x": "np.linspace(0, r, 100)"}
+        a, b = 1, 2                 ->  {"a": "1, 2", "b": "1, 2"}
+    """
+    assignments = {}
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#') or stripped.startswith('%'):
+            continue
+        # Simple assignment: name = expr  (also handles a = b = expr)
+        if '=' in stripped and not any(stripped.startswith(kw) for kw in ('if ', 'for ', 'while ', 'def ', 'class ', 'return ', 'yield ', 'import ', 'from ', 'with ', 'assert ')):
+            # Skip augmented assignments (+=, -=, etc.) and comparisons (==, !=, <=, >=)
+            eq_pos = stripped.find('=')
+            if eq_pos > 0 and stripped[eq_pos - 1] not in '!<>+*-/^%&|~' and (eq_pos + 1 >= len(stripped) or stripped[eq_pos + 1] != '='):
+                lhs = stripped[:eq_pos].strip()
+                rhs = stripped[eq_pos + 1:].strip()
+                # Remove inline comments from rhs
+                # Simple heuristic: find # not inside strings
+                comment_pos = _find_comment(rhs)
+                if comment_pos >= 0:
+                    rhs = rhs[:comment_pos].strip()
+                # Handle tuple unpacking: a, b = ...
+                if ',' in lhs and not lhs.startswith('(') and not lhs.startswith('['):
+                    names = [n.strip() for n in lhs.split(',')]
+                    for n in names:
+                        if n.isidentifier():
+                            assignments[n] = rhs
+                elif lhs.isidentifier():
+                    assignments[lhs] = rhs
+    return assignments
+
+
+def _find_comment(s: str) -> int:
+    """Find the position of # comment outside quotes. Returns -1 if none."""
+    in_single = in_double = False
+    for i, c in enumerate(s):
+        if c == "'" and not in_double:
+            in_single = not in_single
+        elif c == '"' and not in_single:
+            in_double = not in_double
+        elif c == '#' and not in_single and not in_double:
+            return i
+    return -1
+
+
 def _post_run_cell(result=None):
     """Runs after every notebook cell. Captures diff, variables, and output."""
-    exp = _nb_state["exp"]
-    if exp is None:
-        return
 
     try:
         ip = _nb_state.get("ip")
@@ -343,11 +428,8 @@ def _post_run_cell(result=None):
                 ip = get_ipython()  # noqa
             except NameError:
                 return
-        _nb_state["exec_count"] += 1
-        exec_num = _nb_state["exec_count"]
 
-        # ── 1. Get the cell that just ran ─────────────────────────────────────
-        # Primary: get source directly from the execution result (post_run_cell)
+        # ── 0. Get the cell source early (needed for deferred start check) ──
         source = None
         output = None
         if result is not None:
@@ -355,23 +437,40 @@ def _post_run_cell(result=None):
                 source = result.info.raw_cell
             except AttributeError:
                 pass
-
-        # Fallback 1: input_hist_raw (in-memory, no DB query)
         if not source:
             try:
                 source = ip.history_manager.input_hist_raw[-1]
             except (IndexError, AttributeError):
                 pass
-
-        # Fallback 2: In list from user namespace
         if not source:
             try:
                 source = ip.user_ns.get("In", [""])[-1]
             except (IndexError, TypeError):
                 pass
-
         if not source:
             return
+
+        # ── 0b. Handle deferred start ────────────────────────────────────────
+        # If we're in deferred mode (from %load_ext), skip magic-only cells
+        # and start the experiment on the first real cell.
+        if _nb_state.get("deferred"):
+            if _is_magic_only(source):
+                return  # skip — don't create an experiment for magic cells
+            # First real cell — start the experiment now
+            start_fn = _nb_state.get("deferred_start_fn")
+            nb_file = _nb_state.get("deferred_nb_file", "")
+            _nb_state["deferred"] = False
+            _nb_state["deferred_start_fn"] = None
+            if start_fn:
+                start_fn(nb_file, ip=ip)
+            # Fall through to capture this cell's variables
+
+        exp = _nb_state["exp"]
+        if exp is None:
+            return
+
+        _nb_state["exec_count"] += 1
+        exec_num = _nb_state["exec_count"]
         cell_id = hashlib.md5(source.encode()).hexdigest()[:8]
 
         # ── 2. Diff cell source against last seen version ─────────────────────
@@ -384,11 +483,13 @@ def _post_run_cell(result=None):
             if prev_source:
                 source_diff = _simple_diff(prev_source, source)
             else:
-                # First execution of this cell — log all lines as additions
                 source_diff = [{"op": "+", "line": line}
                                for line in source.splitlines() if line.strip()]
 
-        # ── 3. Capture new/changed variables (scalars + arrays + more) ────
+        # ── 3. Extract assignment expressions from cell source ────────────────
+        cell_assignments = _extract_assignments(source)
+
+        # ── 4. Capture new/changed variables (scalars + arrays + more) ────
         ns = ip.user_ns
         prev_snap = _nb_state["var_snapshot"]
         new_vars, changed_vars = {}, {}
@@ -400,10 +501,19 @@ def _post_run_cell(result=None):
             if summary is None:
                 continue
             fp = _var_fingerprint(val)
+
+            # For non-scalar types, prefer the source expression over the summary
+            # so the user can reconstruct the value from the code
+            display = summary
+            if not isinstance(val, _SCALAR) and name in cell_assignments:
+                expr = cell_assignments[name]
+                if len(expr) <= 500:
+                    display = f"{expr}  # {summary}"
+
             if name not in prev_snap:
-                new_vars[name] = summary
+                new_vars[name] = display
             elif prev_snap[name] != fp:
-                changed_vars[name] = {"from": "(previous)", "to": summary}
+                changed_vars[name] = {"from": "(previous)", "to": display}
 
         # Update snapshot with fingerprints for change detection
         new_snap = {}
@@ -419,7 +529,6 @@ def _post_run_cell(result=None):
         _nb_state["first_run"] = False
 
         # Log HP variables as top-level params (used in run naming)
-        # For HP detection, extract the actual value for scalars
         def _scalar_val(name):
             v = ns.get(name)
             return v if isinstance(v, _SCALAR) else None
@@ -433,7 +542,6 @@ def _post_run_cell(result=None):
 
         # Log ALL variable changes as _var/ params so they appear in the
         # dashboard's "Variable Changes" section — including HP-named ones
-        # (HP variables are ALSO logged as top-level params above for naming)
         all_new_var = {f"_var/{k}": v for k, v in new_vars.items()}
         all_changed_var = {f"_var/{k}": d["to"] for k, d in changed_vars.items()}
         if all_new_var or all_changed_var:
@@ -448,13 +556,12 @@ def _post_run_cell(result=None):
             if diff_summary:
                 exp.log_param(f"_code_change/cell_{exec_num}", diff_summary)
 
-        # ── 4. Save snapshot to .exptrack/notebook_history/ ───────────────────
+        # ── 5. Save snapshot to .exptrack/notebook_history/ ───────────────────
         if source_changed or new_vars or changed_vars:
             _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
                                 source_diff, new_vars, changed_vars, output)
 
     except Exception as _e:
-        # Print a brief diagnostic so users can report capture issues
         print(f"[exptrack] cell capture error: {_e}", file=sys.stderr)
 
 
