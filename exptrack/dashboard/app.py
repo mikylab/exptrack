@@ -267,6 +267,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .diff-add { color: var(--green); }
   .diff-del { color: var(--red); }
   .diff-hunk { color: var(--blue); font-weight: 600; }
+  .code-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 12px; margin-bottom: 16px; font-size: 12px; }
+  .code-changes .change-item { margin-bottom: 8px; }
+  .code-changes .change-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+  .code-changes .change-diff { white-space: pre-wrap; }
+  .var-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 12px; margin-bottom: 16px; font-size: 12px; }
+  .var-changes td { padding: 2px 8px; border: none; }
+  .var-changes .var-name { color: var(--blue); }
   .chart-container { max-width: 600px; margin: 16px 0; }
   .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
   .compare-input { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
@@ -398,17 +405,60 @@ async function showDetail(id) {
   ]);
   if (exp.error) return;
 
-  const paramRows = Object.entries(exp.params).map(([k,v]) =>
-    `<tr><td style="color:var(--blue)">${k}</td><td>${JSON.stringify(v)}</td></tr>`
+  // Separate params into regular, code changes, and variable tracking
+  const regularParams = {};
+  const codeChanges = {};
+  const varChanges = {};
+  for (const [k, v] of Object.entries(exp.params)) {
+    if (k === '_code_changes' || k.startsWith('_code_change/')) {
+      codeChanges[k] = v;
+    } else if (k.startsWith('_var/')) {
+      varChanges[k.slice(5)] = v;  // strip _var/ prefix for display
+    } else if (k.startsWith('_script_hash')) {
+      // skip internal hash, not useful to show
+    } else {
+      regularParams[k] = v;
+    }
+  }
+
+  const paramRows = Object.entries(regularParams).map(([k,v]) =>
+    `<tr><td style="color:var(--blue)">${esc(k)}</td><td>${esc(JSON.stringify(v))}</td></tr>`
   ).join('');
 
   const metricRows = exp.metrics.map(m =>
-    `<tr><td style="color:var(--green)">${m.key}</td><td>${m.last?.toFixed(4)}</td><td>${m.min?.toFixed(4)}</td><td>${m.max?.toFixed(4)}</td><td>${m.n}</td></tr>`
+    `<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4)}</td><td>${m.min?.toFixed(4)}</td><td>${m.max?.toFixed(4)}</td><td>${m.n}</td></tr>`
   ).join('');
 
   const artRows = exp.artifacts.map(a =>
-    `<tr><td>${a.label}</td><td>${a.path}</td></tr>`
+    `<tr><td>${esc(a.label)}</td><td>${esc(a.path)}</td></tr>`
   ).join('');
+
+  // Code changes HTML — render diff-style with +/- coloring
+  let codeHtml = '';
+  if (Object.keys(codeChanges).length) {
+    codeHtml = '<h2>Code Changes</h2><div class="code-changes">';
+    for (const [k, v] of Object.entries(codeChanges)) {
+      const label = k === '_code_changes' ? 'Script diff vs. last commit' : k.replace('_code_change/','Cell ');
+      const parts = String(v).split('; ').map(part => {
+        const trimmed = part.trim();
+        if (trimmed.startsWith('+')) return `<span class="diff-add">${esc(trimmed)}</span>`;
+        if (trimmed.startsWith('-')) return `<span class="diff-del">${esc(trimmed)}</span>`;
+        return esc(trimmed);
+      }).join('\n');
+      codeHtml += `<div class="change-item"><div class="change-label">${esc(label)}</div><div class="change-diff">${parts}</div></div>`;
+    }
+    codeHtml += '</div>';
+  }
+
+  // Variable changes HTML
+  let varHtml = '';
+  if (Object.keys(varChanges).length) {
+    varHtml = '<h2>Variable Changes</h2><div class="var-changes"><table>';
+    for (const [k, v] of Object.entries(varChanges)) {
+      varHtml += `<tr><td class="var-name">${esc(k)}</td><td>= ${esc(JSON.stringify(v))}</td></tr>`;
+    }
+    varHtml += '</table></div>';
+  }
 
   // Diff HTML
   let diffHtml = '';
@@ -440,6 +490,8 @@ async function showDetail(id) {
         <span class="label">Tags</span><span>${exp.tags.length?exp.tags.map(t=>'#'+t).join(' '):'--'}</span>
       </div>
       ${paramRows ? '<h2>Params</h2><table class="params-table">'+paramRows+'</table>' : ''}
+      ${codeHtml}
+      ${varHtml}
       ${metricRows ? '<h2>Metrics</h2><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table>' : ''}
       <div id="charts-container"></div>
       ${artRows ? '<h2>Artifacts</h2><table class="params-table">'+artRows+'</table>' : ''}
@@ -494,7 +546,9 @@ async function doCompare() {
     return;
   }
   const e1 = data.exp1, e2 = data.exp2;
-  const allPKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].sort();
+  // Filter out internal keys from compare view — show only user-facing params
+  const isUserParam = k => !k.startsWith('_code_change') && k !== '_code_changes' && !k.startsWith('_var/') && k !== '_script_hash';
+  const allPKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isUserParam).sort();
   const allMKeys = [...new Set([...e1.metrics.map(m=>m.key), ...e2.metrics.map(m=>m.key)])].sort();
   const m1 = Object.fromEntries(e1.metrics.map(m => [m.key, m.last]));
   const m2 = Object.fromEntries(e2.metrics.map(m => [m.key, m.last]));
