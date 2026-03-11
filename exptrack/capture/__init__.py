@@ -5,9 +5,10 @@ Two capture modes:
   1. argparse   — patches ArgumentParser.parse_args() AND parse_known_args()
                   so params are logged the moment the user's script calls it.
   2. notebook   — IPython post_execute hook that after EVERY cell:
-                    - diffs the cell source against previous version
+                    - diffs the cell source against previous version (by content hash)
                     - captures new/changed scalar variables
                     - captures stdout/stderr output
+                    - logs timeline events for ordering and context reconstruction
                   Stores snapshots in .exptrack/notebook_history/<nb_name>/
 """
 from __future__ import annotations
@@ -15,6 +16,7 @@ import re
 import sys
 import json
 import hashlib
+from difflib import SequenceMatcher
 from pathlib import Path
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -167,6 +169,44 @@ _SKIP_NAMES = frozenset({
     "In", "Out", "get_ipython", "exit", "quit", "open",
 })
 
+# Patterns for "observational" cells — print/display/inspect/debug statements
+# that don't change state and shouldn't clutter the timeline
+_OBSERVATIONAL_RE = re.compile(
+    r"^\s*(?:print|display|type|len|shape|head|tail|describe|info|summary|"
+    r"help|dir|vars|id|repr|str|list|dict|set|tuple|sorted|enumerate|"
+    r"isinstance|hasattr|getattr)\s*\(", re.MULTILINE
+)
+
+
+def _is_observational(source: str) -> bool:
+    """
+    Detect "dumb" cells that just inspect/print values without assigning.
+    e.g., print(x), df.head(), x.shape, type(y)
+
+    These still get logged in the timeline as 'observational' events
+    but are visually de-emphasized and don't trigger full snapshots.
+    """
+    lines = [l.strip() for l in source.splitlines()
+             if l.strip() and not l.strip().startswith('#')]
+    if not lines:
+        return False
+    for line in lines:
+        # Skip comments
+        if line.startswith('#'):
+            continue
+        # If any line contains assignment, it's not observational
+        if '=' in line:
+            eq_pos = line.find('=')
+            if eq_pos > 0 and line[eq_pos - 1] not in '!<>+*-/^%&|~' and \
+               (eq_pos + 1 >= len(line) or line[eq_pos + 1] != '='):
+                return False
+        # Method calls on objects that are read-only are observational
+        # e.g., df.head(), x.shape, model.summary()
+        # But df.drop(...), model.fit(...) are NOT
+        # Heuristic: if the line is a bare expression (no assignment) it's observational
+    # If we get here, no assignments — likely observational
+    return True
+
 
 def _var_summary(val) -> str | None:
     """
@@ -266,7 +306,88 @@ def _var_fingerprint(val) -> str:
     return f"{tname}:{id(val)}"
 
 
-# ── Code baseline helpers ────────────────────────────────────────────────────
+# ── Cell lineage helpers (content-addressed) ─────────────────────────────────
+
+def _cell_hash(source: str) -> str:
+    """Content hash for a cell — this IS the cell's identity."""
+    return hashlib.md5(source.encode()).hexdigest()[:12]
+
+
+def _find_parent_hash(notebook: str, source: str, current_hash: str) -> str | None:
+    """
+    Find the most similar existing cell in this notebook's lineage.
+    Used when a cell is edited: the new hash points back to the old hash.
+    Also handles cell splits — if a new cell's source is a subset of an
+    existing cell, that existing cell is the parent.
+    """
+    try:
+        from ..core import get_db
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT cell_hash, source FROM cell_lineage WHERE notebook=?",
+            (notebook,)
+        ).fetchall()
+    except Exception:
+        return None
+
+    if not rows:
+        return None
+
+    best_hash = None
+    best_ratio = 0.0
+
+    for row in rows:
+        if row["cell_hash"] == current_hash:
+            continue  # skip self
+        ratio = SequenceMatcher(None, row["source"], source).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_hash = row["cell_hash"]
+
+    # Require at least 30% similarity to consider it a parent.
+    # This catches edits, splits (subset of original), and merges.
+    if best_ratio >= 0.3:
+        return best_hash
+    return None
+
+
+def _store_cell_lineage(notebook: str, source: str, parent_hash: str = None):
+    """Store a cell's source in the content-addressed lineage table."""
+    try:
+        from ..core import get_db
+        ch = _cell_hash(source)
+        with get_db() as conn:
+            # Don't overwrite if already exists — content-addressed
+            existing = conn.execute(
+                "SELECT cell_hash FROM cell_lineage WHERE cell_hash=?", (ch,)
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    """INSERT INTO cell_lineage
+                       (cell_hash, notebook, source, parent_hash, created_at)
+                       VALUES (?,?,?,?,?)""",
+                    (ch, notebook, source, parent_hash,
+                     datetime.utcnow().isoformat())
+                )
+                conn.commit()
+    except Exception:
+        pass
+
+
+def _get_cell_source(cell_hash: str) -> str | None:
+    """Retrieve source from the lineage table by hash."""
+    try:
+        from ..core import get_db
+        conn = get_db()
+        row = conn.execute(
+            "SELECT source FROM cell_lineage WHERE cell_hash=?", (cell_hash,)
+        ).fetchone()
+        return row["source"] if row else None
+    except Exception:
+        return None
+
+
+# ── Legacy code baseline helpers (kept for backward compat) ──────────────────
 
 def _get_cell_baseline(notebook: str, cell_seq: int) -> str | None:
     """Get the baseline source for a cell position from the DB."""
@@ -305,7 +426,7 @@ _nb_state: dict = {
     "exp":          None,     # active Experiment
     "ip":           None,     # cached IPython shell instance
     "nb_name":      "",       # notebook filename stem
-    "cell_history": {},       # cell_id -> last source seen
+    "cell_history": {},       # cell_hash -> last source seen
     "var_snapshot": {},       # varname -> last fingerprint seen
     "exec_count":   0,
     "cells_ran":    [],       # cell numbers that ran unchanged (no code/var changes)
@@ -313,6 +434,9 @@ _nb_state: dict = {
     "deferred":     False,    # True when waiting for first real cell
     "deferred_start_fn": None,  # function to call to create the experiment
     "deferred_nb_file":  "",    # notebook file for deferred start
+    "last_cell_hash": None,  # hash of the last executed cell (for lineage)
+    "hash_to_last_exec_hash": {},  # cell_lineage_key -> last exec's source hash
+                                   # tracks when the "same" cell changes content
 }
 
 
@@ -335,6 +459,8 @@ def attach_notebook(exp: "Experiment", nb_name: str = "notebook", ip=None):
     _nb_state["exec_count"]   = 0
     _nb_state["cells_ran"]    = []
     _nb_state["first_run"]    = True
+    _nb_state["last_cell_hash"] = None
+    _nb_state["hash_to_last_exec_hash"] = {}
     if ip is None:
         try:
             ip = get_ipython()  # noqa — only defined in IPython
@@ -360,6 +486,8 @@ def attach_notebook_deferred(nb_file: str = "", ip=None, start_fn=None):
     _nb_state["cells_ran"]  = []
     _nb_state["first_run"] = True
     _nb_state["exp"] = None
+    _nb_state["last_cell_hash"] = None
+    _nb_state["hash_to_last_exec_hash"] = {}
 
     if ip is None:
         try:
@@ -456,7 +584,8 @@ def _find_comment(s: str) -> int:
 
 
 def _post_run_cell(result=None):
-    """Runs after every notebook cell. Captures diff, variables, and output."""
+    """Runs after every notebook cell. Captures diff, variables, and output.
+    Now also emits timeline events for full execution order tracking."""
 
     try:
         ip = _nb_state.get("ip")
@@ -508,40 +637,59 @@ def _post_run_cell(result=None):
 
         _nb_state["exec_count"] += 1
         exec_num = _nb_state["exec_count"]
-        cell_id = hashlib.md5(source.encode()).hexdigest()[:8]
-
-        # ── 2. Compare cell source against DB baseline ────────────────────────
-        # The baseline stores the canonical version of each cell position,
-        # independent of any experiment.  On the first-ever run the full
-        # source is stored; subsequent experiments only log diffs against it.
-        # Deleting experiments never touches baselines, so the reference
-        # code is always preserved.
+        ch = _cell_hash(source)
         notebook = _nb_state["nb_name"]
-        baseline_source = _get_cell_baseline(notebook, exec_num)
 
-        code_is_new = baseline_source is None
+        # ── 1. Content-addressed cell lineage ────────────────────────────────
+        # Store in the lineage table.  Find parent by similarity (handles
+        # edits, splits, and merges).
+        parent_hash = _find_parent_hash(notebook, source, ch)
+        _store_cell_lineage(notebook, source, parent_hash)
+
+        # ── 2. Compute diff against parent cell (if any) ────────────────────
+        # Diff against the parent in the lineage (the previous version of
+        # this cell), NOT against position.  If no parent, it's a new cell.
+        code_is_new = parent_hash is None
         code_changed = False
         source_diff = None
+        parent_source = None
 
-        if code_is_new:
-            # First time this cell position is seen — store as baseline
-            _update_cell_baseline(notebook, exec_num, source)
+        # Also check if we've already executed a cell with this exact hash
+        # in this session — if so, it's a re-run with no code changes.
+        already_seen = ch in _nb_state["cell_history"]
+
+        if already_seen:
+            # Same code as before — no diff needed
+            pass
+        elif code_is_new:
+            # Brand new cell with no similar ancestor
             source_diff = [{"op": "+", "line": line}
                            for line in source.splitlines() if line.strip()]
-        elif source != baseline_source:
-            # Cell source differs from baseline — compute diff, update baseline
-            code_changed = True
-            source_diff = _simple_diff(baseline_source, source)
+        else:
+            # Has a parent — compute diff
+            parent_source = _get_cell_source(parent_hash)
+            if parent_source and parent_source != source:
+                code_changed = True
+                source_diff = _simple_diff(parent_source, source)
+
+        # Update session-local history
+        _nb_state["cell_history"][ch] = source
+        _nb_state["last_cell_hash"] = ch
+
+        # ── 2b. Also update legacy position-based baselines ──────────────────
+        baseline_source = _get_cell_baseline(notebook, exec_num)
+        if baseline_source is None:
             _update_cell_baseline(notebook, exec_num, source)
-        # else: cell unchanged from baseline — no code logging needed
+        elif source != baseline_source:
+            _update_cell_baseline(notebook, exec_num, source)
 
-        # Update session-local history for snapshot deduplication
-        _nb_state["cell_history"][cell_id] = source
+        # ── 3. Detect observational cells ────────────────────────────────────
+        is_observational = _is_observational(source)
 
-        # ── 3. Extract assignment expressions from cell source ────────────────
+        # ── 4. Extract assignment expressions from cell source ───────────────
         cell_assignments = _extract_assignments(source)
 
-        # ── 4. Capture new/changed variables (scalars + arrays + more) ────
+        # ── 5. Capture new/changed variables (scalars + arrays + more) ───────
         ns = ip.user_ns
         prev_snap = _nb_state["var_snapshot"]
         new_vars, changed_vars = {}, {}
@@ -565,7 +713,7 @@ def _post_run_cell(result=None):
             if name not in prev_snap:
                 new_vars[name] = display
             elif prev_snap[name] != fp:
-                changed_vars[name] = {"from": "(previous)", "to": display}
+                changed_vars[name] = {"from": prev_snap[name], "to": display}
 
         # Update snapshot with fingerprints for change detection
         new_snap = {}
@@ -580,7 +728,60 @@ def _post_run_cell(result=None):
         is_first = _nb_state["first_run"]
         _nb_state["first_run"] = False
 
-        # Log HP variables as top-level params (used in run naming)
+        # ── 6. Emit timeline events ──────────────────────────────────────────
+        # cell_exec — always emitted so execution order is preserved
+        diff_str = None
+        if source_diff:
+            diff_str = json.dumps(source_diff)
+
+        event_type = "observational" if is_observational else "cell_exec"
+        cell_seq = exp.log_event(
+            event_type=event_type,
+            cell_hash=ch,
+            cell_pos=exec_num,
+            key=f"cell_{exec_num}",
+            value={
+                "code_is_new": code_is_new and not already_seen,
+                "code_changed": code_changed,
+                "parent_hash": parent_hash,
+                "is_rerun": already_seen and not code_changed and not new_vars and not changed_vars,
+                "source_preview": source[:200],
+            },
+            source_diff=diff_str,
+        )
+
+        # var_set — one event per changed/new variable
+        for name, display in new_vars.items():
+            val = ns.get(name)
+            exp.log_event(
+                event_type="var_set",
+                cell_hash=ch,
+                cell_pos=exec_num,
+                key=name,
+                value=display,
+                prev_value=None,
+            )
+
+        for name, change in changed_vars.items():
+            val = ns.get(name)
+            # For the prev_value, try to get a human-readable form
+            prev_display = change.get("from", "(unknown)")
+            # If the previous fingerprint looks like a repr, use it directly
+            if isinstance(prev_display, str) and len(prev_display) < 200:
+                pass  # already good
+            else:
+                prev_display = "(previous value)"
+
+            exp.log_event(
+                event_type="var_set",
+                cell_hash=ch,
+                cell_pos=exec_num,
+                key=name,
+                value=change["to"],
+                prev_value=prev_display,
+            )
+
+        # ── 7. Log HP variables as top-level params (for run naming) ─────────
         def _scalar_val(name):
             v = ns.get(name)
             return v if isinstance(v, _SCALAR) else None
@@ -609,15 +810,15 @@ def _post_run_cell(result=None):
                 exp.log_param(f"_code_change/cell_{exec_num}", diff_summary)
 
         # If cell ran unchanged with no variable changes, just note it ran
-        if not code_is_new and not code_changed and not new_vars and not changed_vars:
+        if already_seen and not code_changed and not new_vars and not changed_vars:
             _nb_state["cells_ran"].append(exec_num)
             exp.log_param("_cells_ran", json.dumps(_nb_state["cells_ran"]))
 
-        # ── 5. Save snapshot to .exptrack/notebook_history/ ───────────────────
+        # ── 8. Save snapshot to .exptrack/notebook_history/ ───────────────────
         # Only save full snapshots when there are actual changes to record
         if code_is_new or code_changed or new_vars or changed_vars:
-            _save_cell_snapshot(exp, exec_num, cell_id, source,
-                                baseline_source or "",
+            _save_cell_snapshot(exp, exec_num, ch, source,
+                                parent_source or "",
                                 source_diff, new_vars, changed_vars, output)
 
     except Exception as _e:
@@ -665,7 +866,8 @@ def patch_savefig(exp: "Experiment"):
     """
     Monkey-patch matplotlib.pyplot.savefig and Figure.savefig so that every
     saved plot is automatically registered as an artifact on the active
-    experiment.  Safe to call when matplotlib is not installed.
+    experiment.  Also emits a timeline 'artifact' event linking the saved
+    plot to the current variable context.
     """
     global _plt_patched
     if _plt_patched:
@@ -693,9 +895,17 @@ def patch_savefig(exp: "Experiment"):
             out_dir = exp.output_path(orig_path.name)
             if out_dir.resolve() != orig_path:
                 shutil.copy2(str(orig_path), str(out_dir))
+            # Emit timeline artifact event BEFORE registering
+            # so the artifact row can reference the timeline seq
+            art_seq = exp.log_event(
+                event_type="artifact",
+                cell_hash=_nb_state.get("last_cell_hash"),
+                key=orig_path.name,
+                value=str(orig_path),
+            )
             # Register artifact with experiment name as context
             label = f"{exp.name}/{orig_path.name}" if exp.name else orig_path.name
-            exp.log_artifact(str(orig_path), label=label)
+            exp.log_artifact(str(orig_path), label=label, timeline_seq=art_seq)
         except Exception:
             pass
         return result
@@ -758,6 +968,15 @@ def capture_script_snapshot(exp: "Experiment", script_path: str):
                 changed.append(f"- {line[1:].strip()}")
         if changed:
             exp.log_param("_code_changes", "; ".join(changed)[:1000])
+
+    # Also emit a timeline event for the script execution
+    exp.log_event(
+        event_type="cell_exec",
+        cell_hash=src_hash,
+        key="script",
+        value={"script": script_path, "hash": src_hash},
+        source_diff="; ".join(changed)[:1000] if script_diff else None,
+    )
 
 
 def _simple_diff(old: str, new: str) -> list[dict]:

@@ -151,7 +151,8 @@ def cmd_show(args):
     if params:
         sec("Params")
         for p in params:
-            print(f"    {col(p['key'], M):<30} {json.loads(p['value'])}")
+            if not p["key"].startswith("_"):
+                print(f"    {col(p['key'], M):<30} {json.loads(p['value'])}")
         print()
 
     metrics = conn.execute("""
@@ -170,14 +171,155 @@ def cmd_show(args):
                   f" {m['min_v']:>10.4g} {m['max_v']:>10.4g} {m['n']:>6}")
         print()
 
-    arts = conn.execute("SELECT label, path FROM artifacts WHERE exp_id=?",
+    arts = conn.execute("SELECT label, path, timeline_seq FROM artifacts WHERE exp_id=?",
                         (exp["id"],)).fetchall()
     if arts:
         sec("Outputs")
         for a in arts:
             exists = "[ok]" if Path(a["path"]).exists() else dim("[missing]")
-            print(f"    {col(a['label'] or 'file', Y):<30} {a['path']}  {exists}")
+            seq_info = ""
+            if a["timeline_seq"]:
+                seq_info = dim(f"  @seq={a['timeline_seq']}")
+            print(f"    {col(a['label'] or 'file', Y):<30} {a['path']}  {exists}{seq_info}")
         print()
+
+    # Show timeline summary if --timeline flag
+    if getattr(args, "timeline", False):
+        _print_timeline(conn, exp["id"])
+
+
+def cmd_timeline(args):
+    """Show the execution timeline for an experiment."""
+    conn = get_db()
+    exp = conn.execute("SELECT id, name FROM experiments WHERE id LIKE ?",
+                       (args.id + "%",)).fetchone()
+    if not exp:
+        print(col(f"Not found: {args.id}", R)); return
+    print()
+    print(bold(f"  Timeline: {exp['name']}"))
+    _print_timeline(conn, exp["id"], verbose=not args.compact,
+                    event_filter=args.type)
+
+
+def _print_timeline(conn, exp_id, verbose=True, event_filter=None):
+    """Print the execution timeline for an experiment."""
+    where = "WHERE exp_id=?"
+    params = [exp_id]
+    if event_filter:
+        where += " AND event_type=?"
+        params.append(event_filter)
+
+    rows = conn.execute(
+        f"SELECT * FROM timeline {where} ORDER BY seq", params
+    ).fetchall()
+
+    if not rows:
+        print(dim("  No timeline events recorded.")); return
+
+    print(dim("  " + "-"*76))
+
+    ICONS = {
+        "cell_exec": col(">>", C),
+        "var_set": col("=", M),
+        "artifact": col("[]", G),
+        "metric": col("#", Y),
+        "observational": dim(".."),
+    }
+
+    # Track variable state as we walk the timeline
+    var_state = {}
+
+    for r in rows:
+        seq = r["seq"]
+        etype = r["event_type"]
+        icon = ICONS.get(etype, " ")
+        ts = fmt_dt(r["ts"])
+        key = r["key"] or ""
+        val_raw = r["value"]
+
+        if etype == "cell_exec":
+            try:
+                info = json.loads(val_raw) if val_raw else {}
+            except Exception:
+                info = {}
+            preview = info.get("source_preview", "")[:60]
+            flags = []
+            if info.get("code_is_new"): flags.append(col("NEW", G))
+            if info.get("code_changed"): flags.append(col("EDITED", Y))
+            if info.get("is_rerun"): flags.append(dim("rerun"))
+            flag_str = " ".join(flags)
+            print(f"\n  {icon} seq={seq:<4} {ts}  {col(key, C)}  {flag_str}")
+            if verbose and preview:
+                # Show first line of code
+                first_line = preview.splitlines()[0][:70] if preview else ""
+                print(dim(f"             {first_line}"))
+            # Show diff if present
+            if verbose and r["source_diff"]:
+                try:
+                    diff_data = json.loads(r["source_diff"])
+                    for entry in diff_data[:10]:
+                        op = entry.get("op", "=")
+                        line = entry.get("line", "")
+                        if op == "+":
+                            print(col(f"             + {line[:70]}", G))
+                        elif op == "-":
+                            print(col(f"             - {line[:70]}", R))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        elif etype == "observational":
+            try:
+                info = json.loads(val_raw) if val_raw else {}
+            except Exception:
+                info = {}
+            preview = info.get("source_preview", "")[:60]
+            first_line = preview.splitlines()[0][:70] if preview else ""
+            print(dim(f"  {icon} seq={seq:<4} {ts}  {first_line}"))
+
+        elif etype == "var_set":
+            try:
+                val = json.loads(val_raw) if val_raw else ""
+            except Exception:
+                val = val_raw
+            prev_raw = r["prev_value"]
+            old_val = var_state.get(key)
+            var_state[key] = val
+
+            val_str = str(val)[:50]
+            if prev_raw:
+                try:
+                    prev = json.loads(prev_raw)
+                except Exception:
+                    prev = prev_raw
+                print(f"  {icon} seq={seq:<4} {ts}  {col(key, M)} = {val_str}  {dim(f'(was: {str(prev)[:30]})')}")
+            else:
+                print(f"  {icon} seq={seq:<4} {ts}  {col(key, M)} = {val_str}")
+
+        elif etype == "artifact":
+            try:
+                val = json.loads(val_raw) if val_raw else ""
+            except Exception:
+                val = val_raw
+            print(f"  {icon} seq={seq:<4} {ts}  {col('artifact:', G)} {key}  -> {str(val)[:50]}")
+            if verbose:
+                # Show variable context at this point
+                ctx_vars = {k: v for k, v in var_state.items()
+                            if not str(v).startswith("(") and k[0] != "_"}
+                if ctx_vars:
+                    ctx_str = ", ".join(f"{k}={str(v)[:15]}" for k, v in
+                                        list(ctx_vars.items())[:6])
+                    print(dim(f"             context: {ctx_str}"))
+
+        elif etype == "metric":
+            try:
+                val = json.loads(val_raw) if val_raw else ""
+            except Exception:
+                val = val_raw
+            print(f"  {icon} seq={seq:<4} {ts}  {col(key, Y)} = {val}")
+
+    print()
+    print(dim(f"  {len(rows)} events total"))
+    print()
 
 
 def cmd_diff(args):
@@ -201,6 +343,16 @@ def cmd_diff(args):
 
 def cmd_compare(args):
     conn = get_db()
+
+    # Check if --at-seq is used for within-experiment comparison
+    seq1 = getattr(args, "seq1", None)
+    seq2 = getattr(args, "seq2", None)
+
+    if seq1 is not None and seq2 is not None:
+        # Within-experiment comparison: compare variable state at two timeline points
+        _compare_within(conn, args.id1, int(seq1), int(seq2))
+        return
+
     exps = []
     for eid in [args.id1, args.id2]:
         e = conn.execute("SELECT * FROM experiments WHERE id LIKE ?",
@@ -230,10 +382,39 @@ def cmd_compare(args):
     if p1 or p2:
         print(bold(col("  Params", Y)))
         for k in sorted(set(p1) | set(p2)):
+            if k.startswith("_"):
+                continue  # skip internal params in compare
             v1 = str(p1.get(k, dim("--")))
             v2 = str(p2.get(k, dim("--")))
             marker = col("  < differs", Y) if p1.get(k) != p2.get(k) else ""
             print(f"  {k:<26} {v1:<30} {v2:<30}{marker}")
+        print()
+
+    # Variable comparison (from timeline)
+    def get_final_vars(eid):
+        """Get final variable state from timeline."""
+        rows = conn.execute("""
+            SELECT key, value FROM timeline
+            WHERE exp_id=? AND event_type='var_set'
+            ORDER BY seq DESC
+        """, (eid,)).fetchall()
+        ctx = {}
+        for r in rows:
+            if r["key"] not in ctx:
+                try:
+                    ctx[r["key"]] = json.loads(r["value"]) if r["value"] else None
+                except Exception:
+                    ctx[r["key"]] = r["value"]
+        return ctx
+
+    v1, v2 = get_final_vars(e1["id"]), get_final_vars(e2["id"])
+    if v1 or v2:
+        print(bold(col("  Variables (final state)", M)))
+        for k in sorted(set(v1) | set(v2)):
+            sv1 = str(v1.get(k, dim("--")))[:30]
+            sv2 = str(v2.get(k, dim("--")))[:30]
+            marker = col("  < differs", Y) if v1.get(k) != v2.get(k) else ""
+            print(f"  {k:<26} {sv1:<30} {sv2:<30}{marker}")
         print()
 
     if m1 or m2:
@@ -247,6 +428,70 @@ def cmd_compare(args):
                 marker = col(f"  {'>' if d>0 else '<'}{abs(d):.3g}", G if d < 0 else R)
             print(f"  {k:<26} {sv1:<30} {sv2:<30}{marker}")
         print()
+
+
+def _compare_within(conn, exp_id_prefix, seq1, seq2):
+    """Compare variable state at two timeline points within the same experiment."""
+    exp = conn.execute("SELECT id, name FROM experiments WHERE id LIKE ?",
+                       (exp_id_prefix + "%",)).fetchone()
+    if not exp:
+        print(col(f"Not found: {exp_id_prefix}", R)); return
+
+    eid = exp["id"]
+
+    def vars_at_seq(s):
+        rows = conn.execute("""
+            SELECT key, value FROM timeline
+            WHERE exp_id=? AND event_type='var_set' AND seq <= ?
+            ORDER BY seq DESC
+        """, (eid, s)).fetchall()
+        ctx = {}
+        for r in rows:
+            if r["key"] not in ctx:
+                try:
+                    ctx[r["key"]] = json.loads(r["value"]) if r["value"] else None
+                except Exception:
+                    ctx[r["key"]] = r["value"]
+        return ctx
+
+    v1, v2 = vars_at_seq(seq1), vars_at_seq(seq2)
+
+    print()
+    print(bold(f"  Within-experiment comparison: {exp['name']}"))
+    print(f"  {'':26} {bold(col(f'@seq={seq1}', C)):<36} {bold(col(f'@seq={seq2}', M))}")
+    print(dim("  " + "-" * 82))
+
+    # Show what cell was executing at each seq
+    for s, label in [(seq1, C), (seq2, M)]:
+        row = conn.execute(
+            "SELECT event_type, key, value FROM timeline WHERE exp_id=? AND seq=?",
+            (eid, s)).fetchone()
+        if row:
+            try:
+                info = json.loads(row["value"]) if row["value"] else {}
+            except (json.JSONDecodeError, TypeError):
+                info = {}
+            if isinstance(info, dict):
+                preview = info.get("source_preview", row["key"] or "")[:50]
+            else:
+                preview = str(info)[:50]
+            print(f"  {col(f'@seq={s}', label)}: {row['event_type']} - {preview}")
+    print()
+
+    all_keys = sorted(set(v1) | set(v2))
+    if all_keys:
+        print(bold(col("  Variables", M)))
+        for k in all_keys:
+            sv1 = str(v1.get(k, dim("--")))[:30]
+            sv2 = str(v2.get(k, dim("--")))[:30]
+            marker = col("  < changed", Y) if v1.get(k) != v2.get(k) else ""
+            if v1.get(k) != v2.get(k):
+                print(f"  {col(k, Y):<34} {sv1:<30} {sv2:<30}{marker}")
+            else:
+                print(dim(f"  {k:<26} {sv1:<30} {sv2:<30}"))
+    else:
+        print(dim("  No variable state recorded at these points."))
+    print()
 
 
 def cmd_history(args):
@@ -355,7 +600,7 @@ def cmd_rm(args):
     if not exp: print(col(f"Not found: {args.id}", R)); return
     confirm = input(f"Delete '{exp['name']}' ({exp['id'][:6]})? [y/N] ")
     if confirm.lower() == "y":
-        for t in ("metrics", "params", "artifacts"):
+        for t in ("metrics", "params", "artifacts", "timeline"):
             conn.execute(f"DELETE FROM {t} WHERE exp_id=?", (exp["id"],))
         conn.execute("DELETE FROM experiments WHERE id=?", (exp["id"],))
         conn.commit()
@@ -386,7 +631,7 @@ def cmd_clean(args):
     for r in rows: print(f"  {r['id'][:6]}  {r['name']}")
     if input("Delete all? [y/N] ").lower() == "y":
         for r in rows:
-            for t in ("metrics", "params", "artifacts"):
+            for t in ("metrics", "params", "artifacts", "timeline"):
                 conn.execute(f"DELETE FROM {t} WHERE exp_id=?", (r["id"],))
             conn.execute("DELETE FROM experiments WHERE id=?", (r["id"],))
         conn.commit()
@@ -706,10 +951,10 @@ def cmd_upgrade(args):
     """Run schema migrations and optionally reinstall the package."""
     conn = get_db()
 
-    # Get current columns
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(experiments)").fetchall()}
-
     migrations = []
+
+    # Get current columns for experiments table
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(experiments)").fetchall()}
 
     # Add columns that may be missing from older schemas
     new_cols = {
@@ -723,12 +968,57 @@ def cmd_upgrade(args):
     for col_name, col_type in new_cols.items():
         if col_name not in cols:
             conn.execute(f"ALTER TABLE experiments ADD COLUMN {col_name} {col_type}")
-            migrations.append(col_name)
+            migrations.append(f"experiments.{col_name}")
+
+    # Add timeline_seq to artifacts if missing
+    art_cols = {row[1] for row in conn.execute("PRAGMA table_info(artifacts)").fetchall()}
+    if "timeline_seq" not in art_cols:
+        conn.execute("ALTER TABLE artifacts ADD COLUMN timeline_seq INTEGER")
+        migrations.append("artifacts.timeline_seq")
+
+    # Create timeline table if missing
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+
+    if "timeline" not in tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS timeline (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                exp_id      TEXT NOT NULL,
+                seq         INTEGER NOT NULL,
+                event_type  TEXT NOT NULL,
+                cell_hash   TEXT,
+                cell_pos    INTEGER,
+                key         TEXT,
+                value       TEXT,
+                prev_value  TEXT,
+                source_diff TEXT,
+                ts          TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_timeline_exp_seq
+                ON timeline(exp_id, seq);
+            CREATE INDEX IF NOT EXISTS idx_timeline_exp_type
+                ON timeline(exp_id, event_type);
+        """)
+        migrations.append("timeline table")
+
+    if "cell_lineage" not in tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS cell_lineage (
+                cell_hash   TEXT PRIMARY KEY,
+                notebook    TEXT NOT NULL,
+                source      TEXT NOT NULL,
+                parent_hash TEXT,
+                created_at  TEXT NOT NULL
+            );
+        """)
+        migrations.append("cell_lineage table")
 
     conn.commit()
 
     if migrations:
-        print(col(f"Added columns: {', '.join(migrations)}", G))
+        print(col(f"Migrations applied: {', '.join(migrations)}", G))
     else:
         print(dim("Schema is up to date."))
 
@@ -834,11 +1124,30 @@ def main():
     p_ls = sub.add_parser("ls")
     p_ls.add_argument("-n", type=int, default=20)
 
-    sub.add_parser("show").add_argument("id")
+    p_show = sub.add_parser("show")
+    p_show.add_argument("id")
+    p_show.add_argument("--timeline", "-t", action="store_true",
+                        help="Show execution timeline")
+
     sub.add_parser("diff").add_argument("id")
 
-    p_cmp = sub.add_parser("compare")
-    p_cmp.add_argument("id1"); p_cmp.add_argument("id2")
+    p_cmp = sub.add_parser("compare",
+        help="Compare two experiments, or compare within one experiment at two timeline points")
+    p_cmp.add_argument("id1", help="First experiment ID (or sole ID for within-exp compare)")
+    p_cmp.add_argument("id2", nargs="?", default="",
+                       help="Second experiment ID (omit for within-exp compare)")
+    p_cmp.add_argument("--seq1", type=int, default=None,
+                       help="Timeline seq point 1 (within-experiment comparison)")
+    p_cmp.add_argument("--seq2", type=int, default=None,
+                       help="Timeline seq point 2 (within-experiment comparison)")
+
+    p_tl = sub.add_parser("timeline", help="Show execution timeline for an experiment")
+    p_tl.add_argument("id")
+    p_tl.add_argument("--compact", "-c", action="store_true",
+                      help="Compact output (no code previews)")
+    p_tl.add_argument("--type", choices=["cell_exec", "var_set", "artifact",
+                                          "metric", "observational"],
+                      help="Filter by event type")
 
     p_hist = sub.add_parser("history")
     p_hist.add_argument("notebook")
@@ -876,6 +1185,7 @@ def main():
         "show":         cmd_show,
         "diff":         cmd_diff,
         "compare":      cmd_compare,
+        "timeline":     cmd_timeline,
         "history":      cmd_history,
         "tag":          cmd_tag,
         "note":         cmd_note,

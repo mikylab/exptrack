@@ -89,7 +89,42 @@ def _ensure_schema(conn):
             updated_at  TEXT NOT NULL,
             PRIMARY KEY (notebook, cell_seq)
         );
+
+        CREATE TABLE IF NOT EXISTS timeline (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            exp_id      TEXT NOT NULL,
+            seq         INTEGER NOT NULL,
+            event_type  TEXT NOT NULL,
+            cell_hash   TEXT,
+            cell_pos    INTEGER,
+            key         TEXT,
+            value       TEXT,
+            prev_value  TEXT,
+            source_diff TEXT,
+            ts          TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_timeline_exp_seq
+            ON timeline(exp_id, seq);
+        CREATE INDEX IF NOT EXISTS idx_timeline_exp_type
+            ON timeline(exp_id, event_type);
+
+        CREATE TABLE IF NOT EXISTS cell_lineage (
+            cell_hash   TEXT PRIMARY KEY,
+            notebook    TEXT NOT NULL,
+            source      TEXT NOT NULL,
+            parent_hash TEXT,
+            created_at  TEXT NOT NULL
+        );
     """)
+
+    # Add timeline_seq to artifacts if missing
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(artifacts)").fetchall()}
+        if "timeline_seq" not in cols:
+            conn.execute("ALTER TABLE artifacts ADD COLUMN timeline_seq INTEGER")
+    except Exception:
+        pass
+
     conn.commit()
 
 
@@ -304,16 +339,6 @@ class Experiment:
 
     # ── Artifacts / outputs ───────────────────────────────────────────────────
 
-    def log_artifact(self, path: str | Path, label: str = ""):
-        """Register an output file path (the file itself stays local)."""
-        ts = datetime.utcnow().isoformat()
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
-                (self.id, label or Path(path).name, str(path), ts)
-            )
-            conn.commit()
-
     def output_path(self, filename: str) -> Path:
         """
         Get a namespaced output path for this run.
@@ -352,6 +377,73 @@ class Experiment:
         if error:
             self.log_param("error", error)
         self.finish("failed")
+
+    # ── Timeline ──────────────────────────────────────────────────────────────
+
+    _timeline_seq: int = 0
+
+    def log_event(self, event_type: str, cell_hash: str = None,
+                  cell_pos: int = None, key: str = None, value: Any = None,
+                  prev_value: Any = None, source_diff: str = None) -> int:
+        """
+        Append an event to the execution timeline.
+
+        event_type: 'cell_exec' | 'var_set' | 'artifact' | 'metric' | 'observational'
+        Returns the seq number of this event.
+        """
+        self._timeline_seq += 1
+        seq = self._timeline_seq
+        ts = datetime.utcnow().isoformat()
+        with get_db() as conn:
+            conn.execute(
+                """INSERT INTO timeline
+                   (exp_id, seq, event_type, cell_hash, cell_pos,
+                    key, value, prev_value, source_diff, ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (self.id, seq, event_type, cell_hash, cell_pos, key,
+                 json.dumps(value, default=str) if value is not None else None,
+                 json.dumps(prev_value, default=str) if prev_value is not None else None,
+                 source_diff, ts)
+            )
+            conn.commit()
+        return seq
+
+    def log_artifact(self, path: str | Path, label: str = "",
+                     timeline_seq: int = None):
+        """Register an output file path (the file itself stays local)."""
+        ts = datetime.utcnow().isoformat()
+        with get_db() as conn:
+            conn.execute(
+                """INSERT INTO artifacts
+                   (exp_id, label, path, created_at, timeline_seq)
+                   VALUES (?,?,?,?,?)""",
+                (self.id, label or Path(path).name, str(path), ts, timeline_seq)
+            )
+            conn.commit()
+
+    def get_variable_context(self, at_seq: int = None) -> dict:
+        """
+        Reconstruct the variable state at a given timeline seq by walking
+        backward through var_set events.  If at_seq is None, returns the
+        current (latest) state.
+        """
+        where = "WHERE exp_id=? AND event_type='var_set'"
+        params: list = [self.id]
+        if at_seq is not None:
+            where += " AND seq <= ?"
+            params.append(at_seq)
+        with get_db() as conn:
+            rows = conn.execute(
+                f"""SELECT key, value FROM timeline {where}
+                    ORDER BY seq DESC""",
+                params,
+            ).fetchall()
+        # Latest value per key (first seen wins since DESC order)
+        ctx: dict = {}
+        for r in rows:
+            if r["key"] not in ctx:
+                ctx[r["key"]] = json.loads(r["value"]) if r["value"] else None
+        return ctx
 
     def __enter__(self):
         return self
