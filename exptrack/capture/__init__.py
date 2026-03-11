@@ -269,6 +269,7 @@ def _var_fingerprint(val) -> str:
 # State per notebook session
 _nb_state: dict = {
     "exp":          None,     # active Experiment
+    "ip":           None,     # cached IPython shell instance
     "nb_name":      "",       # notebook filename stem
     "cell_history": {},       # cell_id -> last source seen
     "var_snapshot": {},       # varname -> last fingerprint seen
@@ -277,10 +278,17 @@ _nb_state: dict = {
 }
 
 
-def attach_notebook(exp: "Experiment", nb_name: str = "notebook"):
+def attach_notebook(exp: "Experiment", nb_name: str = "notebook", ip=None):
     """
-    Install the post_execute hook into the running IPython kernel.
+    Install the post_run_cell hook into the running IPython kernel.
     Safe to call outside notebooks — does nothing if IPython isn't active.
+
+    Parameters
+    ----------
+    ip : optional IPython shell instance.  When called from
+         load_ipython_extension the shell is passed directly so we don't
+         rely on the get_ipython() builtin (which may not resolve inside
+         every module context).
     """
     _nb_state["exp"]          = exp
     _nb_state["nb_name"]      = nb_name
@@ -288,50 +296,82 @@ def attach_notebook(exp: "Experiment", nb_name: str = "notebook"):
     _nb_state["var_snapshot"] = {}
     _nb_state["exec_count"]   = 0
     _nb_state["first_run"]    = True
-    try:
-        ip = get_ipython()  # noqa — only defined in IPython
-        _unregister_hook(ip)
-        ip.events.register("post_execute", _post_execute)
-    except NameError:
-        pass
+    if ip is None:
+        try:
+            ip = get_ipython()  # noqa — only defined in IPython
+        except NameError:
+            return
+    _nb_state["ip"] = ip
+    _unregister_hook(ip)
+    ip.events.register("post_run_cell", _post_run_cell)
 
 
 def detach_notebook():
     _nb_state["exp"] = None
-    try:
-        ip = get_ipython()  # noqa
-        _unregister_hook(ip)
-    except NameError:
-        pass
+    ip = _nb_state.get("ip")
+    if ip is None:
+        try:
+            ip = get_ipython()  # noqa
+        except NameError:
+            return
+    _unregister_hook(ip)
 
 
 def _unregister_hook(ip):
-    try:
-        ip.events.unregister("post_execute", _post_execute)
-    except Exception:
-        pass
+    # Remove both old-style and new-style hooks for safe upgrades
+    for hook_fn in (_post_run_cell, _post_execute):
+        try:
+            ip.events.unregister("post_run_cell", hook_fn)
+        except (ValueError, Exception):
+            pass
+        try:
+            ip.events.unregister("post_execute", hook_fn)
+        except (ValueError, Exception):
+            pass
 
 
-def _post_execute():
+def _post_run_cell(result=None):
     """Runs after every notebook cell. Captures diff, variables, and output."""
     exp = _nb_state["exp"]
     if exp is None:
         return
 
     try:
-        ip = get_ipython()  # noqa
+        ip = _nb_state.get("ip")
+        if ip is None:
+            try:
+                ip = get_ipython()  # noqa
+            except NameError:
+                return
         _nb_state["exec_count"] += 1
         exec_num = _nb_state["exec_count"]
 
         # ── 1. Get the cell that just ran ─────────────────────────────────────
-        hist = list(ip.history_manager.get_range(
-            output=True, raw=True,
-            start=-1, stop=None
-        ))
-        if not hist:
-            return
+        # Primary: get source directly from the execution result (post_run_cell)
+        source = None
+        output = None
+        if result is not None:
+            try:
+                source = result.info.raw_cell
+            except AttributeError:
+                pass
 
-        session, lineno, (source, output) = hist[-1]
+        # Fallback 1: input_hist_raw (in-memory, no DB query)
+        if not source:
+            try:
+                source = ip.history_manager.input_hist_raw[-1]
+            except (IndexError, AttributeError):
+                pass
+
+        # Fallback 2: In list from user namespace
+        if not source:
+            try:
+                source = ip.user_ns.get("In", [""])[-1]
+            except (IndexError, TypeError):
+                pass
+
+        if not source:
+            return
         cell_id = hashlib.md5(source.encode()).hexdigest()[:8]
 
         # ── 2. Diff cell source against last seen version ─────────────────────
@@ -353,7 +393,7 @@ def _post_execute():
         prev_snap = _nb_state["var_snapshot"]
         new_vars, changed_vars = {}, {}
 
-        for name, val in ns.items():
+        for name, val in list(ns.items()):
             if name.startswith("_") or name in _SKIP_NAMES:
                 continue
             summary = _var_summary(val)
@@ -367,7 +407,7 @@ def _post_execute():
 
         # Update snapshot with fingerprints for change detection
         new_snap = {}
-        for name, val in ns.items():
+        for name, val in list(ns.items()):
             if name.startswith("_") or name in _SKIP_NAMES:
                 continue
             if _var_summary(val) is not None:
@@ -413,8 +453,13 @@ def _post_execute():
             _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
                                 source_diff, new_vars, changed_vars, output)
 
-    except Exception:
-        pass  # never break the user's notebook
+    except Exception as _e:
+        # Print a brief diagnostic so users can report capture issues
+        print(f"[exptrack] cell capture error: {_e}", file=sys.stderr)
+
+
+# Backward-compat alias — old code registered _post_execute
+_post_execute = _post_run_cell
 
 
 def _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,

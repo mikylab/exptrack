@@ -51,13 +51,20 @@ def start(name: str = "", nb_file: str = "", **params) -> Experiment:
     if not nb_file:
         nb_file = _detect_nb_name()
 
+    # Try to get the IPython shell instance for reliable hook registration
+    ip = None
+    try:
+        ip = get_ipython()  # noqa
+    except NameError:
+        pass
+
     _active = Experiment(
         name=name,
         params=params or None,
         script=nb_file or "notebook",
         _caller_depth=2,
     )
-    attach_notebook(_active, nb_name=Path(nb_file).stem if nb_file else "notebook")
+    attach_notebook(_active, nb_name=Path(nb_file).stem if nb_file else "notebook", ip=ip)
     patch_savefig(_active)
     return _active
 
@@ -154,14 +161,14 @@ def _detect_nb_name() -> str:
 def load_ipython_extension(ip):
     """Called by %load_ext exptrack"""
 
-    # Auto-start on load
+    # Auto-start on load — pass ip directly so the hook is reliably registered
     nb_file = _detect_nb_name()
-    _auto_start(nb_file)
+    _auto_start(nb_file, ip=ip)
 
     def exp_start(line):
         """Start or restart experiment. Optional: %exp_start my_run_name"""
         nb_file = _detect_nb_name()
-        _auto_start(nb_file, name=line.strip())
+        _auto_start(nb_file, name=line.strip(), ip=ip)
 
     def exp_done(line):
         """Finish the current experiment."""
@@ -203,7 +210,7 @@ def load_ipython_extension(ip):
     print(f"[exptrack] Loaded. Use %exp_status, %exp_done, %exp_tag, %exp_note")
 
 
-def _auto_start(nb_file: str = "", name: str = ""):
+def _auto_start(nb_file: str = "", name: str = "", ip=None):
     global _active
     if _active is not None:
         try: _active.finish()
@@ -216,5 +223,5 @@ def _auto_start(nb_file: str = "", name: str = ""):
         _caller_depth=3,
     )
     nb_name = Path(nb_file).stem if nb_file else "notebook"
-    attach_notebook(_active, nb_name=nb_name)
+    attach_notebook(_active, nb_name=nb_name, ip=ip)
     patch_savefig(_active)
