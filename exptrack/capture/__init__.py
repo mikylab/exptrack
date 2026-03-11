@@ -155,13 +155,125 @@ _HP_RE = re.compile(
 )
 _SCALAR = (int, float, bool, str)
 
+# Types we skip entirely (modules, functions, classes, etc.)
+_SKIP_TYPES_NAMES = frozenset({
+    "module", "function", "builtin_function_or_method", "type",
+    "method", "classmethod", "staticmethod", "property",
+    "getset_descriptor", "member_descriptor", "wrapper_descriptor",
+    "method_descriptor", "method-wrapper",
+})
+# Internal IPython names to never capture
+_SKIP_NAMES = frozenset({
+    "In", "Out", "get_ipython", "exit", "quit", "open",
+})
+
+
+def _var_summary(val) -> str | None:
+    """
+    Return a short summary string for any variable value.
+    Returns None if the variable should be skipped.
+    """
+    if isinstance(val, _SCALAR):
+        if isinstance(val, str) and len(val) > 200:
+            return None
+        return repr(val)
+    tname = type(val).__name__
+    if tname in _SKIP_TYPES_NAMES:
+        return None
+    # numpy array
+    if tname == "ndarray":
+        try:
+            shape = val.shape
+            dtype = val.dtype
+            return f"ndarray(shape={shape}, dtype={dtype})"
+        except Exception:
+            return f"ndarray(?)"
+    # pandas DataFrame / Series
+    if tname == "DataFrame":
+        try:
+            return f"DataFrame(shape={val.shape}, cols={list(val.columns)[:8]})"
+        except Exception:
+            return f"DataFrame(?)"
+    if tname == "Series":
+        try:
+            return f"Series(len={len(val)}, dtype={val.dtype})"
+        except Exception:
+            return f"Series(?)"
+    # torch Tensor
+    if tname == "Tensor":
+        try:
+            return f"Tensor(shape={list(val.shape)}, dtype={val.dtype})"
+        except Exception:
+            return f"Tensor(?)"
+    # list / tuple / dict / set — show type + length
+    if isinstance(val, (list, tuple, set, frozenset)):
+        return f"{tname}(len={len(val)})"
+    if isinstance(val, dict):
+        return f"dict(len={len(val)}, keys={list(val.keys())[:8]})"
+    # matplotlib Figure
+    if tname == "Figure":
+        return None  # skip figures, captured via savefig
+    # Generic: show type name
+    try:
+        s = repr(val)
+        if len(s) > 200:
+            return f"{tname}(...)"
+        return s
+    except Exception:
+        return f"{tname}(?)"
+
+
+def _var_fingerprint(val) -> str:
+    """
+    Return a fingerprint string used for change detection.
+    For large objects we use id+type, for scalars the repr.
+    """
+    if isinstance(val, _SCALAR):
+        return repr(val)
+    tname = type(val).__name__
+    if tname == "ndarray":
+        try:
+            import hashlib as _hl
+            return f"ndarray:{val.shape}:{val.dtype}:{_hl.md5(val.tobytes()).hexdigest()[:8]}"
+        except Exception:
+            return f"ndarray:{id(val)}"
+    if tname in ("DataFrame", "Series"):
+        try:
+            import hashlib as _hl
+            return f"{tname}:{val.shape}:{_hl.md5(val.values.tobytes()).hexdigest()[:8]}"
+        except Exception:
+            return f"{tname}:{id(val)}"
+    if tname == "Tensor":
+        try:
+            import hashlib as _hl
+            return f"Tensor:{list(val.shape)}:{_hl.md5(val.cpu().numpy().tobytes()).hexdigest()[:8]}"
+        except Exception:
+            return f"Tensor:{id(val)}"
+    if isinstance(val, (list, tuple, set, frozenset, dict)):
+        try:
+            j = json.dumps(val, default=str, sort_keys=True)
+            if len(j) < 10000:
+                return j
+        except Exception:
+            pass
+        return f"{tname}:{len(val)}:{id(val)}"
+    try:
+        r = repr(val)
+        if len(r) < 1000:
+            return r
+    except Exception:
+        pass
+    return f"{tname}:{id(val)}"
+
+
 # State per notebook session
 _nb_state: dict = {
     "exp":          None,     # active Experiment
     "nb_name":      "",       # notebook filename stem
     "cell_history": {},       # cell_id -> last source seen
-    "var_snapshot": {},       # varname -> last value seen
+    "var_snapshot": {},       # varname -> last fingerprint seen
     "exec_count":   0,
+    "first_run":    True,     # True until first cell is processed
 }
 
 
@@ -175,6 +287,7 @@ def attach_notebook(exp: "Experiment", nb_name: str = "notebook"):
     _nb_state["cell_history"] = {}
     _nb_state["var_snapshot"] = {}
     _nb_state["exec_count"]   = 0
+    _nb_state["first_run"]    = True
     try:
         ip = get_ipython()  # noqa — only defined in IPython
         _unregister_hook(ip)
@@ -235,31 +348,44 @@ def _post_execute():
                 source_diff = [{"op": "+", "line": line}
                                for line in source.splitlines() if line.strip()]
 
-        # ── 3. Capture new/changed scalar variables ───────────────────────────
+        # ── 3. Capture new/changed variables (scalars + arrays + more) ────
         ns = ip.user_ns
         prev_snap = _nb_state["var_snapshot"]
         new_vars, changed_vars = {}, {}
 
         for name, val in ns.items():
-            if name.startswith("_") or not isinstance(val, _SCALAR):
+            if name.startswith("_") or name in _SKIP_NAMES:
                 continue
-            if isinstance(val, str) and len(val) > 200:
+            summary = _var_summary(val)
+            if summary is None:
                 continue
+            fp = _var_fingerprint(val)
             if name not in prev_snap:
-                new_vars[name] = val
-            elif prev_snap[name] != val:
-                changed_vars[name] = {"from": prev_snap[name], "to": val}
+                new_vars[name] = summary
+            elif prev_snap[name] != fp:
+                changed_vars[name] = {"from": "(previous)", "to": summary}
 
-        # Update snapshot
-        _nb_state["var_snapshot"] = {
-            k: v for k, v in ns.items()
-            if not k.startswith("_") and isinstance(v, _SCALAR) and
-               not (isinstance(v, str) and len(v) > 200)
-        }
+        # Update snapshot with fingerprints for change detection
+        new_snap = {}
+        for name, val in ns.items():
+            if name.startswith("_") or name in _SKIP_NAMES:
+                continue
+            if _var_summary(val) is not None:
+                new_snap[name] = _var_fingerprint(val)
+        _nb_state["var_snapshot"] = new_snap
+
+        # On first run, capture all variables as the baseline
+        is_first = _nb_state["first_run"]
+        _nb_state["first_run"] = False
 
         # Log HP variables as top-level params (used in run naming)
-        hp_new = {k: v for k, v in new_vars.items() if _HP_RE.match(k)}
-        hp_changed = {k: d["to"] for k, d in changed_vars.items() if _HP_RE.match(k)}
+        # For HP detection, extract the actual value for scalars
+        def _scalar_val(name):
+            v = ns.get(name)
+            return v if isinstance(v, _SCALAR) else None
+
+        hp_new = {k: _scalar_val(k) for k in new_vars if _HP_RE.match(k) and _scalar_val(k) is not None}
+        hp_changed = {k: _scalar_val(k) for k in changed_vars if _HP_RE.match(k) and _scalar_val(k) is not None}
         if hp_new or hp_changed:
             exp.log_params({**hp_new, **hp_changed})
             from ..core import make_run_name
@@ -344,23 +470,30 @@ def patch_savefig(exp: "Experiment"):
     _orig_plt_savefig = plt.savefig
     _orig_fig_savefig = mfig.Figure.savefig
 
-    def _hooked_plt_savefig(fname, *args, **kwargs):
-        result = _orig_plt_savefig(fname, *args, **kwargs)
+    def _namespace_and_save(fname, save_fn, *args, **kwargs):
+        """Save the file, copy to experiment output dir, and register artifact."""
+        from pathlib import Path as _P
+        import shutil
+        # Save to the original location first
+        result = save_fn(fname, *args, **kwargs)
         try:
-            from pathlib import Path as _P
-            exp.log_artifact(str(_P(str(fname)).resolve()), label=_P(str(fname)).name)
+            orig_path = _P(str(fname)).resolve()
+            # Also copy into the experiment's namespaced output directory
+            out_dir = exp.output_path(orig_path.name)
+            if out_dir.resolve() != orig_path:
+                shutil.copy2(str(orig_path), str(out_dir))
+            # Register artifact with experiment name as context
+            label = f"{exp.name}/{orig_path.name}" if exp.name else orig_path.name
+            exp.log_artifact(str(orig_path), label=label)
         except Exception:
             pass
         return result
 
+    def _hooked_plt_savefig(fname, *args, **kwargs):
+        return _namespace_and_save(fname, _orig_plt_savefig, *args, **kwargs)
+
     def _hooked_fig_savefig(self_fig, fname, *args, **kwargs):
-        result = _orig_fig_savefig(self_fig, fname, *args, **kwargs)
-        try:
-            from pathlib import Path as _P
-            exp.log_artifact(str(_P(str(fname)).resolve()), label=_P(str(fname)).name)
-        except Exception:
-            pass
-        return result
+        return _namespace_and_save(fname, lambda f, *a, **kw: _orig_fig_savefig(self_fig, f, *a, **kw), *args, **kwargs)
 
     plt.savefig = _hooked_plt_savefig
     mfig.Figure.savefig = _hooked_fig_savefig
