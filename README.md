@@ -213,6 +213,67 @@ path = exp.out("preds.csv")        # -> outputs/run_name/preds.csv
 exp.done()
 ```
 
+#### Using the explicit API with your own model
+
+exptrack doesn't auto-detect your model's hyperparameters. Instead, define your
+hyperparameters as variables and pass them to **both** `exp.start()` and your
+model/optimizer. The variables are the single source of truth — exptrack just
+records them.
+
+```python
+import exptrack.notebook as exp
+import torch
+import torch.nn as nn
+
+# 1. Define hyperparams as variables (single source of truth)
+lr = 0.001
+bs = 32
+epochs = 20
+dropout = 0.3
+
+# 2. Pass them to exptrack — these are recorded as experiment params
+run = exp.start(lr=lr, bs=bs, epochs=epochs, dropout=dropout)
+
+# 3. Use the SAME variables in your model — they're always in sync
+model = nn.Sequential(
+    nn.Linear(784, 256),
+    nn.ReLU(),
+    nn.Dropout(dropout),      # same variable
+    nn.Linear(256, 10),
+)
+optimizer = torch.optim.Adam(model.parameters(), lr=lr)   # same variable
+train_loader = DataLoader(dataset, batch_size=bs)          # same variable
+
+# 4. Training loop — log metrics as you go
+for epoch in range(epochs):
+    for batch in train_loader:
+        loss = train_step(model, batch, optimizer)
+
+    val_loss = evaluate(model, val_loader)
+    exp.metric("train/loss", loss, step=epoch)
+    exp.metric("val/loss", val_loss, step=epoch)
+
+# 5. Save model — auto-registered as artifact
+path = exp.out("model.pt")
+torch.save(model.state_dict(), path)
+
+exp.done()
+```
+
+The key idea: **you are not passing the same values twice**. You define each
+hyperparameter once as a variable, then reference that variable everywhere.
+Change `lr = 0.001` to `lr = 0.01` at the top, and both exptrack and your
+optimizer see the new value.
+
+You can also log extra params mid-run if needed:
+
+```python
+exp.param("scheduler", "cosine")        # single param
+exp.param("model_params", count_params(model))
+exp.tag("baseline")
+exp.note("first run with dropout")
+```
+
 ### Step 4: View your experiments
 
 ```bash
@@ -384,21 +445,112 @@ searchable history with no large files ever touching GitHub.
 
 ---
 
-## Adding a plugin
+## Plugins
+
+Plugins run your code automatically when experiments start, finish, fail, or log
+metrics. You never call them directly — exptrack triggers them for you.
+
+### Why use a plugin?
+
+Without a plugin, you'd have to manually add notification/upload/sync code to
+every training script. Plugins let you write that logic once and it runs
+automatically for every experiment.
+
+**Common use cases:**
+- **Slack/email alerts** — get notified when a long training run finishes or crashes
+- **Cloud upload** — auto-upload model checkpoints to S3/GCS when a run completes
+- **Shared experiment log** — sync run metadata to a shared database or GitHub repo
+  (the included `github_sync` plugin does this)
+- **Auto-cleanup** — delete old checkpoints when a new best model is found
+
+### How plugins work
+
+Every plugin has four lifecycle hooks:
 
 ```python
-# exptrack/plugins/myplugin.py
-from exptrack.plugins import Plugin
-
-class MyPlugin(Plugin):
-    name = "myPlugin"
-    def __init__(self, config): ...
-    def on_finish(self, exp): ...   # fires when run completes
-
-plugin_class = MyPlugin
+class Plugin:
+    def on_start(self, exp):              # experiment created
+    def on_finish(self, exp):             # experiment completed successfully
+    def on_fail(self, exp, error):        # experiment failed
+    def on_metric(self, exp, key, value, step):  # metric logged
 ```
 
-Add `"myPlugin"` to `"enabled"` in config. No other changes needed.
+You only override the hooks you need. For example, a Slack notifier only needs
+`on_finish` and `on_fail`.
+
+### Writing a plugin
+
+```python
+# exptrack/plugins/slack_notify.py
+import json
+import urllib.request
+from exptrack.plugins import Plugin
+
+class SlackNotify(Plugin):
+    name = "slack_notify"
+
+    def __init__(self, config):
+        self.webhook = config.get("webhook_url", "")
+
+    def on_finish(self, exp):
+        self._post(f"Run *{exp.name}* finished in {exp.duration_s:.0f}s")
+
+    def on_fail(self, exp, error):
+        self._post(f"Run *{exp.name}* FAILED: {error}")
+
+    def _post(self, text):
+        if not self.webhook:
+            return
+        data = json.dumps({"text": text}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(self.webhook, data,
+                                  {"Content-Type": "application/json"})
+        )
+
+plugin_class = SlackNotify
+```
+
+### Enabling a plugin
+
+Add it to `.exptrack/config.json`:
+
+```json
+{
+  "plugins": {
+    "enabled": ["slack_notify"],
+    "slack_notify": {
+      "webhook_url": "https://hooks.slack.com/services/T.../B.../xxx"
+    }
+  }
+}
+```
+
+That's it. Every experiment now posts to Slack when it finishes or fails.
+
+---
+
+## exptrack vs. TensorBoard
+
+| | exptrack | TensorBoard |
+|---|---|---|
+| **Dependencies** | Zero (stdlib only) | TensorFlow/tensorboard + protobuf |
+| **Code changes** | None required. Monkey-patches argparse and IPython | Must add `SummaryWriter` calls everywhere |
+| **Auto-captures** | Params, git branch, full uncommitted diff, cell diffs, variable changes | Nothing automatic — you log everything manually |
+| **Storage** | SQLite (one file, queryable, portable) | Protobuf event files (opaque, need TB to read) |
+| **Experiment management** | Built-in: `ls`, `show`, `diff`, `compare`, `tag`, `note`, `rm`, `clean` | None — TB is a viewer, not a manager |
+| **Reproducibility** | Captures full `git diff` at run time — reconstruct exactly what code ran | No git integration |
+| **Shell/SLURM** | First-class: `eval $(exptrack run-start ...)` | Not designed for non-Python workflows |
+| **Rich media** | No (metrics, params, artifacts only) | Yes (images, audio, histograms, computational graphs) |
+| **Size** | ~1000 lines of Python | Large dependency tree |
+
+**Use TensorBoard when** you need image/audio/histogram visualization or
+computational graph inspection.
+
+**Use exptrack when** you want zero-friction tracking without modifying your
+training code, git-based reproducibility, or lightweight experiment management.
+
+**They work together** — use exptrack for "what params and code produced this
+run" and TensorBoard for rich media visualization. They don't conflict.
 
 ---
 
