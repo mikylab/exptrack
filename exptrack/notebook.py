@@ -152,24 +152,20 @@ def _detect_nb_name() -> str:
 
 def load_ipython_extension(ip):
     """Called by %load_ext exptrack"""
-    from IPython.core.magic import register_line_magic
 
     # Auto-start on load
     nb_file = _detect_nb_name()
     _auto_start(nb_file)
 
-    @register_line_magic
     def exp_start(line):
         """Start or restart experiment. Optional: %exp_start my_run_name"""
         nb_file = _detect_nb_name()
         _auto_start(nb_file, name=line.strip())
 
-    @register_line_magic
     def exp_done(line):
         """Finish the current experiment."""
         done()
 
-    @register_line_magic
     def exp_status(line):
         """Show current experiment."""
         exp = current()
@@ -182,15 +178,20 @@ def load_ipython_extension(ip):
             for k, v in exp._params.items():
                 print(f"    {k} = {v}")
 
-    @register_line_magic
     def exp_tag(line):
         """Add tags: %exp_tag baseline resnet"""
         tag(*line.strip().split())
 
-    @register_line_magic
     def exp_note(line):
         """Add a note: %exp_note "tried higher dropout" """
         note(line.strip().strip('"\''))
+
+    # Register magics via the ip instance (works without get_ipython() context)
+    ip.register_magic_function(exp_start, magic_kind='line')
+    ip.register_magic_function(exp_done, magic_kind='line')
+    ip.register_magic_function(exp_status, magic_kind='line')
+    ip.register_magic_function(exp_tag, magic_kind='line')
+    ip.register_magic_function(exp_note, magic_kind='line')
 
     # Finish experiment on kernel shutdown
     try:
