@@ -1,0 +1,207 @@
+"""
+exptrack/cli/main.py — Entry point and argument parser
+
+exptrack init [name]          init project (writes config + .gitignore)
+exptrack run script.py [args] run a script with tracking
+exptrack ls [-n N]            list experiments
+exptrack show <id>            full details
+exptrack diff <id>            print captured git diff
+exptrack compare <id1> <id2>  side-by-side param+metric comparison
+exptrack history <nb> [id]    show notebook cell history for an experiment
+exptrack tag <id> <tag>       add tag
+exptrack note <id> <text>     add note
+exptrack rm <id>              delete experiment
+exptrack clean                remove all failed runs
+exptrack stale --hours N      mark killed runs as failed
+exptrack upgrade              run schema migrations
+exptrack ui                   launch web dashboard
+"""
+from __future__ import annotations
+import argparse
+import sys
+
+from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_storage
+from .inspect_cmds import (cmd_ls, cmd_show, cmd_timeline, cmd_diff,
+                           cmd_compare, cmd_history, cmd_export)
+from .mutate_cmds import (cmd_tag, cmd_untag, cmd_note, cmd_edit_note,
+                          cmd_rm, cmd_clean, cmd_finish)
+from .pipeline_cmds import (cmd_run_start, cmd_run_finish, cmd_run_fail,
+                            cmd_log_metric, cmd_log_artifact)
+
+
+def main():
+    # run-start accepts arbitrary --key value user params — handle before argparse
+    # consumes them as unknown flags.
+    if len(sys.argv) > 1 and sys.argv[1] == "run-start":
+        p_rs = argparse.ArgumentParser(prog="exptrack run-start")
+        p_rs.add_argument("--name",   default="")
+        p_rs.add_argument("--script", default="")
+        p_rs.add_argument("--tags",   nargs="*")
+        p_rs.add_argument("--notes",  default="")
+        known, unknown = p_rs.parse_known_args(sys.argv[2:])
+        known.params = unknown
+        cmd_run_start(known)
+        return
+
+    p = argparse.ArgumentParser(
+        prog="exptrack",
+        description="Experiment tracker -- scripts, notebooks, and SLURM pipelines",
+    )
+    sub = p.add_subparsers(dest="cmd")
+
+    # ── Project setup ─────────────────────────────────────────────────────────
+    p_init = sub.add_parser("init", help="Initialize exptrack in project directory")
+    p_init.add_argument("name", nargs="?", default="")
+    p_init.add_argument("--here", action="store_true",
+                        help="Create .exptrack/ in the current directory instead of the git root")
+
+    # ── Python script wrapping ────────────────────────────────────────────────
+    p_run = sub.add_parser("run", help="Run a Python script with tracking")
+    p_run.add_argument("script")
+    p_run.add_argument("script_args", nargs=argparse.REMAINDER)
+
+    # ── Shell / SLURM pipeline commands ──────────────────────────────────────
+    p_rs = sub.add_parser(
+        "run-start",
+        help="Start experiment from shell. Use: eval $(exptrack run-start --lr 0.01)"
+    )
+    p_rs.add_argument("--name",   default="", help="Override run name")
+    p_rs.add_argument("--script", default="", help="Script/pipeline name for naming")
+    p_rs.add_argument("--tags",   nargs="*",  help="Tags")
+    p_rs.add_argument("--notes",  default="", help="Notes")
+    p_rs.add_argument("params",   nargs=argparse.REMAINDER,
+                      help="Params as --key value pairs, e.g. --lr 0.01 --epochs 50")
+
+    p_rf = sub.add_parser("run-finish", help="Finish experiment from shell")
+    p_rf.add_argument("id",        help="EXP_ID from run-start")
+    p_rf.add_argument("--metrics", help="Path to JSON file with final metrics")
+    p_rf.add_argument("--step",    type=int, default=None)
+    p_rf.add_argument("--params",  nargs="*", metavar="KEY=VALUE",
+                      help="Extra params to log e.g. best_epoch=42")
+
+    p_rfail = sub.add_parser("run-fail", help="Mark experiment as failed")
+    p_rfail.add_argument("id")
+    p_rfail.add_argument("reason", nargs="?", default="")
+
+    p_lm = sub.add_parser("log-metric", help="Log a metric from shell mid-pipeline")
+    p_lm.add_argument("id",           help="EXP_ID")
+    p_lm.add_argument("key",          nargs="?", help="Metric name")
+    p_lm.add_argument("value",        nargs="?", type=float, help="Metric value")
+    p_lm.add_argument("--step",       type=int, default=None)
+    p_lm.add_argument("--file",       help="JSON file to bulk-import metrics from")
+
+    p_la = sub.add_parser("log-artifact", help="Register an output file")
+    p_la.add_argument("id")
+    p_la.add_argument("path", nargs="?", default="-")
+    p_la.add_argument("--label", default="")
+    p_la.add_argument("--stdin", action="store_true",
+                       help="Read content from stdin and save as artifact")
+
+    p_stale = sub.add_parser("stale", help="Mark killed/timed-out runs as failed")
+    p_stale.add_argument("--hours", type=float, default=24,
+                         help="Mark as timed-out if running longer than this (default: 24)")
+
+    # ── Schema management ────────────────────────────────────────────────────
+    p_up = sub.add_parser("upgrade", help="Run schema migrations")
+    p_up.add_argument("--reinstall", action="store_true",
+                      help="Also pip install -e . after migration")
+
+    # ── Inspection ────────────────────────────────────────────────────────────
+    p_ls = sub.add_parser("ls")
+    p_ls.add_argument("-n", type=int, default=20)
+
+    p_show = sub.add_parser("show")
+    p_show.add_argument("id")
+    p_show.add_argument("--timeline", "-t", action="store_true",
+                        help="Show execution timeline")
+
+    sub.add_parser("diff").add_argument("id")
+
+    p_cmp = sub.add_parser("compare",
+        help="Compare two experiments, or compare within one experiment at two timeline points")
+    p_cmp.add_argument("id1", help="First experiment ID (or sole ID for within-exp compare)")
+    p_cmp.add_argument("id2", nargs="?", default="",
+                       help="Second experiment ID (omit for within-exp compare)")
+    p_cmp.add_argument("--seq1", type=int, default=None,
+                       help="Timeline seq point 1 (within-experiment comparison)")
+    p_cmp.add_argument("--seq2", type=int, default=None,
+                       help="Timeline seq point 2 (within-experiment comparison)")
+
+    p_tl = sub.add_parser("timeline", help="Show execution timeline for an experiment")
+    p_tl.add_argument("id")
+    p_tl.add_argument("--compact", "-c", action="store_true",
+                      help="Compact output (no code previews)")
+    p_tl.add_argument("--type", choices=["cell_exec", "var_set", "artifact",
+                                          "metric", "observational"],
+                      help="Filter by event type")
+
+    p_hist = sub.add_parser("history")
+    p_hist.add_argument("notebook")
+    p_hist.add_argument("id", nargs="?", default="")
+
+    p_tag = sub.add_parser("tag")
+    p_tag.add_argument("id"); p_tag.add_argument("tag")
+
+    p_untag = sub.add_parser("untag", help="Remove a tag from an experiment")
+    p_untag.add_argument("id"); p_untag.add_argument("tag")
+
+    p_note = sub.add_parser("note", help="Append a note to an experiment")
+    p_note.add_argument("id"); p_note.add_argument("text")
+
+    p_edit_note = sub.add_parser("edit-note", help="Replace an experiment's notes")
+    p_edit_note.add_argument("id"); p_edit_note.add_argument("text")
+
+    p_export = sub.add_parser("export", help="Export experiment data (JSON or markdown)")
+    p_export.add_argument("id")
+    p_export.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    sub.add_parser("rm").add_argument("id")
+    p_clean = sub.add_parser("clean")
+    p_clean.add_argument("--baselines", action="store_true",
+                         help="Delete code baselines (next run re-records full code)")
+
+    p_ui = sub.add_parser("ui")
+    p_ui.add_argument("--port", type=int, default=7331)
+    p_ui.add_argument("--host", type=str, default="127.0.0.1")
+
+    sub.add_parser("storage", help="Show data storage breakdown and tips")
+
+    p_finish = sub.add_parser("finish", help="Manually mark a running experiment as done")
+    p_finish.add_argument("id")
+
+    args = p.parse_args()
+    if not args.cmd:
+        p.print_help(); return
+
+    dispatch = {
+        "init":         cmd_init,
+        "run":          cmd_run,
+        "run-start":    cmd_run_start,
+        "run-finish":   cmd_run_finish,
+        "run-fail":     cmd_run_fail,
+        "log-metric":   cmd_log_metric,
+        "log-artifact": cmd_log_artifact,
+        "stale":        cmd_stale,
+        "upgrade":      cmd_upgrade,
+        "storage":      cmd_storage,
+        "finish":       cmd_finish,
+        "ls":           cmd_ls,
+        "show":         cmd_show,
+        "diff":         cmd_diff,
+        "compare":      cmd_compare,
+        "timeline":     cmd_timeline,
+        "history":      cmd_history,
+        "tag":          cmd_tag,
+        "untag":        cmd_untag,
+        "note":         cmd_note,
+        "edit-note":    cmd_edit_note,
+        "export":       cmd_export,
+        "rm":           cmd_rm,
+        "clean":        cmd_clean,
+        "ui":           cmd_ui,
+    }
+    dispatch[args.cmd](args)
+
+
+if __name__ == "__main__":
+    main()

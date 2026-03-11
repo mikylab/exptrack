@@ -13,6 +13,7 @@ DEFAULTS: dict = {
     "db":                    ".exptrack/experiments.db",
     "outputs_dir":           "outputs",
     "notebook_history_dir":  ".exptrack/notebook_history",
+    "max_git_diff_kb":       256,
     "auto_capture": {
         "argparse": True,
         "argv":     True,

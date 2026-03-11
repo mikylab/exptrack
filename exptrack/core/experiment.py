@@ -1,17 +1,15 @@
 """
-exptrack/core.py — Experiment class
+exptrack/core/experiment.py — Experiment class
 
 One Experiment = one run of a script or a notebook session.
 Captures: params, metrics, git state (branch + uncommitted diff),
 output file paths, and fires plugin hooks on lifecycle events.
 """
 from __future__ import annotations
+import hashlib
 import json
-import os
 import platform
 import socket
-import sqlite3
-import subprocess
 import sys
 import time
 import uuid
@@ -19,250 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import config as cfg
-from .plugins import registry as plugins
+from .. import config as cfg
+from ..plugins import registry as plugins
+from .db import get_db
+from .git import git_info
+from .naming import make_run_name, output_path
 
-
-# ── Database ──────────────────────────────────────────────────────────────────
-
-def get_db() -> sqlite3.Connection:
-    root = cfg.project_root()
-    conf = cfg.load()
-    p = root / conf.get("db", ".exptrack/experiments.db")
-    p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(p))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    _ensure_schema(conn)
-    return conn
-
-
-def _ensure_schema(conn):
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS experiments (
-            id          TEXT PRIMARY KEY,
-            project     TEXT,
-            name        TEXT NOT NULL,
-            status      TEXT DEFAULT 'running',
-            created_at  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL,
-            script      TEXT,
-            command     TEXT,
-            git_branch  TEXT,
-            git_commit  TEXT,
-            git_diff    TEXT,
-            hostname    TEXT,
-            python_ver  TEXT,
-            duration_s  REAL,
-            notes       TEXT,
-            tags        TEXT
-        );
-        CREATE TABLE IF NOT EXISTS params (
-            exp_id  TEXT NOT NULL REFERENCES experiments(id),
-            key     TEXT NOT NULL,
-            value   TEXT,
-            PRIMARY KEY (exp_id, key)
-        );
-        CREATE TABLE IF NOT EXISTS metrics (
-            id      INTEGER PRIMARY KEY AUTOINCREMENT,
-            exp_id  TEXT NOT NULL REFERENCES experiments(id),
-            key     TEXT NOT NULL,
-            value   REAL,
-            step    INTEGER,
-            ts      TEXT
-        );
-        CREATE TABLE IF NOT EXISTS artifacts (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            exp_id      TEXT NOT NULL REFERENCES experiments(id),
-            label       TEXT,
-            path        TEXT,
-            created_at  TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_metrics_exp ON metrics(exp_id, key);
-        CREATE INDEX IF NOT EXISTS idx_params_exp  ON params(exp_id);
-
-        CREATE TABLE IF NOT EXISTS code_baselines (
-            notebook    TEXT NOT NULL,
-            cell_seq    INTEGER NOT NULL,
-            source      TEXT NOT NULL,
-            source_hash TEXT NOT NULL,
-            updated_at  TEXT NOT NULL,
-            PRIMARY KEY (notebook, cell_seq)
-        );
-
-        CREATE TABLE IF NOT EXISTS timeline (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            exp_id      TEXT NOT NULL,
-            seq         INTEGER NOT NULL,
-            event_type  TEXT NOT NULL,
-            cell_hash   TEXT,
-            cell_pos    INTEGER,
-            key         TEXT,
-            value       TEXT,
-            prev_value  TEXT,
-            source_diff TEXT,
-            ts          TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_timeline_exp_seq
-            ON timeline(exp_id, seq);
-        CREATE INDEX IF NOT EXISTS idx_timeline_exp_type
-            ON timeline(exp_id, event_type);
-
-        CREATE TABLE IF NOT EXISTS cell_lineage (
-            cell_hash   TEXT PRIMARY KEY,
-            notebook    TEXT NOT NULL,
-            source      TEXT NOT NULL,
-            parent_hash TEXT,
-            created_at  TEXT NOT NULL
-        );
-    """)
-
-    # Add timeline_seq to artifacts if missing
-    try:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(artifacts)").fetchall()}
-        if "timeline_seq" not in cols:
-            conn.execute("ALTER TABLE artifacts ADD COLUMN timeline_seq INTEGER")
-    except Exception:
-        pass
-
-    conn.commit()
-
-
-# ── Deletion helpers ──────────────────────────────────────────────────────────
-
-def delete_experiment(conn: sqlite3.Connection, exp_id: str,
-                      delete_files: bool = True):
-    """Delete an experiment and all related DB records.
-
-    If *delete_files* is True, also removes artifact files on disk and the
-    experiment's output directory (``outputs/<name>/``).
-    """
-    if delete_files:
-        _delete_experiment_files(conn, exp_id)
-    for table in ("metrics", "params", "artifacts", "timeline"):
-        conn.execute(f"DELETE FROM {table} WHERE exp_id=?", (exp_id,))
-    conn.execute("DELETE FROM experiments WHERE id=?", (exp_id,))
-
-
-def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str):
-    """Remove artifact files and the experiment output directory from disk."""
-    import shutil
-
-    # Delete individual artifact files
-    rows = conn.execute(
-        "SELECT path FROM artifacts WHERE exp_id=?", (exp_id,)
-    ).fetchall()
-    for r in rows:
-        p = r["path"]
-        if not p:
-            continue
-        try:
-            fp = Path(p)
-            if fp.is_file():
-                fp.unlink()
-        except Exception:
-            pass
-
-    # Delete the experiment's output directory (outputs/<name>/)
-    exp_row = conn.execute(
-        "SELECT name FROM experiments WHERE id=?", (exp_id,)
-    ).fetchone()
-    if exp_row and exp_row["name"]:
-        try:
-            conf = cfg.load()
-            out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp_row["name"]
-            if out_dir.is_dir():
-                shutil.rmtree(str(out_dir), ignore_errors=True)
-        except Exception:
-            pass
-
-
-def finish_experiment(exp_id: str) -> bool:
-    """Manually mark any experiment as done by ID (prefix match).
-
-    Useful from scripts that manage experiments externally.
-    Returns True if the experiment was updated, False if not found or already done.
-    """
-    conn = get_db()
-    exp = conn.execute(
-        "SELECT id, status, created_at FROM experiments WHERE id LIKE ?",
-        (exp_id + "%",)
-    ).fetchone()
-    if not exp or exp["status"] == "done":
-        return False
-    now = datetime.now(timezone.utc).isoformat()
-    duration = (datetime.fromisoformat(now) -
-                datetime.fromisoformat(exp["created_at"])).total_seconds()
-    conn.execute("""
-        UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?
-    """, (now, duration, exp["id"]))
-    conn.commit()
-    return True
-
-
-# ── Git ───────────────────────────────────────────────────────────────────────
-
-def _git(*cmd) -> str:
-    try:
-        r = subprocess.run(["git", *cmd], capture_output=True, text=True, timeout=10,
-                           cwd=str(cfg.project_root()))
-        return r.stdout.strip() if r.returncode == 0 else ""
-    except Exception:
-        return ""
-
-
-def git_info() -> dict:
-    return {
-        "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
-        "git_commit": _git("rev-parse", "--short", "HEAD"),
-        "git_diff":   _git("diff", "HEAD"),   # captures ALL uncommitted changes
-    }
-
-
-# ── Run naming ────────────────────────────────────────────────────────────────
-
-def make_run_name(script: str = "", params: dict = None) -> str:
-    """
-    Produces:   train__lr0.01_bs32__0312_a3f2
-    Script stem + top N params + date + short uid.
-    Always unique, always tells you what it was.
-    """
-    ncfg     = cfg.load().get("naming", {})
-    max_keys = ncfg.get("max_param_keys", 4)
-    key_len  = ncfg.get("key_max_len", 8)
-
-    base  = Path(script).stem if script else "exp"
-    parts = []
-    if params:
-        for k, v in list(params.items())[:max_keys]:
-            short_k = k.split(".")[-1][:key_len]
-            if isinstance(v, float):
-                parts.append(f"{short_k}{v:.3g}")
-            elif isinstance(v, bool):
-                parts.append(f"{short_k}{int(v)}")
-            else:
-                parts.append(f"{short_k}{str(v)[:12]}")
-
-    uid   = uuid.uuid4().hex[:4]
-    today = datetime.now().strftime("%m%d")
-    name  = base
-    if parts:
-        name += "__" + "_".join(parts)
-    name += f"__{today}_{uid}"
-    return name
-
-
-def output_path(filename: str, exp_name: str = "") -> Path:
-    """Return outputs/<exp_name>/<filename>, creating dirs as needed."""
-    conf = cfg.load()
-    base = cfg.project_root() / conf.get("outputs_dir", "outputs")
-    if exp_name:
-        base = base / exp_name
-    base.mkdir(parents=True, exist_ok=True)
-    return base / filename
-
-
-# ── Experiment ────────────────────────────────────────────────────────────────
 
 class Experiment:
     """
@@ -314,8 +74,8 @@ class Experiment:
         self.git_branch = ginfo["git_branch"]
         self.git_commit = ginfo["git_commit"]
         diff_text = ginfo["git_diff"]
-        # Optionally truncate very large diffs to keep DB size manageable
-        max_kb = conf.get("max_git_diff_kb", 0)
+        # Truncate very large diffs to keep DB size manageable (default 256 KB)
+        max_kb = conf.get("max_git_diff_kb", 256)
         if max_kb and diff_text and len(diff_text) > max_kb * 1024:
             diff_text = diff_text[:max_kb * 1024] + "\n\n[truncated — exceeded max_git_diff_kb limit]"
         self.git_diff = diff_text
@@ -326,16 +86,31 @@ class Experiment:
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.project    = conf.get("project", cfg.project_root().name)
 
+        # Deduplicate: skip snapshot if this script+params hash was already saved
+        self._snapshot_hash = self._compute_snapshot_hash()
+
         self._save()
         plugins.load_from_config(conf)
         plugins.on_start(self)
 
         print(f"[exptrack] {self.name}  ({self.id[:6]})", file=sys.stderr)
 
+    # ── Snapshot dedup ─────────────────────────────────────────────────────
+
+    def _compute_snapshot_hash(self) -> str:
+        """Hash of script + params + git commit for dedup of unchanged re-runs."""
+        h = hashlib.md5()
+        h.update((self.script or "").encode())
+        h.update(json.dumps(self._params, sort_keys=True, default=str).encode())
+        h.update((self.git_commit or "").encode())
+        return h.hexdigest()[:16]
+
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _save(self):
-        with get_db() as conn:
+        conn = get_db()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("""
                 INSERT OR REPLACE INTO experiments
                 (id, project, name, status, created_at, updated_at,
@@ -353,6 +128,9 @@ class Experiment:
             if self._params:
                 self._write_params(conn, self._params)
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     def _write_params(self, conn, params: dict):
         conn.executemany(
