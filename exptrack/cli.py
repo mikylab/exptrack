@@ -22,7 +22,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .core import get_db
@@ -771,7 +771,7 @@ def cmd_run_finish(args):
                 numeric = {k: float(v) for k, v in flat.items()
                            if isinstance(v, (int, float)) and not isinstance(v, bool)}
                 if numeric:
-                    ts = datetime.utcnow().isoformat()
+                    ts = datetime.now(timezone.utc).isoformat()
                     with conn:
                         conn.executemany(
                             "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
@@ -799,7 +799,7 @@ def cmd_run_finish(args):
                 )
 
     # Mark done and compute duration
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     created = conn.execute(
         "SELECT created_at FROM experiments WHERE id=?", (exp_id,)
     ).fetchone()["created_at"]
@@ -846,7 +846,7 @@ def cmd_run_fail(args):
     if not exp_row:
         print(f"[exptrack] run-fail: not found: {args.id}", file=sys.stderr); sys.exit(1)
 
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     duration = (datetime.fromisoformat(now) -
                 datetime.fromisoformat(exp_row["created_at"])).total_seconds()
     reason = args.reason or "shell script exited non-zero"
@@ -874,7 +874,7 @@ def cmd_log_metric(args):
         print(f"[exptrack] log-metric: not found: {args.id}", file=sys.stderr); sys.exit(1)
 
     exp_id = exp_row["id"]
-    ts = datetime.utcnow().isoformat()
+    ts = datetime.now(timezone.utc).isoformat()
 
     if args.file:
         fpath = Path(args.file)
@@ -919,7 +919,7 @@ def cmd_log_artifact(args):
         out_path.write_bytes(content)
         args.path = str(out_path)
 
-    ts = datetime.utcnow().isoformat()
+    ts = datetime.now(timezone.utc).isoformat()
     label = args.label or Path(args.path).name
     with conn:
         conn.execute(
@@ -936,7 +936,7 @@ def cmd_stale(args):
     """
     from datetime import timedelta
     conn = get_db()
-    cutoff = datetime.utcnow() - timedelta(hours=args.hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     rows = conn.execute("""
         SELECT id, name, created_at FROM experiments
         WHERE status='running' AND created_at < ?
@@ -944,7 +944,7 @@ def cmd_stale(args):
     if not rows:
         print(dim(f"No stale experiments (running > {args.hours}h).")); return
     print(f"Marking {len(rows)} stale experiment(s) as timed-out:")
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     for r in rows:
         duration = (datetime.fromisoformat(now) -
                     datetime.fromisoformat(r["created_at"])).total_seconds()

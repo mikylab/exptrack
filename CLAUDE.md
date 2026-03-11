@@ -69,7 +69,7 @@ exptrack/
 - **`notebook.py`** -- `%load_ext exptrack` magic + explicit API (`start()`, `metric()`, `out()`, `done()`). IPython `post_execute` hook captures cell diffs and auto-detects hyperparameters
 - **`__init__.py`** -- Exports `Experiment` and provides `load_ipython_extension()` / `unload_ipython_extension()` entry points so `%load_ext exptrack` works
 - **`plugins/__init__.py`** -- `Plugin` base class with lifecycle hooks (`on_start`, `on_finish`, `on_fail`, `on_metric`). `registry` singleton loads plugins from config
-- **`dashboard/app.py`** -- Web UI (`exptrack ui`): stats cards, experiment list with filters, detail view with Chart.js metric plots, git diff viewer, compare view. Stdlib `http.server`, default port 7331
+- **`dashboard/app.py`** -- Web UI (`exptrack ui`): stats cards, experiment list with filters, detail view with Chart.js metric plots, git diff viewer, compare view. Features inline editing (double-click tags/notes/names), tag autocomplete with reuse, timezone selector, interactive owl mascot. Stdlib `http.server`, default port 7331
 
 ## Key Design Patterns
 
@@ -80,6 +80,10 @@ exptrack/
 - **Auto artifact linking**: `plt.savefig()` is monkey-patched so saved plots auto-register as artifacts — linked to the experiment by name/id
 - **Plugin system**: Plugins loaded dynamically from `exptrack.plugins.<name>`, each module exports `plugin_class`
 - **Per-project storage**: DB + notebook history in `.exptrack/` (gitignored), config.json is committable
+- **Inline editing**: All editable fields (name, tags, notes) support double-click inline editing in both table and detail views — no modal prompts
+- **Tag autocomplete**: `/api/all-tags` endpoint returns all tags with usage counts; UI shows autocomplete dropdown for tag reuse
+- **Timezone-aware display**: Dashboard timestamps use `Intl.DateTimeFormat` with configurable timezone stored in project config (`config.json`). All timestamps stored as UTC with timezone indicator
+- **Owl mascot**: Interactive pixel owl in header with contextual speech bubbles. Reacts to user actions (delete, compare, export, etc.)
 
 ## Database Schema
 

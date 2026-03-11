@@ -16,6 +16,7 @@ import os
 import sqlite3
 import sys
 import urllib.parse
+from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -69,6 +70,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # /api/export/<exp_id>?format=json|markdown
             exp_id = path.split("/")[-1]
             self._json_response(self._api_export(exp_id, qs))
+        elif path == "/api/all-tags":
+            self._json_response(self._api_all_tags())
+        elif path == "/api/config/timezone":
+            self._json_response(self._api_get_timezone())
         else:
             self.send_error(404)
 
@@ -112,6 +117,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(self._api_bulk_delete(body))
         elif path == "/api/bulk-export":
             self._json_response(self._api_bulk_export(body))
+        elif path == "/api/config/timezone":
+            self._json_response(self._api_set_timezone(body))
         else:
             self.send_error(404)
 
@@ -298,7 +305,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         existing = exp["notes"] or ""
         new_notes = (existing + "\n" + text).strip() if existing else text
         conn.execute("UPDATE experiments SET notes=?, updated_at=? WHERE id=?",
-                     (new_notes, __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+                     (new_notes, datetime.now(timezone.utc).isoformat(), exp["id"]))
         conn.commit()
         return {"ok": True, "notes": new_notes}
 
@@ -315,7 +322,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if tag not in tags:
             tags.append(tag)
         conn.execute("UPDATE experiments SET tags=?, updated_at=? WHERE id=?",
-                     (json.dumps(tags), __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+                     (json.dumps(tags), datetime.now(timezone.utc).isoformat(), exp["id"]))
         conn.commit()
         return {"ok": True, "tags": tags}
 
@@ -329,7 +336,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not new_name:
             return {"error": "empty name"}
         conn.execute("UPDATE experiments SET name=?, updated_at=? WHERE id=?",
-                     (new_name, __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+                     (new_name, datetime.now(timezone.utc).isoformat(), exp["id"]))
         conn.commit()
         return {"ok": True, "name": new_name}
 
@@ -361,7 +368,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return {"error": "provide label or path"}
         if not label:
             label = Path(path).name
-        ts = __import__('datetime').datetime.utcnow().isoformat()
+        ts = datetime.now(timezone.utc).isoformat()
         conn.execute(
             "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
             (exp["id"], label, path, ts)
@@ -381,7 +388,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         tags = json.loads(exp["tags"] or "[]")
         tags = [t for t in tags if t != tag]
         conn.execute("UPDATE experiments SET tags=?, updated_at=? WHERE id=?",
-                     (json.dumps(tags), __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+                     (json.dumps(tags), datetime.now(timezone.utc).isoformat(), exp["id"]))
         conn.commit()
         return {"ok": True, "tags": tags}
 
@@ -398,7 +405,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         tags = json.loads(exp["tags"] or "[]")
         tags = [new_tag if t == old_tag else t for t in tags]
         conn.execute("UPDATE experiments SET tags=?, updated_at=? WHERE id=?",
-                     (json.dumps(tags), __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+                     (json.dumps(tags), datetime.now(timezone.utc).isoformat(), exp["id"]))
         conn.commit()
         return {"ok": True, "tags": tags}
 
@@ -410,7 +417,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return {"error": "not found"}
         notes = body.get("notes", "")
         conn.execute("UPDATE experiments SET notes=?, updated_at=? WHERE id=?",
-                     (notes, __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+                     (notes, datetime.now(timezone.utc).isoformat(), exp["id"]))
         conn.commit()
         return {"ok": True, "notes": notes}
 
@@ -491,6 +498,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not data.get("error"):
                 results.append(data)
         return results
+
+    def _api_all_tags(self):
+        conn = get_db()
+        rows = conn.execute("SELECT tags FROM experiments WHERE tags IS NOT NULL AND tags != '[]'").fetchall()
+        all_tags = {}
+        for r in rows:
+            try:
+                for t in json.loads(r["tags"] or "[]"):
+                    all_tags[t] = all_tags.get(t, 0) + 1
+            except Exception:
+                pass
+        return {"tags": [{"name": t, "count": c} for t, c in sorted(all_tags.items(), key=lambda x: -x[1])]}
+
+    def _api_get_timezone(self):
+        from exptrack import config as cfg
+        conf = cfg.load()
+        return {"timezone": conf.get("timezone", "")}
+
+    def _api_set_timezone(self, body):
+        from exptrack import config as cfg
+        tz = body.get("timezone", "").strip()
+        conf = cfg.load()
+        conf["timezone"] = tz
+        cfg.save(conf)
+        return {"ok": True, "timezone": tz}
 
     def _api_timeline(self, exp_id, qs):
         conn = get_db()
@@ -1134,13 +1166,65 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   /* Detail name hover */
   #detail-name { cursor: default; padding: 2px 6px; border-radius: 3px; }
   #detail-name:hover { background: rgba(44,90,160,0.08); }
+  /* Tag autocomplete dropdown */
+  .tag-autocomplete { position: relative; display: inline-block; }
+  .tag-autocomplete-list {
+    position: absolute; top: 100%; left: 0; z-index: 50;
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px;
+    max-height: 180px; overflow-y: auto; min-width: 160px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  .tag-autocomplete-item {
+    padding: 4px 10px; cursor: pointer; font-size: 12px; display: flex; justify-content: space-between;
+  }
+  .tag-autocomplete-item:hover, .tag-autocomplete-item.active { background: var(--code-bg); color: var(--blue); }
+  .tag-autocomplete-item .tag-count { color: var(--muted); font-size: 11px; }
+  .tag-autocomplete-new { color: var(--green); font-style: italic; }
+  /* Inline editable hints */
+  .editable-hint { border-bottom: 1px dashed transparent; transition: border-color 0.15s; }
+  .editable-hint:hover { border-bottom-color: var(--blue); }
+  /* Detail inline tag area */
+  .detail-tags-inline { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .detail-tags-inline .tag-input-area { display: inline-flex; align-items: center; }
+  /* Detail inline notes */
+  .detail-notes-inline { cursor: text; min-height: 24px; padding: 4px; border-radius: 3px; }
+  .detail-notes-inline:hover { background: rgba(44,90,160,0.05); }
+  /* Owl mascot */
+  .owl-mascot { cursor: pointer; transition: transform 0.2s; display: inline-block; }
+  .owl-mascot:hover { transform: scale(1.15); }
+  .owl-mascot.owl-blink svg rect.owl-eye-white { animation: owlBlink 3s infinite; }
+  @keyframes owlBlink { 0%,92%,100% { height: 1; } 94%,98% { height: 0; } }
+  .owl-speech { position: absolute; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 11px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 100; bottom: 44px; left: 50%; transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity 0.3s; }
+  .owl-speech.visible { opacity: 1; }
+  .owl-speech::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: var(--border); }
+  .owl-container { position: relative; display: inline-block; }
+  /* Timezone setting */
+  .tz-setting { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; }
+  .tz-setting select { font-family: inherit; font-size: 11px; border: 1px solid var(--border); padding: 2px 6px; border-radius: 3px; background: var(--card-bg); color: var(--fg); }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1 onclick="showWelcome()" title="Back to dashboard home"><svg width="32" height="32" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:8px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect x="5" y="4" width="2" height="1" fill="#fff"/><rect x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg>exptrack</h1>
+  <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak()"><svg width="32" height="32" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:8px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
   <div class="header-actions">
+    <span class="tz-setting" title="Set timezone for displaying timestamps">
+      <span style="font-size:12px;color:var(--muted)">TZ:</span>
+      <select id="tz-select" onchange="setTimezone(this.value)">
+        <option value="">Browser local</option>
+        <option value="UTC">UTC</option>
+        <option value="America/New_York">US Eastern</option>
+        <option value="America/Chicago">US Central</option>
+        <option value="America/Denver">US Mountain</option>
+        <option value="America/Los_Angeles">US Pacific</option>
+        <option value="Europe/London">London</option>
+        <option value="Europe/Berlin">Berlin</option>
+        <option value="Europe/Paris">Paris</option>
+        <option value="Asia/Tokyo">Tokyo</option>
+        <option value="Asia/Shanghai">Shanghai</option>
+        <option value="Asia/Kolkata">India</option>
+        <option value="Australia/Sydney">Sydney</option>
+      </select>
+    </span>
     <button class="theme-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
     <button class="help-btn" onclick="toggleHelp()">? Docs</button>
   </div>
@@ -1266,6 +1350,8 @@ let sortDir = 'desc';
 let groupBy = 'git_commit';
 let collapsedGroups = new Set();
 let clickTimer = null;
+let currentTimezone = localStorage.getItem('exptrack-tz') || '';
+let allKnownTags = []; // {name, count}[]
 
 // Dark mode
 function toggleTheme() {
@@ -1325,13 +1411,101 @@ function fmtTimeAgo(iso) {
 
 function fmtDt(iso) {
   if (!iso) return '--';
-  const d = new Date(iso);
+  const d = new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
+  if (currentTimezone) {
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: currentTimezone, month: 'numeric', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: false
+      }).formatToParts(d);
+      const get = type => (parts.find(p => p.type === type) || {}).value || '';
+      return get('month') + '/' + get('day') + ' ' + get('hour') + ':' + get('minute');
+    } catch(e) {}
+  }
   return (d.getMonth()+1) + '/' + d.getDate() + ' ' +
          String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
 }
 
+function fmtDtFull(iso) {
+  if (!iso) return '--';
+  const d = new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
+  const opts = { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+  if (currentTimezone) opts.timeZone = currentTimezone;
+  try { return d.toLocaleString('en-US', opts); } catch(e) {}
+  return d.toLocaleString();
+}
+
+async function setTimezone(tz) {
+  currentTimezone = tz;
+  localStorage.setItem('exptrack-tz', tz);
+  try { await fetch('/api/config/timezone', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({timezone: tz}) }); } catch(e) {}
+  renderExperiments();
+  renderExpList();
+  if (currentDetailId) showDetail(currentDetailId);
+  owlSay(tz ? 'Timezone set to ' + tz + '!' : 'Using your browser timezone!');
+}
+
+async function loadTimezoneConfig() {
+  try {
+    const data = await api('/api/config/timezone');
+    if (data.timezone) {
+      currentTimezone = data.timezone;
+      localStorage.setItem('exptrack-tz', data.timezone);
+    }
+  } catch(e) {}
+  const sel = document.getElementById('tz-select');
+  if (sel) sel.value = currentTimezone;
+}
+
+async function loadAllTags() {
+  try {
+    const data = await api('/api/all-tags');
+    allKnownTags = data.tags || [];
+  } catch(e) { allKnownTags = []; }
+}
+
 function toggleHelp() {
   document.getElementById('help-panel').classList.toggle('visible');
+}
+
+// ── Owl mascot ──────────────────────────────────────────────────────────────
+const owlPhrases = [
+  'Hoo hoo! Track all the things!',
+  'Another experiment? Wise choice.',
+  'Remember to tag your best runs!',
+  'I never forget a metric.',
+  'Did you try a lower learning rate?',
+  'Diff your code, diff your life.',
+  'Compare runs to find the signal.',
+  'Notes help future-you understand past-you.',
+  'Zero dependencies, infinite wisdom.',
+  'Local-first, always.',
+  'Reproducibility is a superpower!',
+  'Git diff captured. You\'re welcome.',
+  'Have you tried turning it off and on again?',
+];
+const owlContextPhrases = {
+  delete: ['Are you sure? I\'ll miss that one...', 'Cleaning house? Smart owl.'],
+  compare: ['Let\'s see who wins!', 'Side by side, insight arrives.'],
+  export: ['Sharing is caring!', 'Data to go!'],
+  tag: ['Good labeling, wise human!', 'Tags make finding things a hoot!'],
+  empty: ['No experiments yet? Go run something!', 'An empty lab is full of potential.'],
+  welcome: ['Welcome back! What shall we track today?', 'Hoo! Good to see you!'],
+};
+let owlSpeechTimer = null;
+
+function owlSay(msg) {
+  const el = document.getElementById('owl-speech');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('visible');
+  if (owlSpeechTimer) clearTimeout(owlSpeechTimer);
+  owlSpeechTimer = setTimeout(() => el.classList.remove('visible'), 3000);
+}
+
+function owlSpeak(context) {
+  const phrases = context && owlContextPhrases[context] ? owlContextPhrases[context] : owlPhrases;
+  owlSay(phrases[Math.floor(Math.random() * phrases.length)]);
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -1421,6 +1595,7 @@ function showWelcome() {
   document.getElementById('compare-view').style.display = 'none';
   document.getElementById('exp-sidebar').classList.add('collapsed');
   renderExpList();
+  if (allExperiments.length === 0) owlSpeak('empty');
 }
 
 function showCompareView() {
@@ -1476,6 +1651,7 @@ function renderTableActionsBar() {
 }
 
 async function sidebarBulkDelete() {
+  owlSpeak('delete');
   if (!confirm('Delete ' + selectedIds.size + ' experiments? This cannot be undone.')) return;
   const ids = [...selectedIds];
   const r = await fetch('/api/bulk-delete', {
@@ -1492,6 +1668,7 @@ async function sidebarBulkDelete() {
 }
 
 async function sidebarExport() {
+  owlSpeak('export');
   const ids = [...selectedIds];
   const r = await fetch('/api/bulk-export', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1509,15 +1686,30 @@ async function sidebarCopyText() {
   let lines = [];
   for (const e of exps) {
     lines.push(e.name + ' (' + e.id.slice(0,6) + ') [' + e.status + ']');
+    lines.push('  ID: ' + e.id);
+    lines.push('  Status: ' + e.status);
+    if (e.created_at) lines.push('  Started: ' + fmtDtFull(e.created_at));
+    if (e.duration_s) lines.push('  Duration: ' + fmtDur(e.duration_s));
+    if (e.git_branch) lines.push('  Branch: ' + e.git_branch + (e.git_commit ? ' @ ' + e.git_commit : ''));
     const params = Object.entries(e.params || {}).filter(([k]) => !k.startsWith('_'));
-    if (params.length) lines.push('  Params: ' + params.map(([k,v]) => k + '=' + JSON.stringify(v)).join(', '));
+    if (params.length) {
+      lines.push('  Parameters:');
+      params.forEach(([k,v]) => lines.push('    ' + k + ' = ' + JSON.stringify(v)));
+    }
     const metrics = Object.entries(e.metrics || {});
-    if (metrics.length) lines.push('  Metrics: ' + metrics.map(([k,v]) => k + '=' + (typeof v === 'number' ? v.toFixed(4) : v)).join(', '));
-    if (e.tags && e.tags.length) lines.push('  Tags: ' + e.tags.join(', '));
-    if (e.notes) lines.push('  Notes: ' + e.notes.split('\n')[0].slice(0,80));
+    if (metrics.length) {
+      lines.push('  Metrics:');
+      metrics.forEach(([k,v]) => lines.push('    ' + k + ' = ' + (typeof v === 'number' ? v.toFixed(4) : v)));
+    }
+    if (e.tags && e.tags.length) lines.push('  Tags: ' + e.tags.map(t => '#' + t).join(', '));
+    if (e.notes) {
+      lines.push('  Notes:');
+      e.notes.split('\n').forEach(l => lines.push('    ' + l));
+    }
     lines.push('');
   }
   await navigator.clipboard.writeText(lines.join('\n'));
+  owlSay('Copied ' + exps.length + ' experiment(s) to clipboard!');
   alert('Copied ' + exps.length + ' experiments to clipboard (plain text)');
 }
 
@@ -1767,6 +1959,76 @@ function startInlineRename(id, el) {
   });
 }
 
+// ── Tag autocomplete helper ──────────────────────────────────────────────────
+function createTagInput(id, tags, exp, onUpdate, opts = {}) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'tag-autocomplete';
+  wrapper.style.cssText = 'display:inline-block;position:relative';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = opts.placeholder || '+ tag';
+  input.className = 'name-edit-input';
+  input.style.cssText = opts.style || 'width:90px;font-size:12px;padding:2px 4px';
+  const dropdown = document.createElement('div');
+  dropdown.className = 'tag-autocomplete-list';
+  dropdown.style.display = 'none';
+  wrapper.appendChild(input);
+  wrapper.appendChild(dropdown);
+  let activeIdx = -1;
+
+  function showSuggestions() {
+    const val = input.value.trim().toLowerCase();
+    const existing = new Set(tags.map(t => t.toLowerCase()));
+    let suggestions = allKnownTags.filter(t => !existing.has(t.name.toLowerCase()));
+    if (val) suggestions = suggestions.filter(t => t.name.toLowerCase().includes(val));
+    suggestions = suggestions.slice(0, 8);
+    if (val && !suggestions.some(t => t.name.toLowerCase() === val) && !existing.has(val)) {
+      suggestions.unshift({name: val, count: 0, isNew: true});
+    }
+    if (!suggestions.length) { dropdown.style.display = 'none'; return; }
+    dropdown.innerHTML = suggestions.map((t, i) =>
+      '<div class="tag-autocomplete-item' + (i === activeIdx ? ' active' : '') + '" data-tag="' + esc(t.name) + '">' +
+      (t.isNew ? '<span class="tag-autocomplete-new">create "' + esc(t.name) + '"</span>' : '<span>#' + esc(t.name) + '</span>') +
+      '<span class="tag-count">' + (t.count || '') + '</span></div>'
+    ).join('');
+    dropdown.style.display = 'block';
+    dropdown.querySelectorAll('.tag-autocomplete-item').forEach(item => {
+      item.onmousedown = (ev) => { ev.preventDefault(); selectTag(item.dataset.tag); };
+    });
+  }
+
+  async function selectTag(val) {
+    if (!val) return;
+    await fetch('/api/experiment/' + id + '/tag', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tag: val})
+    });
+    if (!tags.includes(val)) tags.push(val);
+    if (exp) exp.tags = [...tags];
+    input.value = '';
+    dropdown.style.display = 'none';
+    activeIdx = -1;
+    loadAllTags();
+    if (onUpdate) onUpdate();
+  }
+
+  input.addEventListener('input', () => { activeIdx = -1; showSuggestions(); });
+  input.addEventListener('focus', showSuggestions);
+  input.addEventListener('blur', () => { setTimeout(() => dropdown.style.display = 'none', 150); });
+  input.addEventListener('keydown', (ev) => {
+    const items = dropdown.querySelectorAll('.tag-autocomplete-item');
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); activeIdx = Math.min(activeIdx + 1, items.length - 1); showSuggestions(); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); activeIdx = Math.max(activeIdx - 1, -1); showSuggestions(); }
+    else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      if (activeIdx >= 0 && items[activeIdx]) selectTag(items[activeIdx].dataset.tag);
+      else if (input.value.trim()) selectTag(input.value.trim());
+    }
+    else if (ev.key === 'Escape') { dropdown.style.display = 'none'; if (opts.onEscape) opts.onEscape(); }
+  });
+  return { wrapper, input };
+}
+
 // ── Inline tag editing on double-click ──────────────────────────────────────
 function startInlineTag(id, el) {
   const exp = allExperiments.find(e => e.id === id);
@@ -1796,34 +2058,15 @@ function startInlineTag(id, el) {
         if (exp) exp.tags = [...tags];
         render();
         renderExpList();
+        loadAllTags();
       };
       chip.appendChild(x);
       container.appendChild(chip);
     });
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.placeholder = '+ tag';
-    input.className = 'name-edit-input';
-    input.style.cssText = 'width:70px;font-size:12px;padding:2px 4px';
-    input.addEventListener('keydown', async (ev) => {
-      if (ev.key === 'Enter') {
-        ev.preventDefault();
-        const val = input.value.trim();
-        if (val) {
-          await fetch('/api/experiment/' + id + '/tag', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({tag: val})
-          });
-          tags.push(val);
-          if (exp) exp.tags = [...tags];
-          input.value = '';
-          render();
-          renderExpList();
-        }
-      }
-      if (ev.key === 'Escape') { renderExperiments(); renderExpList(); }
+    const { wrapper, input } = createTagInput(id, tags, exp, () => { render(); renderExpList(); }, {
+      onEscape: () => { renderExperiments(); renderExpList(); }
     });
-    container.appendChild(input);
+    container.appendChild(wrapper);
     setTimeout(() => input.focus(), 0);
   }
   el.innerHTML = '';
@@ -1870,6 +2113,7 @@ function startInlineNote(id, el) {
 
 async function compareSelected() {
   if (selectedIds.size !== 2) return;
+  owlSpeak('compare');
   showCompareView();
   await populateCompareDropdowns();
   const ids = [...selectedIds];
@@ -2040,12 +2284,14 @@ async function showDetail(id) {
     }).join('\n');
   }
 
-  const tagsHtml = exp.tags.length
-    ? exp.tags.map(t => '<span class="tag-removable">#' + esc(t) +
-      ' <span class="tag-edit" onclick="event.stopPropagation();editTag(\'' + exp.id + '\',\'' + esc(t).replace(/'/g,"\\'") + '\')" title="Edit">ed</span>' +
-      ' <span class="tag-delete" onclick="event.stopPropagation();deleteTag(\'' + exp.id + '\',\'' + esc(t).replace(/'/g,"\\'") + '\')" title="Remove">&times;</span>' +
-      '</span>').join('')
-    : '<span style="color:var(--muted)">none</span>';
+  const tagsHtml = '<span class="detail-tags-inline" id="detail-tags-area">' +
+    (exp.tags.length
+      ? exp.tags.map(t => '<span class="tag-removable">#' + esc(t) +
+        ' <span class="tag-delete" onclick="event.stopPropagation();deleteTagInline(\'' + exp.id + '\',\'' + esc(t).replace(/'/g,"\\'") + '\')" title="Remove">&times;</span>' +
+        '</span>').join('')
+      : '') +
+    '<span class="tag-input-area" id="detail-tag-input-area"></span>' +
+    '</span>';
 
   document.getElementById('detail-panel').innerHTML = `
     <div class="detail" style="border:none;padding:4px 16px;margin:0">
@@ -2066,11 +2312,8 @@ async function showDetail(id) {
 
       <!-- Header with name + actions -->
       <div class="detail-header">
-        <h2 id="detail-name" ondblclick="startInlineRename('${exp.id}',this)" title="Double-click to rename">${esc(exp.name)}</h2>
+        <h2 id="detail-name" class="editable-hint" ondblclick="startInlineRename('${exp.id}',this)" title="Double-click to rename">${esc(exp.name)}</h2>
         <div class="detail-actions">
-          <button class="action-btn" onclick="renameExp('${exp.id}')">Rename</button>
-          <button class="action-btn" onclick="addTagUI('${exp.id}')">+ Tag</button>
-          <button class="action-btn" onclick="addNoteUI('${exp.id}')">+ Note</button>
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name).replace(/'/g,"\\'")}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
         </div>
@@ -2098,7 +2341,7 @@ async function showDetail(id) {
               <span class="label">Host</span><span>${exp.hostname||'--'}</span>
               <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
               <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
-              <span class="label">Notes</span><span id="detail-notes">${exp.notes ? '<div class="notes-display">'+esc(exp.notes)+'<button class="notes-edit-btn" onclick="editNotes(\''+exp.id+'\')">edit</button></div>' : '<span style="color:var(--muted)">none</span>'}</span>
+              <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" ondblclick="startDetailNoteEdit('${exp.id}',this)" title="Double-click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">double-click to add notes</span>'}</span>
             </div>
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
             ${varHtml}
@@ -2124,6 +2367,16 @@ async function showDetail(id) {
       <div id="detail-tab-compare-within" style="display:none"></div>
     </div>
   `;
+
+  // Wire up inline tag input in detail view
+  const tagInputArea = document.getElementById('detail-tag-input-area');
+  if (tagInputArea) {
+    const detailTags = [...(exp.tags || [])];
+    const { wrapper, input } = createTagInput(exp.id, detailTags, null, () => {
+      loadExperiments().then(() => showDetail(exp.id));
+    }, { placeholder: '+ add tag', style: 'width:100px;font-size:12px;padding:2px 6px' });
+    tagInputArea.appendChild(wrapper);
+  }
 
   // Render metric charts
   Object.values(charts).forEach(c => c.destroy());
@@ -2163,6 +2416,7 @@ async function showDetail(id) {
 // ── Export ──────────────────────────────────────────────────────────────────────
 
 async function exportExp(id) {
+  owlSpeak('export');
   const container = document.getElementById('export-container');
   container.innerHTML = '<div class="export-panel"><div class="export-actions">' +
     '<button class="action-btn" onclick="doExport(\'' + id + '\',\'json\')">JSON</button>' +
@@ -2373,6 +2627,7 @@ async function addNoteUI(id) {
 }
 
 async function deleteExp(id, name) {
+  owlSpeak('delete');
   if (!confirm('Delete experiment "' + name + '"? This cannot be undone.')) return;
   const r = await fetch('/api/experiment/' + id + '/delete', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -2424,6 +2679,46 @@ async function editTag(id, oldTag) {
   const d = await r.json();
   if (d.ok) { loadExperiments(); showDetail(id); }
   else alert(d.error || 'Failed');
+}
+
+async function deleteTagInline(id, tag) {
+  const r = await fetch('/api/experiment/' + id + '/delete-tag', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({tag})
+  });
+  const d = await r.json();
+  if (d.ok) { loadAllTags(); loadExperiments().then(() => showDetail(id)); }
+}
+
+function startDetailNoteEdit(id, el) {
+  const currentText = el.textContent.trim();
+  const isPlaceholder = el.querySelector('span[style]') !== null;
+  const textarea = document.createElement('textarea');
+  textarea.className = 'notes-edit-area';
+  textarea.value = isPlaceholder ? '' : currentText;
+  textarea.style.cssText = 'width:100%;min-height:60px;font-size:13px;font-family:inherit';
+  el.innerHTML = '';
+  el.appendChild(textarea);
+  textarea.focus();
+
+  let saved = false;
+  async function doSave() {
+    if (saved) return;
+    saved = true;
+    const notes = textarea.value;
+    await fetch('/api/experiment/' + id + '/edit-notes', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({notes})
+    });
+    const exp = allExperiments.find(e => e.id === id);
+    if (exp) exp.notes = notes;
+    showDetail(id);
+  }
+  textarea.addEventListener('blur', doSave);
+  textarea.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && ev.ctrlKey) { ev.preventDefault(); textarea.blur(); }
+    if (ev.key === 'Escape') { saved = true; showDetail(id); }
+  });
 }
 
 async function editNotes(id) {
@@ -2733,8 +3028,13 @@ async function doWithinCompare(expId) {
 
 // Init — sidebar starts collapsed (opens when entering detail view)
 document.getElementById('exp-sidebar').classList.add('collapsed');
+loadTimezoneConfig();
+loadAllTags();
 loadStats();
-loadExperiments();
+loadExperiments().then(() => {
+  if (allExperiments.length === 0) owlSpeak('empty');
+  else owlSpeak('welcome');
+});
 </script>
 </body>
 </html>

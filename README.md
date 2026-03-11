@@ -293,11 +293,15 @@ exptrack ui --port 8080        # custom port
 The dashboard shows:
 - **Stats cards** — total runs, success rate, average duration (hover for descriptions)
 - **Experiment list** — filterable by status, searchable by name/tag/param, metric previews inline
+- **Inline editing** — double-click any name, tag, or note field in the table view to edit directly. Tags and notes in the detail view are also inline-editable (double-click to edit)
+- **Tag autocomplete** — when adding tags, a dropdown shows previously used tags with usage counts. Select existing tags or create new ones
 - **Experiment detail** — summary card, params, code changes, variables (grouped by type), metrics with Chart.js plots, artifacts with type badges, git diff viewer
 - **Timeline view** — chronological event log with "view source" to see full cell code (current + previous version). Filters by event type (Code, Variables, Artifacts, Observational)
 - **Compare view** — side-by-side param + variable + metric comparison with "show only differences" toggle
 - **Compare Within** — select two timeline points within a single experiment to diff variable state
-- **Export** — JSON or Markdown export for documentation and workflow integration
+- **Export** — JSON, Markdown, or Plain Text export. "Copy as Text" includes full details (params, metrics, tags, notes, git info)
+- **Timezone selector** — set your preferred timezone in the header; timestamps across the dashboard update accordingly. Saved to project config
+- **Owl mascot** — click the owl in the header for tips and reactions. The owl reacts contextually to your actions (deleting, exporting, comparing, etc.)
 - **Docs panel** — click "? Docs" button for a built-in reference explaining all concepts (params, metrics, variables, artifacts, code changes, timeline, tags, compare)
 
 No external dependencies — uses stdlib `http.server` and Chart.js from CDN.
