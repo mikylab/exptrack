@@ -464,6 +464,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ORDER BY seq
         """, (exp["id"],)).fetchall()
 
+        # Separate internal params into categories
+        all_params = {p["key"]: json.loads(p["value"]) for p in params}
+        user_params = {k: v for k, v in all_params.items() if not k.startswith("_")}
+        variables = {k[5:]: v for k, v in all_params.items() if k.startswith("_var/")}
+        code_changes = {k[13:]: v for k, v in all_params.items() if k.startswith("_code_change/")}
+
         data = {
             "id": exp["id"],
             "name": exp["name"],
@@ -471,12 +477,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "status": exp["status"],
             "created_at": exp["created_at"],
             "duration_s": exp["duration_s"],
+            "script": exp["script"],
+            "command": exp["command"],
+            "python_ver": exp["python_ver"],
             "git_branch": exp["git_branch"],
             "git_commit": exp["git_commit"],
             "hostname": exp["hostname"],
             "tags": json.loads(exp["tags"] or "[]"),
             "notes": exp["notes"],
-            "params": {p["key"]: json.loads(p["value"]) for p in params},
+            "params": user_params,
+            "variables": variables,
+            "code_changes": code_changes,
             "metrics_series": {},
             "artifacts": [{"label": a["label"], "path": a["path"]} for a in artifacts],
             "timeline_summary": {
@@ -503,43 +514,62 @@ class DashboardHandler(BaseHTTPRequestHandler):
             f"**ID:** {data['id']}  ",
             f"**Status:** {data['status']}  ",
             f"**Created:** {data['created_at']}  ",
-            f"**Duration:** {data['duration_s']}s  " if data['duration_s'] else "",
-            f"**Git:** {data['git_branch']} @ {data['git_commit']}  " if data['git_branch'] else "",
-            f"**Tags:** {', '.join(data['tags'])}  " if data['tags'] else "",
+            f"**Duration:** {data['duration_s']}s  " if data.get('duration_s') else "",
+            f"**Script:** `{data['script']}`  " if data.get('script') else "",
+            f"**Command:** `{data['command']}`  " if data.get('command') else "",
+            f"**Python:** {data['python_ver']}  " if data.get('python_ver') else "",
+            f"**Git:** {data['git_branch']} @ {data['git_commit']}  " if data.get('git_branch') else "",
+            f"**Hostname:** {data['hostname']}  " if data.get('hostname') else "",
+            f"**Tags:** {', '.join(data['tags'])}  " if data.get('tags') else "",
             f"",
         ]
         if data.get("notes"):
             lines += [f"## Notes", f"", data["notes"], f""]
         # Params
-        user_params = {k: v for k, v in data["params"].items() if not k.startswith("_")}
-        if user_params:
+        if data.get("params"):
             lines += [f"## Parameters", f"", "| Key | Value |", "| --- | --- |"]
-            for k, v in user_params.items():
+            for k, v in data["params"].items():
+                lines.append(f"| {k} | {json.dumps(v)} |")
+            lines.append("")
+        # Variables
+        if data.get("variables"):
+            lines += [f"## Variables", f"", "| Name | Value |", "| --- | --- |"]
+            for k, v in data["variables"].items():
                 lines.append(f"| {k} | {json.dumps(v)} |")
             lines.append("")
         # Metrics
-        if data["metrics_series"]:
+        if data.get("metrics_series"):
             lines += [f"## Metrics", f"", "| Key | Last | Steps |", "| --- | --- | --- |"]
             for k, pts in data["metrics_series"].items():
                 last = pts[-1]["value"] if pts else "--"
                 lines.append(f"| {k} | {last} | {len(pts)} |")
             lines.append("")
         # Artifacts
-        if data["artifacts"]:
+        if data.get("artifacts"):
             lines += [f"## Artifacts", f""]
             for a in data["artifacts"]:
                 lines.append(f"- **{a['label']}**: `{a['path']}`")
             lines.append("")
+        # Code Changes
+        if data.get("code_changes"):
+            lines += [f"## Code Changes", f""]
+            for name, diff in data["code_changes"].items():
+                lines.append(f"### {name}")
+                lines.append("```diff")
+                lines.append(str(diff))
+                lines.append("```")
+                lines.append("")
         # Timeline summary
-        ts = data["timeline_summary"]
-        lines += [
-            f"## Timeline Summary",
-            f"",
-            f"- Total events: {ts['total_events']}",
-            f"- Cell executions: {ts['cell_executions']}",
-            f"- Variable changes: {ts['variable_sets']}",
-            f"- Artifacts saved: {ts['artifact_events']}",
-        ]
+        ts = data.get("timeline_summary", {})
+        if ts.get("total_events"):
+            lines += [
+                f"## Timeline Summary",
+                f"",
+                f"- Total events: {ts['total_events']}",
+                f"- Cell executions: {ts['cell_executions']}",
+                f"- Variable changes: {ts['variable_sets']}",
+                f"- Artifacts saved: {ts['artifact_events']}",
+            ]
         return "\n".join(lines)
 
 
@@ -563,13 +593,64 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   body {
     font-family: 'IBM Plex Mono', monospace;
     background: var(--bg); color: var(--fg);
-    max-width: 1400px; margin: 0 auto; padding: 28px 36px;
+    margin: 0; padding: 0;
     font-size: 15px; line-height: 1.6;
+    overflow: hidden; height: 100vh;
   }
   /* Header bar */
-  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-  .header h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; margin: 0; }
+  .header { display: flex; justify-content: space-between; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--border); background: var(--card-bg); flex-shrink: 0; height: 44px; }
+  .header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.5px; margin: 0; }
   .header-actions { display: flex; gap: 8px; align-items: center; }
+  /* IDE layout */
+  #app-layout { display: flex; height: calc(100vh - 44px); overflow: hidden; }
+  #exp-sidebar {
+    width: 280px; min-width: 280px; border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+    transition: width 0.2s ease, min-width 0.2s ease; flex-shrink: 0;
+    background: var(--card-bg);
+  }
+  #exp-sidebar.collapsed { width: 44px; min-width: 44px; }
+  #exp-sidebar.collapsed .sidebar-content { display: none; }
+  #exp-sidebar.collapsed .collapse-strip { display: flex; }
+  .sidebar-content { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+  .sidebar-header { display: flex; gap: 6px; padding: 10px 12px 6px; align-items: center; }
+  .sidebar-header input { flex: 1; font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 5px 8px; border-radius: 3px; background: var(--bg); min-width: 0; }
+  .collapse-btn { font-family: inherit; font-size: 16px; background: none; border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); flex-shrink: 0; }
+  .collapse-btn:hover { background: var(--code-bg); color: var(--fg); }
+  .collapse-strip { display: none; flex-direction: column; align-items: center; padding-top: 12px; cursor: pointer; width: 44px; height: 100%; }
+  .collapse-strip:hover { background: var(--code-bg); }
+  .status-chips { display: flex; gap: 4px; padding: 4px 12px 8px; flex-wrap: wrap; }
+  .status-chips button { font-family: inherit; font-size: 11px; background: var(--bg); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .status-chips button:hover { background: var(--code-bg); color: var(--fg); }
+  .status-chips button.active { background: var(--fg); color: var(--bg); }
+  #exp-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
+  .exp-card { padding: 8px 10px; border-radius: 4px; cursor: pointer; margin-bottom: 2px; border: 1px solid transparent; }
+  .exp-card:hover { background: var(--code-bg); }
+  .exp-card.active { background: rgba(44,90,160,0.08); border-color: var(--blue); }
+  .exp-card-row1 { display: flex; align-items: center; gap: 6px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .status-dot.status-done { background: var(--green); }
+  .status-dot.status-failed { background: var(--red); }
+  .status-dot.status-running { background: var(--yellow); }
+  .exp-card-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .exp-card-meta { font-size: 11px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .exp-card-metrics { font-size: 11px; color: var(--blue); margin-top: 1px; }
+  .exp-card-cb { margin-right: 4px; cursor: pointer; }
+  .sidebar-compare-bar { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--code-bg); }
+  .sidebar-compare-bar button { font-family: inherit; font-size: 12px; background: var(--blue); color: #fff; border: none; padding: 5px 12px; cursor: pointer; border-radius: 3px; width: 100%; }
+  #main-content { flex: 1; overflow-y: auto; min-width: 0; padding: 20px 28px; }
+  /* Detail summary bar */
+  .detail-summary { display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 16px; align-items: center; }
+  .detail-summary .sum-item { font-size: 13px; color: var(--muted); }
+  .detail-summary .sum-item strong { color: var(--fg); }
+  .detail-summary .sum-sep { color: var(--border); }
+  /* Two-column detail grid */
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .detail-grid-full { grid-column: 1 / -1; }
+  @media (max-width: 900px) {
+    .detail-grid { grid-template-columns: 1fr; }
+    #exp-sidebar { display: none; }
+  }
   .help-btn {
     font-family: inherit; font-size: 13px; background: var(--code-bg);
     border: 1px solid var(--border); padding: 5px 12px; cursor: pointer;
@@ -579,7 +660,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   h2 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
   h2 .help-icon { font-size: 13px; cursor: help; color: var(--blue); margin-left: 6px; font-weight: normal; text-transform: none; letter-spacing: 0; }
   /* Stats cards */
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 28px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .stat {
     background: var(--card-bg); border: 1px solid var(--border);
     padding: 20px; text-align: center; border-radius: 4px;
@@ -782,11 +863,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     transform: translateX(-50%); font-size: 11px; white-space: nowrap;
   }
   .tooltip:hover .tooltip-text { visibility: visible; }
-  /* Side panel layout */
-  .layout-side { display: flex; gap: 0; }
-  .layout-side #list-view { flex: 1; min-width: 0; }
-  .layout-side #detail-panel { width: 55%; min-width: 500px; border-left: 1px solid var(--border); max-height: calc(100vh - 140px); overflow-y: auto; position: sticky; top: 28px; }
-  .layout-side #detail-panel .detail { margin-top: 0; border: none; border-radius: 0; }
+  /* Legacy side panel (kept for compat) */
   .layout-mode-btn { font-family: inherit; font-size: 12px; background: var(--code-bg); border: 1px solid var(--border); padding: 4px 10px; cursor: pointer; border-radius: 3px; color: var(--muted); }
   .layout-mode-btn:hover { background: var(--border); color: var(--fg); }
   .layout-mode-btn.active { background: var(--fg); color: var(--bg); }
@@ -796,6 +873,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .bulk-bar button { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 12px; cursor: pointer; border-radius: 3px; background: var(--card-bg); }
   .bulk-bar button.danger { color: var(--red); border-color: var(--red); }
   .bulk-bar button.danger:hover { background: var(--red); color: #fff; }
+  /* Collapsible sections */
+  .section-toggle {
+    cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px;
+    padding: 6px 0; border-radius: 3px;
+  }
+  .section-toggle:hover { color: var(--blue); }
+  .section-toggle::before {
+    content: '\25BC'; font-size: 10px; transition: transform 0.15s; display: inline-block; width: 14px; text-align: center;
+  }
+  .section-toggle.collapsed::before { transform: rotate(-90deg); }
+  .section-body { transition: max-height 0.2s ease; }
+  .section-toggle.collapsed + .section-body { display: none; }
   /* Editable name */
   .editable-name { cursor: default; padding: 2px 4px; border-radius: 3px; }
   .editable-name:hover { background: rgba(44,90,160,0.08); }
@@ -826,8 +915,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div class="header">
   <h1>exptrack</h1>
   <div class="header-actions">
-    <button class="layout-mode-btn" id="layout-bottom-btn" onclick="setLayout('bottom')" title="Detail panel below table">&#9881; Below</button>
-    <button class="layout-mode-btn" id="layout-side-btn" onclick="setLayout('side')" title="Detail panel on the side">&#9881; Side</button>
     <button class="help-btn" onclick="toggleHelp()">? Docs</button>
   </div>
 </div>
@@ -874,43 +961,56 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 
   <h3>Dashboard Views</h3>
-  <p><strong>Experiments tab:</strong> List of all runs. Click a row to see details. Use checkboxes to select 2 experiments for comparison. Use search to filter by name or tag.</p>
-  <p><strong>Compare tab:</strong> Select two experiments to see param/variable/metric differences. Yellow highlighting = values differ between runs.</p>
-  <p><strong>Detail panel (click a row):</strong></p>
-  <p style="margin-left:16px">
-    <strong>Overview</strong> — Run info, params, code changes, variables (grouped by type), metrics with charts, artifacts, git diff<br>
-    <strong>Timeline</strong> — Chronological event log. Filter by type. Click "view source" on cells to see full code.<br>
-    <strong>Compare Within</strong> — Select two timeline points to diff variable state within a single run.
-  </p>
-  <p><strong>Export:</strong> Use the Export button on any experiment to get JSON or Markdown for documentation and workflow integration.</p>
+  <p><strong>Experiment list:</strong> Collapsible sidebar on the left. Click any experiment to see details. Use checkboxes to select 2 experiments for comparison.</p>
+  <p><strong>Detail view:</strong> Shows full experiment info in the main area. Tabs: Overview, Timeline, Compare Within.</p>
+  <p><strong>Compare:</strong> Select two experiments via checkboxes in the sidebar, then click Compare.</p>
+  <p><strong>Export:</strong> Use the Export button on any experiment to get JSON, Markdown, or Plain Text.</p>
 </div>
 
-<div class="stats" id="stats"></div>
+<div id="app-layout">
+  <!-- Left: Collapsible experiment list -->
+  <div id="exp-sidebar">
+    <div class="sidebar-content">
+      <div class="sidebar-header">
+        <input type="text" id="search-input" placeholder="Search..." oninput="searchQuery=this.value;renderExpList()">
+        <button class="collapse-btn" onclick="toggleSidebar()" title="Collapse sidebar">&#8249;</button>
+      </div>
+      <div class="status-chips" id="status-chips"></div>
+      <div id="exp-list"></div>
+      <div id="sidebar-compare-bar"></div>
+    </div>
+    <div class="collapse-strip" onclick="toggleSidebar()">
+      <span style="font-size:18px;color:var(--muted)">&#8250;</span>
+      <span id="sidebar-count" style="font-size:11px;color:var(--muted);margin-top:8px;writing-mode:vertical-rl"></span>
+    </div>
+  </div>
 
-<div class="tabs">
-  <button class="tab active" onclick="switchTab('list')">Experiments</button>
-  <button class="tab" onclick="switchTab('compare')">Compare</button>
-</div>
-
-<div id="view">
-  <div id="main-layout">
-    <div id="list-view">
-      <div class="filters" id="filters"></div>
+  <!-- Center: Main content -->
+  <div id="main-content">
+    <!-- Welcome state: shown when no experiment selected -->
+    <div id="welcome-state">
+      <div class="stats" id="stats"></div>
       <div id="bulk-bar-container"></div>
       <table id="exp-table"><thead><tr>
         <th class="cb-col"></th><th>ID</th><th>Name</th><th>Status</th><th>Tags</th><th>Notes</th><th>Started</th><th>Duration</th><th>Branch</th>
       </tr></thead><tbody id="exp-body"></tbody></table>
     </div>
-    <div id="detail-panel"></div>
-  </div>
-  <div id="compare-view" style="display:none">
-    <div class="compare-input">
-      <select id="cmp-id1"><option value="">-- Select experiment 1 --</option></select>
-      <span class="vs-label">vs</span>
-      <select id="cmp-id2"><option value="">-- Select experiment 2 --</option></select>
-      <button onclick="doCompare()">Compare</button>
+
+    <!-- Detail state: shown when an experiment is selected -->
+    <div id="detail-view" style="display:none">
+      <div id="detail-panel"></div>
     </div>
-    <div id="compare-result"></div>
+
+    <!-- Compare state -->
+    <div id="compare-view" style="display:none">
+      <div class="compare-input">
+        <select id="cmp-id1"><option value="">-- Select experiment 1 --</option></select>
+        <span class="vs-label">vs</span>
+        <select id="cmp-id2"><option value="">-- Select experiment 2 --</option></select>
+        <button onclick="doCompare()">Compare</button>
+      </div>
+      <div id="compare-result"></div>
+    </div>
   </div>
 </div>
 
@@ -922,7 +1022,7 @@ let selectedForCompare = new Set();
 let selectedForBulk = new Set();
 let selectMode = false;
 let allExperiments = [];
-let layoutMode = localStorage.getItem('exptrack-layout') || 'bottom';
+let currentDetailId = '';
 
 async function api(path) {
   const r = await fetch(path);
@@ -947,18 +1047,92 @@ function toggleHelp() {
   document.getElementById('help-panel').classList.toggle('visible');
 }
 
-// ── Layout mode ──────────────────────────────────────────────────────────────
-function setLayout(mode) {
-  layoutMode = mode;
-  localStorage.setItem('exptrack-layout', mode);
-  const layout = document.getElementById('main-layout');
-  document.getElementById('layout-bottom-btn').classList.toggle('active', mode === 'bottom');
-  document.getElementById('layout-side-btn').classList.toggle('active', mode === 'side');
-  if (mode === 'side') {
-    layout.classList.add('layout-side');
+// ── Sidebar ──────────────────────────────────────────────────────────────────
+function toggleSidebar() {
+  const sb = document.getElementById('exp-sidebar');
+  sb.classList.toggle('collapsed');
+  localStorage.setItem('exptrack-sidebar', sb.classList.contains('collapsed') ? 'collapsed' : 'open');
+  const countEl = document.getElementById('sidebar-count');
+  if (countEl) countEl.textContent = allExperiments.length + ' experiments';
+}
+
+function renderStatusChips() {
+  const el = document.getElementById('status-chips');
+  if (!el) return;
+  const chips = [
+    {label: 'All', val: ''},
+    {label: 'Done', val: 'done'},
+    {label: 'Failed', val: 'failed'},
+    {label: 'Running', val: 'running'}
+  ];
+  el.innerHTML = chips.map(c =>
+    '<button class="' + (currentFilter===c.val?'active':'') + '" onclick="filterExps(\'' + c.val + '\')">' + c.label + '</button>'
+  ).join('');
+}
+
+function renderExpList() {
+  const list = document.getElementById('exp-list');
+  if (!list) return;
+  const filtered = getFilteredExperiments();
+  list.innerHTML = filtered.map(e => {
+    const active = currentDetailId === e.id ? ' active' : '';
+    const statusCls = 'status-' + e.status;
+    const metrics = Object.entries(e.metrics || {}).slice(0, 2)
+      .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v)).join('  ');
+    const isCompare = selectedForCompare.has(e.id);
+    const cbHtml = '<input type="checkbox" class="exp-card-cb" ' + (isCompare?'checked':'') +
+      ' onclick="event.stopPropagation();toggleCompare(\'' + e.id + '\')" title="Select for compare">';
+    return '<div class="exp-card' + active + '" onclick="showDetail(\'' + e.id + '\')">' +
+      '<div class="exp-card-row1">' + cbHtml +
+      '<span class="status-dot ' + statusCls + '"></span>' +
+      '<span class="exp-card-name">' + esc(e.name) + '</span></div>' +
+      '<div class="exp-card-meta">' +
+        esc(e.git_branch || '') + ' &middot; ' + fmtDur(e.duration_s) + ' &middot; ' + fmtDt(e.created_at) +
+      '</div>' +
+      (metrics ? '<div class="exp-card-metrics">' + esc(metrics) + '</div>' : '') +
+    '</div>';
+  }).join('');
+
+  // Update sidebar count
+  const countEl = document.getElementById('sidebar-count');
+  if (countEl) countEl.textContent = filtered.length + ' exp';
+
+  // Render compare bar in sidebar
+  renderSidebarCompareBar();
+}
+
+function renderSidebarCompareBar() {
+  const bar = document.getElementById('sidebar-compare-bar');
+  if (!bar) return;
+  if (selectedForCompare.size === 2) {
+    bar.innerHTML = '<div class="sidebar-compare-bar"><button onclick="compareSelected()">Compare Selected (2)</button></div>';
+  } else if (selectedForCompare.size === 1) {
+    bar.innerHTML = '<div class="sidebar-compare-bar" style="text-align:center;font-size:11px;color:var(--muted);padding:6px">Select 1 more to compare</div>';
   } else {
-    layout.classList.remove('layout-side');
+    bar.innerHTML = '';
   }
+}
+
+// ── View switching ───────────────────────────────────────────────────────────
+function showWelcome() {
+  currentDetailId = '';
+  document.getElementById('welcome-state').style.display = '';
+  document.getElementById('detail-view').style.display = 'none';
+  document.getElementById('compare-view').style.display = 'none';
+  renderExpList();
+}
+
+function showCompareView() {
+  document.getElementById('welcome-state').style.display = 'none';
+  document.getElementById('detail-view').style.display = 'none';
+  document.getElementById('compare-view').style.display = '';
+  populateCompareDropdowns();
+}
+
+function showDetailView() {
+  document.getElementById('welcome-state').style.display = 'none';
+  document.getElementById('detail-view').style.display = '';
+  document.getElementById('compare-view').style.display = 'none';
 }
 
 // ── Select/bulk mode ─────────────────────────────────────────────────────────
@@ -1012,7 +1186,7 @@ async function bulkDelete() {
   const d = await r.json();
   if (d.ok) {
     selectedForBulk.clear();
-    document.getElementById('detail-panel').innerHTML = '';
+    showWelcome();
     loadStats();
     loadExperiments();
     renderBulkBar();
@@ -1066,34 +1240,31 @@ function getFilteredExperiments() {
 
 async function loadStats() {
   const s = await api('/api/stats');
-  document.getElementById('stats').innerHTML = `
-    <div class="stat"><div class="num">${s.total}</div><div class="label">Total Runs</div><div class="stat-hint">All experiments tracked in this project</div></div>
-    <div class="stat"><div class="num status-done">${s.done}</div><div class="label">Done</div><div class="stat-hint">Completed successfully</div></div>
-    <div class="stat"><div class="num status-failed">${s.failed}</div><div class="label">Failed</div><div class="stat-hint">Ended with an error</div></div>
-    <div class="stat"><div class="num status-running">${s.running}</div><div class="label">Running</div><div class="stat-hint">Currently in progress</div></div>
-    <div class="stat"><div class="num">${s.success_rate}%</div><div class="label">Success Rate</div><div class="stat-hint">done / total</div></div>
-    <div class="stat"><div class="num">${fmtDur(s.avg_duration_s)}</div><div class="label">Avg Duration</div><div class="stat-hint">Mean run time (completed only)</div></div>
-  `;
-  document.getElementById('filters').innerHTML = `
-    <button class="${!currentFilter?'active':''}" onclick="filterExps('')">All</button>
-    <button class="${currentFilter==='done'?'active':''}" onclick="filterExps('done')">Done</button>
-    <button class="${currentFilter==='failed'?'active':''}" onclick="filterExps('failed')">Failed</button>
-    <button class="${currentFilter==='running'?'active':''}" onclick="filterExps('running')">Running</button>
-    <input class="search-box" type="text" placeholder="Search name, tag, param..." value="${esc(searchQuery)}" oninput="searchQuery=this.value;renderExperiments()">
-    <button class="${selectMode?'active':''}" style="margin-left:auto" onclick="toggleSelectMode()">${selectMode ? 'Exit Select' : 'Select'}</button>
-    <button class="compare-selected ${selectedForCompare.size===2?'visible':''}" onclick="compareSelected()">Compare Selected (${selectedForCompare.size}/2)</button>
-  `;
+  const statsEl = document.getElementById('stats');
+  if (statsEl) {
+    statsEl.innerHTML = `
+      <div class="stat"><div class="num">${s.total}</div><div class="label">Total Runs</div><div class="stat-hint">All experiments tracked in this project</div></div>
+      <div class="stat"><div class="num status-done">${s.done}</div><div class="label">Done</div><div class="stat-hint">Completed successfully</div></div>
+      <div class="stat"><div class="num status-failed">${s.failed}</div><div class="label">Failed</div><div class="stat-hint">Ended with an error</div></div>
+      <div class="stat"><div class="num status-running">${s.running}</div><div class="label">Running</div><div class="stat-hint">Currently in progress</div></div>
+      <div class="stat"><div class="num">${s.success_rate}%</div><div class="label">Success Rate</div><div class="stat-hint">done / total</div></div>
+      <div class="stat"><div class="num">${fmtDur(s.avg_duration_s)}</div><div class="label">Avg Duration</div><div class="stat-hint">Mean run time (completed only)</div></div>
+    `;
+  }
+  renderStatusChips();
 }
 
 async function loadExperiments() {
   const url = currentFilter ? '/api/experiments?status=' + currentFilter : '/api/experiments';
   allExperiments = await api(url);
   renderExperiments();
+  renderExpList();
 }
 
 function renderExperiments() {
   const exps = getFilteredExperiments();
   const tbody = document.getElementById('exp-body');
+  if (!tbody) return;
   tbody.innerHTML = exps.map(e => {
     const metricsPreview = Object.entries(e.metrics || {}).slice(0, 3)
       .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v))
@@ -1168,13 +1339,13 @@ function toggleCompare(id) {
     }
     selectedForCompare.add(id);
   }
-  loadStats();
+  renderExpList();
   renderExperiments();
 }
 
 async function compareSelected() {
   if (selectedForCompare.size !== 2) return;
-  switchTab('compare');
+  showCompareView();
   await populateCompareDropdowns();
   const ids = [...selectedForCompare];
   document.getElementById('cmp-id1').value = ids[0];
@@ -1184,16 +1355,8 @@ async function compareSelected() {
 
 function filterExps(status) {
   currentFilter = status;
-  loadStats();
+  renderStatusChips();
   loadExperiments();
-}
-
-function switchTab(tab) {
-  document.querySelectorAll('.tabs > .tab').forEach((t,i) => t.classList.toggle('active', i === (tab==='list'?0:1)));
-  document.getElementById('main-layout').style.display = tab==='list' ? '' : 'none';
-  document.getElementById('compare-view').style.display = tab==='compare' ? '' : 'none';
-  document.getElementById('detail-panel').innerHTML = '';
-  if (tab === 'compare') populateCompareDropdowns();
 }
 
 async function populateCompareDropdowns() {
@@ -1223,6 +1386,15 @@ function artifactTypeBadge(path) {
 }
 
 async function showDetail(id) {
+  // Toggle: clicking same experiment deselects
+  if (currentDetailId === id) {
+    showWelcome();
+    return;
+  }
+  currentDetailId = id;
+  showDetailView();
+  renderExpList();
+
   const [exp, metricsData, diffData] = await Promise.all([
     api('/api/experiment/' + id),
     api('/api/metrics/' + id),
@@ -1269,7 +1441,7 @@ async function showDetail(id) {
   // Code changes
   let codeHtml = '';
   if (Object.keys(codeChanges).length) {
-    codeHtml = '<h2>Code Changes <span class="help-icon" title="Diffs of your code vs. the last git commit (scripts) or the previous cell version (notebooks). Only changed lines are stored.">?</span></h2><div class="code-changes">';
+    codeHtml = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Code Changes</h2><div class="section-body"><div class="code-changes">';
     for (const [k, v] of Object.entries(codeChanges)) {
       const label = k === '_code_changes' ? 'Script diff vs. last commit' : k.replace('_code_change/','Cell ');
       const parts = String(v).split('; ').map(part => {
@@ -1280,7 +1452,7 @@ async function showDetail(id) {
       }).join('\n');
       codeHtml += '<div class="change-item"><div class="change-label">' + esc(label) + '</div><div class="change-diff">' + parts + '</div></div>';
     }
-    codeHtml += '</div>';
+    codeHtml += '</div></div>';
   }
 
   // Variable changes
@@ -1297,7 +1469,7 @@ async function showDetail(id) {
         other[k] = v;
       }
     }
-    varHtml = '<h2>Variables <span class="help-icon" title="All notebook variable values captured automatically. Scalars = simple values, Arrays = numpy/torch/pandas, Other = everything else.">?</span></h2><div class="var-changes">';
+    varHtml = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Variables (' + Object.keys(varChanges).length + ')</h2><div class="section-body"><div class="var-changes">';
     const renderGroup = (title, vars) => {
       if (!Object.keys(vars).length) return '';
       let h = '<div class="var-section-title">' + title + ' (' + Object.keys(vars).length + ')</div><table>';
@@ -1309,7 +1481,7 @@ async function showDetail(id) {
     varHtml += renderGroup('Scalars', scalars);
     varHtml += renderGroup('Arrays & Tensors', arrays);
     varHtml += renderGroup('Other', other);
-    varHtml += '</div>';
+    varHtml += '</div></div>';
   }
 
   // Summary card
@@ -1342,7 +1514,23 @@ async function showDetail(id) {
     : '<span style="color:var(--muted)">none</span>';
 
   document.getElementById('detail-panel').innerHTML = `
-    <div class="detail">
+    <div class="detail" style="border:none;padding:0;margin:0">
+      <!-- Summary bar -->
+      <div class="detail-summary">
+        <span class="sum-item"><strong class="status-${exp.status}">${exp.status}</strong></span>
+        <span class="sum-sep">|</span>
+        <span class="sum-item">Branch: <strong>${esc(exp.git_branch||'--')}</strong></span>
+        <span class="sum-item">Commit: <strong>${esc((exp.git_commit||'--').slice(0,7))}</strong></span>
+        <span class="sum-sep">|</span>
+        <span class="sum-item">Started: <strong>${fmtDt(exp.created_at)}</strong></span>
+        <span class="sum-item">Duration: <strong>${fmtDur(exp.duration_s)}</strong></span>
+        <span class="sum-sep">|</span>
+        <span class="sum-item">${Object.keys(regularParams).length} params</span>
+        <span class="sum-item">${exp.metrics.length} metrics</span>
+        <span class="sum-item">${exp.artifacts.length} artifacts</span>
+      </div>
+
+      <!-- Header with name + actions -->
       <div class="detail-header">
         <h2 id="detail-name">${esc(exp.name)}</h2>
         <div class="detail-actions">
@@ -1351,7 +1539,7 @@ async function showDetail(id) {
           <button class="action-btn" onclick="addNoteUI('${exp.id}')">+ Note</button>
           <button class="action-btn primary" onclick="exportExp('${exp.id}')">Export</button>
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name).replace(/'/g,"\\'")}')">Delete</button>
-          <button class="close-btn" onclick="document.getElementById('detail-panel').innerHTML=''">&times;</button>
+          <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
         </div>
       </div>
 
@@ -1362,28 +1550,36 @@ async function showDetail(id) {
       </div>
 
       <div id="detail-tab-overview">
-        ${summaryHtml}
-        <div class="info-grid">
-          <span class="label">ID</span><span>${exp.id}</span>
-          <span class="label">Status</span><span class="status-${exp.status}">${exp.status}</span>
-          <span class="label">Created</span><span>${fmtDt(exp.created_at)}</span>
-          <span class="label">Duration</span><span>${fmtDur(exp.duration_s)}</span>
-          <span class="label">Script</span><span>${esc(exp.script||'--')}</span>
-          <span class="label">Branch</span><span>${exp.git_branch||'--'} @ ${exp.git_commit||'--'}</span>
-          <span class="label">Host</span><span>${exp.hostname||'--'}</span>
-          <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
-          <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
-          <span class="label">Notes</span><span id="detail-notes">${exp.notes ? '<div class="notes-display">'+esc(exp.notes)+'</div>' : '<span style="color:var(--muted)">none</span>'}</span>
+        <!-- Two-column grid -->
+        <div class="detail-grid">
+          <!-- Left column: info + params -->
+          <div>
+            <div class="info-grid">
+              <span class="label">ID</span><span>${exp.id}</span>
+              <span class="label">Script</span><span style="font-size:12px">${esc(exp.script||'--')}</span>
+              <span class="label">Host</span><span>${exp.hostname||'--'}</span>
+              <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
+              <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
+              <span class="label">Notes</span><span id="detail-notes">${exp.notes ? '<div class="notes-display">'+esc(exp.notes)+'</div>' : '<span style="color:var(--muted)">none</span>'}</span>
+            </div>
+            ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
+            ${varHtml}
+          </div>
+          <!-- Right column: metrics + charts + artifacts -->
+          <div>
+            ${metricRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Metrics (' + exp.metrics.length + ')</h2><div class="section-body"><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table><div id="charts-container"></div></div>' : '<div id="charts-container"></div>'}
+            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
+            <div class="section-body">
+            ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
+            ${addArtifactForm}
+            </div>
+          </div>
         </div>
-        ${paramRows ? '<h2>Params <span class="help-icon" title="Hyperparameters and config values captured from argparse, CLI flags, or notebook variable assignments.">?</span></h2><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table>' : ''}
-        ${codeHtml}
-        ${varHtml}
-        ${metricRows ? '<h2>Metrics <span class="help-icon" title="Numeric values logged during training. Last = most recent value, Min/Max = range, Steps = number of data points.">?</span></h2><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table>' : ''}
-        <div id="charts-container"></div>
-        <h2>Artifacts <span class="help-icon" title="Output files auto-captured from plt.savefig() or manually added. Badge shows file type.">?</span></h2>
-        ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
-        ${addArtifactForm}
-        ${diffHtml ? '<h2>Git Diff <span class="help-icon" title="All uncommitted changes in the repo when this experiment started. This is the traceability link to reproduce exactly what code ran.">?</span> ('+exp.diff_lines+' lines)</h2><div class="diff-view">'+diffHtml+'</div>' : ''}
+        <!-- Full-width sections below the grid -->
+        <div style="margin-top:20px">
+          ${codeHtml}
+          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Git Diff ('+exp.diff_lines+' lines)</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
+        </div>
       </div>
 
       <div id="detail-tab-timeline" style="display:none"></div>
@@ -1448,21 +1644,31 @@ async function doExport(id, fmt) {
   } else if (fmt === 'plain') {
     // Plain text format for easy copying
     let lines = [];
-    lines.push('Experiment: ' + (data.name || data.data?.name || ''));
-    lines.push('ID: ' + (data.id || data.data?.id || ''));
-    lines.push('Status: ' + (data.status || data.data?.status || ''));
     const d = data.data || data;
+    lines.push('Experiment: ' + (d.name || ''));
+    lines.push('ID: ' + (d.id || ''));
+    lines.push('Status: ' + (d.status || ''));
     if (d.created_at) lines.push('Created: ' + d.created_at);
     if (d.duration_s) lines.push('Duration: ' + fmtDur(d.duration_s));
-    if (d.git_branch) lines.push('Git: ' + d.git_branch + ' @ ' + (d.git_commit || ''));
+    if (d.script) lines.push('Script: ' + d.script);
+    if (d.command) lines.push('Command: ' + d.command);
+    if (d.python_ver) lines.push('Python: ' + d.python_ver);
+    if (d.git_branch) lines.push('Branch: ' + d.git_branch);
+    if (d.git_commit) lines.push('Commit: ' + d.git_commit);
+    if (d.hostname) lines.push('Hostname: ' + d.hostname);
     if (d.tags && d.tags.length) lines.push('Tags: ' + d.tags.join(', '));
     if (d.notes) lines.push('Notes: ' + d.notes);
     lines.push('');
     const params = d.params || {};
-    const userParams = Object.entries(params).filter(([k]) => !k.startsWith('_'));
-    if (userParams.length) {
+    if (Object.keys(params).length) {
       lines.push('Parameters:');
-      userParams.forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
+      Object.entries(params).forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
+      lines.push('');
+    }
+    const vars = d.variables || {};
+    if (Object.keys(vars).length) {
+      lines.push('Variables:');
+      Object.entries(vars).forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
       lines.push('');
     }
     const ms = d.metrics_series || {};
@@ -1477,6 +1683,20 @@ async function doExport(id, fmt) {
     if (d.artifacts && d.artifacts.length) {
       lines.push('Artifacts:');
       d.artifacts.forEach(a => lines.push('  ' + a.label + ': ' + a.path));
+      lines.push('');
+    }
+    const changes = d.code_changes || {};
+    if (Object.keys(changes).length) {
+      lines.push('Code Changes:');
+      Object.entries(changes).forEach(([k,v]) => lines.push('  ' + k + ': ' + JSON.stringify(v)));
+      lines.push('');
+    }
+    const ts = d.timeline_summary || {};
+    if (ts.total_events) {
+      lines.push('Timeline: ' + ts.total_events + ' events (' +
+        (ts.cell_executions || 0) + ' cells, ' +
+        (ts.variable_sets || 0) + ' vars, ' +
+        (ts.artifact_events || 0) + ' artifacts)');
     }
     pre.textContent = lines.join('\n');
   } else {
@@ -1623,7 +1843,7 @@ async function deleteExp(id, name) {
   });
   const d = await r.json();
   if (d.ok) {
-    document.getElementById('detail-panel').innerHTML = '';
+    showWelcome();
     loadStats();
     loadExperiments();
   } else alert(d.error || 'Failed');
@@ -1891,7 +2111,9 @@ async function doWithinCompare(expId) {
 }
 
 // Init
-setLayout(layoutMode);
+if (localStorage.getItem('exptrack-sidebar') === 'collapsed') {
+  document.getElementById('exp-sidebar').classList.add('collapsed');
+}
 loadStats();
 loadExperiments();
 </script>

@@ -13,6 +13,7 @@ script itself. Works by:
 
 The script sees sys.argv exactly as if it were called directly.
 """
+import os
 import sys
 import runpy
 from pathlib import Path
@@ -57,6 +58,9 @@ def main():
     # Patch matplotlib.savefig so saved plots auto-register as artifacts
     patch_savefig(exp)
 
+    # Record start time for auto-detecting new output files
+    start_ts = exp._start
+
     # Run the script in its own namespace
     try:
         runpy.run_path(
@@ -64,10 +68,12 @@ def main():
             run_name="__main__",
             init_globals={"__exptrack__": exp},  # script can access via globals()
         )
+        _auto_detect_outputs(exp, start_ts)
         exp.finish()
     except SystemExit as e:
         # Normal exit — treat code 0 as success
         if e.code == 0 or e.code is None:
+            _auto_detect_outputs(exp, start_ts)
             exp.finish()
         else:
             exp.fail(f"SystemExit({e.code})")
@@ -77,6 +83,34 @@ def main():
         traceback.print_exc()
         exp.fail(str(e))
         sys.exit(1)
+
+
+_AUTO_DETECT_EXTS = {
+    '.png', '.jpg', '.jpeg', '.pdf', '.svg', '.gif', '.bmp',
+    '.csv', '.json', '.jsonl', '.tsv', '.parquet',
+    '.pt', '.pth', '.h5', '.hdf5', '.onnx', '.pkl', '.safetensors',
+    '.log', '.npy', '.npz',
+}
+_SKIP_DIRS = {'.exptrack', '.git', '__pycache__', 'node_modules', '.venv', 'venv'}
+
+
+def _auto_detect_outputs(exp, start_ts):
+    """Scan working directory for files created during the run and log them."""
+    try:
+        for root, dirs, files in os.walk('.'):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+            for f in files:
+                ext = os.path.splitext(f)[1].lower()
+                if ext not in _AUTO_DETECT_EXTS:
+                    continue
+                fp = os.path.join(root, f)
+                try:
+                    if os.path.getmtime(fp) >= start_ts:
+                        exp.log_file(fp)
+                except OSError:
+                    pass
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
