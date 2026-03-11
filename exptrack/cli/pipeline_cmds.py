@@ -1,0 +1,284 @@
+"""
+exptrack/cli/pipeline_cmds.py — Shell / SLURM pipeline commands
+
+run-start, run-finish, run-fail, log-metric, log-artifact
+
+All output to stderr so stdout can be captured cleanly by eval $(...).
+"""
+from __future__ import annotations
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from ..core import get_db
+from .. import config as cfg
+
+
+def _coerce_str(v: str):
+    if v.lower() == "true":  return True
+    if v.lower() == "false": return False
+    try:    return int(v)
+    except Exception: pass
+    try:    return float(v)
+    except Exception: pass
+    return v
+
+
+def _flatten_dict(d: dict, prefix: str = "") -> dict:
+    """Flatten nested dict: {"val": {"loss": 0.3}} -> {"val/loss": 0.3}"""
+    out = {}
+    for k, v in d.items():
+        key = f"{prefix}/{k}" if prefix else k
+        if isinstance(v, dict):
+            out.update(_flatten_dict(v, key))
+        else:
+            out[key] = v
+    return out
+
+
+def cmd_run_start(args):
+    """
+    Start an experiment from a shell script. Prints shell-sourceable env vars
+    to stdout so the caller can do:
+
+        eval $(exptrack run-start --lr 0.01 --epochs 50)
+    """
+    from ..core import Experiment
+
+    # Parse free-form --key value pairs from remaining args
+    params = {}
+    raw = args.params
+    i = 0
+    while i < len(raw):
+        a = raw[i]
+        if a.startswith("--"):
+            key = a[2:]
+            if "=" in key:
+                k, v = key.split("=", 1)
+                params[k] = _coerce_str(v)
+            elif i + 1 < len(raw) and not raw[i+1].startswith("--"):
+                params[key] = _coerce_str(raw[i+1])
+                i += 1
+            else:
+                params[key] = True
+        i += 1
+
+    # Add SLURM context if present
+    slurm_vars = {
+        "SLURM_JOB_ID":       os.environ.get("SLURM_JOB_ID"),
+        "SLURM_JOB_NAME":     os.environ.get("SLURM_JOB_NAME"),
+        "SLURM_NODELIST":     os.environ.get("SLURM_NODELIST"),
+        "SLURM_CPUS_ON_NODE": os.environ.get("SLURM_CPUS_ON_NODE"),
+        "SLURM_MEM_PER_NODE": os.environ.get("SLURM_MEM_PER_NODE"),
+        "SLURM_GPUS":         os.environ.get("SLURM_GPUS"),
+    }
+    slurm = {k: v for k, v in slurm_vars.items() if v}
+    if slurm:
+        params["_slurm"] = slurm
+
+    tags  = args.tags or []
+    notes = args.notes or ""
+    name  = args.name or ""
+
+    exp = Experiment(
+        name=name,
+        params=params,
+        tags=tags,
+        notes=notes,
+        script=args.script or os.environ.get("SLURM_JOB_NAME", "pipeline"),
+        _caller_depth=0,
+    )
+
+    conf = cfg.load()
+    out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    exp.log_artifact(str(out_dir), label="output_dir")
+
+    print(f'export EXP_ID="{exp.id}"')
+    print(f'export EXP_NAME="{exp.name}"')
+    print(f'export EXP_OUT="{out_dir}"')
+
+    env_file = out_dir / ".exptrack_run.env"
+    env_file.write_text(
+        f"EXP_ID={exp.id}\n"
+        f"EXP_NAME={exp.name}\n"
+        f"EXP_OUT={out_dir}\n"
+        f"EXP_CREATED={exp.created_at}\n"
+    )
+
+
+def cmd_run_finish(args):
+    """Mark an experiment as done from a shell script."""
+    conn = get_db()
+    exp_row = conn.execute(
+        "SELECT id, name FROM experiments WHERE id LIKE ?", (args.id + "%",)
+    ).fetchone()
+    if not exp_row:
+        print(f"[exptrack] run-finish: experiment '{args.id}' not found", file=sys.stderr)
+        sys.exit(1)
+
+    exp_id = exp_row["id"]
+    step   = args.step
+
+    if args.metrics:
+        mpath = Path(args.metrics)
+        if mpath.exists():
+            try:
+                raw = json.loads(mpath.read_text())
+                flat = _flatten_dict(raw)
+                numeric = {k: float(v) for k, v in flat.items()
+                           if isinstance(v, (int, float)) and not isinstance(v, bool)}
+                if numeric:
+                    ts = datetime.now(timezone.utc).isoformat()
+                    with conn:
+                        conn.executemany(
+                            "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
+                            [(exp_id, k, v, step, ts) for k, v in numeric.items()]
+                        )
+                    print(f"[exptrack] Logged {len(numeric)} metrics from {mpath.name}",
+                          file=sys.stderr)
+            except Exception as e:
+                print(f"[exptrack] Warning: could not parse metrics file: {e}", file=sys.stderr)
+        else:
+            print(f"[exptrack] Warning: metrics file not found: {mpath}", file=sys.stderr)
+
+    if args.params:
+        params = {}
+        for pair in args.params:
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                params[k] = _coerce_str(v)
+        if params:
+            with conn:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+                    [(exp_id, k, json.dumps(v)) for k, v in params.items()]
+                )
+
+    now = datetime.now(timezone.utc).isoformat()
+    created = conn.execute(
+        "SELECT created_at FROM experiments WHERE id=?", (exp_id,)
+    ).fetchone()["created_at"]
+    duration = (datetime.fromisoformat(now) - datetime.fromisoformat(created)).total_seconds()
+
+    with conn:
+        conn.execute("""
+            UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?
+        """, (now, duration, exp_id))
+
+    m, s = divmod(duration, 60)
+    print(f"[exptrack] done: {exp_row['name']}  ({int(m)}m {s:.0f}s)", file=sys.stderr)
+
+    # Fire finish plugins
+    from ..plugins import registry as plugin_reg
+    plugin_reg.load_from_config(cfg.load())
+
+    class _FakeExp:
+        pass
+    fake = _FakeExp()
+    row = conn.execute("SELECT * FROM experiments WHERE id=?", (exp_id,)).fetchone()
+    for k in row.keys():
+        setattr(fake, k, row[k])
+    fake._params = {r["key"]: json.loads(r["value"]) for r in
+                    conn.execute("SELECT key, value FROM params WHERE exp_id=?",
+                                 (exp_id,)).fetchall()}
+    fake.status = "done"
+    fake.duration_s = duration
+    fake.last_metrics = lambda: {r["key"]: r["value"] for r in conn.execute("""
+        SELECT key, value FROM metrics m WHERE exp_id=?
+        GROUP BY key HAVING MAX(COALESCE(step,0))
+    """, (exp_id,)).fetchall()}
+    plugin_reg.on_finish(fake)
+
+
+def cmd_run_fail(args):
+    """Mark an experiment as failed: exptrack run-fail $EXP_ID "reason" """
+    conn = get_db()
+    exp_row = conn.execute(
+        "SELECT id, name, created_at FROM experiments WHERE id LIKE ?",
+        (args.id + "%",)
+    ).fetchone()
+    if not exp_row:
+        print(f"[exptrack] run-fail: not found: {args.id}", file=sys.stderr); sys.exit(1)
+
+    now = datetime.now(timezone.utc).isoformat()
+    duration = (datetime.fromisoformat(now) -
+                datetime.fromisoformat(exp_row["created_at"])).total_seconds()
+    reason = args.reason or "shell script exited non-zero"
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+            (exp_row["id"], "error", json.dumps(reason))
+        )
+        conn.execute("""
+            UPDATE experiments SET status='failed', updated_at=?, duration_s=? WHERE id=?
+        """, (now, duration, exp_row["id"]))
+    print(f"[exptrack] FAILED: {exp_row['name']}  -- {reason}", file=sys.stderr)
+
+
+def cmd_log_metric(args):
+    """Log a metric from shell: exptrack log-metric $EXP_ID loss 0.234 --step 10"""
+    conn = get_db()
+    exp_row = conn.execute(
+        "SELECT id FROM experiments WHERE id LIKE ?", (args.id + "%",)
+    ).fetchone()
+    if not exp_row:
+        print(f"[exptrack] log-metric: not found: {args.id}", file=sys.stderr); sys.exit(1)
+
+    exp_id = exp_row["id"]
+    ts = datetime.now(timezone.utc).isoformat()
+
+    if args.file:
+        fpath = Path(args.file)
+        if not fpath.exists():
+            print(f"[exptrack] log-metric: file not found: {fpath}", file=sys.stderr); sys.exit(1)
+        raw = json.loads(fpath.read_text())
+        flat = _flatten_dict(raw)
+        rows = [(exp_id, k, float(v), args.step, ts)
+                for k, v in flat.items() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    else:
+        if args.key is None or args.value is None:
+            print("[exptrack] log-metric: provide KEY VALUE or --file FILE", file=sys.stderr)
+            sys.exit(1)
+        rows = [(exp_id, args.key, float(args.value), args.step, ts)]
+
+    with conn:
+        conn.executemany(
+            "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)", rows
+        )
+    for _, k, v, step, _ in rows:
+        step_str = f" step={step}" if step is not None else ""
+        print(f"[exptrack] metric: {k}={v}{step_str}", file=sys.stderr)
+
+
+def cmd_log_artifact(args):
+    """Register an output file: exptrack log-artifact $EXP_ID path/to/file.pt --label model"""
+    conn = get_db()
+    exp_row = conn.execute(
+        "SELECT id FROM experiments WHERE id LIKE ?", (args.id + "%",)
+    ).fetchone()
+    if not exp_row:
+        print(f"[exptrack] log-artifact: not found: {args.id}", file=sys.stderr); sys.exit(1)
+
+    # Support piped content via --stdin or path='-'
+    if getattr(args, 'stdin', False) or args.path == '-':
+        content = sys.stdin.buffer.read()
+        from .. import config as _cfg
+        out_dir = _cfg.project_root() / '.exptrack' / 'outputs'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        label = args.label or 'stdin_capture'
+        out_path = out_dir / f"{exp_row['id'][:8]}_{label}"
+        out_path.write_bytes(content)
+        args.path = str(out_path)
+
+    ts = datetime.now(timezone.utc).isoformat()
+    label = args.label or Path(args.path).name
+    with conn:
+        conn.execute(
+            "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
+            (exp_row["id"], label, args.path, ts)
+        )
+    print(f"[exptrack] Artifact: {label} -> {args.path}", file=sys.stderr)

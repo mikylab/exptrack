@@ -1,0 +1,125 @@
+"""
+exptrack/capture/matplotlib_patch.py — Monkey-patch plt.savefig for auto artifact capture
+"""
+from __future__ import annotations
+import sys
+from typing import TYPE_CHECKING
+
+from .notebook_hooks import _nb_state
+
+if TYPE_CHECKING:
+    from ..core import Experiment
+
+_plt_patched = False
+
+def patch_savefig(exp: "Experiment"):
+    """
+    Monkey-patch matplotlib.pyplot.savefig and Figure.savefig so that every
+    saved plot is automatically registered as an artifact on the active
+    experiment.  Also emits a timeline 'artifact' event linking the saved
+    plot to the current variable context.
+    """
+    global _plt_patched
+    _nb_state["exp"] = exp
+    if _plt_patched:
+        return
+    _plt_patched = True
+
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.figure as mfig
+    except ImportError:
+        return
+
+    _orig_plt_savefig = plt.savefig
+    _orig_fig_savefig = mfig.Figure.savefig
+    _savefig_in_progress = [False]
+
+    def _namespace_and_save(fname, save_fn, *args, **kwargs):
+        """Save the file, copy to experiment output dir, and register artifact."""
+        from pathlib import Path as _P
+        import shutil
+        if _savefig_in_progress[0]:
+            return save_fn(fname, *args, **kwargs)
+        _savefig_in_progress[0] = True
+        try:
+            result = save_fn(fname, *args, **kwargs)
+            cur_exp = _nb_state.get("exp")
+            if cur_exp is None:
+                return result
+
+            orig_path = _P(str(fname)).resolve()
+
+            if not orig_path.exists():
+                fmt = kwargs.get("format")
+                if not fmt:
+                    try:
+                        import matplotlib as _mpl
+                        fmt = _mpl.rcParams.get("savefig.format", "png")
+                    except Exception:
+                        fmt = "png"
+                candidate = orig_path.with_suffix("." + fmt)
+                if candidate.exists():
+                    orig_path = candidate
+                else:
+                    for ext in ('.png', '.pdf', '.svg', '.jpg', '.eps'):
+                        candidate = orig_path.with_suffix(ext)
+                        if candidate.exists():
+                            orig_path = candidate
+                            break
+
+            try:
+                out_dir = cur_exp.output_path(orig_path.name)
+                if out_dir.resolve() != orig_path:
+                    shutil.copy2(str(orig_path), str(out_dir))
+            except Exception:
+                pass
+
+            art_seq = None
+            try:
+                art_seq = cur_exp.log_event(
+                    event_type="artifact",
+                    cell_hash=_nb_state.get("last_cell_hash"),
+                    key=orig_path.name,
+                    value=str(orig_path),
+                )
+            except Exception:
+                pass
+
+            try:
+                fig_title = _nb_state.pop("_last_fig_title", "")
+                if fig_title:
+                    label = f"{fig_title} ({orig_path.name})"
+                elif cur_exp.name:
+                    label = f"{cur_exp.name}/{orig_path.name}"
+                else:
+                    label = orig_path.name
+                cur_exp.log_artifact(str(orig_path), label=label, timeline_seq=art_seq)
+            except Exception as _e:
+                print(f"[exptrack] savefig artifact error: {_e}",
+                      file=sys.stderr)
+
+            return result
+        finally:
+            _savefig_in_progress[0] = False
+
+    def _hooked_plt_savefig(fname, *args, **kwargs):
+        return _namespace_and_save(fname, _orig_plt_savefig, *args, **kwargs)
+
+    def _hooked_fig_savefig(self_fig, fname, *args, **kwargs):
+        try:
+            fig_title = self_fig._suptitle.get_text() if self_fig._suptitle else ""
+            if not fig_title:
+                for ax in self_fig.axes:
+                    t = ax.get_title()
+                    if t:
+                        fig_title = t
+                        break
+            if fig_title:
+                _nb_state["_last_fig_title"] = fig_title
+        except Exception:
+            pass
+        return _namespace_and_save(fname, lambda f, *a, **kw: _orig_fig_savefig(self_fig, f, *a, **kw), *args, **kwargs)
+
+    plt.savefig = _hooked_plt_savefig
+    mfig.Figure.savefig = _hooked_fig_savefig
