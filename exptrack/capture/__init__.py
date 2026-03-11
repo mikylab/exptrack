@@ -949,77 +949,85 @@ def patch_savefig(exp: "Experiment"):
 
     _orig_plt_savefig = plt.savefig
     _orig_fig_savefig = mfig.Figure.savefig
+    _savefig_in_progress = [False]  # mutable flag to prevent re-entrance
 
     def _namespace_and_save(fname, save_fn, *args, **kwargs):
         """Save the file, copy to experiment output dir, and register artifact."""
         from pathlib import Path as _P
         import shutil
-        # Save to the original location first
-        result = save_fn(fname, *args, **kwargs)
-        # Look up the CURRENT experiment dynamically — not a stale closure
-        cur_exp = _nb_state.get("exp")
-        if cur_exp is None:
+        # Guard against re-entrance: plt.savefig -> fig.savefig triggers both hooks
+        if _savefig_in_progress[0]:
+            return save_fn(fname, *args, **kwargs)
+        _savefig_in_progress[0] = True
+        try:
+            # Save to the original location first
+            result = save_fn(fname, *args, **kwargs)
+            # Look up the CURRENT experiment dynamically — not a stale closure
+            cur_exp = _nb_state.get("exp")
+            if cur_exp is None:
+                return result
+
+            orig_path = _P(str(fname)).resolve()
+
+            # Auto-detect extension: plt.savefig("test") may save as "test.png"
+            # depending on matplotlib's default format (rcParams['savefig.format'])
+            if not orig_path.exists():
+                # Check explicit format kwarg first, then rcParams default
+                fmt = kwargs.get("format")
+                if not fmt:
+                    try:
+                        import matplotlib as _mpl
+                        fmt = _mpl.rcParams.get("savefig.format", "png")
+                    except Exception:
+                        fmt = "png"
+                candidate = orig_path.with_suffix("." + fmt)
+                if candidate.exists():
+                    orig_path = candidate
+                else:
+                    # Try common extensions as fallback
+                    for ext in ('.png', '.pdf', '.svg', '.jpg', '.eps'):
+                        candidate = orig_path.with_suffix(ext)
+                        if candidate.exists():
+                            orig_path = candidate
+                            break
+
+            # Step 1: Copy to output dir (optional, non-blocking)
+            try:
+                out_dir = cur_exp.output_path(orig_path.name)
+                if out_dir.resolve() != orig_path:
+                    shutil.copy2(str(orig_path), str(out_dir))
+            except Exception:
+                pass
+
+            # Step 2: Timeline event (optional, non-blocking)
+            art_seq = None
+            try:
+                art_seq = cur_exp.log_event(
+                    event_type="artifact",
+                    cell_hash=_nb_state.get("last_cell_hash"),
+                    key=orig_path.name,
+                    value=str(orig_path),
+                )
+            except Exception:
+                pass
+
+            # Step 3: Register artifact (critical — always attempt)
+            try:
+                fig_title = _nb_state.pop("_last_fig_title", "")
+                if fig_title:
+                    label = f"{fig_title} ({orig_path.name})"
+                elif cur_exp.name:
+                    label = f"{cur_exp.name}/{orig_path.name}"
+                else:
+                    label = orig_path.name
+                cur_exp.log_artifact(str(orig_path), label=label, timeline_seq=art_seq)
+            except Exception as _e:
+                print(f"[exptrack] savefig artifact error: {_e}",
+                      file=sys.stderr)
+
             return result
-
-        orig_path = _P(str(fname)).resolve()
-
-        # Auto-detect extension: plt.savefig("test") may save as "test.png"
-        # depending on matplotlib's default format (rcParams['savefig.format'])
-        if not orig_path.exists():
-            # Check explicit format kwarg first, then rcParams default
-            fmt = kwargs.get("format")
-            if not fmt:
-                try:
-                    import matplotlib as _mpl
-                    fmt = _mpl.rcParams.get("savefig.format", "png")
-                except Exception:
-                    fmt = "png"
-            candidate = orig_path.with_suffix("." + fmt)
-            if candidate.exists():
-                orig_path = candidate
-            else:
-                # Try common extensions as fallback
-                for ext in ('.png', '.pdf', '.svg', '.jpg', '.eps'):
-                    candidate = orig_path.with_suffix(ext)
-                    if candidate.exists():
-                        orig_path = candidate
-                        break
-
-        # Step 1: Copy to output dir (optional, non-blocking)
-        try:
-            out_dir = cur_exp.output_path(orig_path.name)
-            if out_dir.resolve() != orig_path:
-                shutil.copy2(str(orig_path), str(out_dir))
-        except Exception:
-            pass
-
-        # Step 2: Timeline event (optional, non-blocking)
-        art_seq = None
-        try:
-            art_seq = cur_exp.log_event(
-                event_type="artifact",
-                cell_hash=_nb_state.get("last_cell_hash"),
-                key=orig_path.name,
-                value=str(orig_path),
-            )
-        except Exception:
-            pass
-
-        # Step 3: Register artifact (critical — always attempt)
-        try:
-            fig_title = _nb_state.pop("_last_fig_title", "")
-            if fig_title:
-                label = f"{fig_title} ({orig_path.name})"
-            elif cur_exp.name:
-                label = f"{cur_exp.name}/{orig_path.name}"
-            else:
-                label = orig_path.name
-            cur_exp.log_artifact(str(orig_path), label=label, timeline_seq=art_seq)
-        except Exception as _e:
-            print(f"[exptrack] savefig artifact error: {_e}",
-                  file=sys.stderr)
-
-        return result
+        finally:
+            _savefig_in_progress[0] = False
 
     def _hooked_plt_savefig(fname, *args, **kwargs):
         return _namespace_and_save(fname, _orig_plt_savefig, *args, **kwargs)

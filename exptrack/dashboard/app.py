@@ -93,6 +93,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/experiment/") and path.endswith("/artifact"):
             exp_id = path.split("/")[-2]
             self._json_response(self._api_add_artifact(exp_id, body))
+        elif path.startswith("/api/experiment/") and path.endswith("/delete-tag"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_delete_tag(exp_id, body))
+        elif path.startswith("/api/experiment/") and path.endswith("/edit-tag"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_edit_tag(exp_id, body))
+        elif path.startswith("/api/experiment/") and path.endswith("/edit-notes"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_edit_notes(exp_id, body))
+        elif path.startswith("/api/experiment/") and path.endswith("/delete-artifact"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_delete_artifact(exp_id, body))
+        elif path.startswith("/api/experiment/") and path.endswith("/edit-artifact"):
+            exp_id = path.split("/")[-2]
+            self._json_response(self._api_edit_artifact(exp_id, body))
         elif path == "/api/bulk-delete":
             self._json_response(self._api_bulk_delete(body))
         elif path == "/api/bulk-export":
@@ -330,6 +345,97 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
         conn.commit()
         return {"ok": True, "label": label, "path": path}
+
+    def _api_delete_tag(self, exp_id, body):
+        conn = get_db()
+        exp = conn.execute("SELECT id, tags FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        tag = body.get("tag", "").strip()
+        if not tag:
+            return {"error": "empty tag"}
+        tags = json.loads(exp["tags"] or "[]")
+        tags = [t for t in tags if t != tag]
+        conn.execute("UPDATE experiments SET tags=?, updated_at=? WHERE id=?",
+                     (json.dumps(tags), __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+        conn.commit()
+        return {"ok": True, "tags": tags}
+
+    def _api_edit_tag(self, exp_id, body):
+        conn = get_db()
+        exp = conn.execute("SELECT id, tags FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        old_tag = body.get("old_tag", "").strip()
+        new_tag = body.get("new_tag", "").strip()
+        if not old_tag or not new_tag:
+            return {"error": "provide old_tag and new_tag"}
+        tags = json.loads(exp["tags"] or "[]")
+        tags = [new_tag if t == old_tag else t for t in tags]
+        conn.execute("UPDATE experiments SET tags=?, updated_at=? WHERE id=?",
+                     (json.dumps(tags), __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+        conn.commit()
+        return {"ok": True, "tags": tags}
+
+    def _api_edit_notes(self, exp_id, body):
+        conn = get_db()
+        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        notes = body.get("notes", "")
+        conn.execute("UPDATE experiments SET notes=?, updated_at=? WHERE id=?",
+                     (notes, __import__('datetime').datetime.utcnow().isoformat(), exp["id"]))
+        conn.commit()
+        return {"ok": True, "notes": notes}
+
+    def _api_delete_artifact(self, exp_id, body):
+        conn = get_db()
+        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        label = body.get("label", "")
+        path = body.get("path", "")
+        if not label and not path:
+            return {"error": "provide label or path"}
+        if label and path:
+            conn.execute("DELETE FROM artifacts WHERE exp_id=? AND label=? AND path=?",
+                         (exp["id"], label, path))
+        elif label:
+            conn.execute("DELETE FROM artifacts WHERE exp_id=? AND label=?",
+                         (exp["id"], label))
+        else:
+            conn.execute("DELETE FROM artifacts WHERE exp_id=? AND path=?",
+                         (exp["id"], path))
+        conn.commit()
+        return {"ok": True}
+
+    def _api_edit_artifact(self, exp_id, body):
+        conn = get_db()
+        exp = conn.execute("SELECT id FROM experiments WHERE id LIKE ?",
+                           (exp_id + "%",)).fetchone()
+        if not exp:
+            return {"error": "not found"}
+        old_label = body.get("old_label", "")
+        old_path = body.get("old_path", "")
+        new_label = body.get("new_label", "")
+        new_path = body.get("new_path", "")
+        if not old_label and not old_path:
+            return {"error": "provide old_label or old_path"}
+        if old_label and old_path:
+            conn.execute("UPDATE artifacts SET label=?, path=? WHERE exp_id=? AND label=? AND path=?",
+                         (new_label or old_label, new_path or old_path, exp["id"], old_label, old_path))
+        elif old_label:
+            conn.execute("UPDATE artifacts SET label=?, path=? WHERE exp_id=? AND label=?",
+                         (new_label or old_label, new_path or old_path, exp["id"], old_label))
+        else:
+            conn.execute("UPDATE artifacts SET label=?, path=? WHERE exp_id=? AND path=?",
+                         (new_label or old_label, new_path or old_path, exp["id"], old_path))
+        conn.commit()
+        return {"ok": True}
 
     def _api_bulk_delete(self, body):
         ids = body.get("ids", [])
@@ -599,7 +705,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   /* Header bar */
   .header { display: flex; justify-content: space-between; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--border); background: var(--card-bg); flex-shrink: 0; height: 44px; }
-  .header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.5px; margin: 0; }
+  .header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.5px; margin: 0; cursor: pointer; }
+  .header h1:hover { color: var(--blue); }
   .header-actions { display: flex; gap: 8px; align-items: center; }
   /* IDE layout */
   #app-layout { display: flex; height: calc(100vh - 44px); overflow: hidden; }
@@ -635,9 +742,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .exp-card-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .exp-card-meta { font-size: 11px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .exp-card-metrics { font-size: 11px; color: var(--blue); margin-top: 1px; }
+  .exp-card-tags { font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .exp-card-tags .tag { font-size: 10px; padding: 0 4px; margin-left: 0; margin-right: 3px; }
   .exp-card-cb { margin-right: 4px; cursor: pointer; }
-  .sidebar-compare-bar { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--code-bg); }
-  .sidebar-compare-bar button { font-family: inherit; font-size: 12px; background: var(--blue); color: #fff; border: none; padding: 5px 12px; cursor: pointer; border-radius: 3px; width: 100%; }
+  .sidebar-actions-bar { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--code-bg); display: flex; flex-direction: column; gap: 4px; }
+  .sidebar-actions-bar button { font-family: inherit; font-size: 12px; border: none; padding: 5px 12px; cursor: pointer; border-radius: 3px; width: 100%; }
+  .sidebar-actions-bar button.primary { background: var(--blue); color: #fff; }
+  .sidebar-actions-bar button.export-btn { background: var(--card-bg); border: 1px solid var(--border); color: var(--fg); }
+  .sidebar-actions-bar button.export-btn:hover { background: var(--border); }
+  .sidebar-actions-bar button.danger { background: var(--card-bg); border: 1px solid var(--red); color: var(--red); }
+  .sidebar-actions-bar button.danger:hover { background: var(--red); color: #fff; }
+  .sidebar-actions-bar .action-count { font-size: 11px; color: var(--muted); text-align: center; }
   #main-content { flex: 1; overflow-y: auto; min-width: 0; padding: 20px 28px; }
   /* Detail summary bar */
   .detail-summary { display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 16px; align-items: center; }
@@ -645,7 +760,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .detail-summary .sum-item strong { color: var(--fg); }
   .detail-summary .sum-sep { color: var(--border); }
   /* Two-column detail grid */
-  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; padding: 0 8px; }
+  .detail-grid > div { padding: 4px 8px; }
   .detail-grid-full { grid-column: 1 / -1; }
   @media (max-width: 900px) {
     .detail-grid { grid-template-columns: 1fr; }
@@ -831,7 +947,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .inline-form button:hover { background: var(--border); }
   .notes-display { white-space: pre-wrap; background: var(--code-bg); padding: 10px; border-radius: 4px; margin: 4px 0; font-size: 13px; }
   .tag-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-  .tag-removable { background: var(--code-bg); padding: 3px 10px; font-size: 13px; border-radius: 3px; display: inline-flex; align-items: center; gap: 4px; }
+  .tag-removable { background: var(--code-bg); padding: 3px 10px; font-size: 13px; border-radius: 3px; display: inline-flex; align-items: center; gap: 4px; cursor: default; }
+  .tag-removable .tag-delete { cursor: pointer; color: var(--muted); font-size: 14px; margin-left: 2px; line-height: 1; }
+  .tag-removable .tag-delete:hover { color: var(--red); }
+  .tag-removable .tag-edit { cursor: pointer; color: var(--muted); font-size: 11px; }
+  .tag-removable .tag-edit:hover { color: var(--blue); }
+  .notes-display { position: relative; }
+  .notes-edit-btn { position: absolute; top: 4px; right: 4px; font-size: 11px; cursor: pointer; color: var(--muted); background: var(--card-bg); border: 1px solid var(--border); padding: 1px 6px; border-radius: 3px; }
+  .notes-edit-btn:hover { color: var(--blue); border-color: var(--blue); }
+  .notes-edit-area { width: 100%; font-family: inherit; font-size: 13px; border: 1px solid var(--blue); padding: 8px; border-radius: 4px; background: var(--card-bg); min-height: 80px; resize: vertical; }
+  .artifact-actions { display: flex; gap: 4px; }
+  .artifact-actions button { font-family: inherit; font-size: 11px; padding: 1px 6px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .artifact-actions button:hover { color: var(--fg); border-color: var(--fg); }
+  .artifact-actions button.art-del:hover { color: var(--red); border-color: var(--red); }
+  .home-btn { font-family: inherit; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border); padding: 5px 12px; cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .home-btn:hover { background: var(--border); color: var(--fg); }
   /* Help/docs panel */
   .help-panel { display: none; background: var(--card-bg); border: 1px solid var(--border); padding: 24px; border-radius: 4px; margin-bottom: 20px; }
   .help-panel.visible { display: block; }
@@ -913,8 +1043,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <body>
 
 <div class="header">
-  <h1>exptrack</h1>
+  <h1 onclick="showWelcome()">exptrack</h1>
   <div class="header-actions">
+    <button class="home-btn" onclick="showWelcome()" title="Back to dashboard home">Home</button>
     <button class="help-btn" onclick="toggleHelp()">? Docs</button>
   </div>
 </div>
@@ -977,7 +1108,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
       <div class="status-chips" id="status-chips"></div>
       <div id="exp-list"></div>
-      <div id="sidebar-compare-bar"></div>
+      <div id="sidebar-actions-bar"></div>
     </div>
     <div class="collapse-strip" onclick="toggleSidebar()">
       <span style="font-size:18px;color:var(--muted)">&#8250;</span>
@@ -990,9 +1121,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <!-- Welcome state: shown when no experiment selected -->
     <div id="welcome-state">
       <div class="stats" id="stats"></div>
-      <div id="bulk-bar-container"></div>
       <table id="exp-table"><thead><tr>
-        <th class="cb-col"></th><th>ID</th><th>Name</th><th>Status</th><th>Tags</th><th>Notes</th><th>Started</th><th>Duration</th><th>Branch</th>
+        <th class="cb-col"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th><th>ID</th><th>Name</th><th>Status</th><th>Tags</th><th>Notes</th><th>Started</th><th>Duration</th><th>Branch</th>
       </tr></thead><tbody id="exp-body"></tbody></table>
     </div>
 
@@ -1018,9 +1148,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 let currentFilter = '';
 let searchQuery = '';
 let charts = {};
-let selectedForCompare = new Set();
-let selectedForBulk = new Set();
-let selectMode = false;
+let selectedIds = new Set();
 let allExperiments = [];
 let currentDetailId = '';
 
@@ -1079,9 +1207,10 @@ function renderExpList() {
     const statusCls = 'status-' + e.status;
     const metrics = Object.entries(e.metrics || {}).slice(0, 2)
       .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v)).join('  ');
-    const isCompare = selectedForCompare.has(e.id);
-    const cbHtml = '<input type="checkbox" class="exp-card-cb" ' + (isCompare?'checked':'') +
-      ' onclick="event.stopPropagation();toggleCompare(\'' + e.id + '\')" title="Select for compare">';
+    const isSelected = selectedIds.has(e.id);
+    const cbHtml = '<input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
+      ' onclick="event.stopPropagation();toggleSelection(\'' + e.id + '\')" title="Select">';
+    const tagsHtml = (e.tags||[]).length ? '<div class="exp-card-tags">' + (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') + '</div>' : '';
     return '<div class="exp-card' + active + '" onclick="showDetail(\'' + e.id + '\')">' +
       '<div class="exp-card-row1">' + cbHtml +
       '<span class="status-dot ' + statusCls + '"></span>' +
@@ -1090,6 +1219,7 @@ function renderExpList() {
         esc(e.git_branch || '') + ' &middot; ' + fmtDur(e.duration_s) + ' &middot; ' + fmtDt(e.created_at) +
       '</div>' +
       (metrics ? '<div class="exp-card-metrics">' + esc(metrics) + '</div>' : '') +
+      tagsHtml +
     '</div>';
   }).join('');
 
@@ -1097,20 +1227,31 @@ function renderExpList() {
   const countEl = document.getElementById('sidebar-count');
   if (countEl) countEl.textContent = filtered.length + ' exp';
 
-  // Render compare bar in sidebar
-  renderSidebarCompareBar();
+  // Render sidebar actions bar
+  renderSidebarActionsBar();
 }
 
-function renderSidebarCompareBar() {
-  const bar = document.getElementById('sidebar-compare-bar');
+function renderSidebarActionsBar() {
+  const bar = document.getElementById('sidebar-actions-bar');
   if (!bar) return;
-  if (selectedForCompare.size === 2) {
-    bar.innerHTML = '<div class="sidebar-compare-bar"><button onclick="compareSelected()">Compare Selected (2)</button></div>';
-  } else if (selectedForCompare.size === 1) {
-    bar.innerHTML = '<div class="sidebar-compare-bar" style="text-align:center;font-size:11px;color:var(--muted);padding:6px">Select 1 more to compare</div>';
-  } else {
+  const n = selectedIds.size;
+  if (n === 0) {
     bar.innerHTML = '';
+    return;
   }
+  let html = '<div class="sidebar-actions-bar">';
+  html += '<div class="action-count">' + n + ' selected</div>';
+  if (n === 2) {
+    html += '<button class="primary" onclick="compareSelected()">Compare (2)</button>';
+  } else if (n === 1) {
+    html += '<button class="primary" style="opacity:0.5" disabled title="Select 2 to compare">Compare (need 2)</button>';
+  }
+  html += '<button class="export-btn" onclick="sidebarExport()">Export (' + n + ')</button>';
+  html += '<button class="export-btn" onclick="sidebarCopyText()">Copy as Text</button>';
+  html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
+  html += '<button class="export-btn" onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear Selection</button>';
+  html += '</div>';
+  bar.innerHTML = html;
 }
 
 // ── View switching ───────────────────────────────────────────────────────────
@@ -1135,66 +1276,43 @@ function showDetailView() {
   document.getElementById('compare-view').style.display = 'none';
 }
 
-// ── Select/bulk mode ─────────────────────────────────────────────────────────
-function toggleSelectMode() {
-  selectMode = !selectMode;
-  if (!selectMode) selectedForBulk.clear();
-  renderBulkBar();
-  renderExperiments();
-}
-
-function toggleBulkSelect(id) {
-  if (selectedForBulk.has(id)) selectedForBulk.delete(id);
-  else selectedForBulk.add(id);
-  renderBulkBar();
+// ── Unified selection ─────────────────────────────────────────────────────────
+function toggleSelection(id) {
+  if (selectedIds.has(id)) selectedIds.delete(id);
+  else selectedIds.add(id);
+  renderExpList();
   renderExperiments();
 }
 
 function selectAllVisible() {
   const visibleExps = getFilteredExperiments();
-  if (selectedForBulk.size === visibleExps.length) {
-    selectedForBulk.clear();
+  if (selectedIds.size === visibleExps.length) {
+    selectedIds.clear();
   } else {
-    visibleExps.forEach(e => selectedForBulk.add(e.id));
+    visibleExps.forEach(e => selectedIds.add(e.id));
   }
-  renderBulkBar();
+  renderExpList();
   renderExperiments();
 }
 
-function renderBulkBar() {
-  const container = document.getElementById('bulk-bar-container');
-  if (!selectMode || selectedForBulk.size === 0) {
-    container.innerHTML = '';
-    return;
-  }
-  container.innerHTML = `<div class="bulk-bar">
-    <span class="bulk-count">${selectedForBulk.size} selected</span>
-    <button onclick="bulkExport()">Export</button>
-    <button onclick="bulkCopyPlainText()">Copy as Text</button>
-    <button class="danger" onclick="bulkDelete()">Delete</button>
-    <button onclick="selectedForBulk.clear();renderBulkBar();renderExperiments()">Clear</button>
-  </div>`;
-}
-
-async function bulkDelete() {
-  if (!confirm('Delete ' + selectedForBulk.size + ' experiments? This cannot be undone.')) return;
-  const ids = [...selectedForBulk];
+async function sidebarBulkDelete() {
+  if (!confirm('Delete ' + selectedIds.size + ' experiments? This cannot be undone.')) return;
+  const ids = [...selectedIds];
   const r = await fetch('/api/bulk-delete', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ids})
   });
   const d = await r.json();
   if (d.ok) {
-    selectedForBulk.clear();
+    selectedIds.clear();
     showWelcome();
     loadStats();
     loadExperiments();
-    renderBulkBar();
   } else alert(d.error || 'Failed');
 }
 
-async function bulkExport() {
-  const ids = [...selectedForBulk];
+async function sidebarExport() {
+  const ids = [...selectedIds];
   const r = await fetch('/api/bulk-export', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ids, format: 'json'})
@@ -1205,8 +1323,8 @@ async function bulkExport() {
   alert('Exported ' + data.length + ' experiments to clipboard (JSON)');
 }
 
-async function bulkCopyPlainText() {
-  const ids = [...selectedForBulk];
+async function sidebarCopyText() {
+  const ids = [...selectedIds];
   const exps = allExperiments.filter(e => ids.includes(e.id));
   let lines = [];
   for (const e of exps) {
@@ -1269,16 +1387,14 @@ function renderExperiments() {
     const metricsPreview = Object.entries(e.metrics || {}).slice(0, 3)
       .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v))
       .join(', ');
-    const isCompare = selectedForCompare.has(e.id);
-    const isBulk = selectedForBulk.has(e.id);
-    const rowCls = isCompare || isBulk ? 'selected-row' : '';
+    const isSelected = selectedIds.has(e.id);
+    const rowCls = isSelected ? 'selected-row' : '';
     const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
     const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,40)) : '<span style="color:var(--muted)">--</span>';
     return `<tr class="${rowCls}">
-      <td class="cb-col">${selectMode
-        ? '<input type="checkbox" '+(isBulk?'checked':'')+' onclick="event.stopPropagation();toggleBulkSelect(\''+e.id+'\')" title="Select for bulk action">'
-        : '<input type="checkbox" '+(isCompare?'checked':'')+' onclick="event.stopPropagation();toggleCompare(\''+e.id+'\')" title="Select for compare">'
-      }</td>
+      <td class="cb-col">
+        <input type="checkbox" ${isSelected?'checked':''} onclick="event.stopPropagation();toggleSelection('${e.id}')" title="Select">
+      </td>
       <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.id.slice(0,6)}</td>
       <td style="cursor:pointer">
         <span class="editable-name" onclick="showDetail('${e.id}')" ondblclick="event.stopPropagation();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}</span>
@@ -1292,7 +1408,6 @@ function renderExperiments() {
       <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.git_branch||'--'}</td>
     </tr>`;
   }).join('');
-  renderBulkBar();
 }
 
 // ── Inline rename on double-click ────────────────────────────────────────────
@@ -1329,25 +1444,11 @@ function startInlineRename(id, el) {
   });
 }
 
-function toggleCompare(id) {
-  if (selectedForCompare.has(id)) {
-    selectedForCompare.delete(id);
-  } else {
-    if (selectedForCompare.size >= 2) {
-      const first = selectedForCompare.values().next().value;
-      selectedForCompare.delete(first);
-    }
-    selectedForCompare.add(id);
-  }
-  renderExpList();
-  renderExperiments();
-}
-
 async function compareSelected() {
-  if (selectedForCompare.size !== 2) return;
+  if (selectedIds.size !== 2) return;
   showCompareView();
   await populateCompareDropdowns();
-  const ids = [...selectedForCompare];
+  const ids = [...selectedIds];
   document.getElementById('cmp-id1').value = ids[0];
   document.getElementById('cmp-id2').value = ids[1];
   doCompare();
@@ -1370,8 +1471,8 @@ async function populateCompareDropdowns() {
   sel2.innerHTML = makeOpts(exps);
   if (prev1) sel1.value = prev1;
   if (prev2) sel2.value = prev2;
-  if (!prev1 && !prev2 && selectedForCompare.size === 2) {
-    const ids = [...selectedForCompare];
+  if (!prev1 && !prev2 && selectedIds.size === 2) {
+    const ids = [...selectedIds];
     sel1.value = ids[0];
     sel2.value = ids[1];
   }
@@ -1429,7 +1530,7 @@ async function showDetail(id) {
   ).join('');
 
   const artRows = exp.artifacts.map(a =>
-    `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td></tr>`
+    `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td><td><div class="artifact-actions"><button onclick="editArtifact('${exp.id}','${esc(a.label).replace(/'/g,"\\'")}','${esc(a.path).replace(/'/g,"\\'")}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label).replace(/'/g,"\\'")}','${esc(a.path).replace(/'/g,"\\'")}')">del</button></div></td></tr>`
   ).join('');
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
@@ -1510,7 +1611,10 @@ async function showDetail(id) {
   }
 
   const tagsHtml = exp.tags.length
-    ? exp.tags.map(t => '<span class="tag-removable">#' + esc(t) + '</span>').join('')
+    ? exp.tags.map(t => '<span class="tag-removable">#' + esc(t) +
+      ' <span class="tag-edit" onclick="event.stopPropagation();editTag(\'' + exp.id + '\',\'' + esc(t).replace(/'/g,"\\'") + '\')" title="Edit">ed</span>' +
+      ' <span class="tag-delete" onclick="event.stopPropagation();deleteTag(\'' + exp.id + '\',\'' + esc(t).replace(/'/g,"\\'") + '\')" title="Remove">&times;</span>' +
+      '</span>').join('')
     : '<span style="color:var(--muted)">none</span>';
 
   document.getElementById('detail-panel').innerHTML = `
@@ -1560,7 +1664,7 @@ async function showDetail(id) {
               <span class="label">Host</span><span>${exp.hostname||'--'}</span>
               <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
               <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
-              <span class="label">Notes</span><span id="detail-notes">${exp.notes ? '<div class="notes-display">'+esc(exp.notes)+'</div>' : '<span style="color:var(--muted)">none</span>'}</span>
+              <span class="label">Notes</span><span id="detail-notes">${exp.notes ? '<div class="notes-display">'+esc(exp.notes)+'<button class="notes-edit-btn" onclick="editNotes(\''+exp.id+'\')">edit</button></div>' : '<span style="color:var(--muted)">none</span>'}</span>
             </div>
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
             ${varHtml}
@@ -1570,7 +1674,7 @@ async function showDetail(id) {
             ${metricRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Metrics (' + exp.metrics.length + ')</h2><div class="section-body"><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table><div id="charts-container"></div></div>' : '<div id="charts-container"></div>'}
             <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
             <div class="section-body">
-            ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
+            ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
             ${addArtifactForm}
             </div>
           </div>
@@ -1584,7 +1688,7 @@ async function showDetail(id) {
 
       <div id="detail-tab-timeline" style="display:none"></div>
       <div id="detail-tab-compare-within" style="display:none"></div>
-      <div id="export-container"></div>
+      <div id="export-container" style="margin-top:16px"></div>
     </div>
   `;
 
@@ -1858,6 +1962,82 @@ async function addArtifact(id) {
   const r = await fetch('/api/experiment/' + id + '/artifact', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({label, path})
+  });
+  const d = await r.json();
+  if (d.ok) { showDetail(id); }
+  else alert(d.error || 'Failed');
+}
+
+// ── Edit/delete tags, notes, artifacts ────────────────────────────────────────
+
+async function deleteTag(id, tag) {
+  if (!confirm('Remove tag "' + tag + '"?')) return;
+  const r = await fetch('/api/experiment/' + id + '/delete-tag', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({tag})
+  });
+  const d = await r.json();
+  if (d.ok) { loadExperiments(); showDetail(id); }
+  else alert(d.error || 'Failed');
+}
+
+async function editTag(id, oldTag) {
+  const newTag = prompt('Edit tag:', oldTag);
+  if (!newTag || newTag === oldTag) return;
+  const r = await fetch('/api/experiment/' + id + '/edit-tag', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({old_tag: oldTag, new_tag: newTag.trim()})
+  });
+  const d = await r.json();
+  if (d.ok) { loadExperiments(); showDetail(id); }
+  else alert(d.error || 'Failed');
+}
+
+async function editNotes(id) {
+  const notesEl = document.getElementById('detail-notes');
+  if (!notesEl) return;
+  const current = notesEl.querySelector('.notes-display');
+  const currentText = current ? current.textContent.replace(/edit$/, '').trim() : '';
+  notesEl.innerHTML = '<div><textarea class="notes-edit-area" id="notes-edit-area">' + esc(currentText) + '</textarea>' +
+    '<div style="margin-top:4px;display:flex;gap:6px">' +
+    '<button class="action-btn" onclick="saveNotes(\'' + id + '\')">Save</button>' +
+    '<button class="action-btn" onclick="showDetail(\'' + id + '\')">Cancel</button>' +
+    '</div></div>';
+  document.getElementById('notes-edit-area').focus();
+}
+
+async function saveNotes(id) {
+  const area = document.getElementById('notes-edit-area');
+  if (!area) return;
+  const notes = area.value;
+  const r = await fetch('/api/experiment/' + id + '/edit-notes', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({notes})
+  });
+  const d = await r.json();
+  if (d.ok) { showDetail(id); }
+  else alert(d.error || 'Failed');
+}
+
+async function deleteArtifact(id, label, path) {
+  if (!confirm('Delete artifact "' + label + '"?')) return;
+  const r = await fetch('/api/experiment/' + id + '/delete-artifact', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({label, path})
+  });
+  const d = await r.json();
+  if (d.ok) { showDetail(id); }
+  else alert(d.error || 'Failed');
+}
+
+async function editArtifact(id, oldLabel, oldPath) {
+  const newLabel = prompt('Edit label:', oldLabel);
+  if (newLabel === null) return;
+  const newPath = prompt('Edit path:', oldPath);
+  if (newPath === null) return;
+  const r = await fetch('/api/experiment/' + id + '/edit-artifact', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({old_label: oldLabel, old_path: oldPath, new_label: newLabel.trim(), new_path: newPath.trim()})
   });
   const d = await r.json();
   if (d.ok) { showDetail(id); }
