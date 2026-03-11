@@ -1,9 +1,9 @@
 """exptrack — local-first experiment tracker for ML research"""
 
-from .core import Experiment
+from .core import Experiment, finish_experiment
 
 __version__ = "2.0.0"
-__all__ = ["Experiment"]
+__all__ = ["Experiment", "finish_experiment"]
 
 
 # ── IPython extension entry points ───────────────────────────────────────────

@@ -25,7 +25,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .core import get_db
+from .core import get_db, delete_experiment
 from . import config as cfg
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
@@ -593,6 +593,100 @@ def cmd_note(args):
     print(col("Note saved.", G))
 
 
+def cmd_untag(args):
+    conn = get_db()
+    exp = conn.execute("SELECT id, tags FROM experiments WHERE id LIKE ?",
+                       (args.id + "%",)).fetchone()
+    if not exp: print(col(f"Not found: {args.id}", R)); return
+    tags = json.loads(exp["tags"] or "[]")
+    if args.tag not in tags:
+        print(dim(f"Tag '{args.tag}' not found on this experiment.")); return
+    tags = [t for t in tags if t != args.tag]
+    conn.execute("UPDATE experiments SET tags=? WHERE id=?",
+                 (json.dumps(tags), exp["id"]))
+    conn.commit()
+    print(col(f"Removed #{args.tag}", G))
+
+
+def cmd_edit_note(args):
+    conn = get_db()
+    exp = conn.execute("SELECT id, notes FROM experiments WHERE id LIKE ?",
+                       (args.id + "%",)).fetchone()
+    if not exp: print(col(f"Not found: {args.id}", R)); return
+    conn.execute("UPDATE experiments SET notes=? WHERE id=?", (args.text, exp["id"]))
+    conn.commit()
+    print(col("Note updated.", G))
+
+
+def cmd_export(args):
+    """Export experiment data: exptrack export <id> [--format json|markdown]"""
+    conn = get_db()
+    exp = conn.execute("SELECT * FROM experiments WHERE id LIKE ?",
+                       (args.id + "%",)).fetchone()
+    if not exp: print(col(f"Not found: {args.id}", R)); return
+
+    eid = exp["id"]
+    params = {r["key"]: json.loads(r["value"]) for r in
+              conn.execute("SELECT key, value FROM params WHERE exp_id=?", (eid,)).fetchall()}
+    metrics = [dict(r) for r in
+               conn.execute("SELECT key, value, step, ts FROM metrics WHERE exp_id=? ORDER BY ts",
+                            (eid,)).fetchall()]
+    artifacts = [dict(r) for r in
+                 conn.execute("SELECT label, path, created_at FROM artifacts WHERE exp_id=?",
+                              (eid,)).fetchall()]
+
+    fmt = getattr(args, "format", "json")
+    if fmt == "markdown":
+        tags = json.loads(exp["tags"] or "[]")
+        print(f"# {exp['name']}")
+        print(f"\n**ID:** {eid}  ")
+        print(f"**Status:** {exp['status']}  ")
+        print(f"**Created:** {exp['created_at']}  ")
+        if exp["duration_s"]:
+            m, s = divmod(exp["duration_s"], 60)
+            print(f"**Duration:** {int(m)}m {s:.0f}s  ")
+        if exp["git_branch"]:
+            print(f"**Git:** {exp['git_branch']} @ {exp['git_commit']}  ")
+        if tags:
+            print(f"**Tags:** {', '.join(tags)}  ")
+        if exp["notes"]:
+            print(f"\n## Notes\n{exp['notes']}")
+        if params:
+            print("\n## Parameters")
+            for k, v in params.items():
+                if not k.startswith("_"):
+                    print(f"- **{k}:** {v}")
+        if metrics:
+            print("\n## Metrics")
+            seen = {}
+            for m_row in metrics:
+                seen[m_row["key"]] = m_row["value"]
+            for k, v in seen.items():
+                print(f"- **{k}:** {v}")
+        if artifacts:
+            print("\n## Artifacts")
+            for a in artifacts:
+                print(f"- {a['label']}: `{a['path']}`")
+    else:
+        data = {
+            "id": eid,
+            "name": exp["name"],
+            "status": exp["status"],
+            "created_at": exp["created_at"],
+            "duration_s": exp["duration_s"],
+            "script": exp["script"],
+            "git_branch": exp["git_branch"],
+            "git_commit": exp["git_commit"],
+            "hostname": exp["hostname"],
+            "tags": json.loads(exp["tags"] or "[]"),
+            "notes": exp["notes"],
+            "params": params,
+            "metrics": metrics,
+            "artifacts": artifacts,
+        }
+        print(json.dumps(data, indent=2, default=str))
+
+
 def cmd_rm(args):
     conn = get_db()
     exp = conn.execute("SELECT id, name FROM experiments WHERE id LIKE ?",
@@ -600,11 +694,9 @@ def cmd_rm(args):
     if not exp: print(col(f"Not found: {args.id}", R)); return
     confirm = input(f"Delete '{exp['name']}' ({exp['id'][:6]})? [y/N] ")
     if confirm.lower() == "y":
-        for t in ("metrics", "params", "artifacts", "timeline"):
-            conn.execute(f"DELETE FROM {t} WHERE exp_id=?", (exp["id"],))
-        conn.execute("DELETE FROM experiments WHERE id=?", (exp["id"],))
+        delete_experiment(conn, exp["id"])
         conn.commit()
-        print(col("Deleted.", G))
+        print(col("Deleted (including output files).", G))
 
 
 def cmd_clean(args):
@@ -631,11 +723,9 @@ def cmd_clean(args):
     for r in rows: print(f"  {r['id'][:6]}  {r['name']}")
     if input("Delete all? [y/N] ").lower() == "y":
         for r in rows:
-            for t in ("metrics", "params", "artifacts", "timeline"):
-                conn.execute(f"DELETE FROM {t} WHERE exp_id=?", (r["id"],))
-            conn.execute("DELETE FROM experiments WHERE id=?", (r["id"],))
+            delete_experiment(conn, r["id"])
         conn.commit()
-        print(col(f"Cleaned {len(rows)} experiments.", G))
+        print(col(f"Cleaned {len(rows)} experiments (including output files).", G))
 
 
 def cmd_ui(args):
@@ -1041,6 +1131,114 @@ def cmd_upgrade(args):
         print(col("Reinstalled.", G))
 
 
+def cmd_storage(args):
+    """Show data storage breakdown for the exptrack database and outputs."""
+    conn = get_db()
+
+    # DB file size
+    conf = cfg.load()
+    root = cfg.project_root()
+    db_path = root / conf.get("db", ".exptrack/experiments.db")
+    db_size = db_path.stat().st_size if db_path.exists() else 0
+
+    # Outputs dir size
+    outputs_dir = root / conf.get("outputs_dir", "outputs")
+    outputs_size = 0
+    outputs_count = 0
+    if outputs_dir.is_dir():
+        for fp in outputs_dir.rglob("*"):
+            if fp.is_file():
+                outputs_size += fp.stat().st_size
+                outputs_count += 1
+
+    # Row counts
+    exp_count = conn.execute("SELECT COUNT(*) as n FROM experiments").fetchone()["n"]
+    param_count = conn.execute("SELECT COUNT(*) as n FROM params").fetchone()["n"]
+    metric_count = conn.execute("SELECT COUNT(*) as n FROM metrics").fetchone()["n"]
+    artifact_count = conn.execute("SELECT COUNT(*) as n FROM artifacts").fetchone()["n"]
+    try:
+        timeline_count = conn.execute("SELECT COUNT(*) as n FROM timeline").fetchone()["n"]
+    except Exception:
+        timeline_count = 0
+
+    # Estimate git_diff storage
+    git_diff_rows = conn.execute(
+        "SELECT LENGTH(git_diff) as sz FROM experiments WHERE git_diff IS NOT NULL AND git_diff != ''"
+    ).fetchall()
+    git_diff_total = sum(r["sz"] for r in git_diff_rows)
+    git_diff_avg = git_diff_total // len(git_diff_rows) if git_diff_rows else 0
+
+    # Estimate timeline storage
+    try:
+        timeline_rows = conn.execute(
+            "SELECT SUM(LENGTH(value)) + SUM(LENGTH(source_diff)) as sz FROM timeline"
+        ).fetchone()
+        timeline_size = timeline_rows["sz"] or 0
+    except Exception:
+        timeline_size = 0
+
+    def fmt(b):
+        if b < 1024: return f"{b} B"
+        if b < 1024**2: return f"{b/1024:.1f} KB"
+        if b < 1024**3: return f"{b/1024**2:.1f} MB"
+        return f"{b/1024**3:.2f} GB"
+
+    print()
+    print(bold(col("  Storage Report", W)))
+    print(dim("  " + "-" * 50))
+    print(f"  {bold('Database file:')}     {fmt(db_size)}")
+    print(f"  {bold('Outputs directory:')} {fmt(outputs_size)}  ({outputs_count} files)")
+    print(f"  {bold('Total:')}             {fmt(db_size + outputs_size)}")
+    print()
+    print(bold(col("  Database Breakdown", W)))
+    print(dim("  " + "-" * 50))
+    print(f"  Experiments:   {exp_count:>8,} rows")
+    print(f"  Params:        {param_count:>8,} rows")
+    print(f"  Metrics:       {metric_count:>8,} rows")
+    print(f"  Artifacts:     {artifact_count:>8,} rows")
+    print(f"  Timeline:      {timeline_count:>8,} rows  (~{fmt(timeline_size)})")
+    print()
+    print(bold(col("  Storage Hotspots", W)))
+    print(dim("  " + "-" * 50))
+    print(f"  git_diff total:   {fmt(git_diff_total)}  "
+          f"(avg {fmt(git_diff_avg)}/experiment, {len(git_diff_rows)} with diffs)")
+    if git_diff_total > 1024 * 1024:
+        print(col("    Tip: Large git diffs dominate DB size. Set "
+                   "\"max_git_diff_kb\" in config.json to cap it.", Y))
+    if timeline_size > 1024 * 1024:
+        print(col("    Tip: Timeline data is growing large. Use "
+                   "\"exptrack clean\" to remove failed runs.", Y))
+    if outputs_size > 100 * 1024 * 1024:
+        print(col("    Tip: Outputs directory is large. Delete old experiments "
+                   "with \"exptrack rm\" to reclaim space.", Y))
+    print()
+
+
+def cmd_finish(args):
+    """Manually mark a running experiment as done: exptrack finish <id>"""
+    conn = get_db()
+    exp_row = conn.execute(
+        "SELECT id, name, status, created_at FROM experiments WHERE id LIKE ?",
+        (args.id + "%",)
+    ).fetchone()
+    if not exp_row:
+        print(col(f"Not found: {args.id}", R)); return
+
+    if exp_row["status"] == "done":
+        print(dim(f"Experiment '{exp_row['name']}' is already done.")); return
+
+    now = datetime.now(timezone.utc).isoformat()
+    duration = (datetime.fromisoformat(now) -
+                datetime.fromisoformat(exp_row["created_at"])).total_seconds()
+    with conn:
+        conn.execute("""
+            UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?
+        """, (now, duration, exp_row["id"]))
+    m, s = divmod(duration, 60)
+    prev = exp_row["status"]
+    print(col(f"Marked '{exp_row['name']}' as done ({prev} -> done, {int(m)}m {s:.0f}s)", G))
+
+
 def _flatten_dict(d: dict, prefix: str = "") -> dict:
     """Flatten nested dict: {"val": {"loss": 0.3}} -> {"val/loss": 0.3}"""
     out = {}
@@ -1168,8 +1366,18 @@ def main():
     p_tag = sub.add_parser("tag")
     p_tag.add_argument("id"); p_tag.add_argument("tag")
 
-    p_note = sub.add_parser("note")
+    p_untag = sub.add_parser("untag", help="Remove a tag from an experiment")
+    p_untag.add_argument("id"); p_untag.add_argument("tag")
+
+    p_note = sub.add_parser("note", help="Append a note to an experiment")
     p_note.add_argument("id"); p_note.add_argument("text")
+
+    p_edit_note = sub.add_parser("edit-note", help="Replace an experiment's notes")
+    p_edit_note.add_argument("id"); p_edit_note.add_argument("text")
+
+    p_export = sub.add_parser("export", help="Export experiment data (JSON or markdown)")
+    p_export.add_argument("id")
+    p_export.add_argument("--format", choices=["json", "markdown"], default="json")
 
     sub.add_parser("rm").add_argument("id")
     p_clean = sub.add_parser("clean")
@@ -1179,6 +1387,11 @@ def main():
     p_ui = sub.add_parser("ui")
     p_ui.add_argument("--port", type=int, default=7331)
     p_ui.add_argument("--host", type=str, default="127.0.0.1")
+
+    sub.add_parser("storage", help="Show data storage breakdown and tips")
+
+    p_finish = sub.add_parser("finish", help="Manually mark a running experiment as done")
+    p_finish.add_argument("id")
 
     args = p.parse_args()
     if not args.cmd:
@@ -1194,6 +1407,8 @@ def main():
         "log-artifact": cmd_log_artifact,
         "stale":        cmd_stale,
         "upgrade":      cmd_upgrade,
+        "storage":      cmd_storage,
+        "finish":       cmd_finish,
         "ls":           cmd_ls,
         "show":         cmd_show,
         "diff":         cmd_diff,
@@ -1201,7 +1416,10 @@ def main():
         "timeline":     cmd_timeline,
         "history":      cmd_history,
         "tag":          cmd_tag,
+        "untag":        cmd_untag,
         "note":         cmd_note,
+        "edit-note":    cmd_edit_note,
+        "export":       cmd_export,
         "rm":           cmd_rm,
         "clean":        cmd_clean,
         "ui":           cmd_ui,

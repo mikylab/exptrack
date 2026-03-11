@@ -128,6 +128,78 @@ def _ensure_schema(conn):
     conn.commit()
 
 
+# ── Deletion helpers ──────────────────────────────────────────────────────────
+
+def delete_experiment(conn: sqlite3.Connection, exp_id: str,
+                      delete_files: bool = True):
+    """Delete an experiment and all related DB records.
+
+    If *delete_files* is True, also removes artifact files on disk and the
+    experiment's output directory (``outputs/<name>/``).
+    """
+    if delete_files:
+        _delete_experiment_files(conn, exp_id)
+    for table in ("metrics", "params", "artifacts", "timeline"):
+        conn.execute(f"DELETE FROM {table} WHERE exp_id=?", (exp_id,))
+    conn.execute("DELETE FROM experiments WHERE id=?", (exp_id,))
+
+
+def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str):
+    """Remove artifact files and the experiment output directory from disk."""
+    import shutil
+
+    # Delete individual artifact files
+    rows = conn.execute(
+        "SELECT path FROM artifacts WHERE exp_id=?", (exp_id,)
+    ).fetchall()
+    for r in rows:
+        p = r["path"]
+        if not p:
+            continue
+        try:
+            fp = Path(p)
+            if fp.is_file():
+                fp.unlink()
+        except Exception:
+            pass
+
+    # Delete the experiment's output directory (outputs/<name>/)
+    exp_row = conn.execute(
+        "SELECT name FROM experiments WHERE id=?", (exp_id,)
+    ).fetchone()
+    if exp_row and exp_row["name"]:
+        try:
+            conf = cfg.load()
+            out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp_row["name"]
+            if out_dir.is_dir():
+                shutil.rmtree(str(out_dir), ignore_errors=True)
+        except Exception:
+            pass
+
+
+def finish_experiment(exp_id: str) -> bool:
+    """Manually mark any experiment as done by ID (prefix match).
+
+    Useful from scripts that manage experiments externally.
+    Returns True if the experiment was updated, False if not found or already done.
+    """
+    conn = get_db()
+    exp = conn.execute(
+        "SELECT id, status, created_at FROM experiments WHERE id LIKE ?",
+        (exp_id + "%",)
+    ).fetchone()
+    if not exp or exp["status"] == "done":
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    duration = (datetime.fromisoformat(now) -
+                datetime.fromisoformat(exp["created_at"])).total_seconds()
+    conn.execute("""
+        UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?
+    """, (now, duration, exp["id"]))
+    conn.commit()
+    return True
+
+
 # ── Git ───────────────────────────────────────────────────────────────────────
 
 def _git(*cmd) -> str:
@@ -241,7 +313,12 @@ class Experiment:
         ginfo = git_info()
         self.git_branch = ginfo["git_branch"]
         self.git_commit = ginfo["git_commit"]
-        self.git_diff   = ginfo["git_diff"]   # full uncommitted diff
+        diff_text = ginfo["git_diff"]
+        # Optionally truncate very large diffs to keep DB size manageable
+        max_kb = conf.get("max_git_diff_kb", 0)
+        if max_kb and diff_text and len(diff_text) > max_kb * 1024:
+            diff_text = diff_text[:max_kb * 1024] + "\n\n[truncated — exceeded max_git_diff_kb limit]"
+        self.git_diff = diff_text
 
         self.hostname   = socket.gethostname()
         self.python_ver = platform.python_version()
@@ -303,6 +380,41 @@ class Experiment:
 
     def log_param(self, key: str, value: Any):
         self.log_params({key: value})
+
+    # ── Tags & Notes ─────────────────────────────────────────────────────────
+
+    def add_tag(self, tag: str):
+        """Add a tag to this experiment."""
+        if tag not in self.tags:
+            self.tags.append(tag)
+            with get_db() as conn:
+                conn.execute("UPDATE experiments SET tags=? WHERE id=?",
+                             (json.dumps(self.tags), self.id))
+                conn.commit()
+
+    def remove_tag(self, tag: str):
+        """Remove a tag from this experiment."""
+        self.tags = [t for t in self.tags if t != tag]
+        with get_db() as conn:
+            conn.execute("UPDATE experiments SET tags=? WHERE id=?",
+                         (json.dumps(self.tags), self.id))
+            conn.commit()
+
+    def set_note(self, text: str):
+        """Set (replace) the notes for this experiment."""
+        self.notes = text
+        with get_db() as conn:
+            conn.execute("UPDATE experiments SET notes=? WHERE id=?",
+                         (text, self.id))
+            conn.commit()
+
+    def add_note(self, text: str):
+        """Append to the notes for this experiment."""
+        self.notes = ((self.notes or "") + "\n" + text).strip()
+        with get_db() as conn:
+            conn.execute("UPDATE experiments SET notes=? WHERE id=?",
+                         (self.notes, self.id))
+            conn.commit()
 
     # ── Metrics ───────────────────────────────────────────────────────────────
 
@@ -410,14 +522,26 @@ class Experiment:
 
     def log_artifact(self, path: str | Path, label: str = "",
                      timeline_seq: int = None):
-        """Register an output file path (the file itself stays local)."""
+        """Register an output file path (the file itself stays local).
+
+        Deduplicates by resolved path — if the same file is already registered
+        on this experiment the call is a no-op (prevents double-logging from
+        savefig patch + auto-detect).
+        """
+        resolved = str(Path(str(path)).resolve())
         ts = datetime.now(timezone.utc).isoformat()
         with get_db() as conn:
+            existing = conn.execute(
+                "SELECT id FROM artifacts WHERE exp_id=? AND path=?",
+                (self.id, resolved)
+            ).fetchone()
+            if existing:
+                return
             conn.execute(
                 """INSERT INTO artifacts
                    (exp_id, label, path, created_at, timeline_seq)
                    VALUES (?,?,?,?,?)""",
-                (self.id, label or Path(path).name, str(path), ts, timeline_seq)
+                (self.id, label or Path(path).name, resolved, ts, timeline_seq)
             )
             conn.commit()
 

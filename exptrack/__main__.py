@@ -95,18 +95,55 @@ _SKIP_DIRS = {'.exptrack', '.git', '__pycache__', 'node_modules', '.venv', 'venv
 
 
 def _auto_detect_outputs(exp, start_ts):
-    """Scan working directory for files created during the run and log them."""
+    """Scan working directory for files created during the run and log them.
+
+    Skips the outputs directory (managed by savefig patch / save_output) and
+    deduplicates against artifacts already registered on this experiment so
+    the same file is never logged twice.
+    """
+    from . import config as _cfg
+
+    # Determine the outputs directory name so we can skip it — files there
+    # are copies managed by the savefig patch or save_output() and were
+    # already registered as artifacts when they were created.
+    try:
+        conf = _cfg.load()
+        outputs_dir = conf.get("outputs_dir", "outputs")
+    except Exception:
+        outputs_dir = "outputs"
+
+    skip_dirs = _SKIP_DIRS | {outputs_dir}
+
+    # Collect paths already registered so we don't double-log
+    already_registered: set[str] = set()
+    try:
+        from .core import get_db
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT path FROM artifacts WHERE exp_id=?", (exp.id,)
+            ).fetchall()
+        for r in rows:
+            if r["path"]:
+                try:
+                    already_registered.add(str(Path(r["path"]).resolve()))
+                except Exception:
+                    already_registered.add(r["path"])
+    except Exception:
+        pass
+
     try:
         for root, dirs, files in os.walk('.'):
-            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
             for f in files:
                 ext = os.path.splitext(f)[1].lower()
                 if ext not in _AUTO_DETECT_EXTS:
                     continue
                 fp = os.path.join(root, f)
                 try:
-                    if os.path.getmtime(fp) >= start_ts:
+                    resolved = str(Path(fp).resolve())
+                    if os.path.getmtime(fp) >= start_ts and resolved not in already_registered:
                         exp.log_file(fp)
+                        already_registered.add(resolved)
                 except OSError:
                     pass
     except Exception:
