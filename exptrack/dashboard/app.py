@@ -873,6 +873,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .bulk-bar button { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 12px; cursor: pointer; border-radius: 3px; background: var(--card-bg); }
   .bulk-bar button.danger { color: var(--red); border-color: var(--red); }
   .bulk-bar button.danger:hover { background: var(--red); color: #fff; }
+  /* Collapsible sections */
+  .section-toggle {
+    cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px;
+    padding: 6px 0; border-radius: 3px;
+  }
+  .section-toggle:hover { color: var(--blue); }
+  .section-toggle::before {
+    content: '\25BC'; font-size: 10px; transition: transform 0.15s; display: inline-block; width: 14px; text-align: center;
+  }
+  .section-toggle.collapsed::before { transform: rotate(-90deg); }
+  .section-body { transition: max-height 0.2s ease; }
+  .section-toggle.collapsed + .section-body { display: none; }
   /* Editable name */
   .editable-name { cursor: default; padding: 2px 4px; border-radius: 3px; }
   .editable-name:hover { background: rgba(44,90,160,0.08); }
@@ -1429,7 +1441,7 @@ async function showDetail(id) {
   // Code changes
   let codeHtml = '';
   if (Object.keys(codeChanges).length) {
-    codeHtml = '<h2>Code Changes <span class="help-icon" title="Diffs of your code vs. the last git commit (scripts) or the previous cell version (notebooks). Only changed lines are stored.">?</span></h2><div class="code-changes">';
+    codeHtml = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Code Changes</h2><div class="section-body"><div class="code-changes">';
     for (const [k, v] of Object.entries(codeChanges)) {
       const label = k === '_code_changes' ? 'Script diff vs. last commit' : k.replace('_code_change/','Cell ');
       const parts = String(v).split('; ').map(part => {
@@ -1440,7 +1452,7 @@ async function showDetail(id) {
       }).join('\n');
       codeHtml += '<div class="change-item"><div class="change-label">' + esc(label) + '</div><div class="change-diff">' + parts + '</div></div>';
     }
-    codeHtml += '</div>';
+    codeHtml += '</div></div>';
   }
 
   // Variable changes
@@ -1457,7 +1469,7 @@ async function showDetail(id) {
         other[k] = v;
       }
     }
-    varHtml = '<h2>Variables <span class="help-icon" title="All notebook variable values captured automatically. Scalars = simple values, Arrays = numpy/torch/pandas, Other = everything else.">?</span></h2><div class="var-changes">';
+    varHtml = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Variables (' + Object.keys(varChanges).length + ')</h2><div class="section-body"><div class="var-changes">';
     const renderGroup = (title, vars) => {
       if (!Object.keys(vars).length) return '';
       let h = '<div class="var-section-title">' + title + ' (' + Object.keys(vars).length + ')</div><table>';
@@ -1469,7 +1481,7 @@ async function showDetail(id) {
     varHtml += renderGroup('Scalars', scalars);
     varHtml += renderGroup('Arrays & Tensors', arrays);
     varHtml += renderGroup('Other', other);
-    varHtml += '</div>';
+    varHtml += '</div></div>';
   }
 
   // Summary card
@@ -1550,22 +1562,23 @@ async function showDetail(id) {
               <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
               <span class="label">Notes</span><span id="detail-notes">${exp.notes ? '<div class="notes-display">'+esc(exp.notes)+'</div>' : '<span style="color:var(--muted)">none</span>'}</span>
             </div>
-            ${paramRows ? '<h2>Params</h2><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table>' : ''}
+            ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
             ${varHtml}
           </div>
           <!-- Right column: metrics + charts + artifacts -->
           <div>
-            ${metricRows ? '<h2>Metrics</h2><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table>' : ''}
-            <div id="charts-container"></div>
-            <h2>Artifacts</h2>
+            ${metricRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Metrics (' + exp.metrics.length + ')</h2><div class="section-body"><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table><div id="charts-container"></div></div>' : '<div id="charts-container"></div>'}
+            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
+            <div class="section-body">
             ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
             ${addArtifactForm}
+            </div>
           </div>
         </div>
         <!-- Full-width sections below the grid -->
         <div style="margin-top:20px">
           ${codeHtml}
-          ${diffHtml ? '<h2>Git Diff ('+exp.diff_lines+' lines)</h2><div class="diff-view">'+diffHtml+'</div>' : ''}
+          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Git Diff ('+exp.diff_lines+' lines)</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
         </div>
       </div>
 

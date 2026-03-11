@@ -963,6 +963,28 @@ def patch_savefig(exp: "Experiment"):
 
         orig_path = _P(str(fname)).resolve()
 
+        # Auto-detect extension: plt.savefig("test") may save as "test.png"
+        # depending on matplotlib's default format (rcParams['savefig.format'])
+        if not orig_path.exists():
+            # Check explicit format kwarg first, then rcParams default
+            fmt = kwargs.get("format")
+            if not fmt:
+                try:
+                    import matplotlib as _mpl
+                    fmt = _mpl.rcParams.get("savefig.format", "png")
+                except Exception:
+                    fmt = "png"
+            candidate = orig_path.with_suffix("." + fmt)
+            if candidate.exists():
+                orig_path = candidate
+            else:
+                # Try common extensions as fallback
+                for ext in ('.png', '.pdf', '.svg', '.jpg', '.eps'):
+                    candidate = orig_path.with_suffix(ext)
+                    if candidate.exists():
+                        orig_path = candidate
+                        break
+
         # Step 1: Copy to output dir (optional, non-blocking)
         try:
             out_dir = cur_exp.output_path(orig_path.name)
