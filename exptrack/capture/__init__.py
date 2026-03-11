@@ -698,30 +698,69 @@ def _post_run_cell(result=None):
             if name.startswith("_") or name in _SKIP_NAMES:
                 continue
             summary = _var_summary(val)
-            if summary is None:
-                continue
-            fp = _var_fingerprint(val)
+            tname = type(val).__name__
 
-            # For non-scalar types, prefer the source expression over the summary
-            # so the user can reconstruct the value from the code
-            display = summary
-            if not isinstance(val, _SCALAR) and name in cell_assignments:
+            # If _var_summary skips this type (functions, modules, etc.),
+            # still capture it if the cell explicitly assigned it — we want
+            # to track `f = lambda x: x**2` or `model = create_model()`.
+            if summary is None:
+                if name not in cell_assignments:
+                    continue  # truly skip — not assigned in this cell
+                # Use the creation expression as the display value
                 expr = cell_assignments[name]
+                summary = f"{tname}()"
                 if len(expr) <= 500:
-                    display = f"{name} = {expr}  # {summary}"
+                    display = f"{name} = {expr}  # {tname}"
+                else:
+                    display = f"{tname}()"
+                fp = f"{tname}:{name}:{_cell_hash(expr)}"
+            else:
+                fp = _var_fingerprint(val)
+                # For non-scalar types, prefer the source expression over
+                # the summary so the user can reconstruct the value
+                display = summary
+                if not isinstance(val, _SCALAR) and name in cell_assignments:
+                    expr = cell_assignments[name]
+                    if len(expr) <= 500:
+                        display = f"{name} = {expr}  # {summary}"
 
             if name not in prev_snap:
                 new_vars[name] = display
-            elif prev_snap[name] != fp:
-                changed_vars[name] = {"from": prev_snap[name], "to": display}
+            else:
+                prev_entry = prev_snap[name]
+                # Backward compat: old snapshots stored bare fingerprint strings
+                if isinstance(prev_entry, str):
+                    prev_fp, prev_disp = prev_entry, prev_entry
+                else:
+                    prev_fp = prev_entry["fp"]
+                    prev_disp = prev_entry["display"]
+                if prev_fp != fp:
+                    changed_vars[name] = {
+                        "from": prev_disp,
+                        "to": display,
+                    }
 
-        # Update snapshot with fingerprints for change detection
+        # Update snapshot with fingerprints AND display strings for change
+        # detection and human-readable prev_value tracking
         new_snap = {}
         for name, val in list(ns.items()):
             if name.startswith("_") or name in _SKIP_NAMES:
                 continue
-            if _var_summary(val) is not None:
-                new_snap[name] = _var_fingerprint(val)
+            summary = _var_summary(val)
+            if summary is not None:
+                new_snap[name] = {
+                    "fp": _var_fingerprint(val),
+                    "display": summary,
+                }
+            elif name in cell_assignments:
+                # Track explicitly-assigned skippable types too
+                tname = type(val).__name__
+                expr = cell_assignments[name]
+                new_snap[name] = {
+                    "fp": f"{tname}:{name}:{_cell_hash(expr)}",
+                    "display": f"{name} = {expr}  # {tname}"
+                        if len(expr) <= 500 else f"{tname}()",
+                }
         _nb_state["var_snapshot"] = new_snap
 
         # On first run, capture all variables as the baseline
@@ -764,13 +803,9 @@ def _post_run_cell(result=None):
 
         for name, change in changed_vars.items():
             val = ns.get(name)
-            # For the prev_value, try to get a human-readable form
+            # change["from"] is now a human-readable display string
+            # (stored alongside fingerprints in var_snapshot)
             prev_display = change.get("from", "(unknown)")
-            # If the previous fingerprint looks like a repr, use it directly
-            if isinstance(prev_display, str) and len(prev_display) < 200:
-                pass  # already good
-            else:
-                prev_display = "(previous value)"
 
             exp.log_event(
                 event_type="var_set",
