@@ -235,18 +235,25 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .stat .num { font-size: 28px; font-weight: 600; }
   .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
-  .filters { margin-bottom: 16px; display: flex; gap: 8px; }
+  .filters { margin-bottom: 16px; display: flex; gap: 8px; align-items: center; }
   .filters button {
     font-family: inherit; font-size: 12px;
     background: var(--card-bg); border: 1px solid var(--border);
     padding: 4px 12px; cursor: pointer;
   }
   .filters button.active { background: var(--fg); color: var(--bg); }
+  .filters .compare-selected {
+    margin-left: auto; background: var(--blue); color: #fff; border: none;
+    padding: 4px 12px; font-family: inherit; font-size: 12px; cursor: pointer;
+    display: none;
+  }
+  .filters .compare-selected.visible { display: inline-block; }
+  .cb-col { width: 30px; text-align: center; }
+  .cb-col input { cursor: pointer; }
   table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); }
   th { text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--fg); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
   td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
   tr:hover { background: var(--code-bg); }
-  tr { cursor: pointer; }
   .status-done { color: var(--green); }
   .status-failed { color: var(--red); }
   .status-running { color: var(--yellow); }
@@ -312,7 +319,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div id="list-view">
     <div class="filters" id="filters"></div>
     <table id="exp-table"><thead><tr>
-      <th>ID</th><th>Name</th><th>Status</th><th>Started</th><th>Duration</th><th>Branch</th>
+      <th class="cb-col"></th><th>ID</th><th>Name</th><th>Status</th><th>Started</th><th>Duration</th><th>Branch</th>
     </tr></thead><tbody id="exp-body"></tbody></table>
   </div>
   <div id="compare-view" style="display:none">
@@ -330,6 +337,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <script>
 let currentFilter = '';
 let charts = {};
+let selectedForCompare = new Set();
 
 async function api(path) {
   const r = await fetch(path);
@@ -365,6 +373,7 @@ async function loadStats() {
     <button class="${currentFilter==='done'?'active':''}" onclick="filterExps('done')">Done</button>
     <button class="${currentFilter==='failed'?'active':''}" onclick="filterExps('failed')">Failed</button>
     <button class="${currentFilter==='running'?'active':''}" onclick="filterExps('running')">Running</button>
+    <button class="compare-selected ${selectedForCompare.size===2?'visible':''}" onclick="compareSelected()">Compare Selected (${selectedForCompare.size}/2)</button>
   `;
 }
 
@@ -373,15 +382,40 @@ async function loadExperiments() {
   const exps = await api(url);
   const tbody = document.getElementById('exp-body');
   tbody.innerHTML = exps.map(e => `
-    <tr onclick="showDetail('${e.id}')">
-      <td>${e.id.slice(0,6)}</td>
-      <td>${e.name.slice(0,40)}${e.tags.map(t=>'<span class="tag">#'+t+'</span>').join('')}</td>
-      <td class="status-${e.status}">${e.status}</td>
-      <td>${fmtDt(e.created_at)}</td>
-      <td>${fmtDur(e.duration_s)}</td>
-      <td>${e.git_branch||'--'}</td>
+    <tr>
+      <td class="cb-col"><input type="checkbox" ${selectedForCompare.has(e.id)?'checked':''} onclick="event.stopPropagation();toggleCompare('${e.id}')" title="Select for compare"></td>
+      <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.id.slice(0,6)}</td>
+      <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.name.slice(0,40)}${e.tags.map(t=>'<span class="tag">#'+t+'</span>').join('')}</td>
+      <td onclick="showDetail('${e.id}')" style="cursor:pointer" class="status-${e.status}">${e.status}</td>
+      <td onclick="showDetail('${e.id}')" style="cursor:pointer">${fmtDt(e.created_at)}</td>
+      <td onclick="showDetail('${e.id}')" style="cursor:pointer">${fmtDur(e.duration_s)}</td>
+      <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.git_branch||'--'}</td>
     </tr>
   `).join('');
+}
+
+function toggleCompare(id) {
+  if (selectedForCompare.has(id)) {
+    selectedForCompare.delete(id);
+  } else {
+    if (selectedForCompare.size >= 2) {
+      // Remove oldest selection
+      const first = selectedForCompare.values().next().value;
+      selectedForCompare.delete(first);
+    }
+    selectedForCompare.add(id);
+  }
+  loadStats();  // refresh compare button visibility
+  loadExperiments();  // refresh checkboxes
+}
+
+function compareSelected() {
+  if (selectedForCompare.size !== 2) return;
+  const ids = [...selectedForCompare];
+  document.getElementById('cmp-id1').value = ids[0];
+  document.getElementById('cmp-id2').value = ids[1];
+  switchTab('compare');
+  doCompare();
 }
 
 function filterExps(status) {

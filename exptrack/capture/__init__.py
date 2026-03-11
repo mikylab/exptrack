@@ -227,8 +227,13 @@ def _post_execute():
         _nb_state["cell_history"][cell_id] = source
 
         source_diff = None
-        if source_changed and prev_source:
-            source_diff = _simple_diff(prev_source, source)
+        if source_changed:
+            if prev_source:
+                source_diff = _simple_diff(prev_source, source)
+            else:
+                # First execution of this cell — log all lines as additions
+                source_diff = [{"op": "+", "line": line}
+                               for line in source.splitlines() if line.strip()]
 
         # ── 3. Capture new/changed scalar variables ───────────────────────────
         ns = ip.user_ns
@@ -260,14 +265,13 @@ def _post_execute():
             from ..core import make_run_name
             exp._rename(make_run_name(exp.script, exp._params))
 
-        # Log ALL other changed variables as _var/ params so code tweaks
-        # (e.g. changing np.linspace(0,10,100) to (0,20,200)) are tracked
-        other_new = {f"_var/{k}": v for k, v in new_vars.items()
-                     if not _HP_RE.match(k)}
-        other_changed = {f"_var/{k}": d["to"] for k, d in changed_vars.items()
-                         if not _HP_RE.match(k)}
-        if other_new or other_changed:
-            exp.log_params({**other_new, **other_changed})
+        # Log ALL variable changes as _var/ params so they appear in the
+        # dashboard's "Variable Changes" section — including HP-named ones
+        # (HP variables are ALSO logged as top-level params above for naming)
+        all_new_var = {f"_var/{k}": v for k, v in new_vars.items()}
+        all_changed_var = {f"_var/{k}": d["to"] for k, d in changed_vars.items()}
+        if all_new_var or all_changed_var:
+            exp.log_params({**all_new_var, **all_changed_var})
 
         # Log code diffs as a param so they appear in `exptrack show`
         if source_diff:
