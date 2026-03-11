@@ -639,13 +639,11 @@ def cmd_clean(args):
 
 
 def cmd_ui(args):
-    dashboard = Path(__file__).parent / "dashboard" / "app.py"
-    if not dashboard.exists():
-        print(col(f"Dashboard not found at {dashboard}", R))
-        return
-    port = args.port if hasattr(args, "port") else 7331
-    print(col(f"Launching dashboard -> http://localhost:{port}", C))
-    os.execvp(sys.executable, [sys.executable, str(dashboard), str(port)])
+    from .dashboard.app import main as ui_main
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 7331)
+    print(col(f"Launching dashboard -> http://{host}:{port}", C), file=sys.stderr)
+    ui_main(host=host, port=port)
 
 
 # ── Shell pipeline commands ───────────────────────────────────────────────────
@@ -1180,6 +1178,7 @@ def main():
 
     p_ui = sub.add_parser("ui")
     p_ui.add_argument("--port", type=int, default=7331)
+    p_ui.add_argument("--host", type=str, default="127.0.0.1")
 
     args = p.parse_args()
     if not args.cmd:

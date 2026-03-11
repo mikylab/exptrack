@@ -2,6 +2,7 @@
 
 from .core import Experiment
 
+__version__ = "2.0.0"
 __all__ = ["Experiment"]
 
 
