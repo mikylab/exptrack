@@ -966,37 +966,77 @@ async function sidebarExport() {
   alert('Exported ' + data.length + ' experiments to clipboard (JSON)');
 }
 
-async function sidebarCopyText() {
-  const ids = [...selectedIds];
-  const exps = allExperiments.filter(e => ids.includes(e.id));
+function _formatExpPlainText(d) {
+  // Shared plain-text formatter — same format used by the detail view export
   let lines = [];
-  for (const e of exps) {
-    lines.push(e.name + ' (' + e.id.slice(0,6) + ') [' + e.status + ']');
-    lines.push('  ID: ' + e.id);
-    lines.push('  Status: ' + e.status);
-    if (e.created_at) lines.push('  Started: ' + fmtDtFull(e.created_at));
-    if (e.duration_s) lines.push('  Duration: ' + fmtDur(e.duration_s));
-    if (e.git_branch) lines.push('  Branch: ' + e.git_branch + (e.git_commit ? ' @ ' + e.git_commit : ''));
-    const params = Object.entries(e.params || {}).filter(([k]) => !k.startsWith('_'));
-    if (params.length) {
-      lines.push('  Parameters:');
-      params.forEach(([k,v]) => lines.push('    ' + k + ' = ' + JSON.stringify(v)));
-    }
-    const metrics = Object.entries(e.metrics || {});
-    if (metrics.length) {
-      lines.push('  Metrics:');
-      metrics.forEach(([k,v]) => lines.push('    ' + k + ' = ' + (typeof v === 'number' ? v.toFixed(4) : v)));
-    }
-    if (e.tags && e.tags.length) lines.push('  Tags: ' + e.tags.map(t => '#' + t).join(', '));
-    if (e.notes) {
-      lines.push('  Notes:');
-      e.notes.split('\n').forEach(l => lines.push('    ' + l));
-    }
+  lines.push('Experiment: ' + (d.name || ''));
+  lines.push('ID: ' + (d.id || ''));
+  lines.push('Status: ' + (d.status || ''));
+  if (d.created_at) lines.push('Created: ' + d.created_at);
+  if (d.duration_s) lines.push('Duration: ' + fmtDur(d.duration_s));
+  if (d.script) lines.push('Script: ' + d.script);
+  if (d.command) lines.push('Command: ' + d.command);
+  if (d.python_ver) lines.push('Python: ' + d.python_ver);
+  if (d.git_branch) lines.push('Branch: ' + d.git_branch);
+  if (d.git_commit) lines.push('Commit: ' + d.git_commit);
+  if (d.hostname) lines.push('Hostname: ' + d.hostname);
+  if (d.tags && d.tags.length) lines.push('Tags: ' + d.tags.join(', '));
+  if (d.notes) lines.push('Notes: ' + d.notes);
+  lines.push('');
+  const params = d.params || {};
+  if (Object.keys(params).length) {
+    lines.push('Parameters:');
+    Object.entries(params).forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
     lines.push('');
   }
-  await navigator.clipboard.writeText(lines.join('\n'));
-  owlSay('Copied ' + exps.length + ' experiment(s) to clipboard!');
-  alert('Copied ' + exps.length + ' experiments to clipboard (plain text)');
+  const vars = d.variables || {};
+  if (Object.keys(vars).length) {
+    lines.push('Variables:');
+    Object.entries(vars).forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
+    lines.push('');
+  }
+  const ms = d.metrics_series || {};
+  if (Object.keys(ms).length) {
+    lines.push('Metrics:');
+    Object.entries(ms).forEach(([k,pts]) => {
+      const last = pts.length ? pts[pts.length-1].value : '--';
+      lines.push('  ' + k + ' = ' + last + ' (' + pts.length + ' steps)');
+    });
+    lines.push('');
+  }
+  if (d.artifacts && d.artifacts.length) {
+    lines.push('Artifacts:');
+    d.artifacts.forEach(a => lines.push('  ' + a.label + ': ' + a.path));
+    lines.push('');
+  }
+  const changes = d.code_changes || {};
+  if (Object.keys(changes).length) {
+    lines.push('Code Changes:');
+    Object.entries(changes).forEach(([k,v]) => lines.push('  ' + k + ': ' + JSON.stringify(v)));
+    lines.push('');
+  }
+  const ts = d.timeline_summary || {};
+  if (ts.total_events) {
+    lines.push('Timeline: ' + ts.total_events + ' events (' +
+      (ts.cell_executions || 0) + ' cells, ' +
+      (ts.variable_sets || 0) + ' vars, ' +
+      (ts.artifact_events || 0) + ' artifacts)');
+  }
+  return lines.join('\n');
+}
+
+async function sidebarCopyText() {
+  const ids = [...selectedIds];
+  // Fetch full export data for each experiment (same data as detail view)
+  const data = await postApi('/api/bulk-export', {ids, format: 'json'});
+  let sections = [];
+  for (const d of data) {
+    sections.push(_formatExpPlainText(d));
+  }
+  const text = sections.join('\n\n---\n\n');
+  await navigator.clipboard.writeText(text);
+  owlSay('Copied ' + data.length + ' experiment(s) to clipboard!');
+  alert('Copied ' + data.length + ' experiments to clipboard (plain text)');
 }
 
 function setGroup(field) {
@@ -1712,63 +1752,8 @@ async function doExport(id, fmt) {
   if (fmt === 'markdown') {
     pre.textContent = data.markdown || JSON.stringify(data, null, 2);
   } else if (fmt === 'plain') {
-    // Plain text format for easy copying
-    let lines = [];
     const d = data.data || data;
-    lines.push('Experiment: ' + (d.name || ''));
-    lines.push('ID: ' + (d.id || ''));
-    lines.push('Status: ' + (d.status || ''));
-    if (d.created_at) lines.push('Created: ' + d.created_at);
-    if (d.duration_s) lines.push('Duration: ' + fmtDur(d.duration_s));
-    if (d.script) lines.push('Script: ' + d.script);
-    if (d.command) lines.push('Command: ' + d.command);
-    if (d.python_ver) lines.push('Python: ' + d.python_ver);
-    if (d.git_branch) lines.push('Branch: ' + d.git_branch);
-    if (d.git_commit) lines.push('Commit: ' + d.git_commit);
-    if (d.hostname) lines.push('Hostname: ' + d.hostname);
-    if (d.tags && d.tags.length) lines.push('Tags: ' + d.tags.join(', '));
-    if (d.notes) lines.push('Notes: ' + d.notes);
-    lines.push('');
-    const params = d.params || {};
-    if (Object.keys(params).length) {
-      lines.push('Parameters:');
-      Object.entries(params).forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
-      lines.push('');
-    }
-    const vars = d.variables || {};
-    if (Object.keys(vars).length) {
-      lines.push('Variables:');
-      Object.entries(vars).forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
-      lines.push('');
-    }
-    const ms = d.metrics_series || {};
-    if (Object.keys(ms).length) {
-      lines.push('Metrics:');
-      Object.entries(ms).forEach(([k,pts]) => {
-        const last = pts.length ? pts[pts.length-1].value : '--';
-        lines.push('  ' + k + ' = ' + last + ' (' + pts.length + ' steps)');
-      });
-      lines.push('');
-    }
-    if (d.artifacts && d.artifacts.length) {
-      lines.push('Artifacts:');
-      d.artifacts.forEach(a => lines.push('  ' + a.label + ': ' + a.path));
-      lines.push('');
-    }
-    const changes = d.code_changes || {};
-    if (Object.keys(changes).length) {
-      lines.push('Code Changes:');
-      Object.entries(changes).forEach(([k,v]) => lines.push('  ' + k + ': ' + JSON.stringify(v)));
-      lines.push('');
-    }
-    const ts = d.timeline_summary || {};
-    if (ts.total_events) {
-      lines.push('Timeline: ' + ts.total_events + ' events (' +
-        (ts.cell_executions || 0) + ' cells, ' +
-        (ts.variable_sets || 0) + ' vars, ' +
-        (ts.artifact_events || 0) + ' artifacts)');
-    }
-    pre.textContent = lines.join('\n');
+    pre.textContent = _formatExpPlainText(d);
   } else {
     pre.textContent = JSON.stringify(data, null, 2);
   }
