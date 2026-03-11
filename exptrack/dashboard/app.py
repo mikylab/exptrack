@@ -760,8 +760,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .detail-summary .sum-item strong { color: var(--fg); }
   .detail-summary .sum-sep { color: var(--border); }
   /* Two-column detail grid */
-  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; padding: 0 8px; }
-  .detail-grid > div { padding: 4px 8px; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .detail-grid > div { }
   .detail-grid-full { grid-column: 1 / -1; }
   @media (max-width: 900px) {
     .detail-grid { grid-template-columns: 1fr; }
@@ -1038,12 +1038,35 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .artifact-add-form { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
   .artifact-add-form input { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; background: var(--card-bg); }
   .artifact-add-form button { font-family: inherit; font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); background: var(--code-bg); cursor: pointer; border-radius: 3px; }
+  /* Pinned experiments */
+  .pin-btn { cursor: pointer; font-size: 14px; background: none; border: none; color: var(--muted); padding: 0 2px; }
+  .pin-btn:hover { color: var(--yellow); }
+  .pin-btn.pinned { color: var(--yellow); }
+  .pinned-row { background: rgba(184,134,11,0.05); }
+  .pinned-row:hover { background: rgba(184,134,11,0.1); }
+  /* Table row clickable */
+  #exp-body tr { cursor: pointer; }
+  #exp-body tr:hover { background: var(--code-bg); }
+  /* Tag filter bar */
+  .tag-filter-bar { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; align-items: center; }
+  .tag-filter-bar .tag-chip { font-family: inherit; font-size: 11px; background: var(--code-bg); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .tag-filter-bar .tag-chip:hover { background: var(--border); color: var(--fg); }
+  .tag-filter-bar .tag-chip.active { background: var(--fg); color: var(--bg); }
+  /* Code changes column */
+  .code-stat { font-size: 11px; color: var(--muted); }
+  .code-stat .lines-added { color: var(--green); }
+  .code-stat .lines-removed { color: var(--red); }
+  /* Notes cell expanded */
+  .notes-cell-expanded { max-width: 250px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Detail name hover */
+  #detail-name { cursor: default; padding: 2px 6px; border-radius: 3px; }
+  #detail-name:hover { background: rgba(44,90,160,0.08); }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1 onclick="showWelcome()">exptrack</h1>
+  <h1 onclick="showWelcome()"><svg width="22" height="22" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><rect x="6" y="1" width="1" height="1" fill="#2c5aa0"/><rect x="9" y="1" width="1" height="1" fill="#2c5aa0"/><rect x="6" y="2" width="1" height="1" fill="#2c5aa0"/><rect x="9" y="2" width="1" height="1" fill="#2c5aa0"/><rect x="7" y="3" width="2" height="1" fill="#2c5aa0"/><rect x="6" y="4" width="4" height="1" fill="#2c5aa0"/><rect x="7" y="4" width="1" height="1" fill="#fff"/><rect x="8" y="4" width="1" height="1" fill="#fff"/><rect x="5" y="5" width="6" height="1" fill="#2c5aa0"/><rect x="5" y="6" width="6" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#2c5aa0"/><rect x="7" y="9" width="2" height="1" fill="#2c5aa0"/><rect x="3" y="5" width="2" height="1" fill="#7c3aed"/><rect x="11" y="5" width="2" height="1" fill="#7c3aed"/><rect x="4" y="7" width="1" height="1" fill="#7c3aed"/><rect x="11" y="7" width="1" height="1" fill="#7c3aed"/><rect x="3" y="6" width="1" height="1" fill="#7c3aed"/><rect x="12" y="6" width="1" height="1" fill="#7c3aed"/><rect x="6" y="10" width="1" height="2" fill="#2c5aa0"/><rect x="9" y="10" width="1" height="2" fill="#2c5aa0"/></svg>exptrack</h1>
   <div class="header-actions">
     <button class="home-btn" onclick="showWelcome()" title="Back to dashboard home">Home</button>
     <button class="help-btn" onclick="toggleHelp()">? Docs</button>
@@ -1121,8 +1144,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <!-- Welcome state: shown when no experiment selected -->
     <div id="welcome-state">
       <div class="stats" id="stats"></div>
+      <div class="tag-filter-bar" id="tag-filter-bar"></div>
       <table id="exp-table"><thead><tr>
-        <th class="cb-col"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th><th>ID</th><th>Name</th><th>Status</th><th>Tags</th><th>Notes</th><th>Started</th><th>Duration</th><th>Branch</th>
+        <th style="width:28px"></th><th class="cb-col"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th><th>ID</th><th>Name</th><th>Status</th><th>Tags</th><th>Notes</th><th>Key Metrics</th><th>Changes</th><th>Started</th>
       </tr></thead><tbody id="exp-body"></tbody></table>
     </div>
 
@@ -1147,10 +1171,33 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <script>
 let currentFilter = '';
 let searchQuery = '';
+let tagFilter = '';
 let charts = {};
 let selectedIds = new Set();
+let pinnedIds = new Set(JSON.parse(localStorage.getItem('exptrack-pinned') || '[]'));
 let allExperiments = [];
 let currentDetailId = '';
+
+function togglePin(id) {
+  if (pinnedIds.has(id)) pinnedIds.delete(id);
+  else pinnedIds.add(id);
+  localStorage.setItem('exptrack-pinned', JSON.stringify([...pinnedIds]));
+  renderExperiments();
+}
+
+function renderTagFilterBar() {
+  const bar = document.getElementById('tag-filter-bar');
+  if (!bar) return;
+  const allTags = new Set();
+  allExperiments.forEach(e => (e.tags||[]).forEach(t => allTags.add(t)));
+  if (allTags.size === 0) { bar.innerHTML = ''; return; }
+  let html = '<span style="font-size:11px;color:var(--muted);margin-right:4px">Filter:</span>';
+  html += '<span class="tag-chip' + (tagFilter===''?' active':'') + '" onclick="tagFilter=\'\';renderExperiments();renderExpList();renderTagFilterBar()">All</span>';
+  for (const t of [...allTags].sort()) {
+    html += '<span class="tag-chip' + (tagFilter===t?' active':'') + '" onclick="tagFilter=\'' + esc(t).replace(/'/g,"\\'") + '\';renderExperiments();renderExpList();renderTagFilterBar()">#' + esc(t) + '</span>';
+  }
+  bar.innerHTML = html;
+}
 
 async function api(path) {
   const r = await fetch(path);
@@ -1214,7 +1261,7 @@ function renderExpList() {
     return '<div class="exp-card' + active + '" onclick="showDetail(\'' + e.id + '\')">' +
       '<div class="exp-card-row1">' + cbHtml +
       '<span class="status-dot ' + statusCls + '"></span>' +
-      '<span class="exp-card-name">' + esc(e.name) + '</span></div>' +
+      '<span class="exp-card-name" ondblclick="event.stopPropagation();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name) + '</span></div>' +
       '<div class="exp-card-meta">' +
         esc(e.git_branch || '') + ' &middot; ' + fmtDur(e.duration_s) + ' &middot; ' + fmtDt(e.created_at) +
       '</div>' +
@@ -1343,6 +1390,9 @@ async function sidebarCopyText() {
 
 function getFilteredExperiments() {
   let exps = allExperiments;
+  if (tagFilter) {
+    exps = exps.filter(e => (e.tags || []).includes(tagFilter));
+  }
   if (searchQuery) {
     const q = searchQuery.toLowerCase();
     exps = exps.filter(e =>
@@ -1350,9 +1400,16 @@ function getFilteredExperiments() {
       e.id.toLowerCase().includes(q) ||
       (e.tags || []).some(t => t.toLowerCase().includes(q)) ||
       Object.keys(e.params || {}).some(k => k.toLowerCase().includes(q)) ||
-      (e.git_branch || '').toLowerCase().includes(q)
+      (e.git_branch || '').toLowerCase().includes(q) ||
+      (e.notes || '').toLowerCase().includes(q)
     );
   }
+  // Sort: pinned first, then by created_at
+  exps = [...exps].sort((a, b) => {
+    const ap = pinnedIds.has(a.id) ? 0 : 1;
+    const bp = pinnedIds.has(b.id) ? 0 : 1;
+    return ap - bp;
+  });
   return exps;
 }
 
@@ -1383,29 +1440,48 @@ function renderExperiments() {
   const exps = getFilteredExperiments();
   const tbody = document.getElementById('exp-body');
   if (!tbody) return;
+  renderTagFilterBar();
   tbody.innerHTML = exps.map(e => {
-    const metricsPreview = Object.entries(e.metrics || {}).slice(0, 3)
-      .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v))
+    const metricsHtml = Object.entries(e.metrics || {}).slice(0, 3)
+      .map(([k,v]) => '<span style="color:var(--blue)">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))))
       .join(', ');
     const isSelected = selectedIds.has(e.id);
-    const rowCls = isSelected ? 'selected-row' : '';
+    const isPinned = pinnedIds.has(e.id);
+    const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '');
     const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
-    const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,40)) : '<span style="color:var(--muted)">--</span>';
-    return `<tr class="${rowCls}">
-      <td class="cb-col">
-        <input type="checkbox" ${isSelected?'checked':''} onclick="event.stopPropagation();toggleSelection('${e.id}')" title="Select">
+    const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>';
+    // Code change stats from params
+    const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
+    let codeStatHtml = '--';
+    if (codeParams.length) {
+      let added = 0, removed = 0;
+      for (const k of codeParams) {
+        const v = String(e.params[k] || '');
+        const parts = v.split('; ');
+        for (const p of parts) {
+          if (p.trim().startsWith('+')) added++;
+          else if (p.trim().startsWith('-')) removed++;
+        }
+      }
+      codeStatHtml = '<span class="code-stat">' + codeParams.length + ' file' + (codeParams.length>1?'s':'');
+      if (added || removed) codeStatHtml += ' <span class="lines-added">+' + added + '</span> <span class="lines-removed">-' + removed + '</span>';
+      codeStatHtml += '</span>';
+    }
+    return `<tr class="${rowCls}" onclick="showDetail('${e.id}')">
+      <td onclick="event.stopPropagation()"><button class="pin-btn${isPinned?' pinned':''}" onclick="togglePin('${e.id}')" title="${isPinned?'Unpin':'Pin'}">${isPinned?'\u2605':'\u2606'}</button></td>
+      <td onclick="event.stopPropagation()">
+        <input type="checkbox" ${isSelected?'checked':''} onclick="toggleSelection('${e.id}')" title="Select" style="cursor:pointer">
       </td>
-      <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.id.slice(0,6)}</td>
-      <td style="cursor:pointer">
-        <span class="editable-name" onclick="showDetail('${e.id}')" ondblclick="event.stopPropagation();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}</span>
-        ${metricsPreview ? '<div class="exp-metrics-preview">' + esc(metricsPreview) + '</div>' : ''}
+      <td>${e.id.slice(0,6)}</td>
+      <td>
+        <span class="editable-name" ondblclick="event.stopPropagation();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}</span>
       </td>
-      <td onclick="showDetail('${e.id}')" style="cursor:pointer" class="status-${e.status}">${e.status}</td>
-      <td class="tags-cell" onclick="showDetail('${e.id}')" style="cursor:pointer">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
-      <td class="notes-cell" onclick="showDetail('${e.id}')" style="cursor:pointer" title="${esc(e.notes||'')}">${notesPreview}</td>
-      <td onclick="showDetail('${e.id}')" style="cursor:pointer">${fmtDt(e.created_at)}</td>
-      <td onclick="showDetail('${e.id}')" style="cursor:pointer">${fmtDur(e.duration_s)}</td>
-      <td onclick="showDetail('${e.id}')" style="cursor:pointer">${e.git_branch||'--'}</td>
+      <td class="status-${e.status}">${e.status}</td>
+      <td class="tags-cell">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
+      <td class="notes-cell-expanded" title="${esc(e.notes||'')}">${notesPreview}</td>
+      <td style="font-size:12px">${metricsHtml || '<span style="color:var(--muted)">--</span>'}</td>
+      <td>${codeStatHtml}</td>
+      <td>${fmtDt(e.created_at)}</td>
     </tr>`;
   }).join('');
 }
@@ -1431,6 +1507,7 @@ function startInlineRename(id, el) {
       const d = await r.json();
       if (d.ok) {
         loadExperiments();
+        if (currentDetailId === id) showDetail(id);
         return;
       }
     }
@@ -1618,7 +1695,7 @@ async function showDetail(id) {
     : '<span style="color:var(--muted)">none</span>';
 
   document.getElementById('detail-panel').innerHTML = `
-    <div class="detail" style="border:none;padding:0;margin:0">
+    <div class="detail" style="border:none;padding:4px 16px;margin:0">
       <!-- Summary bar -->
       <div class="detail-summary">
         <span class="sum-item"><strong class="status-${exp.status}">${exp.status}</strong></span>
@@ -1636,7 +1713,7 @@ async function showDetail(id) {
 
       <!-- Header with name + actions -->
       <div class="detail-header">
-        <h2 id="detail-name">${esc(exp.name)}</h2>
+        <h2 id="detail-name" ondblclick="startInlineRename('${exp.id}',this)" title="Double-click to rename">${esc(exp.name)}</h2>
         <div class="detail-actions">
           <button class="action-btn" onclick="renameExp('${exp.id}')">Rename</button>
           <button class="action-btn" onclick="addTagUI('${exp.id}')">+ Tag</button>
