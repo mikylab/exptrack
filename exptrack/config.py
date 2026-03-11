@@ -88,13 +88,26 @@ def reload():
 def init(project_name: str = "", here: bool = False):
     """Called by `exptrack init` — writes config + .gitignore rules.
 
-    If here=True, forces .exptrack/ creation in the current working directory
-    instead of walking up to find a git root.
+    By default, init creates .exptrack/ in the current working directory.
+    If a parent git root is found and --here is NOT set, it will still
+    prefer cwd but print a note about the detected git root.
     """
     global _root_cache
-    if here:
-        _root_cache = Path.cwd()
-    root = project_root()
+    cwd = Path.cwd()
+
+    # Always init in cwd — that's what the user means by "init"
+    _root_cache = cwd
+    root = cwd
+
+    # If there's a git root above cwd, let the user know
+    if not here:
+        git_root = _find_git_root(cwd)
+        if git_root and git_root != cwd:
+            import sys
+            print(f"[exptrack] Note: git root detected at {git_root}",
+                  file=sys.stderr)
+            print(f"[exptrack] Initializing in current directory: {cwd}",
+                  file=sys.stderr)
     d = exptrack_dir()
     p = config_path()
 
@@ -129,6 +142,14 @@ def init(project_name: str = "", here: bool = False):
     print(f"  DB           : .exptrack/experiments.db  (local, gitignored)")
     print(f"  Config       : .exptrack/config.json     (commit this)")
     print(f"  Outputs      : outputs/                  (gitignored)")
+
+
+def _find_git_root(start: Path) -> Path | None:
+    """Walk up from start looking for a .git directory."""
+    for parent in [start, *start.parents]:
+        if (parent / ".git").exists():
+            return parent
+    return None
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
