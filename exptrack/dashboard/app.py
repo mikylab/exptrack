@@ -136,6 +136,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         failed = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE status='failed'").fetchone()["n"]
         running = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE status='running'").fetchone()["n"]
         avg_dur = conn.execute("SELECT AVG(duration_s) as v FROM experiments WHERE duration_s IS NOT NULL").fetchone()["v"]
+        longest = conn.execute("SELECT MAX(duration_s) as v FROM experiments WHERE duration_s IS NOT NULL").fetchone()["v"]
+        most_recent = conn.execute("SELECT created_at FROM experiments ORDER BY created_at DESC LIMIT 1").fetchone()
+        # Count unique tags
+        tag_rows = conn.execute("SELECT tags FROM experiments WHERE tags IS NOT NULL AND tags != '[]'").fetchall()
+        all_tags = set()
+        for r in tag_rows:
+            try:
+                for t in json.loads(r["tags"] or "[]"):
+                    all_tags.add(t)
+            except Exception:
+                pass
+        # Count artifacts
+        try:
+            total_artifacts = conn.execute("SELECT COUNT(*) as n FROM artifacts").fetchone()["n"]
+        except Exception:
+            total_artifacts = 0
+        # Count unique branches
+        unique_branches = conn.execute("SELECT COUNT(DISTINCT git_branch) as n FROM experiments WHERE git_branch IS NOT NULL AND git_branch != ''").fetchone()["n"]
         return {
             "total": total,
             "done": done,
@@ -143,6 +161,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "running": running,
             "success_rate": round(done / total * 100, 1) if total else 0,
             "avg_duration_s": round(avg_dur or 0, 1),
+            "longest_run_s": round(longest or 0, 1),
+            "most_recent": most_recent["created_at"] if most_recent else None,
+            "unique_tags": len(all_tags),
+            "total_artifacts": total_artifacts,
+            "unique_branches": unique_branches,
         }
 
     def _api_experiments(self, qs):
@@ -696,6 +719,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     --tl-cell: #2c5aa0; --tl-var: #7c3aed; --tl-artifact: #2d7d46;
     --tl-metric: #d4820f; --tl-obs: #999;
   }
+  body.dark {
+    --bg: #1a1a1a; --fg: #e0e0e0; --muted: #999; --border: #444;
+    --green: #4caf50; --red: #ef5350; --yellow: #ffc107; --blue: #5c9ce6;
+    --purple: #b388ff; --card-bg: #252525; --code-bg: #2d2d2d;
+    --tl-cell: #5c9ce6; --tl-var: #b388ff; --tl-artifact: #4caf50;
+    --tl-metric: #ffc107; --tl-obs: #777;
+  }
   body {
     font-family: 'IBM Plex Mono', monospace;
     background: var(--bg); color: var(--fg);
@@ -773,6 +803,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border-radius: 3px; color: var(--muted);
   }
   .help-btn:hover { background: var(--border); color: var(--fg); }
+  .theme-btn { font-family: inherit; font-size: 16px; background: var(--code-bg); border: 1px solid var(--border); padding: 4px 10px; cursor: pointer; border-radius: 3px; color: var(--muted); line-height: 1; }
+  .theme-btn:hover { background: var(--border); color: var(--fg); }
   h2 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
   h2 .help-icon { font-size: 13px; cursor: help; color: var(--blue); margin-left: 6px; font-weight: normal; text-transform: none; letter-spacing: 0; }
   /* Stats cards */
@@ -809,7 +841,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .cb-col { width: 36px; text-align: center; }
   .cb-col input { cursor: pointer; width: 16px; height: 16px; }
   table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; }
-  th { text-align: left; padding: 12px 16px; border-bottom: 2px solid var(--fg); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+  th { text-align: left; padding: 12px 16px; border-bottom: 2px solid var(--fg); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; user-select: none; }
+  th.sortable { cursor: pointer; }
+  th.sortable:hover { color: var(--blue); }
+  th .sort-arrow { font-size: 10px; margin-left: 4px; opacity: 0.3; }
+  th.sort-active .sort-arrow { opacity: 1; color: var(--blue); }
   td { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
   tr:hover { background: var(--code-bg); }
   tr.selected-row { background: rgba(44,90,160,0.08); }
@@ -856,7 +892,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .code-changes .change-diff { white-space: pre-wrap; }
   /* Variables */
   .var-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; margin-bottom: 20px; font-size: 13px; border-radius: 4px; }
-  .var-changes td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
+  .var-changes table { width: 100%; table-layout: fixed; }
+  .var-changes td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: top; word-break: break-word; }
+  .var-changes td:first-child { width: 30%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .var-changes .var-name { color: var(--blue); font-weight: 500; }
   .var-changes .var-type { color: var(--muted); font-size: 12px; }
   .var-section-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
@@ -1052,6 +1090,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .tag-filter-bar .tag-chip { font-family: inherit; font-size: 11px; background: var(--code-bg); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); }
   .tag-filter-bar .tag-chip:hover { background: var(--border); color: var(--fg); }
   .tag-filter-bar .tag-chip.active { background: var(--fg); color: var(--bg); }
+  .group-bar { display: flex; gap: 4px; align-items: center; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
+  .group-bar button { font-family: inherit; font-size: 11px; background: var(--code-bg); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .group-bar button:hover { background: var(--border); color: var(--fg); }
+  .group-bar button.active { background: var(--fg); color: var(--bg); }
+  .group-header td { background: var(--code-bg); font-size: 12px; font-weight: 600; padding: 8px 16px; cursor: pointer; user-select: none; border-bottom: 2px solid var(--border); }
+  .group-header td:hover { background: var(--border); }
+  .group-header .group-label { color: var(--fg); }
+  .group-header .group-meta { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  .group-header .group-toggle { float: right; color: var(--muted); font-size: 10px; }
   /* Code changes column */
   .code-stat { font-size: 11px; color: var(--muted); }
   .code-stat .lines-added { color: var(--green); }
@@ -1066,9 +1113,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <body>
 
 <div class="header">
-  <h1 onclick="showWelcome()"><svg width="22" height="22" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><rect x="6" y="1" width="1" height="1" fill="#2c5aa0"/><rect x="9" y="1" width="1" height="1" fill="#2c5aa0"/><rect x="6" y="2" width="1" height="1" fill="#2c5aa0"/><rect x="9" y="2" width="1" height="1" fill="#2c5aa0"/><rect x="7" y="3" width="2" height="1" fill="#2c5aa0"/><rect x="6" y="4" width="4" height="1" fill="#2c5aa0"/><rect x="7" y="4" width="1" height="1" fill="#fff"/><rect x="8" y="4" width="1" height="1" fill="#fff"/><rect x="5" y="5" width="6" height="1" fill="#2c5aa0"/><rect x="5" y="6" width="6" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#2c5aa0"/><rect x="7" y="9" width="2" height="1" fill="#2c5aa0"/><rect x="3" y="5" width="2" height="1" fill="#7c3aed"/><rect x="11" y="5" width="2" height="1" fill="#7c3aed"/><rect x="4" y="7" width="1" height="1" fill="#7c3aed"/><rect x="11" y="7" width="1" height="1" fill="#7c3aed"/><rect x="3" y="6" width="1" height="1" fill="#7c3aed"/><rect x="12" y="6" width="1" height="1" fill="#7c3aed"/><rect x="6" y="10" width="1" height="2" fill="#2c5aa0"/><rect x="9" y="10" width="1" height="2" fill="#2c5aa0"/></svg>exptrack</h1>
+  <h1 onclick="showWelcome()"><svg width="22" height="22" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect x="5" y="4" width="2" height="1" fill="#fff"/><rect x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg>exptrack</h1>
   <div class="header-actions">
     <button class="home-btn" onclick="showWelcome()" title="Back to dashboard home">Home</button>
+    <button class="theme-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
     <button class="help-btn" onclick="toggleHelp()">? Docs</button>
   </div>
 </div>
@@ -1145,8 +1193,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div id="welcome-state">
       <div class="stats" id="stats"></div>
       <div class="tag-filter-bar" id="tag-filter-bar"></div>
+      <div class="group-bar" id="group-bar">
+        <span>Group by:</span>
+        <button data-group="git_commit" onclick="setGroup('git_commit')" class="active">Git Commit</button>
+        <button data-group="git_branch" onclick="setGroup('git_branch')">Branch</button>
+        <button data-group="status" onclick="setGroup('status')">Status</button>
+        <button data-group="" onclick="setGroup('')">None</button>
+      </div>
       <table id="exp-table"><thead><tr>
-        <th style="width:28px"></th><th class="cb-col"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th><th>ID</th><th>Name</th><th>Status</th><th>Tags</th><th>Notes</th><th>Key Metrics</th><th>Changes</th><th>Started</th>
+        <th style="width:28px"></th><th class="cb-col"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th><th class="sortable" onclick="toggleSort('id')">ID<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('name')">Name<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('status')">Status<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('tags')">Tags<span class="sort-arrow"></span></th><th>Notes</th><th>Key Metrics</th><th>Changes</th><th class="sortable" onclick="toggleSort('created_at')">Started<span class="sort-arrow"></span></th>
       </tr></thead><tbody id="exp-body"></tbody></table>
     </div>
 
@@ -1177,6 +1232,22 @@ let selectedIds = new Set();
 let pinnedIds = new Set(JSON.parse(localStorage.getItem('exptrack-pinned') || '[]'));
 let allExperiments = [];
 let currentDetailId = '';
+let sortCol = 'created_at';
+let sortDir = 'desc';
+let groupBy = 'git_commit';
+let collapsedGroups = new Set();
+
+// Dark mode
+function toggleTheme() {
+  document.body.classList.toggle('dark');
+  const isDark = document.body.classList.contains('dark');
+  localStorage.setItem('exptrack-theme', isDark ? 'dark' : 'light');
+  document.getElementById('theme-toggle').innerHTML = isDark ? '&#9788;' : '&#9790;';
+}
+if (localStorage.getItem('exptrack-theme') === 'dark') {
+  document.body.classList.add('dark');
+  document.getElementById('theme-toggle').innerHTML = '&#9788;';
+}
 
 function togglePin(id) {
   if (pinnedIds.has(id)) pinnedIds.delete(id);
@@ -1209,6 +1280,17 @@ function fmtDur(s) {
   if (s >= 3600) return Math.floor(s/3600) + 'h' + Math.floor((s%3600)/60) + 'm';
   if (s >= 60) return Math.floor(s/60) + 'm' + Math.floor(s%60) + 's';
   return s.toFixed(1) + 's';
+}
+
+function fmtTimeAgo(iso) {
+  if (!iso) return '--';
+  const now = new Date();
+  const then = new Date(iso);
+  const diff = Math.floor((now - then) / 1000);
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
 }
 
 function fmtDt(iso) {
@@ -1307,6 +1389,7 @@ function showWelcome() {
   document.getElementById('welcome-state').style.display = '';
   document.getElementById('detail-view').style.display = 'none';
   document.getElementById('compare-view').style.display = 'none';
+  document.getElementById('exp-sidebar').classList.add('collapsed');
   renderExpList();
 }
 
@@ -1388,6 +1471,42 @@ async function sidebarCopyText() {
   alert('Copied ' + exps.length + ' experiments to clipboard (plain text)');
 }
 
+function setGroup(field) {
+  groupBy = field;
+  collapsedGroups.clear();
+  document.querySelectorAll('#group-bar button').forEach(b => {
+    const val = b.getAttribute('data-group');
+    b.classList.toggle('active', val === field);
+  });
+  renderExperiments();
+}
+
+function toggleGroup(key) {
+  if (collapsedGroups.has(key)) collapsedGroups.delete(key);
+  else collapsedGroups.add(key);
+  renderExperiments();
+}
+
+function toggleSort(col) {
+  if (sortCol === col) {
+    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortCol = col;
+    sortDir = (col === 'name' || col === 'status' || col === 'id') ? 'asc' : 'desc';
+  }
+  renderExperiments();
+  updateSortHeaders();
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll('#exp-table th.sortable').forEach(th => {
+    const col = th.getAttribute('onclick').match(/toggleSort\('(\w+)'\)/)?.[1];
+    th.classList.toggle('sort-active', col === sortCol);
+    const arrow = th.querySelector('.sort-arrow');
+    if (arrow) arrow.textContent = col === sortCol ? (sortDir === 'asc' ? '\u25B2' : '\u25BC') : '';
+  });
+}
+
 function getFilteredExperiments() {
   let exps = allExperiments;
   if (tagFilter) {
@@ -1404,11 +1523,21 @@ function getFilteredExperiments() {
       (e.notes || '').toLowerCase().includes(q)
     );
   }
-  // Sort: pinned first, then by created_at
+  // Sort: pinned first, then by sort column
   exps = [...exps].sort((a, b) => {
     const ap = pinnedIds.has(a.id) ? 0 : 1;
     const bp = pinnedIds.has(b.id) ? 0 : 1;
-    return ap - bp;
+    if (ap !== bp) return ap - bp;
+    let av, bv;
+    switch (sortCol) {
+      case 'name': av = a.name.toLowerCase(); bv = b.name.toLowerCase(); break;
+      case 'status': av = a.status; bv = b.status; break;
+      case 'id': av = a.id; bv = b.id; break;
+      case 'tags': av = (a.tags||[]).length; bv = (b.tags||[]).length; break;
+      case 'created_at': default: av = a.created_at||''; bv = b.created_at||''; break;
+    }
+    let cmp = av < bv ? -1 : av > bv ? 1 : 0;
+    return sortDir === 'desc' ? -cmp : cmp;
   });
   return exps;
 }
@@ -1417,6 +1546,7 @@ async function loadStats() {
   const s = await api('/api/stats');
   const statsEl = document.getElementById('stats');
   if (statsEl) {
+    const timeAgo = s.most_recent ? fmtTimeAgo(s.most_recent) : '--';
     statsEl.innerHTML = `
       <div class="stat"><div class="num">${s.total}</div><div class="label">Total Runs</div><div class="stat-hint">All experiments tracked in this project</div></div>
       <div class="stat"><div class="num status-done">${s.done}</div><div class="label">Done</div><div class="stat-hint">Completed successfully</div></div>
@@ -1424,6 +1554,11 @@ async function loadStats() {
       <div class="stat"><div class="num status-running">${s.running}</div><div class="label">Running</div><div class="stat-hint">Currently in progress</div></div>
       <div class="stat"><div class="num">${s.success_rate}%</div><div class="label">Success Rate</div><div class="stat-hint">done / total</div></div>
       <div class="stat"><div class="num">${fmtDur(s.avg_duration_s)}</div><div class="label">Avg Duration</div><div class="stat-hint">Mean run time (completed only)</div></div>
+      <div class="stat"><div class="num">${timeAgo}</div><div class="label">Latest Run</div><div class="stat-hint">Time since most recent experiment</div></div>
+      <div class="stat"><div class="num">${fmtDur(s.longest_run_s)}</div><div class="label">Longest Run</div><div class="stat-hint">Maximum run duration</div></div>
+      <div class="stat"><div class="num">${s.unique_tags}</div><div class="label">Tags</div><div class="stat-hint">Unique tags across all experiments</div></div>
+      <div class="stat"><div class="num">${s.total_artifacts}</div><div class="label">Artifacts</div><div class="stat-hint">Total artifacts saved</div></div>
+      <div class="stat"><div class="num">${s.unique_branches}</div><div class="label">Branches</div><div class="stat-hint">Unique git branches used</div></div>
     `;
   }
   renderStatusChips();
@@ -1436,54 +1571,89 @@ async function loadExperiments() {
   renderExpList();
 }
 
+function renderExpRow(e) {
+  const metricsHtml = Object.entries(e.metrics || {}).slice(0, 3)
+    .map(([k,v]) => '<span style="color:var(--blue)">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))))
+    .join(', ');
+  const isSelected = selectedIds.has(e.id);
+  const isPinned = pinnedIds.has(e.id);
+  const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '');
+  const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
+  const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>';
+  const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
+  let codeStatHtml = '--';
+  if (codeParams.length) {
+    let added = 0, removed = 0;
+    for (const k of codeParams) {
+      const v = String(e.params[k] || '');
+      const parts = v.split('; ');
+      for (const p of parts) {
+        if (p.trim().startsWith('+')) added++;
+        else if (p.trim().startsWith('-')) removed++;
+      }
+    }
+    codeStatHtml = '<span class="code-stat">' + codeParams.length + ' file' + (codeParams.length>1?'s':'');
+    if (added || removed) codeStatHtml += ' <span class="lines-added">+' + added + '</span> <span class="lines-removed">-' + removed + '</span>';
+    codeStatHtml += '</span>';
+  }
+  return `<tr class="${rowCls}" onclick="showDetail('${e.id}')">
+    <td onclick="event.stopPropagation()"><button class="pin-btn${isPinned?' pinned':''}" onclick="togglePin('${e.id}')" title="${isPinned?'Unpin':'Pin'}">${isPinned?'\u2605':'\u2606'}</button></td>
+    <td onclick="event.stopPropagation()">
+      <input type="checkbox" ${isSelected?'checked':''} onclick="toggleSelection('${e.id}')" title="Select" style="cursor:pointer">
+    </td>
+    <td>${e.id.slice(0,6)}</td>
+    <td>
+      <span class="editable-name" ondblclick="event.stopPropagation();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}</span>
+    </td>
+    <td class="status-${e.status}">${e.status}</td>
+    <td class="tags-cell" ondblclick="event.stopPropagation();startInlineTag('${e.id}',this)">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
+    <td class="notes-cell-expanded" title="${esc(e.notes||'')}" ondblclick="event.stopPropagation();startInlineNote('${e.id}',this)">${notesPreview}</td>
+    <td style="font-size:12px">${metricsHtml || '<span style="color:var(--muted)">--</span>'}</td>
+    <td>${codeStatHtml}</td>
+    <td>${fmtDt(e.created_at)}</td>
+  </tr>`;
+}
+
 function renderExperiments() {
   const exps = getFilteredExperiments();
   const tbody = document.getElementById('exp-body');
   if (!tbody) return;
   renderTagFilterBar();
-  tbody.innerHTML = exps.map(e => {
-    const metricsHtml = Object.entries(e.metrics || {}).slice(0, 3)
-      .map(([k,v]) => '<span style="color:var(--blue)">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))))
-      .join(', ');
-    const isSelected = selectedIds.has(e.id);
-    const isPinned = pinnedIds.has(e.id);
-    const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '');
-    const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
-    const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>';
-    // Code change stats from params
-    const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
-    let codeStatHtml = '--';
-    if (codeParams.length) {
-      let added = 0, removed = 0;
-      for (const k of codeParams) {
-        const v = String(e.params[k] || '');
-        const parts = v.split('; ');
-        for (const p of parts) {
-          if (p.trim().startsWith('+')) added++;
-          else if (p.trim().startsWith('-')) removed++;
-        }
-      }
-      codeStatHtml = '<span class="code-stat">' + codeParams.length + ' file' + (codeParams.length>1?'s':'');
-      if (added || removed) codeStatHtml += ' <span class="lines-added">+' + added + '</span> <span class="lines-removed">-' + removed + '</span>';
-      codeStatHtml += '</span>';
+  updateSortHeaders();
+
+  if (!groupBy) {
+    tbody.innerHTML = exps.map(renderExpRow).join('');
+    return;
+  }
+
+  // Group experiments
+  const groups = new Map();
+  for (const e of exps) {
+    let key = '';
+    if (groupBy === 'git_commit') key = e.git_commit ? e.git_commit.slice(0, 7) : 'no commit';
+    else if (groupBy === 'git_branch') key = e.git_branch || 'no branch';
+    else if (groupBy === 'status') key = e.status || 'unknown';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+
+  let html = '';
+  for (const [key, items] of groups) {
+    const isCollapsed = collapsedGroups.has(key);
+    let groupLabel = key;
+    if (groupBy === 'git_commit' && items[0].git_branch) {
+      groupLabel = key + ' <span class="group-meta">' + esc(items[0].git_branch) + '</span>';
     }
-    return `<tr class="${rowCls}" onclick="showDetail('${e.id}')">
-      <td onclick="event.stopPropagation()"><button class="pin-btn${isPinned?' pinned':''}" onclick="togglePin('${e.id}')" title="${isPinned?'Unpin':'Pin'}">${isPinned?'\u2605':'\u2606'}</button></td>
-      <td onclick="event.stopPropagation()">
-        <input type="checkbox" ${isSelected?'checked':''} onclick="toggleSelection('${e.id}')" title="Select" style="cursor:pointer">
-      </td>
-      <td>${e.id.slice(0,6)}</td>
-      <td>
-        <span class="editable-name" ondblclick="event.stopPropagation();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}</span>
-      </td>
-      <td class="status-${e.status}">${e.status}</td>
-      <td class="tags-cell">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
-      <td class="notes-cell-expanded" title="${esc(e.notes||'')}">${notesPreview}</td>
-      <td style="font-size:12px">${metricsHtml || '<span style="color:var(--muted)">--</span>'}</td>
-      <td>${codeStatHtml}</td>
-      <td>${fmtDt(e.created_at)}</td>
-    </tr>`;
-  }).join('');
+    html += '<tr class="group-header" onclick="toggleGroup(\'' + esc(key).replace(/'/g, "\\'") + '\')"><td colspan="10">';
+    html += '<span class="group-toggle">' + (isCollapsed ? '\u25B6' : '\u25BC') + '</span> ';
+    html += '<span class="group-label">' + groupLabel + '</span>';
+    html += '<span class="group-meta"> \u2014 ' + items.length + ' run' + (items.length > 1 ? 's' : '') + '</span>';
+    html += '</td></tr>';
+    if (!isCollapsed) {
+      html += items.map(renderExpRow).join('');
+    }
+  }
+  tbody.innerHTML = html;
 }
 
 // ── Inline rename on double-click ────────────────────────────────────────────
@@ -1518,6 +1688,96 @@ function startInlineRename(id, el) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
     if (e.key === 'Escape') { input.value = currentName; input.blur(); }
+  });
+}
+
+// ── Inline tag editing on double-click ──────────────────────────────────────
+function startInlineTag(id, el) {
+  const exp = allExperiments.find(e => e.id === id);
+  if (!exp) return;
+  const tags = [...(exp.tags || [])];
+  const container = document.createElement('div');
+  container.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;align-items:center;min-width:120px';
+  container.onclick = (ev) => ev.stopPropagation();
+
+  function render() {
+    container.innerHTML = '';
+    tags.forEach((t, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'tag';
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:2px';
+      chip.textContent = '#' + t;
+      const x = document.createElement('span');
+      x.textContent = '\u00d7';
+      x.style.cssText = 'cursor:pointer;margin-left:2px;color:var(--red);font-weight:bold';
+      x.onclick = async (ev) => {
+        ev.stopPropagation();
+        await fetch('/api/experiment/' + id + '/delete-tag', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({tag: t})
+        });
+        tags.splice(i, 1);
+        render();
+        loadExperiments();
+      };
+      chip.appendChild(x);
+      container.appendChild(chip);
+    });
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = '+ tag';
+    input.className = 'name-edit-input';
+    input.style.cssText = 'width:70px;font-size:12px;padding:2px 4px';
+    input.addEventListener('keydown', async (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        const val = input.value.trim();
+        if (val) {
+          await fetch('/api/experiment/' + id + '/tag', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tag: val})
+          });
+          tags.push(val);
+          input.value = '';
+          render();
+          loadExperiments();
+        }
+      }
+      if (ev.key === 'Escape') { loadExperiments(); }
+    });
+    container.appendChild(input);
+    setTimeout(() => input.focus(), 0);
+  }
+  el.innerHTML = '';
+  el.appendChild(container);
+  render();
+}
+
+// ── Inline note editing on double-click ─────────────────────────────────────
+function startInlineNote(id, el) {
+  const exp = allExperiments.find(e => e.id === id);
+  if (!exp) return;
+  const textarea = document.createElement('textarea');
+  textarea.value = exp.notes || '';
+  textarea.className = 'name-edit-input';
+  textarea.style.cssText = 'width:100%;min-height:50px;font-size:12px;font-family:inherit;resize:vertical;padding:4px 6px';
+  textarea.onclick = (ev) => ev.stopPropagation();
+  el.innerHTML = '';
+  el.appendChild(textarea);
+  textarea.focus();
+
+  async function doSave() {
+    const newNotes = textarea.value.trim();
+    await fetch('/api/experiment/' + id + '/edit-notes', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({notes: newNotes})
+    });
+    loadExperiments();
+  }
+  textarea.addEventListener('blur', doSave);
+  textarea.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && ev.ctrlKey) { ev.preventDefault(); textarea.blur(); }
+    if (ev.key === 'Escape') { loadExperiments(); }
   });
 }
 
@@ -1571,6 +1831,7 @@ async function showDetail(id) {
   }
   currentDetailId = id;
   showDetailView();
+  document.getElementById('exp-sidebar').classList.remove('collapsed');
   renderExpList();
 
   const [exp, metricsData, diffData] = await Promise.all([
@@ -1652,7 +1913,12 @@ async function showDetail(id) {
       if (!Object.keys(vars).length) return '';
       let h = '<div class="var-section-title">' + title + ' (' + Object.keys(vars).length + ')</div><table>';
       for (const [k, v] of Object.entries(vars)) {
-        h += '<tr><td class="var-name">' + esc(k) + '</td><td>= ' + esc(String(v)) + '</td></tr>';
+        let displayVal = String(v);
+        // Strip "varname = " prefix if present (capture stores "x = expr  # type")
+        if (displayVal.startsWith(k + ' = ')) {
+          displayVal = displayVal.slice(k.length + 3);
+        }
+        h += '<tr><td class="var-name">' + esc(k) + '</td><td>= ' + esc(displayVal) + '</td></tr>';
       }
       return h + '</table>';
     };
@@ -2367,10 +2633,8 @@ async function doWithinCompare(expId) {
   document.getElementById('within-compare-result').innerHTML = html;
 }
 
-// Init
-if (localStorage.getItem('exptrack-sidebar') === 'collapsed') {
-  document.getElementById('exp-sidebar').classList.add('collapsed');
-}
+// Init — sidebar starts collapsed (opens when entering detail view)
+document.getElementById('exp-sidebar').classList.add('collapsed');
 loadStats();
 loadExperiments();
 </script>
