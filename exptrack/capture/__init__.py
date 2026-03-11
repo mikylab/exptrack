@@ -18,7 +18,7 @@ import json
 import hashlib
 from difflib import SequenceMatcher
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -367,7 +367,7 @@ def _store_cell_lineage(notebook: str, source: str, parent_hash: str = None):
                        (cell_hash, notebook, source, parent_hash, created_at)
                        VALUES (?,?,?,?,?)""",
                     (ch, notebook, source, parent_hash,
-                     datetime.utcnow().isoformat())
+                     datetime.now(timezone.utc).isoformat())
                 )
                 conn.commit()
     except Exception:
@@ -414,7 +414,7 @@ def _update_cell_baseline(notebook: str, cell_seq: int, source: str):
                    (notebook, cell_seq, source, source_hash, updated_at)
                    VALUES (?, ?, ?, ?, ?)""",
                 (notebook, cell_seq, source, source_hash,
-                 datetime.utcnow().isoformat()),
+                 datetime.now(timezone.utc).isoformat()),
             )
             conn.commit()
     except Exception:
@@ -901,7 +901,7 @@ def _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
     snap = {
         "exp_id":       exp.id,
         "exp_name":     exp.name,
-        "ts":           datetime.utcnow().isoformat(),
+        "ts":           datetime.now(timezone.utc).isoformat(),
         "exec_num":     exec_num,
         "cell_id":      cell_id,
         "source_hash":  hashlib.md5(source.encode()).hexdigest()[:12],

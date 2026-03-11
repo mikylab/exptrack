@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -246,7 +246,7 @@ class Experiment:
         self.hostname   = socket.gethostname()
         self.python_ver = platform.python_version()
         self.id         = uuid.uuid4().hex[:12]
-        self.created_at = datetime.utcnow().isoformat()
+        self.created_at = datetime.now(timezone.utc).isoformat()
         self.project    = conf.get("project", cfg.project_root().name)
 
         self._save()
@@ -307,7 +307,7 @@ class Experiment:
     # ── Metrics ───────────────────────────────────────────────────────────────
 
     def log_metric(self, key: str, value: float, step: int = None):
-        ts = datetime.utcnow().isoformat()
+        ts = datetime.now(timezone.utc).isoformat()
         with get_db() as conn:
             conn.execute(
                 "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
@@ -317,7 +317,7 @@ class Experiment:
         plugins.on_metric(self, key, value, step)
 
     def log_metrics(self, metrics: dict[str, float], step: int = None):
-        ts = datetime.utcnow().isoformat()
+        ts = datetime.now(timezone.utc).isoformat()
         with get_db() as conn:
             conn.executemany(
                 "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
@@ -363,7 +363,7 @@ class Experiment:
                 UPDATE experiments
                 SET status=?, updated_at=?, duration_s=?, name=?
                 WHERE id=?
-            """, (status, datetime.utcnow().isoformat(), self.duration_s, self.name, self.id))
+            """, (status, datetime.now(timezone.utc).isoformat(), self.duration_s, self.name, self.id))
             conn.commit()
         m, s = divmod(self.duration_s, 60)
         icon = "done" if status == "done" else "FAILED"
@@ -393,7 +393,7 @@ class Experiment:
         """
         self._timeline_seq += 1
         seq = self._timeline_seq
-        ts = datetime.utcnow().isoformat()
+        ts = datetime.now(timezone.utc).isoformat()
         with get_db() as conn:
             conn.execute(
                 """INSERT INTO timeline
@@ -411,7 +411,7 @@ class Experiment:
     def log_artifact(self, path: str | Path, label: str = "",
                      timeline_seq: int = None):
         """Register an output file path (the file itself stays local)."""
-        ts = datetime.utcnow().isoformat()
+        ts = datetime.now(timezone.utc).isoformat()
         with get_db() as conn:
             conn.execute(
                 """INSERT INTO artifacts
