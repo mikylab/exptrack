@@ -42,7 +42,8 @@ def _ensure_schema(conn):
             python_ver  TEXT,
             duration_s  REAL,
             notes       TEXT,
-            tags        TEXT
+            tags        TEXT,
+            output_dir  TEXT
         );
         CREATE TABLE IF NOT EXISTS params (
             exp_id  TEXT NOT NULL REFERENCES experiments(id),
@@ -116,6 +117,14 @@ def _ensure_schema(conn):
     except Exception:
         pass
 
+    # Add output_dir to experiments if missing
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(experiments)").fetchall()}
+        if "output_dir" not in cols:
+            conn.execute("ALTER TABLE experiments ADD COLUMN output_dir TEXT")
+    except Exception:
+        pass
+
     conn.commit()
 
 
@@ -154,18 +163,30 @@ def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str):
         except Exception:
             pass
 
-    # Delete the experiment's output directory (outputs/<name>/)
+    # Delete the experiment's output directory
     exp_row = conn.execute(
-        "SELECT name FROM experiments WHERE id=?", (exp_id,)
+        "SELECT name, output_dir FROM experiments WHERE id=?", (exp_id,)
     ).fetchone()
-    if exp_row and exp_row["name"]:
-        try:
-            conf = cfg.load()
-            out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp_row["name"]
-            if out_dir.is_dir():
-                shutil.rmtree(str(out_dir), ignore_errors=True)
-        except Exception:
-            pass
+    if exp_row:
+        dirs_to_try = []
+        # Prefer the tracked output_dir (survives renames)
+        if exp_row["output_dir"]:
+            dirs_to_try.append(Path(exp_row["output_dir"]))
+        # Also try the name-based path as fallback
+        if exp_row["name"]:
+            try:
+                conf = cfg.load()
+                dirs_to_try.append(
+                    cfg.project_root() / conf.get("outputs_dir", "outputs") / exp_row["name"]
+                )
+            except Exception:
+                pass
+        for out_dir in dirs_to_try:
+            try:
+                if out_dir.is_dir():
+                    shutil.rmtree(str(out_dir), ignore_errors=True)
+            except Exception:
+                pass
 
     # Delete notebook history snapshots for this experiment
     _delete_notebook_history(exp_id)
@@ -198,6 +219,50 @@ def _delete_notebook_history(exp_id: str):
                 pass
     except Exception:
         pass
+
+
+def rename_output_folder(conn: sqlite3.Connection, exp_id: str,
+                         old_name: str, new_name: str):
+    """Rename the output folder on disk and update artifact paths + output_dir.
+
+    Called when an experiment is renamed so the output directory stays in sync.
+    If the folder can't be renamed (e.g. doesn't exist), falls back to
+    tracking by experiment ID.
+    """
+    conf = cfg.load()
+    outputs_base = cfg.project_root() / conf.get("outputs_dir", "outputs")
+    old_dir = outputs_base / old_name
+    new_dir = outputs_base / new_name
+
+    renamed = False
+    if old_dir.is_dir() and not new_dir.exists():
+        try:
+            old_dir.rename(new_dir)
+            renamed = True
+        except OSError:
+            pass
+
+    # Update output_dir in experiments table
+    actual_dir = str(new_dir) if renamed else None
+    if renamed:
+        conn.execute("UPDATE experiments SET output_dir=? WHERE id=?",
+                     (str(new_dir), exp_id))
+    elif old_dir.is_dir():
+        # Couldn't rename — keep tracking the old path by ID
+        conn.execute("UPDATE experiments SET output_dir=? WHERE id=?",
+                     (str(old_dir), exp_id))
+
+    # Update artifact paths that lived inside the old output directory
+    if renamed:
+        old_prefix = str(old_dir)
+        rows = conn.execute(
+            "SELECT id, path FROM artifacts WHERE exp_id=?", (exp_id,)
+        ).fetchall()
+        for r in rows:
+            if r["path"] and r["path"].startswith(old_prefix):
+                new_path = str(new_dir) + r["path"][len(old_prefix):]
+                conn.execute("UPDATE artifacts SET path=? WHERE id=?",
+                             (new_path, r["id"]))
 
 
 def finish_experiment(exp_id: str) -> bool:

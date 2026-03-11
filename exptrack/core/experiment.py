@@ -21,6 +21,7 @@ from .. import config as cfg
 from ..plugins import registry as plugins
 from .db import get_db
 from .git import git_info
+from .db import rename_output_folder
 from .naming import make_run_name, output_path
 
 
@@ -109,14 +110,19 @@ class Experiment:
 
     def _save(self):
         conn = get_db()
+        # Compute initial output_dir path
+        conf = cfg.load()
+        self._output_dir = str(
+            cfg.project_root() / conf.get("outputs_dir", "outputs") / self.name
+        )
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("""
                 INSERT OR REPLACE INTO experiments
                 (id, project, name, status, created_at, updated_at,
                  script, command, git_branch, git_commit, git_diff,
-                 hostname, python_ver, notes, tags)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 hostname, python_ver, notes, tags, output_dir)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 self.id, self.project, self.name, self.status,
                 self.created_at, self.created_at,
@@ -124,6 +130,7 @@ class Experiment:
                 self.git_branch, self.git_commit, self.git_diff,
                 self.hostname, self.python_ver,
                 self.notes, json.dumps(self.tags),
+                self._output_dir,
             ))
             if self._params:
                 self._write_params(conn, self._params)
@@ -139,12 +146,17 @@ class Experiment:
         )
 
     def _rename(self, new_name: str):
-        """Update name in memory and DB (called after auto-capture fills params)."""
+        """Update name in memory and DB (called after auto-capture fills params).
+
+        Also renames the output folder on disk and updates artifact paths.
+        """
         if new_name == self.name:
             return
+        old_name = self.name
         self.name = new_name
         with get_db() as conn:
             conn.execute("UPDATE experiments SET name=? WHERE id=?", (new_name, self.id))
+            rename_output_folder(conn, self.id, old_name, new_name)
             conn.commit()
         print(f"[exptrack] -> {self.name}", file=sys.stderr)
 

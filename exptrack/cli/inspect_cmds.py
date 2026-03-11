@@ -90,6 +90,7 @@ def cmd_show(args):
                  ("Diff lines", str(len((exp["git_diff"] or "").splitlines())) + " lines"),
                  ("Host", exp["hostname"] or "--"),
                  ("Python", exp["python_ver"] or "--"),
+                 ("Output dir", exp["output_dir"] or "--"),
                  ("Notes", exp["notes"] or "--"),
                  ("Tags", ", ".join(json.loads(exp["tags"] or "[]")) or "--")]:
         print(f"    {col(k+':', Y):<22} {v}")

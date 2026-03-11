@@ -95,6 +95,13 @@ def cmd_run_start(args):
     out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Track the output directory in both the experiments table and as an artifact
+    from ..core import get_db as _get_db
+    conn = _get_db()
+    conn.execute("UPDATE experiments SET output_dir=? WHERE id=?",
+                 (str(out_dir), exp.id))
+    conn.commit()
+
     exp.log_artifact(str(out_dir), label="output_dir")
 
     print(f'export EXP_ID="{exp.id}"')
