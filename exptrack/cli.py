@@ -57,8 +57,8 @@ def cmd_init(args):
 def cmd_run(args):
     """Hand off to __main__.py logic inline."""
     script = args.script
-    # Rebuild sys.argv so the wrapped script sees its own args
-    sys.argv = [script] + args.script_args
+    # Rebuild sys.argv so __main__.main() sees [_, script, ...script_args]
+    sys.argv = ["exptrack", script] + args.script_args
     from . import __main__ as m
     m.main()
 
