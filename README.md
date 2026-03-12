@@ -1,90 +1,97 @@
-# exptrack v2
+# expTrack
 
-Local-first experiment tracker. Zero changes to your existing scripts.
+**Local-first experiment tracker for ML workflows. Zero dependencies. Zero code changes.**
+
+expTrack automatically captures parameters, metrics, git state, and code changes from your training scripts and notebooks — without touching your code. It monkey-patches argparse and IPython hooks so tracking is invisible. Everything is stored locally in SQLite.
+
+<!-- ![expTrack dashboard screenshot](docs/images/dashboard-overview.png) -->
+
+---
+
+## Table of Contents
+
+- [Why expTrack](#why-exptrack)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Scripts](#scripts)
+- [Notebooks](#notebooks)
+- [Shell / SLURM Pipelines](#shell--slurm-pipelines)
+- [Web Dashboard](#web-dashboard)
+- [Managing Experiments](#managing-experiments)
+- [CLI Reference](#cli-reference)
+- [Configuration](#configuration)
+- [Plugins](#plugins)
+- [Python API](#python-api)
+- [How It Works](#how-it-works)
+- [expTrack vs. TensorBoard](#exptrack-vs-tensorboard)
+- [Troubleshooting](#troubleshooting)
+- [Project Layout](#project-layout)
+
+---
+
+## Why expTrack
+
+- **Zero friction** — wrap your script with `exptrack run` or add one line to your notebook. No `SummaryWriter`, no `wandb.init()`, no decorators
+- **Zero dependencies** — stdlib only (sqlite3, json, hashlib, http.server). Nothing to install beyond Python 3.9+
+- **Local-first** — everything stays on your machine in a single SQLite file. No accounts, no cloud, no internet required
+- **Git-aware** — captures branch, commit hash, and full uncommitted diff at run time. Know exactly what code produced each result
+- **Code change tracking** — diffs scripts against the last commit; tracks notebook cell edits and variable changes across executions
+- **Auto artifact linking** — `plt.savefig()` is monkey-patched so saved plots are automatically registered as experiment artifacts
 
 ---
 
 ## Installation
 
-exptrack has **zero external dependencies** — it uses only the Python standard
-library (sqlite3, argparse, json, etc.). No requirements file is needed.
+expTrack has **zero external dependencies** — it uses only the Python standard library.
 
 ```bash
 pip install -e /path/to/exptrack
 ```
 
-**Important:** Install using the same Python that your tools use. If you use Jupyter,
-install into the Jupyter kernel's Python (see [Notebook setup](#notebooks) below).
-
-### Installing in a virtual environment (recommended)
+### Virtual environment (recommended)
 
 ```bash
-# Create and activate a venv in your project
 cd your_project/
 python -m venv .venv
 source .venv/bin/activate        # Linux/macOS
 # .venv\Scripts\activate         # Windows
 
-# Install exptrack into the venv
 pip install -e /path/to/exptrack
-
-# Now 'exptrack' CLI and 'import exptrack' both work in this venv
 exptrack init
 ```
 
-All scripts and notebooks should run inside this activated venv so they can
-find exptrack. If you use Jupyter with a venv, register the venv as a kernel:
+### Does expTrack affect other packages?
 
-```bash
-source .venv/bin/activate
-pip install ipykernel
-python -m ipykernel install --user --name=myproject
-```
+No. expTrack only activates when you explicitly use it:
 
-Then select the "myproject" kernel in Jupyter. This ensures `import exptrack`
-works in your notebooks.
-
-### Does exptrack affect other packages?
-
-No. exptrack only activates when you explicitly use it:
-
-- **`exptrack run`** / **`python -m exptrack`**: Patches argparse temporarily
-  for the wrapped script only. The patch lives in that process and is gone when
-  the script exits. Other Python processes are not affected.
-- **`%load_ext exptrack`** / **`exptrack.notebook.start()`**: Registers an
-  IPython hook in the current notebook session only.
-- **`import exptrack`**: Does nothing on its own — just makes the `Experiment`
-  class available. No patches, no hooks, no side effects.
+- **`exptrack run`** / **`python -m exptrack`** — patches argparse temporarily for the wrapped script only. Gone when the script exits.
+- **`%load_ext exptrack`** / **`exptrack.notebook.start()`** — registers an IPython hook in the current notebook session only.
+- **`import exptrack`** — does nothing on its own. No patches, no hooks, no side effects.
 
 ---
 
-## Setup (once per project)
+## Quick Start
 
 ```bash
+# 1. Initialize in your project
 cd your_project/
 exptrack init
+
+# 2. Run your training script — that's it
+exptrack run train.py --lr 0.01 --epochs 20 --data cifar10
+
+# 3. See your experiments
+exptrack ls
+
+# 4. Open the dashboard
+exptrack ui
 ```
 
-This creates `.exptrack/` at your project root (the nearest parent directory
-containing `.git/`) and patches `.gitignore`:
-
-```
-.exptrack/experiments.db        <-- local only, never pushed
-.exptrack/notebook_history/     <-- local only, never pushed
-.exptrack/config.json           <-- commit this (no secrets)
-outputs/                        <-- gitignored (large files live here)
-```
-
-If your working directory is inside a larger git repo and you want `.exptrack/`
-in the current directory instead of the git root, use:
-
-```bash
-exptrack init --here
-```
+<!-- ![exptrack ls output](docs/images/cli-ls.png) -->
 
 ---
 
-## Scripts -- zero changes needed
+## Scripts
 
 ```bash
 # Before:
@@ -96,21 +103,137 @@ exptrack run train.py --lr 0.01 --data train
 python -m exptrack train.py --lr 0.01 --data train
 ```
 
-exptrack automatically:
+**Your script needs zero modifications.** expTrack automatically:
+
 - Captures argparse params the moment `parse_args()` is called
 - Names the run: `train__lr0.01_datatrain__0312_a3f2`
 - Snapshots `git diff HEAD` (catches uncommitted changes)
-- **Tracks code changes** — diffs the script against the last git commit and logs
-  only the changed lines (no full copies stored)
-- **Auto-links saved plots** — if your script calls `plt.savefig("plot.png")`,
-  the file is automatically registered as an artifact on the experiment
+- Diffs the script against the last git commit and logs only changed lines
+- Auto-links saved plots — `plt.savefig("plot.png")` registers the file as an artifact
 - Marks done/failed when the script exits
 
-**Your script needs zero modifications.**
+<!-- ![Script tracking flow](docs/images/script-flow.png) -->
 
 ---
 
-## Shell / SLURM pipelines
+## Notebooks
+
+### Setup
+
+1. Install expTrack in your Jupyter kernel's Python:
+
+```python
+# Run this in a notebook cell
+import sys
+!{sys.executable} -m pip install -e /path/to/exptrack
+```
+
+2. Initialize your project (once):
+
+```bash
+exptrack init
+```
+
+### Option A: Magic extension (zero friction)
+
+```python
+%load_ext exptrack
+```
+
+That's it. A new experiment starts automatically on the first real cell execution. Every cell is snapshotted: source diff, changed variables, output.
+
+<!-- ![Notebook magic extension](docs/images/notebook-magic.png) -->
+
+**What gets captured automatically:**
+
+- Variables that look like hyperparams (`lr`, `batch_size`, `epochs`, etc.) become experiment params
+- Code changes are tracked — editing `np.linspace(0, 10, 100)` to `np.linspace(0, 20, 200)` logs the diff
+- Variable changes are logged with assignment context (e.g. `code = np.linspace(0, r, 100)  # ndarray(shape=(100,), dtype=float64)`)
+- `plt.savefig()` calls auto-register plots as artifacts
+
+**Magic commands:**
+
+| Command | Description |
+|---------|-------------|
+| `%exp_status` | Show current experiment + params captured so far |
+| `%exp_tag baseline` | Add a tag |
+| `%exp_note "text"` | Add a note |
+| `%exp_done` | Finish the experiment |
+| `%exp_start` | Restart with a fresh experiment |
+
+### Option B: Explicit API
+
+```python
+import exptrack.notebook as exp
+
+run = exp.start(lr=0.001, bs=32)        # kwargs become experiment params
+exp.metric("val/loss", 0.23, step=5)    # log a metric
+path = exp.out("preds.csv")             # -> outputs/run_name/preds.csv
+exp.done()                              # finish the experiment
+```
+
+### Using the explicit API with a model
+
+Define hyperparameters as variables and pass them to both `exp.start()` and your model. The variables are the single source of truth — expTrack just records them.
+
+```python
+import exptrack.notebook as exp
+import torch
+import torch.nn as nn
+
+# 1. Define hyperparams (single source of truth)
+lr = 0.001
+bs = 32
+epochs = 20
+dropout = 0.3
+
+# 2. Pass to exptrack
+run = exp.start(lr=lr, bs=bs, epochs=epochs, dropout=dropout)
+
+# 3. Use the same variables in your model
+model = nn.Sequential(
+    nn.Linear(784, 256),
+    nn.ReLU(),
+    nn.Dropout(dropout),
+    nn.Linear(256, 10),
+)
+optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+train_loader = DataLoader(dataset, batch_size=bs)
+
+# 4. Training loop
+for epoch in range(epochs):
+    for batch in train_loader:
+        loss = train_step(model, batch, optimizer)
+    val_loss = evaluate(model, val_loader)
+    exp.metric("train/loss", loss, step=epoch)
+    exp.metric("val/loss", val_loss, step=epoch)
+
+# 5. Save model
+path = exp.out("model.pt")
+torch.save(model.state_dict(), path)
+exp.done()
+```
+
+### Notebook API reference
+
+| Function | Description |
+|----------|-------------|
+| `exp.start(name="", **params)` | Start experiment, kwargs become params. Returns `Experiment` |
+| `exp.metric(key, value, step=None)` | Log a single metric |
+| `exp.metrics(step=None, **kwargs)` | Log multiple metrics at once |
+| `exp.param(key, value)` | Log a single param |
+| `exp.tag(*tags)` | Add one or more tags |
+| `exp.note(text)` | Append a note |
+| `exp.artifact(path, label="")` | Register an existing file as artifact |
+| `exp.out(filename)` | Get namespaced output path + register artifact |
+| `exp.done()` | Finish the current experiment |
+| `exp.current()` | Get the active `Experiment` or `None` |
+
+---
+
+## Shell / SLURM Pipelines
+
+For multi-step pipelines where Python isn't the only language:
 
 ```bash
 # Start experiment, get env vars back
@@ -135,362 +258,204 @@ SLURM environment variables (`SLURM_JOB_ID`, etc.) are captured automatically.
 
 ---
 
-## Notebooks
-
-### Step 1: Install exptrack in your Jupyter kernel
-
-exptrack must be installed in the **same Python environment** as your Jupyter
-kernel. If you get `ModuleNotFoundError: No module named 'exptrack'`, this is
-almost always the cause.
-
-**From inside a notebook cell:**
-```python
-import sys
-!{sys.executable} -m pip install -e /path/to/exptrack
-```
-
-This uses the notebook kernel's own Python, which may be different from the
-`pip` or `python` on your shell PATH.
-
-**Or from a terminal**, find the kernel's Python first:
-```bash
-# List Jupyter kernels and their Python paths
-jupyter kernelspec list
-# Then install with that specific Python
-/path/to/kernel/python -m pip install -e /path/to/exptrack
-```
-
-### Step 2: Initialize exptrack in your project
-
-Run this once (from a terminal or notebook cell):
-```bash
-cd /path/to/your/project
-exptrack init
-```
-
-Or from a notebook cell:
-```python
-!cd /path/to/your/project && exptrack init
-```
-
-### Step 3: Use exptrack in your notebook
-
-**Option A: Magic extension (zero friction)**
-
-```python
-%load_ext exptrack
-```
-
-That's it. A new experiment starts automatically. Every cell execution is
-snapshotted: source diff, changed variables, output. Variables that look like
-hyperparams (`lr`, `batch_size`, `epochs`, etc.) are auto-captured as params.
-
-**Code changes are tracked too** — if you change `np.linspace(0, 10, 100)` to
-`np.linspace(0, 20, 200)`, exptrack logs the variable change and cell diff.
-Only diffs are stored, not full copies. The reference point is always the last
-git commit.
-
-**`plt.savefig()` is auto-linked** — any plot saved via `plt.savefig()` or
-`fig.savefig()` is automatically registered as an artifact on the experiment.
-
-Magic commands:
-```
-%exp_status          show current experiment + params captured so far
-%exp_tag baseline    add a tag
-%exp_note "text"     add a note
-%exp_done            finish experiment
-%exp_start           restart with a fresh experiment
-```
-
-**Option B: Explicit API**
-
-```python
-import exptrack.notebook as exp
-
-run = exp.start(lr=0.001, bs=32)   # kwargs become experiment params
-exp.metric("val/loss", 0.23, step=5)
-path = exp.out("preds.csv")        # -> outputs/run_name/preds.csv
-exp.done()
-```
-
-#### Using the explicit API with your own model
-
-exptrack doesn't auto-detect your model's hyperparameters. Instead, define your
-hyperparameters as variables and pass them to **both** `exp.start()` and your
-model/optimizer. The variables are the single source of truth — exptrack just
-records them.
-
-```python
-import exptrack.notebook as exp
-import torch
-import torch.nn as nn
-
-# 1. Define hyperparams as variables (single source of truth)
-lr = 0.001
-bs = 32
-epochs = 20
-dropout = 0.3
-
-# 2. Pass them to exptrack — these are recorded as experiment params
-run = exp.start(lr=lr, bs=bs, epochs=epochs, dropout=dropout)
-
-# 3. Use the SAME variables in your model — they're always in sync
-model = nn.Sequential(
-    nn.Linear(784, 256),
-    nn.ReLU(),
-    nn.Dropout(dropout),      # same variable
-    nn.Linear(256, 10),
-)
-optimizer = torch.optim.Adam(model.parameters(), lr=lr)   # same variable
-train_loader = DataLoader(dataset, batch_size=bs)          # same variable
-
-# 4. Training loop — log metrics as you go
-for epoch in range(epochs):
-    for batch in train_loader:
-        loss = train_step(model, batch, optimizer)
-
-    val_loss = evaluate(model, val_loader)
-    exp.metric("train/loss", loss, step=epoch)
-    exp.metric("val/loss", val_loss, step=epoch)
-
-# 5. Save model — auto-registered as artifact
-path = exp.out("model.pt")
-torch.save(model.state_dict(), path)
-
-exp.done()
-```
-
-The key idea: **you are not passing the same values twice**. You define each
-hyperparameter once as a variable, then reference that variable everywhere.
-Change `lr = 0.001` to `lr = 0.01` at the top, and both exptrack and your
-optimizer see the new value.
-
-You can also log extra params mid-run if needed:
-
-```python
-exp.param("scheduler", "cosine")        # single param
-exp.param("model_params", count_params(model))
-exp.tag("baseline")
-exp.note("first run with dropout")
-```
-
-### Step 4: View your experiments
-
-```bash
-exptrack ls          # list all experiments
-exptrack show <id>   # full details for a run
-```
-
----
-
-## Web dashboard
+## Web Dashboard
 
 ```bash
 exptrack ui                    # opens http://localhost:7331
 exptrack ui --port 8080        # custom port
 ```
 
-The dashboard shows:
-- **Stats cards** — total runs, success rate, average duration (hover for descriptions)
-- **Experiment list** — filterable by status, searchable by name/tag/param, metric previews inline
-- **Inline editing** — double-click any name, tag, or note field in the table view to edit directly. Tags and notes in the detail view are also inline-editable (double-click to edit)
-- **Tag autocomplete** — when adding tags, a dropdown shows previously used tags with usage counts. Select existing tags or create new ones
-- **Experiment detail** — summary card, params, code changes, variables (grouped by type), metrics with Chart.js plots, artifacts with type badges, git diff viewer
-- **Timeline view** — chronological event log with "view source" to see full cell code (current + previous version). Filters by event type (Code, Variables, Artifacts, Observational)
-- **Compare view** — side-by-side param + variable + metric comparison with "show only differences" toggle
-- **Compare Within** — select two timeline points within a single experiment to diff variable state
-- **Export** — JSON, Markdown, or Plain Text export. "Copy as Text" includes full details (params, metrics, tags, notes, git info)
-- **Timezone selector** — set your preferred timezone in the header; timestamps across the dashboard update accordingly. Saved to project config
-- **Owl mascot** — click the owl in the header for tips and reactions. The owl reacts contextually to your actions (deleting, exporting, comparing, etc.)
-- **Docs panel** — click "? Docs" button for a built-in reference explaining all concepts (params, metrics, variables, artifacts, code changes, timeline, tags, compare)
-
 No external dependencies — uses stdlib `http.server` and Chart.js from CDN.
 
-### Artifact tracking
+<!-- ![Dashboard overview](docs/images/dashboard-overview.png) -->
 
-**plt.savefig() auto-links plots** — matplotlib's `savefig()` is monkey-patched so every saved plot is automatically registered as an artifact with a timeline event. Works across multiple experiments in the same session.
+### Features
 
-Artifacts are shown with type badges (image, model, data, file) in both the detail view and timeline.
+**Experiment list** — filterable by status, searchable by name/tag/param. Metric previews shown inline.
+
+<!-- ![Experiment list](docs/images/dashboard-list.png) -->
+
+**Experiment detail** — summary card, params table, code changes, variables grouped by type, metrics with interactive Chart.js plots, artifacts with type badges, git diff viewer.
+
+<!-- ![Experiment detail](docs/images/dashboard-detail.png) -->
+
+**Timeline view** — chronological event log showing cell executions, variable changes, and artifact creation. Click "view source" to see full cell code with diffs. Filter by event type (Code, Variables, Artifacts, Observational).
+
+<!-- ![Timeline view](docs/images/dashboard-timeline.png) -->
+
+**Compare view** — side-by-side param, variable, and metric comparison between two experiments. Toggle "show only differences" to focus on what changed.
+
+<!-- ![Compare view](docs/images/dashboard-compare.png) -->
+
+**Inline editing** — double-click any name, tag, or note field to edit directly. No modal prompts. Works in both the table view and detail view.
+
+**Tag autocomplete** — when adding tags, a dropdown shows previously used tags with usage counts.
+
+**Export** — JSON, Markdown, or Plain Text. "Copy as Text" includes full details (params, metrics, tags, notes, git info).
+
+**Timezone selector** — configure your preferred timezone in the header. All timestamps update accordingly. Saved to project config.
 
 ---
 
-## Managing experiments
+## Managing Experiments
 
-### Delete a run
+### List and inspect
 
 ```bash
-exptrack rm <id>               # interactive confirm, deletes run + all associated data
-exptrack clean                 # bulk-delete all failed runs
+exptrack ls                   # last 20 experiments
+exptrack ls -n 50             # last 50
+exptrack show <id>            # full details
+exptrack show <id> --timeline # with execution timeline
+exptrack diff <id>            # colorized git diff
+exptrack compare <id1> <id2>  # side-by-side comparison
+exptrack history <notebook>   # notebook cell snapshot history
 ```
 
-### Add notes
+### Tag and annotate
 
 ```bash
+exptrack tag <id> baseline    # add tag
+exptrack untag <id> baseline  # remove tag
 exptrack note <id> "tried higher dropout, worse results"
 ```
 
-Notes are appended — you can call `note` multiple times. In notebooks: `%exp_note "text"`.
+Notes are appended — you can call `note` multiple times.
 
-### Add tags
+### Delete and clean up
 
 ```bash
-exptrack tag <id> baseline
+exptrack rm <id>              # delete single run (with confirmation)
+exptrack clean                # bulk-delete all failed runs
+exptrack stale --hours 24     # mark old running experiments as timed-out
 ```
 
-In notebooks: `%exp_tag baseline`.
-
-### Link a file you forgot to track
+### Link artifacts after the fact
 
 ```bash
 exptrack log-artifact <id> path/to/model.pt --label "best model"
-exptrack log-artifact <id> path/to/sine_plot.png --label "sine plot"
 ```
 
-In notebooks: `exp.out("filename")` or explicit API `exp.log_artifact(path)`.
-
----
-
-## CLI reference
+### Export
 
 ```bash
-# Project setup
-exptrack init [name]              init project, patch .gitignore
-exptrack init --here              init in current dir (not git root)
+exptrack export <id>                    # JSON to stdout
+exptrack export <id> --format markdown  # Markdown
+```
 
-# Script tracking
-exptrack run script.py [args]     run with tracking
+### Verify artifact integrity
 
-# Shell/SLURM pipeline
-exptrack run-start [--key val]    start experiment, print env vars
-exptrack run-finish <id>          mark done (--metrics file.json)
-exptrack run-fail <id> [reason]   mark failed
-exptrack log-metric <id> <k> <v>  log metric (--step N, --file f.json)
-exptrack log-artifact <id> <path> register output file (--label name)
+```bash
+exptrack verify <id>          # check file hashes (ok/missing/modified)
+exptrack verify --backfill    # backfill hashes for legacy artifacts
+```
 
-# Inspection
-exptrack ls [-n 50]               list experiments
-exptrack show <id>                params, metrics, outputs, diff size
-exptrack diff <id>                colorized git diff captured at run time
-exptrack compare <id1> <id2>      side-by-side params + metrics
-exptrack history <nb> [id]        notebook cell snapshots
+### Storage info
 
-# Management
-exptrack tag <id> <tag>           add tag
-exptrack note <id> "text"         add note
-exptrack rm <id>                  delete run
-exptrack clean                    remove all failed runs
-exptrack stale --hours 24         mark old running experiments as failed
-exptrack upgrade [--reinstall]    run schema migrations
-
-# Dashboard
-exptrack ui [--port 7331]         web dashboard
+```bash
+exptrack storage              # DB size, output size, row counts, optimization tips
 ```
 
 ---
 
-## Troubleshooting
+## CLI Reference
 
-### `ModuleNotFoundError: No module named 'exptrack'`
-
-This means exptrack is not installed in the Python environment you're using.
-
-**In Jupyter notebooks**, the kernel's Python is often different from your
-shell's Python. Fix it by installing from inside a notebook cell:
-
-```python
-import sys
-!{sys.executable} -m pip install -e /path/to/exptrack
 ```
+Project setup
+  exptrack init [name]              Initialize project, patch .gitignore
+  exptrack init --here              Initialize in current dir (not git root)
 
-Then **restart the kernel** and try again.
+Script tracking
+  exptrack run script.py [args]     Run script with automatic tracking
 
-**In scripts**, make sure you installed with the same Python you're running:
-```bash
-python -m pip install -e /path/to/exptrack   # use the same 'python' you run scripts with
+Shell/SLURM pipeline
+  exptrack run-start [--key val]    Start experiment, print env vars for eval $()
+  exptrack run-finish <id>          Mark done (--metrics file.json)
+  exptrack run-fail <id> [reason]   Mark failed
+  exptrack log-metric <id> <k> <v>  Log metric (--step N, --file f.json)
+  exptrack log-artifact <id> <path> Register output file (--label name)
+
+Inspection
+  exptrack ls [-n 50]               List experiments
+  exptrack show <id> [--timeline]   Full details (params, metrics, artifacts, diff)
+  exptrack timeline <id> [-c]       Execution timeline (--type event_type)
+  exptrack diff <id>                Colorized git diff captured at run time
+  exptrack compare <id1> <id2>      Side-by-side params + metrics
+  exptrack history <nb> [id]        Notebook cell snapshot history
+  exptrack export <id> [--format]   Export as JSON or Markdown
+  exptrack verify [id] [--backfill] Check artifact file integrity
+
+Management
+  exptrack tag <id> <tag>           Add tag
+  exptrack untag <id> <tag>         Remove tag
+  exptrack note <id> "text"         Append note
+  exptrack edit-note <id> "text"    Replace notes
+  exptrack rm <id>                  Delete run
+  exptrack clean [--baselines]      Remove all failed runs (or clear baselines)
+  exptrack finish <id>              Manually mark running experiment as done
+  exptrack stale --hours 24         Mark old running experiments as timed-out
+
+Admin
+  exptrack upgrade [--reinstall]    Run schema migrations
+  exptrack storage                  Show storage breakdown and optimization tips
+  exptrack ui [--port 7331]         Launch web dashboard
 ```
-
-### `exptrack init` didn't create `.exptrack/` where I expected
-
-`exptrack init` creates `.exptrack/` at the project root, which it finds by
-walking up from your current directory looking for `.git/`. If your directory
-is inside a larger git repo, `.exptrack/` ends up at the git root.
-
-To force creation in your current directory:
-```bash
-exptrack init --here
-```
-
-### Experiments not showing up / wrong database
-
-exptrack stores data in `.exptrack/experiments.db` relative to the project root.
-If you run scripts from a different directory than where you initialized, exptrack
-may create a new `.exptrack/` directory elsewhere.
-
-Always run scripts from within your project directory (the one with `.exptrack/`).
 
 ---
 
-## GitHub sync (optional)
+## Configuration
 
-Appends one JSON line per run to a file in your repo -- params, metrics,
-run name, commit hash, diff line count. Never large files.
+expTrack stores config in `.exptrack/config.json`. This file is safe to commit (no secrets).
 
-In `.exptrack/config.json`:
-```json
+```jsonc
 {
+  // Database and storage paths
+  "db":                    ".exptrack/experiments.db",
+  "outputs_dir":           "outputs",
+  "notebook_history_dir":  ".exptrack/notebook_history",
+
+  // Limits
+  "max_git_diff_kb":       256,        // skip diffs larger than this
+  "hash_max_mb":           500,        // partial-hash files larger than this
+
+  // Artifact handling
+  "artifact_strategy":     "reference", // "reference" or "copy"
+  "protect_on_rerun":      true,        // archive old artifacts on path conflict
+
+  // Timezone for dashboard display
+  "timezone":              "",          // "" = UTC, or "America/New_York", etc.
+
+  // Auto-capture toggles
+  "auto_capture": {
+    "argparse":  true,                  // patch ArgumentParser.parse_args()
+    "argv":      true,                  // fallback: parse raw sys.argv
+    "notebook":  true                   // capture notebook cell changes
+  },
+
+  // Run naming
+  "naming": {
+    "max_param_keys": 4,                // max params included in run name
+    "key_max_len":    8                  // param key length limit in name
+  },
+
+  // Plugins
   "plugins": {
-    "enabled": ["github_sync"],
-    "github_sync": {
-      "repo":      "yourname/NewCode1",
-      "file":      "experiment_log/runs.jsonl",
-      "branch":    "main",
-      "token_env": "GITHUB_TOKEN"
-    }
+    "enabled": []                       // list of plugin module names
   }
 }
 ```
-
-```bash
-export GITHUB_TOKEN=ghp_yourtoken
-```
-
-Now every run auto-syncs metadata to `experiment_log/runs.jsonl` in your repo --
-searchable history with no large files ever touching GitHub.
 
 ---
 
 ## Plugins
 
-Plugins run your code automatically when experiments start, finish, fail, or log
-metrics. You never call them directly — exptrack triggers them for you.
+Plugins run your code automatically when experiments start, finish, fail, or log metrics. You never call them directly.
 
-### Why use a plugin?
+### Use cases
 
-Without a plugin, you'd have to manually add notification/upload/sync code to
-every training script. Plugins let you write that logic once and it runs
-automatically for every experiment.
-
-**Common use cases:**
-- **Slack/email alerts** — get notified when a long training run finishes or crashes
-- **Cloud upload** — auto-upload model checkpoints to S3/GCS when a run completes
-- **Shared experiment log** — sync run metadata to a shared database or GitHub repo
-  (the included `github_sync` plugin does this)
+- **Slack/email alerts** — get notified when a run finishes or crashes
+- **Cloud upload** — auto-upload checkpoints to S3/GCS on completion
+- **Shared experiment log** — sync metadata to a shared database or GitHub repo
 - **Auto-cleanup** — delete old checkpoints when a new best model is found
-
-### How plugins work
-
-Every plugin has four lifecycle hooks:
-
-```python
-class Plugin:
-    def on_start(self, exp):              # experiment created
-    def on_finish(self, exp):             # experiment completed successfully
-    def on_fail(self, exp, error):        # experiment failed
-    def on_metric(self, exp, key, value, step):  # metric logged
-```
-
-You only override the hooks you need. For example, a Slack notifier only needs
-`on_finish` and `on_fail`.
 
 ### Writing a plugin
 
@@ -524,9 +489,20 @@ class SlackNotify(Plugin):
 plugin_class = SlackNotify
 ```
 
+### Plugin lifecycle hooks
+
+| Hook | When it runs |
+|------|-------------|
+| `on_start(self, exp)` | Experiment created |
+| `on_finish(self, exp)` | Experiment completed successfully |
+| `on_fail(self, exp, error)` | Experiment failed |
+| `on_metric(self, exp, key, value, step)` | Metric logged |
+
+Override only the hooks you need.
+
 ### Enabling a plugin
 
-Add it to `.exptrack/config.json`:
+Add to `.exptrack/config.json`:
 
 ```json
 {
@@ -539,54 +515,213 @@ Add it to `.exptrack/config.json`:
 }
 ```
 
-That's it. Every experiment now posts to Slack when it finishes or fails.
+### Built-in: GitHub Sync
+
+Appends one JSON line per run to a file in your GitHub repo — params, metrics, run name, commit hash.
+
+```json
+{
+  "plugins": {
+    "enabled": ["github_sync"],
+    "github_sync": {
+      "repo":      "yourname/yourrepo",
+      "file":      "experiment_log/runs.jsonl",
+      "branch":    "main",
+      "token_env": "GITHUB_TOKEN"
+    }
+  }
+}
+```
 
 ---
 
-## exptrack vs. TensorBoard
+## Python API
 
-| | exptrack | TensorBoard |
+For programmatic use beyond the notebook API:
+
+```python
+from exptrack.core import Experiment
+
+# Context manager (auto finish/fail)
+with Experiment(name="my_run", params={"lr": 0.01}) as exp:
+    exp.log_metric("loss", 0.5, step=1)
+    exp.log_metric("loss", 0.3, step=2)
+    path = exp.save_output("model.pt")
+    torch.save(model.state_dict(), path)
+
+# Manual lifecycle
+exp = Experiment(params={"lr": 0.01})
+exp.log_params({"optimizer": "adam", "scheduler": "cosine"})
+exp.log_metrics({"val_loss": 0.23, "val_acc": 0.91}, step=10)
+exp.add_tag("baseline")
+exp.add_note("first run with new architecture")
+exp.log_artifact("outputs/plot.png", label="training curve")
+exp.finish()
+```
+
+### Experiment properties
+
+| Property | Description |
+|----------|-------------|
+| `exp.id` | Unique 12-char hex identifier |
+| `exp.name` | Run name (auto-generated or custom) |
+| `exp.status` | `"running"`, `"done"`, or `"failed"` |
+| `exp.created_at` | ISO timestamp |
+| `exp.duration_s` | Duration in seconds (set on finish) |
+| `exp.script` | Script path |
+| `exp.git_branch` | Git branch at run time |
+| `exp.git_commit` | Git commit hash at run time |
+| `exp.git_diff` | Full uncommitted diff |
+| `exp.tags` | List of tags |
+| `exp.notes` | Freeform notes string |
+
+### Experiment methods
+
+| Method | Description |
+|--------|-------------|
+| `log_param(key, value)` | Log a single parameter |
+| `log_params(dict)` | Log multiple parameters |
+| `log_metric(key, value, step=None)` | Log a metric value |
+| `log_metrics(dict, step=None)` | Log multiple metrics |
+| `last_metrics()` | Get latest value for each metric key |
+| `add_tag(tag)` | Add a tag |
+| `remove_tag(tag)` | Remove a tag |
+| `add_note(text)` | Append text to notes |
+| `set_note(text)` | Replace notes entirely |
+| `output_path(filename)` | Get namespaced path (no artifact registration) |
+| `save_output(filename)` | Get namespaced path + register as artifact |
+| `log_artifact(path, label="")` | Register an existing file |
+| `finish()` | Mark as done |
+| `fail(error="")` | Mark as failed |
+
+---
+
+## How It Works
+
+### Capture mechanisms
+
+**Argparse patching** — expTrack monkey-patches `ArgumentParser.parse_args()` and `parse_known_args()` before your script runs. When your script calls `parser.parse_args()`, expTrack intercepts the result and logs all arguments as params. The patch is removed when the script exits. If your script doesn't use argparse, expTrack falls back to parsing raw `sys.argv`.
+
+**Notebook hooks** — `%load_ext exptrack` registers an IPython `post_run_cell` hook. After every cell execution, the hook:
+1. Computes a content-addressed hash of the cell source
+2. Diffs the cell against its parent version (30% similarity threshold)
+3. Scans the namespace for new/changed variables
+4. Enriches variable displays with assignment expressions from the cell source
+5. Logs timeline events for code changes, variable changes, and observational cells
+
+**Matplotlib patching** — `plt.savefig()` and `Figure.savefig()` are patched to copy saved figures into the experiment's output directory and register them as artifacts. Figures saved before the experiment starts are buffered and flushed when it begins.
+
+### Storage design
+
+- **Diff-only** — script changes are diffed against `git HEAD`; notebook snapshots store only cell diffs and variable change hashes. No full-source copies.
+- **Per-project** — database and notebook history live in `.exptrack/` (gitignored). Config is committable.
+- **SQLite WAL mode** — safe for concurrent reads. Single file, queryable, portable.
+- **Content-addressed cell lineage** — notebook cells are identified by SHA-256 of their source content, enabling accurate tracking across cell reordering and splits.
+
+### Database schema
+
+| Table | Purpose |
+|-------|---------|
+| `experiments` | Run metadata, git state, status, timestamps |
+| `params` | Key-value parameters (JSON-stringified values) |
+| `metrics` | Float values with optional step and timestamp |
+| `artifacts` | Output file paths with content hashes and size |
+| `timeline` | Execution events (cell_exec, var_set, artifact, metric, observational) |
+| `cell_lineage` | Content-addressed notebook cell history |
+| `code_baselines` | Position-based cell baselines (legacy) |
+
+---
+
+## expTrack vs. TensorBoard
+
+| | expTrack | TensorBoard |
 |---|---|---|
 | **Dependencies** | Zero (stdlib only) | TensorFlow/tensorboard + protobuf |
-| **Code changes** | None required. Monkey-patches argparse and IPython | Must add `SummaryWriter` calls everywhere |
-| **Auto-captures** | Params, git branch, full uncommitted diff, cell diffs, variable changes | Nothing automatic — you log everything manually |
-| **Storage** | SQLite (one file, queryable, portable) | Protobuf event files (opaque, need TB to read) |
-| **Experiment management** | Built-in: `ls`, `show`, `diff`, `compare`, `tag`, `note`, `rm`, `clean` | None — TB is a viewer, not a manager |
-| **Reproducibility** | Captures full `git diff` at run time — reconstruct exactly what code ran | No git integration |
+| **Code changes** | None required | Must add `SummaryWriter` calls everywhere |
+| **Auto-captures** | Params, git state, full diff, cell diffs, variable changes | Nothing automatic |
+| **Storage** | SQLite (one file, queryable, portable) | Protobuf event files (need TB to read) |
+| **Experiment management** | Built-in: `ls`, `show`, `diff`, `compare`, `tag`, `note`, `rm`, `clean` | None — TB is a viewer only |
+| **Reproducibility** | Full `git diff` at run time | No git integration |
 | **Shell/SLURM** | First-class: `eval $(exptrack run-start ...)` | Not designed for non-Python workflows |
-| **Rich media** | No (metrics, params, artifacts only) | Yes (images, audio, histograms, computational graphs) |
-| **Size** | ~1000 lines of Python | Large dependency tree |
+| **Rich media** | No (metrics, params, artifacts only) | Yes (images, audio, histograms, graphs) |
 
-**Use TensorBoard when** you need image/audio/histogram visualization or
-computational graph inspection.
-
-**Use exptrack when** you want zero-friction tracking without modifying your
-training code, git-based reproducibility, or lightweight experiment management.
-
-**They work together** — use exptrack for "what params and code produced this
-run" and TensorBoard for rich media visualization. They don't conflict.
+**They work together** — use expTrack for "what params and code produced this run" and TensorBoard for rich media visualization. They don't conflict.
 
 ---
 
-## Project layout
+## Troubleshooting
+
+### `ModuleNotFoundError: No module named 'exptrack'`
+
+expTrack is not installed in the Python environment you're using.
+
+**In Jupyter notebooks**, the kernel's Python is often different from your shell's Python:
+
+```python
+import sys
+!{sys.executable} -m pip install -e /path/to/exptrack
+```
+
+Then **restart the kernel**.
+
+**In scripts**, use the same Python you run scripts with:
+
+```bash
+python -m pip install -e /path/to/exptrack
+```
+
+### `exptrack init` created `.exptrack/` in the wrong place
+
+`exptrack init` walks up from your current directory looking for `.git/`. If you're inside a larger git repo, `.exptrack/` ends up at the git root. Force creation in the current directory:
+
+```bash
+exptrack init --here
+```
+
+### Experiments not showing up
+
+expTrack stores data in `.exptrack/experiments.db` relative to the project root. If you run scripts from a different directory than where you initialized, expTrack may create a new `.exptrack/` elsewhere. Always run from within your project directory.
+
+---
+
+## Project Layout
 
 ```
 exptrack/
-  pyproject.toml          pip install -e .
-  README.md               this file
-  CLAUDE.md               AI assistant context
+  pyproject.toml              pip install -e .
+  README.md                   this file
+  CLAUDE.md                   AI assistant context
   exptrack/
-    __init__.py            public API
-    __main__.py            python -m exptrack entrypoint
-    core.py                Experiment class + DB schema
-    config.py              project-aware config (finds .git root automatically)
-    cli.py                 terminal interface (18+ commands)
-    notebook.py            %load_ext + explicit API
+    __init__.py               public API, load_ipython_extension entry point
+    __main__.py               python -m exptrack (wraps scripts via runpy)
+    config.py                 project-aware config, root detection
+    notebook.py               %load_ext magic + explicit API
+    core/
+      experiment.py           Experiment class, lifecycle, logging
+      db.py                   SQLite schema, migrations, WAL mode
+      naming.py               Run name generation
+      hashing.py              File integrity hashing
+      git.py                  Git state capture
+      artifact_protection.py  Artifact archiving on rerun conflicts
     capture/
-      __init__.py          argparse patch + notebook cell hooks
+      __init__.py             Module re-exports
+      argparse_patch.py       Argparse monkey-patch
+      matplotlib_patch.py     plt.savefig() auto-linking
+      notebook_hooks.py       IPython post_run_cell hook
+      cell_lineage.py         Content-addressed cell tracking
+      variables.py            Variable fingerprinting and classification
+      script_tracking.py      Git diff capture for scripts
+    cli/
+      main.py                 Argument parsing, subcommand dispatch
+      pipeline_cmds.py        run-start, run-finish, run-fail, log-metric, log-artifact
+      inspect_cmds.py         ls, show, diff, compare, history, timeline, export, verify
+      mutate_cmds.py          tag, untag, note, edit-note, rm, finish
+      admin_cmds.py           clean, stale, upgrade, storage
     plugins/
-      __init__.py          Plugin base class + event registry
-      github_sync.py       GitHub metadata sync
+      __init__.py             Plugin base class + event registry
+      github_sync.py          GitHub metadata sync (JSONL)
     dashboard/
-      app.py               web UI (stdlib http.server + Chart.js)
+      app.py                  Web server entry point
+      handler.py              HTTP request handler + API endpoints
+      static.py               Embedded HTML/CSS/JS assets
 ```
