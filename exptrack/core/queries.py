@@ -60,7 +60,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "command": exp["command"],
         "git_branch": exp["git_branch"],
         "git_commit": exp["git_commit"],
-        "git_diff": exp.get("git_diff", ""),
+        "git_diff": exp["git_diff"] or "",
         "diff_lines": len((exp["git_diff"] or "").splitlines()),
         "hostname": exp["hostname"],
         "python_ver": exp["python_ver"],
