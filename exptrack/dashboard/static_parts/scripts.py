@@ -56,20 +56,79 @@ function renderFilterBar() {
   if (allTags.size === 0 && allGroups.size === 0) { bar.innerHTML = ''; return; }
   const hasFilter = tagFilter || groupFilter;
   let html = '<span style="font-size:11px;color:var(--muted);margin-right:4px">Filter:</span>';
-  html += '<span class="tag-chip' + (!hasFilter?' active':'') + '" onclick="tagFilter=\'\';groupFilter=\'\';rerender()">All</span>';
-  for (const t of [...allTags].sort()) {
-    html += '<span class="tag-chip' + (tagFilter===t?' active':'') + '" style="position:relative;padding-right:18px">';
-    html += '<span onclick="groupFilter=\'\';tagFilter=\'' + esc(t) + '\';rerender()">#' + esc(t) + '</span>';
-    html += '<span class="tag-delete-x" onclick="event.stopPropagation();deleteTagGlobal(\'' + esc(t) + '\')" title="Delete tag globally">&times;</span>';
+  // Active filter chip (always visible)
+  if (tagFilter) {
+    html += '<span class="tag-chip active" style="position:relative;padding-right:18px">';
+    html += '<span onclick="tagFilter=\'\';rerender()">#' + esc(tagFilter) + '</span>';
+    html += '<span class="tag-delete-x" style="opacity:1" onclick="event.stopPropagation();tagFilter=\'\';rerender()" title="Clear filter">&times;</span>';
+    html += '</span>';
+  } else if (groupFilter) {
+    html += '<span class="tag-chip group-chip active" style="position:relative;padding-right:18px">';
+    html += '<span onclick="groupFilter=\'\';rerender()">' + esc(groupFilter) + '</span>';
+    html += '<span class="tag-delete-x" style="opacity:1" onclick="event.stopPropagation();groupFilter=\'\';rerender()" title="Clear filter">&times;</span>';
     html += '</span>';
   }
-  for (const g of [...allGroups].sort()) {
-    html += '<span class="tag-chip group-chip' + (groupFilter===g?' active':'') + '" style="position:relative;padding-right:18px">';
-    html += '<span onclick="tagFilter=\'\';groupFilter=\'' + esc(g) + '\';rerender()">' + esc(g) + '</span>';
-    html += '<span class="tag-delete-x" onclick="event.stopPropagation();deleteGroupGlobal(\'' + esc(g) + '\')" title="Delete group globally">&times;</span>';
-    html += '</span>';
+  // Searchable dropdown trigger
+  html += '<div class="filter-dropdown-wrap" style="display:inline-block;position:relative">';
+  html += '<input type="text" class="filter-search-input" id="filter-search-input" placeholder="' + (hasFilter ? 'Change filter...' : 'Search tags/groups...') + '" oninput="renderFilterDropdown()" onfocus="renderFilterDropdown()" autocomplete="off">';
+  html += '<div class="filter-dropdown-list" id="filter-dropdown-list" style="display:none"></div>';
+  html += '</div>';
+  if (hasFilter) {
+    html += ' <span class="tag-chip" style="cursor:pointer" onclick="tagFilter=\'\';groupFilter=\'\';rerender()">Clear</span>';
   }
   bar.innerHTML = html;
+  // Close dropdown on outside click
+  const input = document.getElementById('filter-search-input');
+  if (input) {
+    input.addEventListener('blur', () => { setTimeout(() => { const dd = document.getElementById('filter-dropdown-list'); if (dd) dd.style.display = 'none'; }, 150); });
+    input.addEventListener('keydown', (ev) => {
+      const dd = document.getElementById('filter-dropdown-list');
+      if (!dd) return;
+      const items = dd.querySelectorAll('.filter-dropdown-item');
+      let activeIdx = -1;
+      items.forEach((el, i) => { if (el.classList.contains('active')) activeIdx = i; });
+      if (ev.key === 'ArrowDown') { ev.preventDefault(); activeIdx = Math.min(activeIdx + 1, items.length - 1); items.forEach((el, i) => el.classList.toggle('active', i === activeIdx)); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); activeIdx = Math.max(activeIdx - 1, 0); items.forEach((el, i) => el.classList.toggle('active', i === activeIdx)); }
+      else if (ev.key === 'Enter') { ev.preventDefault(); if (activeIdx >= 0 && items[activeIdx]) items[activeIdx].click(); }
+      else if (ev.key === 'Escape') { dd.style.display = 'none'; input.blur(); }
+    });
+  }
+}
+
+function renderFilterDropdown() {
+  const dd = document.getElementById('filter-dropdown-list');
+  const input = document.getElementById('filter-search-input');
+  if (!dd || !input) return;
+  const q = input.value.trim().toLowerCase();
+  const allTags = new Set();
+  const allGroups = new Set();
+  allExperiments.forEach(e => {
+    (e.tags||[]).forEach(t => allTags.add(t));
+    (e.groups||[]).forEach(g => allGroups.add(g));
+  });
+  let items = [];
+  for (const t of [...allTags].sort()) {
+    const count = allExperiments.filter(e => (e.tags||[]).includes(t)).length;
+    if (!q || t.toLowerCase().includes(q)) items.push({type: 'tag', name: t, count});
+  }
+  for (const g of [...allGroups].sort()) {
+    const count = allExperiments.filter(e => (e.groups||[]).includes(g)).length;
+    if (!q || g.toLowerCase().includes(q)) items.push({type: 'group', name: g, count});
+  }
+  if (items.length === 0) { dd.innerHTML = '<div style="padding:6px 10px;color:var(--muted);font-size:12px">No matches</div>'; dd.style.display = 'block'; return; }
+  dd.innerHTML = items.map(item =>
+    '<div class="filter-dropdown-item" data-type="' + item.type + '" data-name="' + esc(item.name) + '" onmousedown="event.preventDefault();applyFilterFromDropdown(\'' + item.type + '\',\'' + esc(item.name) + '\')">' +
+    '<span>' + (item.type === 'tag' ? '<span style="color:var(--muted)">#</span>' : '<span style="color:var(--blue)">\u25CF </span>') + esc(item.name) + '</span>' +
+    '<span style="color:var(--muted);font-size:11px">' + item.count + '</span>' +
+    '</div>'
+  ).join('');
+  dd.style.display = 'block';
+}
+
+function applyFilterFromDropdown(type, name) {
+  if (type === 'tag') { tagFilter = name; groupFilter = ''; }
+  else { groupFilter = name; tagFilter = ''; }
+  rerender();
 }
 
 function rerender() { renderExperiments(); renderExpList(); renderFilterBar(); }
@@ -651,7 +710,9 @@ function getFilteredExperiments() {
       e.name.toLowerCase().includes(q) ||
       e.id.toLowerCase().includes(q) ||
       (e.tags || []).some(t => t.toLowerCase().includes(q)) ||
+      (e.groups || []).some(g => g.toLowerCase().includes(q)) ||
       Object.keys(e.params || {}).some(k => k.toLowerCase().includes(q)) ||
+      Object.values(e.params || {}).some(v => String(v).toLowerCase().includes(q)) ||
       (e.git_branch || '').toLowerCase().includes(q) ||
       (e.notes || '').toLowerCase().includes(q)
     );
@@ -667,6 +728,7 @@ function getFilteredExperiments() {
       case 'status': av = a.status; bv = b.status; break;
       case 'id': av = a.id; bv = b.id; break;
       case 'tags': av = (a.tags||[]).length; bv = (b.tags||[]).length; break;
+      case 'groups': av = (a.groups||[]).length; bv = (b.groups||[]).length; break;
       case 'created_at': default: av = a.created_at||''; bv = b.created_at||''; break;
     }
     let cmp = av < bv ? -1 : av > bv ? 1 : 0;
@@ -1814,7 +1876,9 @@ async function viewCellSource(cellHash, btnEl) {
 // ── Image gallery ────────────────────────────────────────────────────────────
 
 let imageFilter = '';
-let imageSort = 'newest';
+let imageSort = 'date';
+let imageLimit = 50;
+let imageSortDir = 'desc';
 
 async function loadImages(expId) {
   const container = document.getElementById('detail-tab-images');
@@ -1872,14 +1936,23 @@ async function loadImages(expId) {
     }
 
     // Apply sort
-    if (imageSort === 'oldest') {
-      filtered = [...filtered].sort((a, b) => a.modified - b.modified);
-    } else if (imageSort === 'name') {
-      filtered = [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+    if (imageSort === 'name') {
+      filtered = [...filtered].sort((a, b) => imageSortDir === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name));
+    } else {
+      // date sort
+      filtered = [...filtered].sort((a, b) => imageSortDir === 'asc' ? a.modified - b.modified : b.modified - a.modified);
     }
 
+    const totalFiltered = filtered.length;
+    // Apply limit
+    const displayLimit = imageLimit > 0 ? imageLimit : filtered.length;
+    const limited = filtered.slice(0, displayLimit);
+
     html += '<div class="img-gallery-toolbar">';
-    html += '<span style="color:var(--muted);font-size:13px">' + images.length + ' image' + (images.length !== 1 ? 's' : '') + '</span>';
+    html += '<span style="color:var(--muted);font-size:13px">' + (totalFiltered < images.length ? totalFiltered + ' of ' : '') + images.length + ' image' + (images.length !== 1 ? 's' : '') + '</span>';
+
+    // Refresh button
+    html += ' <button class="img-filter-select" onclick="loadImages(\'' + expId + '\')" title="Refresh images" style="cursor:pointer">&#x21bb; Refresh</button>';
 
     if (dirs.length > 1) {
       html += ' <select class="img-filter-select" onchange="imageFilter=this.value;loadImages(\'' + expId + '\')">';
@@ -1890,28 +1963,47 @@ async function loadImages(expId) {
       html += '</select>';
     }
 
+    // Sort by
     html += ' <select class="img-filter-select" onchange="imageSort=this.value;loadImages(\'' + expId + '\')">';
-    html += '<option value="newest"' + (imageSort === 'newest' ? ' selected' : '') + '>Newest first</option>';
-    html += '<option value="oldest"' + (imageSort === 'oldest' ? ' selected' : '') + '>Oldest first</option>';
-    html += '<option value="name"' + (imageSort === 'name' ? ' selected' : '') + '>By name</option>';
+    html += '<option value="date"' + (imageSort === 'date' ? ' selected' : '') + '>Sort by date</option>';
+    html += '<option value="name"' + (imageSort === 'name' ? ' selected' : '') + '>Sort by name</option>';
     html += '</select>';
+
+    // Sort direction toggle
+    html += ' <button class="img-filter-select" onclick="imageSortDir=imageSortDir===\'asc\'?\'desc\':\'asc\';loadImages(\'' + expId + '\')" title="Toggle sort direction" style="cursor:pointer">' + (imageSortDir === 'asc' ? '\u25B2 Asc' : '\u25BC Desc') + '</button>';
+
+    // Show count
+    html += ' <select class="img-filter-select" onchange="imageLimit=parseInt(this.value);loadImages(\'' + expId + '\')">';
+    const limits = [20, 50, 100, 200, 0];
+    const limitLabels = ['Show 20', 'Show 50', 'Show 100', 'Show 200', 'Show all'];
+    for (let i = 0; i < limits.length; i++) {
+      html += '<option value="' + limits[i] + '"' + (imageLimit === limits[i] ? ' selected' : '') + '>' + limitLabels[i] + '</option>';
+    }
+    html += '</select>';
+
     html += '</div>';
 
+    if (totalFiltered > displayLimit) {
+      html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Showing ' + displayLimit + ' of ' + totalFiltered + ' images</div>';
+    }
+
     html += '<div class="img-gallery">';
-    for (const img of filtered) {
+    for (const img of limited) {
       const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
       const sizeKb = (img.size / 1024).toFixed(1);
+      const modDate = img.modified ? new Date(img.modified * 1000).toLocaleString() : '';
       html += '<div class="img-card" onclick="openImageModal(\'' + esc(src) + '\',\'' + esc(img.name) + '\')">';
       html += '<div class="img-thumb"><img src="' + src + '" alt="' + esc(img.name) + '" loading="lazy"></div>';
       html += '<div class="img-info">';
       html += '<div class="img-name" title="' + esc(img.path) + '">' + esc(img.name) + '</div>';
       if (img.dir !== '.') html += '<div class="img-dir">' + esc(img.dir) + '</div>';
-      html += '<div class="img-meta">' + sizeKb + ' KB</div>';
+      html += '<div class="img-meta">' + sizeKb + ' KB' + (modDate ? ' &middot; ' + modDate : '') + '</div>';
       html += '</div></div>';
     }
     html += '</div>';
   } else if (paths.length) {
     html += '<p style="color:var(--muted);margin-top:12px">No images found in the specified path(s).</p>';
+    html += ' <button class="img-filter-select" onclick="loadImages(\'' + expId + '\')" title="Refresh images" style="cursor:pointer;margin-top:8px">&#x21bb; Refresh</button>';
   }
 
   container.innerHTML = html;
