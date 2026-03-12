@@ -295,9 +295,14 @@ def _post_run_cell(result=None):
                 continue
             summary = var_summary(val)
             if summary is not None:
+                display = summary
+                if not isinstance(val, _SCALAR) and name in cell_assignments:
+                    expr = cell_assignments[name]
+                    if len(expr) <= 500:
+                        display = f"{name} = {expr}  # {summary}"
                 new_snap[name] = {
                     "fp": var_fingerprint(val),
-                    "display": summary,
+                    "display": display,
                 }
             elif name in cell_assignments:
                 tname = type(val).__name__
