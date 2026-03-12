@@ -370,3 +370,40 @@ def api_bulk_add_to_group(conn, body: dict) -> dict:
             added += 1
     conn.commit()
     return {"ok": True, "group": name, "added": added}
+
+
+def api_image_path(conn, exp_id: str, body: dict) -> dict:
+    """Manage image paths for an experiment (add/edit/delete).
+
+    Stored in experiments.image_paths as a JSON array of strings.
+    """
+    exp = find_experiment(conn, exp_id, "id, image_paths")
+    if not exp:
+        return {"error": "not found"}
+    action = body.get("action", "")
+    paths = json.loads(exp["image_paths"] or "[]")
+
+    if action == "add":
+        path = body.get("path", "").strip()
+        if not path:
+            return {"error": "empty path"}
+        if path not in paths:
+            paths.append(path)
+    elif action == "delete":
+        index = body.get("index", -1)
+        if 0 <= index < len(paths):
+            paths.pop(index)
+    elif action == "edit":
+        index = body.get("index", -1)
+        path = body.get("path", "").strip()
+        if 0 <= index < len(paths) and path:
+            paths[index] = path
+    else:
+        return {"error": "invalid action"}
+
+    conn.execute(
+        "UPDATE experiments SET image_paths=?, updated_at=? WHERE id=?",
+        (json.dumps(paths), datetime.now(timezone.utc).isoformat(), exp["id"])
+    )
+    conn.commit()
+    return {"ok": True, "paths": paths}

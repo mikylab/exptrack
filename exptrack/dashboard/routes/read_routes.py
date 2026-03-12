@@ -100,6 +100,65 @@ def api_groups(conn) -> dict:
     return {"groups": get_groups(conn)}
 
 
+def api_list_images(conn, exp_id: str) -> dict:
+    """List images from user-configured paths for this experiment."""
+    import json
+    import os
+    from ...core.queries import find_experiment
+    from ...config import project_root
+
+    exp = find_experiment(conn, exp_id, "id, output_dir, image_paths")
+    if not exp:
+        return {"error": "not found"}
+
+    root = str(project_root())
+
+    # Load saved image paths from dedicated column
+    paths = json.loads(exp["image_paths"] or "[]")
+
+    # Build suggested paths from output_dir
+    output_dir = exp["output_dir"] or ""
+    suggested = []
+    if output_dir and os.path.isdir(os.path.join(root, output_dir)):
+        suggested.append(output_dir)
+        # Also suggest subdirectories of output_dir
+        try:
+            for entry in os.scandir(os.path.join(root, output_dir)):
+                if entry.is_dir():
+                    suggested.append(os.path.join(output_dir, entry.name))
+        except OSError:
+            pass
+
+    # Scan images from saved paths
+    image_exts = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.tiff', '.webp'}
+    images = []
+    for scan_path in paths:
+        abs_dir = os.path.normpath(os.path.join(root, scan_path))
+        if not abs_dir.startswith(os.path.normpath(root)):
+            continue  # security: stay within project
+        if not os.path.isdir(abs_dir):
+            continue
+        for dirpath, _, filenames in os.walk(abs_dir):
+            for fn in sorted(filenames):
+                ext = os.path.splitext(fn)[1].lower()
+                if ext in image_exts:
+                    full = os.path.join(dirpath, fn)
+                    rel = os.path.relpath(full, root)
+                    try:
+                        stat = os.stat(full)
+                    except OSError:
+                        continue
+                    images.append({
+                        "name": fn,
+                        "path": rel,
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime,
+                        "dir": os.path.relpath(dirpath, abs_dir) or ".",
+                    })
+    images.sort(key=lambda x: x["modified"], reverse=True)
+    return {"images": images, "paths": paths, "suggested_paths": suggested}
+
+
 def _export_markdown(data: dict) -> str:
     """Generate a markdown summary of an experiment."""
     import json

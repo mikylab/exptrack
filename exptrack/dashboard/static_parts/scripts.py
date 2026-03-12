@@ -10,6 +10,7 @@ JS_CORE = r"""
 let currentFilter = '';
 let searchQuery = '';
 let tagFilter = '';
+let groupFilter = '';
 let charts = {};
 let selectedIds = new Set();
 let pinnedIds = new Set(JSON.parse(localStorage.getItem('exptrack-pinned') || '[]'));
@@ -43,22 +44,35 @@ function togglePin(id) {
   renderExperiments();
 }
 
-function renderTagFilterBar() {
-  const bar = document.getElementById('tag-filter-bar');
+function renderFilterBar() {
+  const bar = document.getElementById('filter-bar');
   if (!bar) return;
   const allTags = new Set();
-  allExperiments.forEach(e => (e.tags||[]).forEach(t => allTags.add(t)));
-  if (allTags.size === 0) { bar.innerHTML = ''; return; }
+  const allGroups = new Set();
+  allExperiments.forEach(e => {
+    (e.tags||[]).forEach(t => allTags.add(t));
+    (e.groups||[]).forEach(g => allGroups.add(g));
+  });
+  if (allTags.size === 0 && allGroups.size === 0) { bar.innerHTML = ''; return; }
+  const hasFilter = tagFilter || groupFilter;
   let html = '<span style="font-size:11px;color:var(--muted);margin-right:4px">Filter:</span>';
-  html += '<span class="tag-chip' + (tagFilter===''?' active':'') + '" onclick="tagFilter=\'\';renderExperiments();renderExpList();renderTagFilterBar()">All</span>';
+  html += '<span class="tag-chip' + (!hasFilter?' active':'') + '" onclick="tagFilter=\'\';groupFilter=\'\';rerender()">All</span>';
   for (const t of [...allTags].sort()) {
     html += '<span class="tag-chip' + (tagFilter===t?' active':'') + '" style="position:relative;padding-right:18px">';
-    html += '<span onclick="tagFilter=\'' + esc(t) + '\';renderExperiments();renderExpList();renderTagFilterBar()">#' + esc(t) + '</span>';
-    html += '<span class="tag-delete-x" onclick="event.stopPropagation();deleteTagGlobal(\'' + esc(t) + '\')" title="Delete tag from all experiments">&times;</span>';
+    html += '<span onclick="groupFilter=\'\';tagFilter=\'' + esc(t) + '\';rerender()">#' + esc(t) + '</span>';
+    html += '<span class="tag-delete-x" onclick="event.stopPropagation();deleteTagGlobal(\'' + esc(t) + '\')" title="Delete tag globally">&times;</span>';
+    html += '</span>';
+  }
+  for (const g of [...allGroups].sort()) {
+    html += '<span class="tag-chip group-chip' + (groupFilter===g?' active':'') + '" style="position:relative;padding-right:18px">';
+    html += '<span onclick="tagFilter=\'\';groupFilter=\'' + esc(g) + '\';rerender()">' + esc(g) + '</span>';
+    html += '<span class="tag-delete-x" onclick="event.stopPropagation();deleteGroupGlobal(\'' + esc(g) + '\')" title="Delete group globally">&times;</span>';
     html += '</span>';
   }
   bar.innerHTML = html;
 }
+
+function rerender() { renderExperiments(); renderExpList(); renderFilterBar(); }
 
 async function api(path) {
   const r = await fetch(path);
@@ -81,36 +95,116 @@ async function deleteTagGlobal(tag) {
     if (tagFilter === tag) tagFilter = '';
     await loadAllTags();
     await loadExperiments();
-    renderTagManager();
+    renderManagePanel();
   }
 }
 
-function toggleTagManager() {
-  const panel = document.getElementById('tag-manager-panel');
+function toggleManagePanel() {
+  const panel = document.getElementById('manage-panel');
   if (!panel) return;
   if (panel.style.display === 'none') {
     panel.style.display = 'block';
-    renderTagManager();
+    renderManagePanel();
   } else {
     panel.style.display = 'none';
   }
 }
 
-function renderTagManager() {
-  const panel = document.getElementById('tag-manager-panel');
+function renderManagePanel() {
+  const panel = document.getElementById('manage-panel');
   if (!panel || panel.style.display === 'none') return;
+  let html = '';
+
+  // Tags section
+  html += '<div class="manage-section"><h4>Tags</h4>';
   if (!allKnownTags.length) {
-    panel.innerHTML = '<div style="color:var(--muted)">No tags yet.</div>';
-    return;
+    html += '<div style="color:var(--muted);font-size:12px">No tags yet.</div>';
+  } else {
+    for (const t of allKnownTags) {
+      html += '<div class="tag-manager-row">'
+        + '<span class="tm-name-edit" ondblclick="startEditGlobalTag(this,\'' + esc(t.name) + '\')">#' + esc(t.name) + ' <span class="tm-count">(' + t.count + ')</span></span>'
+        + '<span class="tm-delete" onclick="deleteTagGlobal(\'' + esc(t.name) + '\')" title="Remove from all experiments">&times;</span>'
+        + '</div>';
+    }
   }
-  let html = '<h4>All Tags</h4>';
-  for (const t of allKnownTags) {
-    html += '<div class="tag-manager-row">'
-      + '<span><span class="tm-name">#' + esc(t.name) + '</span><span class="tm-count">(' + t.count + ')</span></span>'
-      + '<span class="tm-delete" onclick="deleteTagGlobal(\'' + esc(t.name) + '\')" title="Remove from all experiments">&times;</span>'
-      + '</div>';
+  html += '</div>';
+
+  // Groups section
+  html += '<div class="manage-section"><h4>Groups</h4>';
+  if (!allKnownGroups.length) {
+    html += '<div style="color:var(--muted);font-size:12px">No groups yet.</div>';
+  } else {
+    for (const g of allKnownGroups) {
+      html += '<div class="tag-manager-row">'
+        + '<span class="tm-name-edit" ondblclick="startEditGlobalGroup(this,\'' + esc(g.name) + '\')">' + esc(g.name) + ' <span class="tm-count">(' + g.count + ')</span></span>'
+        + '<span class="tm-delete" onclick="deleteGroupGlobal(\'' + esc(g.name) + '\')" title="Remove from all experiments">&times;</span>'
+        + '</div>';
+    }
   }
+  if (selectedIds.size > 0) {
+    html += '<div class="group-create-form" style="margin-top:8px">';
+    html += '<input type="text" id="new-group-name" placeholder="New group for ' + selectedIds.size + ' selected...">';
+    html += '<button onclick="createGroupFromPanel()">Create</button>';
+    html += '</div>';
+  }
+  html += '</div>';
   panel.innerHTML = html;
+}
+
+async function startEditGlobalTag(el, oldName) {
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'name-edit-input';
+  input.value = oldName; input.style.cssText = 'width:120px;font-size:12px;padding:2px 4px';
+  el.innerHTML = ''; el.appendChild(input); input.focus(); input.select();
+  let saved = false;
+  async function doSave() {
+    if (saved) return; saved = true;
+    const newName = input.value.trim();
+    if (newName && newName !== oldName) {
+      // Rename tag across all experiments
+      for (const e of allExperiments) {
+        if ((e.tags||[]).includes(oldName)) {
+          await postApi('/api/experiment/' + e.id + '/edit-tag', {old_tag: oldName, new_tag: newName});
+        }
+      }
+      await loadAllTags(); await loadExperiments();
+    }
+    renderManagePanel();
+  }
+  input.addEventListener('blur', doSave);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { saved = true; renderManagePanel(); }
+  });
+}
+
+async function startEditGlobalGroup(el, oldName) {
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'name-edit-input';
+  input.value = oldName; input.style.cssText = 'width:120px;font-size:12px;padding:2px 4px';
+  el.innerHTML = ''; el.appendChild(input); input.focus(); input.select();
+  let saved = false;
+  async function doSave() {
+    if (saved) return; saved = true;
+    const newName = input.value.trim();
+    if (newName && newName !== oldName) {
+      // Rename: add new, remove old for each experiment
+      for (const e of allExperiments) {
+        if ((e.groups||[]).includes(oldName)) {
+          await postApi('/api/experiment/' + e.id + '/group', {group: newName});
+          await postApi('/api/experiment/' + e.id + '/delete-group', {group: oldName});
+        }
+      }
+      if (groupFilter === oldName) groupFilter = newName;
+      await loadAllGroups(); await loadExperiments();
+    }
+    renderManagePanel();
+  }
+  input.addEventListener('blur', doSave);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { saved = true; renderManagePanel(); }
+  });
 }
 
 function fmtDur(s) {
@@ -548,6 +642,9 @@ function getFilteredExperiments() {
   if (tagFilter) {
     exps = exps.filter(e => (e.tags || []).includes(tagFilter));
   }
+  if (groupFilter) {
+    exps = exps.filter(e => (e.groups || []).includes(groupFilter));
+  }
   if (searchQuery) {
     const q = searchQuery.toLowerCase();
     exps = exps.filter(e =>
@@ -675,7 +772,7 @@ function renderExperiments() {
   const exps = getFilteredExperiments();
   const tbody = document.getElementById('exp-body');
   if (!tbody) return;
-  renderTagFilterBar();
+  renderFilterBar();
   updateSortHeaders();
   renderTableActionsBar();
 
@@ -759,14 +856,29 @@ function startInlineRename(id, el) {
   });
 }
 
-// ── Tag autocomplete helper ──────────────────────────────────────────────────
-function createTagInput(id, tags, exp, onUpdate, opts = {}) {
+// ── Unified item autocomplete helper (tags & groups) ─────────────────────────
+function createItemInput(id, items, exp, onUpdate, opts = {}) {
+  // opts.kind: 'tag' or 'group'
+  // opts.allKnown: allKnownTags or allKnownGroups
+  // opts.apiAdd: e.g. '/tag' or '/group'
+  // opts.bodyKey: e.g. 'tag' or 'group'
+  // opts.expKey: e.g. 'tags' or 'groups'
+  // opts.loadAll: e.g. loadAllTags or loadAllGroups
+  // opts.prefix: display prefix, e.g. '#' for tags, '' for groups
+  const kind = opts.kind || 'tag';
+  const allKnown = opts.allKnown || allKnownTags;
+  const apiAdd = opts.apiAdd || '/tag';
+  const bodyKey = opts.bodyKey || 'tag';
+  const expKey = opts.expKey || 'tags';
+  const loadAll = opts.loadAll || loadAllTags;
+  const prefix = opts.prefix != null ? opts.prefix : '#';
+
   const wrapper = document.createElement('div');
   wrapper.className = 'tag-autocomplete';
   wrapper.style.cssText = 'display:inline-block;position:relative';
   const input = document.createElement('input');
   input.type = 'text';
-  input.placeholder = opts.placeholder || '+ tag';
+  input.placeholder = opts.placeholder || '+ ' + kind;
   input.className = 'name-edit-input';
   input.style.cssText = opts.style || 'width:90px;font-size:12px;padding:2px 4px';
   const dropdown = document.createElement('div');
@@ -778,8 +890,8 @@ function createTagInput(id, tags, exp, onUpdate, opts = {}) {
 
   function showSuggestions() {
     const val = input.value.trim().toLowerCase();
-    const existing = new Set(tags.map(t => t.toLowerCase()));
-    let suggestions = allKnownTags.filter(t => !existing.has(t.name.toLowerCase()));
+    const existing = new Set(items.map(t => t.toLowerCase()));
+    let suggestions = allKnown.filter(t => !existing.has(t.name.toLowerCase()));
     if (val) suggestions = suggestions.filter(t => t.name.toLowerCase().includes(val));
     suggestions = suggestions.slice(0, 8);
     if (val && !suggestions.some(t => t.name.toLowerCase() === val) && !existing.has(val)) {
@@ -787,25 +899,26 @@ function createTagInput(id, tags, exp, onUpdate, opts = {}) {
     }
     if (!suggestions.length) { dropdown.style.display = 'none'; return; }
     dropdown.innerHTML = suggestions.map((t, i) =>
-      '<div class="tag-autocomplete-item' + (i === activeIdx ? ' active' : '') + '" data-tag="' + esc(t.name) + '">' +
-      (t.isNew ? '<span class="tag-autocomplete-new">create "' + esc(t.name) + '"</span>' : '<span>#' + esc(t.name) + '</span>') +
+      '<div class="tag-autocomplete-item' + (i === activeIdx ? ' active' : '') + '" data-val="' + esc(t.name) + '">' +
+      (t.isNew ? '<span class="tag-autocomplete-new">create "' + esc(t.name) + '"</span>' : '<span>' + prefix + esc(t.name) + '</span>') +
       '<span class="tag-count">' + (t.count || '') + '</span></div>'
     ).join('');
     dropdown.style.display = 'block';
     dropdown.querySelectorAll('.tag-autocomplete-item').forEach(item => {
-      item.onmousedown = (ev) => { ev.preventDefault(); selectTag(item.dataset.tag); };
+      item.onmousedown = (ev) => { ev.preventDefault(); selectItem(item.dataset.val); };
     });
   }
 
-  async function selectTag(val) {
+  async function selectItem(val) {
     if (!val) return;
-    await postApi('/api/experiment/' + id + '/tag', {tag: val});
-    if (!tags.includes(val)) tags.push(val);
-    if (exp) exp.tags = [...tags];
+    const body = {}; body[bodyKey] = val;
+    await postApi('/api/experiment/' + id + apiAdd, body);
+    if (!items.includes(val)) items.push(val);
+    if (exp) exp[expKey] = [...items];
     input.value = '';
     dropdown.style.display = 'none';
     activeIdx = -1;
-    loadAllTags();
+    loadAll();
     if (onUpdate) onUpdate();
   }
 
@@ -813,51 +926,77 @@ function createTagInput(id, tags, exp, onUpdate, opts = {}) {
   input.addEventListener('focus', showSuggestions);
   input.addEventListener('blur', () => { setTimeout(() => dropdown.style.display = 'none', 150); });
   input.addEventListener('keydown', (ev) => {
-    const items = dropdown.querySelectorAll('.tag-autocomplete-item');
-    if (ev.key === 'ArrowDown') { ev.preventDefault(); activeIdx = Math.min(activeIdx + 1, items.length - 1); showSuggestions(); }
+    const items_el = dropdown.querySelectorAll('.tag-autocomplete-item');
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); activeIdx = Math.min(activeIdx + 1, items_el.length - 1); showSuggestions(); }
     else if (ev.key === 'ArrowUp') { ev.preventDefault(); activeIdx = Math.max(activeIdx - 1, -1); showSuggestions(); }
     else if (ev.key === 'Enter') {
       ev.preventDefault();
-      if (activeIdx >= 0 && items[activeIdx]) selectTag(items[activeIdx].dataset.tag);
-      else if (input.value.trim()) selectTag(input.value.trim());
+      if (activeIdx >= 0 && items_el[activeIdx]) selectItem(items_el[activeIdx].dataset.val);
+      else if (input.value.trim()) selectItem(input.value.trim());
     }
     else if (ev.key === 'Escape') { dropdown.style.display = 'none'; if (opts.onEscape) opts.onEscape(); }
   });
   return { wrapper, input };
 }
 
-// ── Inline tag editing on double-click ──────────────────────────────────────
-function startInlineTag(id, el) {
+// Convenience wrappers
+function createTagInput(id, tags, exp, onUpdate, opts = {}) {
+  return createItemInput(id, tags, exp, onUpdate, Object.assign({
+    kind: 'tag', allKnown: allKnownTags, apiAdd: '/tag', bodyKey: 'tag',
+    expKey: 'tags', loadAll: loadAllTags, prefix: '#'
+  }, opts));
+}
+function createGroupInput(id, groups, exp, onUpdate, opts = {}) {
+  return createItemInput(id, groups, exp, onUpdate, Object.assign({
+    kind: 'group', allKnown: allKnownGroups, apiAdd: '/group', bodyKey: 'group',
+    expKey: 'groups', loadAll: loadAllGroups, prefix: ''
+  }, opts));
+}
+
+// ── Unified inline item editing (tags & groups) ──────────────────────────────
+function startInlineItems(id, el, opts) {
+  // opts.expKey: 'tags' or 'groups'
+  // opts.prefix: '#' or ''
+  // opts.chipStyle: extra CSS for chips
+  // opts.deleteApi: e.g. '/delete-tag' or '/delete-group'
+  // opts.deleteBodyKey: e.g. 'tag' or 'group'
+  // opts.createInput: createTagInput or createGroupInput
+  // opts.loadAll: loadAllTags or loadAllGroups
   const exp = allExperiments.find(e => e.id === id);
   if (!exp) return;
-  const tags = [...(exp.tags || [])];
+  const items = [...(exp[opts.expKey] || [])];
   const container = document.createElement('div');
   container.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;align-items:center;min-width:120px';
   container.onclick = (ev) => ev.stopPropagation();
 
   function render() {
     container.innerHTML = '';
-    tags.forEach((t, i) => {
+    items.forEach((t, i) => {
       const chip = document.createElement('span');
       chip.className = 'tag';
-      chip.style.cssText = 'display:inline-flex;align-items:center;gap:2px';
-      chip.textContent = '#' + t;
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:2px' + (opts.chipStyle ? ';' + opts.chipStyle : '');
+      chip.textContent = opts.prefix + t;
       const x = document.createElement('span');
       x.textContent = '\u00d7';
       x.style.cssText = 'cursor:pointer;margin-left:2px;color:var(--red);font-weight:bold';
       x.onclick = async (ev) => {
         ev.stopPropagation();
-        await postApi('/api/experiment/' + id + '/delete-tag', {tag: t});
-        tags.splice(i, 1);
-        if (exp) exp.tags = [...tags];
+        const body = {}; body[opts.deleteBodyKey] = t;
+        await postApi('/api/experiment/' + id + opts.deleteApi, body);
+        items.splice(i, 1);
+        if (exp) exp[opts.expKey] = [...items];
         render();
         renderExpList();
-        loadAllTags();
+        opts.loadAll();
       };
       chip.appendChild(x);
       container.appendChild(chip);
     });
-    const { wrapper, input } = createTagInput(id, tags, exp, () => { render(); renderExpList(); }, {
+    const { wrapper, input } = opts.createInput(id, items, exp, () => {
+      render();
+      renderExpList();
+      renderExperiments();
+    }, {
       onEscape: () => { renderExperiments(); renderExpList(); }
     });
     container.appendChild(wrapper);
@@ -866,6 +1005,22 @@ function startInlineTag(id, el) {
   el.innerHTML = '';
   el.appendChild(container);
   render();
+}
+
+function startInlineTag(id, el) {
+  startInlineItems(id, el, {
+    expKey: 'tags', prefix: '#', chipStyle: '',
+    deleteApi: '/delete-tag', deleteBodyKey: 'tag',
+    createInput: createTagInput, loadAll: loadAllTags
+  });
+}
+
+function startInlineGroup(id, el) {
+  startInlineItems(id, el, {
+    expKey: 'groups', prefix: '', chipStyle: 'background:rgba(44,90,160,0.1);color:var(--blue)',
+    deleteApi: '/delete-group', deleteBodyKey: 'group',
+    createInput: createGroupInput, loadAll: loadAllGroups
+  });
 }
 
 // ── Inline note editing on double-click ─────────────────────────────────────
@@ -1139,6 +1294,7 @@ async function refreshDetail(id) {
       <div class="tabs" id="detail-tabs">
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
         <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
+        <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
         <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
       </div>
 
@@ -1177,6 +1333,7 @@ async function refreshDetail(id) {
       </div>
 
       <div id="detail-tab-timeline" style="display:none"></div>
+      <div id="detail-tab-images" style="display:none"></div>
       <div id="detail-tab-compare-within" style="display:none"></div>
     </div>
   `;
@@ -1479,14 +1636,15 @@ function switchDetailTab(tab, expId) {
   currentDetailTab = tab;
   currentDetailExpId = expId;
   document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
-    const tabs = ['overview','timeline','compare-within'];
+    const tabs = ['overview','timeline','images','compare-within'];
     t.classList.toggle('active', tabs[i] === tab);
   });
-  ['overview','timeline','compare-within'].forEach(t => {
+  ['overview','timeline','images','compare-within'].forEach(t => {
     const el = document.getElementById('detail-tab-'+t);
     if (el) el.style.display = t === tab ? '' : 'none';
   });
   if (tab === 'timeline') loadTimeline(expId);
+  if (tab === 'images') loadImages(expId);
   if (tab === 'compare-within') loadCompareWithin(expId);
 }
 
@@ -1653,6 +1811,163 @@ async function viewCellSource(cellHash, btnEl) {
   btnEl.parentElement.insertAdjacentHTML('beforeend', html);
 }
 
+// ── Image gallery ────────────────────────────────────────────────────────────
+
+let imageFilter = '';
+let imageSort = 'newest';
+
+async function loadImages(expId) {
+  const container = document.getElementById('detail-tab-images');
+  if (!container) return;
+  container.innerHTML = '<p style="color:var(--muted)">Loading...</p>';
+
+  const data = await api('/api/images/' + expId);
+  if (data.error && data.error !== 'not found') {
+    container.innerHTML = '<p style="color:var(--muted)">Error: ' + esc(data.error) + '</p>';
+    return;
+  }
+
+  const paths = data.paths || [];
+  const suggestedPaths = data.suggested_paths || [];
+  let images = data.images || [];
+
+  let html = '<div class="img-paths-section">';
+  html += '<h3 style="font-size:14px;margin-bottom:8px">Image Paths</h3>';
+  html += '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">Add folders to scan for images. Paths are relative to project root.</p>';
+
+  // Show saved paths
+  if (paths.length) {
+    for (let i = 0; i < paths.length; i++) {
+      const p = paths[i];
+      html += '<div class="img-path-row">';
+      html += '<span class="img-path-val" ondblclick="startEditImagePath(\'' + expId + '\',' + i + ',this)">' + esc(p) + '</span>';
+      html += '<button class="img-path-del" onclick="deleteImagePath(\'' + expId + '\',' + i + ')" title="Remove path">&times;</button>';
+      html += '</div>';
+    }
+  }
+
+  // Add path form
+  html += '<div class="img-path-add">';
+  html += '<input type="text" id="img-path-input" placeholder="e.g. outputs/samples" style="flex:1">';
+  html += '<button onclick="addImagePath(\'' + expId + '\')">Add Path</button>';
+  html += '</div>';
+
+  // Suggested paths from output_dir or params
+  if (suggestedPaths.length && paths.length === 0) {
+    html += '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Suggestions: ';
+    html += suggestedPaths.map(s => '<a href="#" style="color:var(--blue)" onclick="event.preventDefault();document.getElementById(\'img-path-input\').value=\'' + esc(s) + '\';addImagePath(\'' + expId + '\')">' + esc(s) + '</a>').join(', ');
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Show images if we have any
+  if (images.length) {
+    // Collect unique directories for filtering
+    const dirs = [...new Set(images.map(img => img.dir))].sort();
+
+    // Apply filter
+    let filtered = images;
+    if (imageFilter) {
+      filtered = filtered.filter(img => img.dir === imageFilter);
+    }
+
+    // Apply sort
+    if (imageSort === 'oldest') {
+      filtered = [...filtered].sort((a, b) => a.modified - b.modified);
+    } else if (imageSort === 'name') {
+      filtered = [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    html += '<div class="img-gallery-toolbar">';
+    html += '<span style="color:var(--muted);font-size:13px">' + images.length + ' image' + (images.length !== 1 ? 's' : '') + '</span>';
+
+    if (dirs.length > 1) {
+      html += ' <select class="img-filter-select" onchange="imageFilter=this.value;loadImages(\'' + expId + '\')">';
+      html += '<option value=""' + (imageFilter === '' ? ' selected' : '') + '>All folders</option>';
+      for (const d of dirs) {
+        html += '<option value="' + esc(d) + '"' + (imageFilter === d ? ' selected' : '') + '>' + esc(d) + '</option>';
+      }
+      html += '</select>';
+    }
+
+    html += ' <select class="img-filter-select" onchange="imageSort=this.value;loadImages(\'' + expId + '\')">';
+    html += '<option value="newest"' + (imageSort === 'newest' ? ' selected' : '') + '>Newest first</option>';
+    html += '<option value="oldest"' + (imageSort === 'oldest' ? ' selected' : '') + '>Oldest first</option>';
+    html += '<option value="name"' + (imageSort === 'name' ? ' selected' : '') + '>By name</option>';
+    html += '</select>';
+    html += '</div>';
+
+    html += '<div class="img-gallery">';
+    for (const img of filtered) {
+      const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
+      const sizeKb = (img.size / 1024).toFixed(1);
+      html += '<div class="img-card" onclick="openImageModal(\'' + esc(src) + '\',\'' + esc(img.name) + '\')">';
+      html += '<div class="img-thumb"><img src="' + src + '" alt="' + esc(img.name) + '" loading="lazy"></div>';
+      html += '<div class="img-info">';
+      html += '<div class="img-name" title="' + esc(img.path) + '">' + esc(img.name) + '</div>';
+      if (img.dir !== '.') html += '<div class="img-dir">' + esc(img.dir) + '</div>';
+      html += '<div class="img-meta">' + sizeKb + ' KB</div>';
+      html += '</div></div>';
+    }
+    html += '</div>';
+  } else if (paths.length) {
+    html += '<p style="color:var(--muted);margin-top:12px">No images found in the specified path(s).</p>';
+  }
+
+  container.innerHTML = html;
+}
+
+async function addImagePath(expId) {
+  const input = document.getElementById('img-path-input');
+  const path = input ? input.value.trim() : '';
+  if (!path) return;
+  await postApi('/api/experiment/' + expId + '/image-path', {action: 'add', path});
+  loadImages(expId);
+}
+
+async function deleteImagePath(expId, index) {
+  await postApi('/api/experiment/' + expId + '/image-path', {action: 'delete', index});
+  loadImages(expId);
+}
+
+function startEditImagePath(expId, index, el) {
+  const currentVal = el.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'name-edit-input';
+  input.value = currentVal; input.style.cssText = 'width:200px;font-size:12px;padding:2px 4px';
+  el.innerHTML = ''; el.appendChild(input); input.focus(); input.select();
+  let saved = false;
+  async function doSave() {
+    if (saved) return; saved = true;
+    const newVal = input.value.trim();
+    if (newVal && newVal !== currentVal) {
+      await postApi('/api/experiment/' + expId + '/image-path', {action: 'edit', index, path: newVal});
+    }
+    loadImages(expId);
+  }
+  input.addEventListener('blur', doSave);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { saved = true; loadImages(expId); }
+  });
+}
+
+function openImageModal(src, name) {
+  const overlay = document.createElement('div');
+  overlay.className = 'img-modal-overlay';
+  overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
+
+  const content = document.createElement('div');
+  content.className = 'img-modal-content';
+  content.innerHTML = '<div class="img-modal-header"><span class="img-modal-name">' + esc(name) + '</span><button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button></div>' +
+    '<img src="' + src + '" alt="' + esc(name) + '" style="max-width:100%;max-height:calc(100vh - 80px);object-fit:contain">';
+  overlay.appendChild(content);
+  document.body.appendChild(overlay);
+
+  const handler = (ev) => { if (ev.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
+  document.addEventListener('keydown', handler);
+}
+
 // ── Within-experiment comparison ─────────────────────────────────────────────
 
 let withinSeq1 = null, withinSeq2 = null;
@@ -1744,58 +2059,16 @@ loadExperiments().then(() => {
 JS_GROUPS = r"""
 // ── Group management ─────────────────────────────────────────────────────────
 
-function toggleGroupPanel() {
-  const panel = document.getElementById('group-panel');
-  if (!panel) return;
-  if (panel.style.display === 'none') {
-    panel.style.display = 'block';
-    renderGroupPanel();
-  } else {
-    panel.style.display = 'none';
+async function deleteGroupGlobal(name) {
+  const count = allExperiments.filter(e => (e.groups||[]).includes(name)).length;
+  if (!confirm('Delete group "' + name + '" from ' + count + ' experiment(s)? This cannot be undone.')) return;
+  const res = await postApi('/api/groups/delete', {name});
+  if (res.ok) {
+    if (groupFilter === name) groupFilter = '';
+    await loadAllGroups();
+    await loadExperiments();
+    renderManagePanel();
   }
-}
-
-async function renderGroupPanel() {
-  let groups;
-  try {
-    const data = await api('/api/groups');
-    groups = data.groups || [];
-  } catch(e) { groups = []; }
-  const panel = document.getElementById('group-panel');
-  if (!panel) return;
-  let html = '<h3>Groups / Pipelines</h3>';
-  if (groups.length === 0) {
-    html += '<p style="color:var(--muted);font-size:13px">No groups yet. Double-click the Groups column on any experiment, or select experiments and use "Add to Group" below.</p>';
-  } else {
-    for (const g of groups) {
-      html += '<div class="group-card">';
-      html += '<span class="group-card-name" onclick="filterByGroup(\'' + esc(g.name) + '\')">' + esc(g.name) + '</span>';
-      html += '<span class="group-card-meta">' + g.count + ' experiment' + (g.count !== 1 ? 's' : '') + '</span>';
-      html += '<div class="group-card-actions">';
-      html += '<button onclick="bulkAddToGroup(\'' + esc(g.name) + '\')">+ Add Selected</button>';
-      html += '<button class="danger" onclick="deleteGroupGlobal(\'' + esc(g.name) + '\')">Delete</button>';
-      html += '</div></div>';
-    }
-  }
-  html += '<div class="group-create-form">';
-  html += '<input type="text" id="new-group-name" placeholder="New group name...">';
-  html += '<button onclick="createGroupFromPanel()">Create Group</button>';
-  html += '</div>';
-  if (selectedIds.size > 0) {
-    html += '<p style="font-size:12px;color:var(--muted);margin-top:8px">' + selectedIds.size + ' experiment(s) selected — type a name and click Create, or click "+ Add Selected" on an existing group.</p>';
-  }
-  panel.innerHTML = html;
-}
-
-function filterByGroup(name) {
-  // Use search to filter by group name
-  searchQuery = name;
-  const mainSearch = document.getElementById('main-search');
-  if (mainSearch) mainSearch.value = name;
-  const sideSearch = document.getElementById('search-input');
-  if (sideSearch) sideSearch.value = name;
-  renderExperiments();
-  renderExpList();
 }
 
 async function createGroupFromPanel() {
@@ -1804,156 +2077,16 @@ async function createGroupFromPanel() {
   if (!name) return;
   const ids = [...selectedIds];
   if (ids.length > 0) {
-    // Add selected experiments to the new group
     const res = await postApi('/api/groups/create', {name, experiment_ids: ids});
-    if (res.ok) {
-      owlSay('Group "' + name + '" created with ' + ids.length + ' experiment(s)!');
-    }
+    if (res.ok) owlSay('Group "' + name + '" created with ' + ids.length + ' experiment(s)!');
   } else {
-    // Just create an empty group by name — user can add experiments later via inline editing
-    owlSay('Type a group name in the Groups column of any experiment, or select experiments first.');
+    owlSay('Select experiments first, then create a group.');
     return;
   }
   if (input) input.value = '';
   await loadAllGroups();
   await loadExperiments();
-  renderGroupPanel();
-}
-
-async function bulkAddToGroup(groupName) {
-  if (selectedIds.size === 0) {
-    alert('Select experiments first (use checkboxes), then click "+ Add Selected".');
-    return;
-  }
-  const res = await postApi('/api/bulk-add-to-group', {group: groupName, ids: [...selectedIds]});
-  if (res.ok) {
-    await loadAllGroups();
-    await loadExperiments();
-    renderGroupPanel();
-    owlSay('Added ' + res.added + ' to "' + groupName + '"');
-  }
-}
-
-async function deleteGroupGlobal(name) {
-  if (!confirm('Delete group "' + name + '" from all experiments?')) return;
-  const res = await postApi('/api/groups/delete', {name});
-  if (res.ok) {
-    await loadAllGroups();
-    await loadExperiments();
-    renderGroupPanel();
-    owlSay('Group "' + name + '" deleted.');
-  }
-}
-
-// ── Inline group editing (like tags) ─────────────────────────────────────────
-
-function createGroupInput(id, groups, exp, onUpdate, opts = {}) {
-  // Reusable group autocomplete input — same pattern as createTagInput
-  const wrapper = document.createElement('div');
-  wrapper.className = 'tag-autocomplete';
-  wrapper.style.cssText = 'display:inline-block;position:relative';
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = opts.placeholder || '+ group';
-  input.className = 'name-edit-input';
-  input.style.cssText = opts.style || 'width:100px;font-size:12px;padding:2px 4px';
-  const dropdown = document.createElement('div');
-  dropdown.className = 'tag-autocomplete-list';
-  dropdown.style.display = 'none';
-  wrapper.appendChild(input);
-  wrapper.appendChild(dropdown);
-  let activeIdx = -1;
-
-  function showSuggestions() {
-    const val = input.value.trim().toLowerCase();
-    const existing = new Set(groups.map(g => g.toLowerCase()));
-    let suggestions = allKnownGroups.filter(g => !existing.has(g.name.toLowerCase()));
-    if (val) suggestions = suggestions.filter(g => g.name.toLowerCase().includes(val));
-    suggestions = suggestions.slice(0, 8);
-    if (val && !suggestions.some(g => g.name.toLowerCase() === val) && !existing.has(val)) {
-      suggestions.unshift({name: val, count: 0, isNew: true});
-    }
-    if (!suggestions.length) { dropdown.style.display = 'none'; return; }
-    dropdown.innerHTML = suggestions.map((g, i) =>
-      '<div class="tag-autocomplete-item' + (i === activeIdx ? ' active' : '') + '" data-group="' + esc(g.name) + '">' +
-      (g.isNew ? '<span class="tag-autocomplete-new">create "' + esc(g.name) + '"</span>' : '<span>' + esc(g.name) + '</span>') +
-      '<span class="tag-count">' + (g.count || '') + '</span></div>'
-    ).join('');
-    dropdown.style.display = 'block';
-    dropdown.querySelectorAll('.tag-autocomplete-item').forEach(item => {
-      item.onmousedown = (ev) => { ev.preventDefault(); selectGroup(item.dataset.group); };
-    });
-  }
-
-  async function selectGroup(val) {
-    if (!val) return;
-    await postApi('/api/experiment/' + id + '/group', {group: val});
-    if (!groups.includes(val)) groups.push(val);
-    if (exp) exp.groups = [...groups];
-    input.value = '';
-    dropdown.style.display = 'none';
-    activeIdx = -1;
-    loadAllGroups();
-    if (onUpdate) onUpdate();
-  }
-
-  input.addEventListener('input', () => { activeIdx = -1; showSuggestions(); });
-  input.addEventListener('focus', showSuggestions);
-  input.addEventListener('blur', () => { setTimeout(() => dropdown.style.display = 'none', 150); });
-  input.addEventListener('keydown', (ev) => {
-    const items = dropdown.querySelectorAll('.tag-autocomplete-item');
-    if (ev.key === 'ArrowDown') { ev.preventDefault(); activeIdx = Math.min(activeIdx + 1, items.length - 1); showSuggestions(); }
-    else if (ev.key === 'ArrowUp') { ev.preventDefault(); activeIdx = Math.max(activeIdx - 1, -1); showSuggestions(); }
-    else if (ev.key === 'Enter') {
-      ev.preventDefault();
-      if (activeIdx >= 0 && items[activeIdx]) selectGroup(items[activeIdx].dataset.group);
-      else if (input.value.trim()) selectGroup(input.value.trim());
-    }
-    else if (ev.key === 'Escape') { dropdown.style.display = 'none'; if (opts.onEscape) opts.onEscape(); }
-  });
-  return { wrapper, input };
-}
-
-function startInlineGroup(id, el) {
-  // Inline group editing on double-click — same pattern as startInlineTag
-  const exp = allExperiments.find(e => e.id === id);
-  if (!exp) return;
-  const groups = [...(exp.groups || [])];
-  const container = document.createElement('div');
-  container.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;align-items:center;min-width:120px';
-  container.onclick = (ev) => ev.stopPropagation();
-
-  function render() {
-    container.innerHTML = '';
-    groups.forEach((g, i) => {
-      const chip = document.createElement('span');
-      chip.className = 'tag';
-      chip.style.cssText = 'display:inline-flex;align-items:center;gap:2px;background:rgba(44,90,160,0.1);color:var(--blue)';
-      chip.textContent = g;
-      const x = document.createElement('span');
-      x.textContent = '\u00d7';
-      x.style.cssText = 'cursor:pointer;margin-left:2px;color:var(--red);font-weight:bold';
-      x.onclick = async (ev) => {
-        ev.stopPropagation();
-        await postApi('/api/experiment/' + id + '/delete-group', {group: g});
-        groups.splice(i, 1);
-        if (exp) exp.groups = [...groups];
-        render();
-        renderExpList();
-        loadAllGroups();
-      };
-      chip.appendChild(x);
-      container.appendChild(chip);
-    });
-    const { wrapper, input } = createGroupInput(id, groups, exp, () => { render(); renderExpList(); }, {
-      onEscape: () => { renderExperiments(); renderExpList(); }
-    });
-    container.appendChild(wrapper);
-    setTimeout(() => input.focus(), 0);
-  }
-  el.innerHTML = '';
-  el.appendChild(container);
-  render();
+  renderManagePanel();
 }
 
 async function promptBulkAddToGroup() {
@@ -1972,6 +2105,12 @@ async function promptBulkAddToGroup() {
 async function deleteGroupInline(id, group) {
   const exp = allExperiments.find(e => e.id === id);
   if (exp) exp.groups = (exp.groups||[]).filter(g => g !== group);
+  const area = document.getElementById('detail-groups-area');
+  if (area) {
+    area.querySelectorAll('.tag-removable').forEach(el => {
+      if (el.textContent.trim().replace(/\u00d7$/, '').trim() === group) el.remove();
+    });
+  }
   const d = await postApi('/api/experiment/' + id + '/delete-group', {group});
   if (d.ok) { loadAllGroups(); loadExperiments().then(() => { if (currentDetailId === id) refreshDetail(id); }); }
 }
