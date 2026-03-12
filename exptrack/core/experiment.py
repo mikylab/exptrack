@@ -139,6 +139,12 @@ class Experiment:
             conn.rollback()
             raise
 
+        # Log output_dir as artifact so it's visible immediately
+        try:
+            self.log_artifact(self._output_dir, label="output_dir")
+        except Exception:
+            pass
+
     def _write_params(self, conn, params: dict):
         conn.executemany(
             "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
@@ -257,9 +263,42 @@ class Experiment:
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
+    def _scan_output_dir(self):
+        """Walk output_dir and register any files as artifacts (reference only)."""
+        out_dir = getattr(self, '_output_dir', None)
+        if not out_dir:
+            return
+        out_path = Path(out_dir)
+        if not out_path.is_dir():
+            return
+        hidden = {'.exptrack_run.env', '.DS_Store'}
+        new_files = []
+        for p in out_path.rglob('*'):
+            if not p.is_file():
+                continue
+            if p.name.startswith('.') or p.name in hidden:
+                continue
+            new_files.append(p)
+        if not new_files:
+            return
+        for p in new_files:
+            try:
+                self.log_artifact(str(p))
+            except Exception:
+                pass
+        if len(new_files) <= 5:
+            for p in new_files:
+                print(f"[exptrack] artifact: {p}", file=sys.stderr)
+        else:
+            print(f"[exptrack] {len(new_files)} artifacts in {out_dir}/", file=sys.stderr)
+
     def finish(self, status: str = "done"):
         self.duration_s = time.time() - self._start
         self.status = status
+
+        # Scan output_dir for artifacts before closing
+        self._scan_output_dir()
+
         with get_db() as conn:
             conn.execute("""
                 UPDATE experiments

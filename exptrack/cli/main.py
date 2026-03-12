@@ -23,8 +23,8 @@ import sys
 from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_storage
 from .inspect_cmds import (cmd_ls, cmd_show, cmd_timeline, cmd_diff,
                            cmd_compare, cmd_history, cmd_export, cmd_verify)
-from .mutate_cmds import (cmd_tag, cmd_untag, cmd_note, cmd_edit_note,
-                          cmd_rm, cmd_clean, cmd_finish)
+from .mutate_cmds import (cmd_tag, cmd_untag, cmd_delete_tag, cmd_note,
+                          cmd_edit_note, cmd_rm, cmd_clean, cmd_finish)
 from .pipeline_cmds import (cmd_run_start, cmd_run_finish, cmd_run_fail,
                             cmd_log_metric, cmd_log_artifact)
 
@@ -145,6 +145,12 @@ def main():
     p_untag = sub.add_parser("untag", help="Remove a tag from an experiment")
     p_untag.add_argument("id"); p_untag.add_argument("tag")
 
+    p_deltag = sub.add_parser("delete-tag",
+        help="Remove a tag from ALL experiments globally")
+    p_deltag.add_argument("tag", help="Tag name to delete everywhere")
+    p_deltag.add_argument("--yes", "-y", action="store_true",
+                          help="Skip confirmation prompt")
+
     p_note = sub.add_parser("note", help="Append a note to an experiment")
     p_note.add_argument("id"); p_note.add_argument("text")
 
@@ -199,6 +205,7 @@ def main():
         "history":      cmd_history,
         "tag":          cmd_tag,
         "untag":        cmd_untag,
+        "delete-tag":   cmd_delete_tag,
         "note":         cmd_note,
         "edit-note":    cmd_edit_note,
         "export":       cmd_export,

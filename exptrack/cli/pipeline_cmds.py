@@ -165,6 +165,40 @@ def cmd_run_finish(args):
                     [(exp_id, k, json.dumps(v)) for k, v in params.items()]
                 )
 
+    # Scan output_dir for artifacts before closing
+    out_row = conn.execute(
+        "SELECT output_dir FROM experiments WHERE id=?", (exp_id,)
+    ).fetchone()
+    out_dir = out_row["output_dir"] if out_row else None
+    if out_dir:
+        out_path = Path(out_dir)
+        if out_path.is_dir():
+            hidden = {'.exptrack_run.env', '.DS_Store'}
+            new_files = [p for p in out_path.rglob('*')
+                         if p.is_file() and not p.name.startswith('.') and p.name not in hidden]
+            ts = datetime.now(timezone.utc).isoformat()
+            for p in new_files:
+                try:
+                    resolved = str(p.resolve())
+                    existing = conn.execute(
+                        "SELECT 1 FROM artifacts WHERE exp_id=? AND path=?",
+                        (exp_id, resolved)
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
+                            (exp_id, p.name, resolved, ts)
+                        )
+                except Exception:
+                    pass
+            if new_files:
+                conn.commit()
+                if len(new_files) <= 5:
+                    for p in new_files:
+                        print(f"[exptrack] artifact: {p}", file=sys.stderr)
+                else:
+                    print(f"[exptrack] {len(new_files)} artifacts in {out_dir}/", file=sys.stderr)
+
     now = datetime.now(timezone.utc).isoformat()
     created = conn.execute(
         "SELECT created_at FROM experiments WHERE id=?", (exp_id,)

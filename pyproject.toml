@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "exptrack"
 version = "2.0.0"
 description = "Local-first ML experiment tracker — zero friction, zero cloud"
-requires-python = ">=3.9"
+requires-python = ">=3.8"
 license = {text = "MIT"}
 readme = "README.md"
 keywords = ["ml", "experiment-tracking", "machine-learning", "research"]
@@ -15,6 +15,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
