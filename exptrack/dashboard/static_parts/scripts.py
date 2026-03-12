@@ -759,14 +759,29 @@ function startInlineRename(id, el) {
   });
 }
 
-// ── Tag autocomplete helper ──────────────────────────────────────────────────
-function createTagInput(id, tags, exp, onUpdate, opts = {}) {
+// ── Unified item autocomplete helper (tags & groups) ─────────────────────────
+function createItemInput(id, items, exp, onUpdate, opts = {}) {
+  // opts.kind: 'tag' or 'group'
+  // opts.allKnown: allKnownTags or allKnownGroups
+  // opts.apiAdd: e.g. '/tag' or '/group'
+  // opts.bodyKey: e.g. 'tag' or 'group'
+  // opts.expKey: e.g. 'tags' or 'groups'
+  // opts.loadAll: e.g. loadAllTags or loadAllGroups
+  // opts.prefix: display prefix, e.g. '#' for tags, '' for groups
+  const kind = opts.kind || 'tag';
+  const allKnown = opts.allKnown || allKnownTags;
+  const apiAdd = opts.apiAdd || '/tag';
+  const bodyKey = opts.bodyKey || 'tag';
+  const expKey = opts.expKey || 'tags';
+  const loadAll = opts.loadAll || loadAllTags;
+  const prefix = opts.prefix != null ? opts.prefix : '#';
+
   const wrapper = document.createElement('div');
   wrapper.className = 'tag-autocomplete';
   wrapper.style.cssText = 'display:inline-block;position:relative';
   const input = document.createElement('input');
   input.type = 'text';
-  input.placeholder = opts.placeholder || '+ tag';
+  input.placeholder = opts.placeholder || '+ ' + kind;
   input.className = 'name-edit-input';
   input.style.cssText = opts.style || 'width:90px;font-size:12px;padding:2px 4px';
   const dropdown = document.createElement('div');
@@ -778,8 +793,8 @@ function createTagInput(id, tags, exp, onUpdate, opts = {}) {
 
   function showSuggestions() {
     const val = input.value.trim().toLowerCase();
-    const existing = new Set(tags.map(t => t.toLowerCase()));
-    let suggestions = allKnownTags.filter(t => !existing.has(t.name.toLowerCase()));
+    const existing = new Set(items.map(t => t.toLowerCase()));
+    let suggestions = allKnown.filter(t => !existing.has(t.name.toLowerCase()));
     if (val) suggestions = suggestions.filter(t => t.name.toLowerCase().includes(val));
     suggestions = suggestions.slice(0, 8);
     if (val && !suggestions.some(t => t.name.toLowerCase() === val) && !existing.has(val)) {
@@ -787,25 +802,26 @@ function createTagInput(id, tags, exp, onUpdate, opts = {}) {
     }
     if (!suggestions.length) { dropdown.style.display = 'none'; return; }
     dropdown.innerHTML = suggestions.map((t, i) =>
-      '<div class="tag-autocomplete-item' + (i === activeIdx ? ' active' : '') + '" data-tag="' + esc(t.name) + '">' +
-      (t.isNew ? '<span class="tag-autocomplete-new">create "' + esc(t.name) + '"</span>' : '<span>#' + esc(t.name) + '</span>') +
+      '<div class="tag-autocomplete-item' + (i === activeIdx ? ' active' : '') + '" data-val="' + esc(t.name) + '">' +
+      (t.isNew ? '<span class="tag-autocomplete-new">create "' + esc(t.name) + '"</span>' : '<span>' + prefix + esc(t.name) + '</span>') +
       '<span class="tag-count">' + (t.count || '') + '</span></div>'
     ).join('');
     dropdown.style.display = 'block';
     dropdown.querySelectorAll('.tag-autocomplete-item').forEach(item => {
-      item.onmousedown = (ev) => { ev.preventDefault(); selectTag(item.dataset.tag); };
+      item.onmousedown = (ev) => { ev.preventDefault(); selectItem(item.dataset.val); };
     });
   }
 
-  async function selectTag(val) {
+  async function selectItem(val) {
     if (!val) return;
-    await postApi('/api/experiment/' + id + '/tag', {tag: val});
-    if (!tags.includes(val)) tags.push(val);
-    if (exp) exp.tags = [...tags];
+    const body = {}; body[bodyKey] = val;
+    await postApi('/api/experiment/' + id + apiAdd, body);
+    if (!items.includes(val)) items.push(val);
+    if (exp) exp[expKey] = [...items];
     input.value = '';
     dropdown.style.display = 'none';
     activeIdx = -1;
-    loadAllTags();
+    loadAll();
     if (onUpdate) onUpdate();
   }
 
@@ -813,51 +829,77 @@ function createTagInput(id, tags, exp, onUpdate, opts = {}) {
   input.addEventListener('focus', showSuggestions);
   input.addEventListener('blur', () => { setTimeout(() => dropdown.style.display = 'none', 150); });
   input.addEventListener('keydown', (ev) => {
-    const items = dropdown.querySelectorAll('.tag-autocomplete-item');
-    if (ev.key === 'ArrowDown') { ev.preventDefault(); activeIdx = Math.min(activeIdx + 1, items.length - 1); showSuggestions(); }
+    const items_el = dropdown.querySelectorAll('.tag-autocomplete-item');
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); activeIdx = Math.min(activeIdx + 1, items_el.length - 1); showSuggestions(); }
     else if (ev.key === 'ArrowUp') { ev.preventDefault(); activeIdx = Math.max(activeIdx - 1, -1); showSuggestions(); }
     else if (ev.key === 'Enter') {
       ev.preventDefault();
-      if (activeIdx >= 0 && items[activeIdx]) selectTag(items[activeIdx].dataset.tag);
-      else if (input.value.trim()) selectTag(input.value.trim());
+      if (activeIdx >= 0 && items_el[activeIdx]) selectItem(items_el[activeIdx].dataset.val);
+      else if (input.value.trim()) selectItem(input.value.trim());
     }
     else if (ev.key === 'Escape') { dropdown.style.display = 'none'; if (opts.onEscape) opts.onEscape(); }
   });
   return { wrapper, input };
 }
 
-// ── Inline tag editing on double-click ──────────────────────────────────────
-function startInlineTag(id, el) {
+// Convenience wrappers
+function createTagInput(id, tags, exp, onUpdate, opts = {}) {
+  return createItemInput(id, tags, exp, onUpdate, Object.assign({
+    kind: 'tag', allKnown: allKnownTags, apiAdd: '/tag', bodyKey: 'tag',
+    expKey: 'tags', loadAll: loadAllTags, prefix: '#'
+  }, opts));
+}
+function createGroupInput(id, groups, exp, onUpdate, opts = {}) {
+  return createItemInput(id, groups, exp, onUpdate, Object.assign({
+    kind: 'group', allKnown: allKnownGroups, apiAdd: '/group', bodyKey: 'group',
+    expKey: 'groups', loadAll: loadAllGroups, prefix: ''
+  }, opts));
+}
+
+// ── Unified inline item editing (tags & groups) ──────────────────────────────
+function startInlineItems(id, el, opts) {
+  // opts.expKey: 'tags' or 'groups'
+  // opts.prefix: '#' or ''
+  // opts.chipStyle: extra CSS for chips
+  // opts.deleteApi: e.g. '/delete-tag' or '/delete-group'
+  // opts.deleteBodyKey: e.g. 'tag' or 'group'
+  // opts.createInput: createTagInput or createGroupInput
+  // opts.loadAll: loadAllTags or loadAllGroups
   const exp = allExperiments.find(e => e.id === id);
   if (!exp) return;
-  const tags = [...(exp.tags || [])];
+  const items = [...(exp[opts.expKey] || [])];
   const container = document.createElement('div');
   container.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;align-items:center;min-width:120px';
   container.onclick = (ev) => ev.stopPropagation();
 
   function render() {
     container.innerHTML = '';
-    tags.forEach((t, i) => {
+    items.forEach((t, i) => {
       const chip = document.createElement('span');
       chip.className = 'tag';
-      chip.style.cssText = 'display:inline-flex;align-items:center;gap:2px';
-      chip.textContent = '#' + t;
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:2px' + (opts.chipStyle ? ';' + opts.chipStyle : '');
+      chip.textContent = opts.prefix + t;
       const x = document.createElement('span');
       x.textContent = '\u00d7';
       x.style.cssText = 'cursor:pointer;margin-left:2px;color:var(--red);font-weight:bold';
       x.onclick = async (ev) => {
         ev.stopPropagation();
-        await postApi('/api/experiment/' + id + '/delete-tag', {tag: t});
-        tags.splice(i, 1);
-        if (exp) exp.tags = [...tags];
+        const body = {}; body[opts.deleteBodyKey] = t;
+        await postApi('/api/experiment/' + id + opts.deleteApi, body);
+        items.splice(i, 1);
+        if (exp) exp[opts.expKey] = [...items];
         render();
         renderExpList();
-        loadAllTags();
+        opts.loadAll();
       };
       chip.appendChild(x);
       container.appendChild(chip);
     });
-    const { wrapper, input } = createTagInput(id, tags, exp, () => { render(); renderExpList(); }, {
+    const { wrapper, input } = opts.createInput(id, items, exp, () => {
+      render();
+      renderExpList();
+      renderExperiments();
+    }, {
       onEscape: () => { renderExperiments(); renderExpList(); }
     });
     container.appendChild(wrapper);
@@ -866,6 +908,22 @@ function startInlineTag(id, el) {
   el.innerHTML = '';
   el.appendChild(container);
   render();
+}
+
+function startInlineTag(id, el) {
+  startInlineItems(id, el, {
+    expKey: 'tags', prefix: '#', chipStyle: '',
+    deleteApi: '/delete-tag', deleteBodyKey: 'tag',
+    createInput: createTagInput, loadAll: loadAllTags
+  });
+}
+
+function startInlineGroup(id, el) {
+  startInlineItems(id, el, {
+    expKey: 'groups', prefix: '', chipStyle: 'background:rgba(44,90,160,0.1);color:var(--blue)',
+    deleteApi: '/delete-group', deleteBodyKey: 'group',
+    createInput: createGroupInput, loadAll: loadAllGroups
+  });
 }
 
 // ── Inline note editing on double-click ─────────────────────────────────────
@@ -1139,6 +1197,7 @@ async function refreshDetail(id) {
       <div class="tabs" id="detail-tabs">
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
         <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
+        <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
         <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
       </div>
 
@@ -1177,6 +1236,7 @@ async function refreshDetail(id) {
       </div>
 
       <div id="detail-tab-timeline" style="display:none"></div>
+      <div id="detail-tab-images" style="display:none"></div>
       <div id="detail-tab-compare-within" style="display:none"></div>
     </div>
   `;
@@ -1479,14 +1539,15 @@ function switchDetailTab(tab, expId) {
   currentDetailTab = tab;
   currentDetailExpId = expId;
   document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
-    const tabs = ['overview','timeline','compare-within'];
+    const tabs = ['overview','timeline','images','compare-within'];
     t.classList.toggle('active', tabs[i] === tab);
   });
-  ['overview','timeline','compare-within'].forEach(t => {
+  ['overview','timeline','images','compare-within'].forEach(t => {
     const el = document.getElementById('detail-tab-'+t);
     if (el) el.style.display = t === tab ? '' : 'none';
   });
   if (tab === 'timeline') loadTimeline(expId);
+  if (tab === 'images') loadImages(expId);
   if (tab === 'compare-within') loadCompareWithin(expId);
 }
 
@@ -1651,6 +1712,99 @@ async function viewCellSource(cellHash, btnEl) {
   }
   html += '</div>';
   btnEl.parentElement.insertAdjacentHTML('beforeend', html);
+}
+
+// ── Image gallery ────────────────────────────────────────────────────────────
+
+let imageFilter = '';
+let imageSort = 'newest';
+
+async function loadImages(expId) {
+  const container = document.getElementById('detail-tab-images');
+  if (!container) return;
+  container.innerHTML = '<p style="color:var(--muted)">Loading images...</p>';
+
+  const data = await api('/api/images/' + expId);
+  if (data.error) {
+    container.innerHTML = '<p style="color:var(--muted)">Error: ' + esc(data.error) + '</p>';
+    return;
+  }
+
+  let images = data.images || [];
+  if (!images.length) {
+    container.innerHTML = '<p style="color:var(--muted)">No images found in output directory' + (data.output_dir ? ' (' + esc(data.output_dir) + ')' : '') + '.</p>';
+    return;
+  }
+
+  // Collect unique directories for filtering
+  const dirs = [...new Set(images.map(img => img.dir))].sort();
+
+  // Apply filter
+  if (imageFilter) {
+    images = images.filter(img => img.dir === imageFilter);
+  }
+
+  // Apply sort
+  if (imageSort === 'oldest') {
+    images = [...images].sort((a, b) => a.modified - b.modified);
+  } else if (imageSort === 'name') {
+    images = [...images].sort((a, b) => a.name.localeCompare(b.name));
+  }
+  // 'newest' is default (already sorted by API)
+
+  let html = '<div class="img-gallery-toolbar">';
+  html += '<span style="color:var(--muted);font-size:13px">' + data.images.length + ' image' + (data.images.length !== 1 ? 's' : '') + ' in ' + esc(data.output_dir) + '</span>';
+
+  // Directory filter
+  if (dirs.length > 1) {
+    html += ' <select class="img-filter-select" onchange="imageFilter=this.value;loadImages(\'' + expId + '\')">';
+    html += '<option value=""' + (imageFilter === '' ? ' selected' : '') + '>All folders</option>';
+    for (const d of dirs) {
+      html += '<option value="' + esc(d) + '"' + (imageFilter === d ? ' selected' : '') + '>' + esc(d) + '</option>';
+    }
+    html += '</select>';
+  }
+
+  // Sort
+  html += ' <select class="img-filter-select" onchange="imageSort=this.value;loadImages(\'' + expId + '\')">';
+  html += '<option value="newest"' + (imageSort === 'newest' ? ' selected' : '') + '>Newest first</option>';
+  html += '<option value="oldest"' + (imageSort === 'oldest' ? ' selected' : '') + '>Oldest first</option>';
+  html += '<option value="name"' + (imageSort === 'name' ? ' selected' : '') + '>By name</option>';
+  html += '</select>';
+  html += '</div>';
+
+  html += '<div class="img-gallery">';
+  for (const img of images) {
+    const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
+    const sizeKb = (img.size / 1024).toFixed(1);
+    html += '<div class="img-card" onclick="openImageModal(\'' + esc(src) + '\',\'' + esc(img.name) + '\')">';
+    html += '<div class="img-thumb"><img src="' + src + '" alt="' + esc(img.name) + '" loading="lazy"></div>';
+    html += '<div class="img-info">';
+    html += '<div class="img-name" title="' + esc(img.path) + '">' + esc(img.name) + '</div>';
+    if (img.dir !== '.') html += '<div class="img-dir">' + esc(img.dir) + '</div>';
+    html += '<div class="img-meta">' + sizeKb + ' KB</div>';
+    html += '</div></div>';
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function openImageModal(src, name) {
+  // Create a fullscreen overlay to view the image
+  const overlay = document.createElement('div');
+  overlay.className = 'img-modal-overlay';
+  overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
+
+  const content = document.createElement('div');
+  content.className = 'img-modal-content';
+  content.innerHTML = '<div class="img-modal-header"><span class="img-modal-name">' + esc(name) + '</span><button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button></div>' +
+    '<img src="' + src + '" alt="' + esc(name) + '" style="max-width:100%;max-height:calc(100vh - 80px);object-fit:contain">';
+  overlay.appendChild(content);
+  document.body.appendChild(overlay);
+
+  // Close on Escape
+  const handler = (ev) => { if (ev.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
+  document.addEventListener('keydown', handler);
 }
 
 // ── Within-experiment comparison ─────────────────────────────────────────────
@@ -1845,116 +1999,7 @@ async function deleteGroupGlobal(name) {
   }
 }
 
-// ── Inline group editing (like tags) ─────────────────────────────────────────
-
-function createGroupInput(id, groups, exp, onUpdate, opts = {}) {
-  // Reusable group autocomplete input — same pattern as createTagInput
-  const wrapper = document.createElement('div');
-  wrapper.className = 'tag-autocomplete';
-  wrapper.style.cssText = 'display:inline-block;position:relative';
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = opts.placeholder || '+ group';
-  input.className = 'name-edit-input';
-  input.style.cssText = opts.style || 'width:100px;font-size:12px;padding:2px 4px';
-  const dropdown = document.createElement('div');
-  dropdown.className = 'tag-autocomplete-list';
-  dropdown.style.display = 'none';
-  wrapper.appendChild(input);
-  wrapper.appendChild(dropdown);
-  let activeIdx = -1;
-
-  function showSuggestions() {
-    const val = input.value.trim().toLowerCase();
-    const existing = new Set(groups.map(g => g.toLowerCase()));
-    let suggestions = allKnownGroups.filter(g => !existing.has(g.name.toLowerCase()));
-    if (val) suggestions = suggestions.filter(g => g.name.toLowerCase().includes(val));
-    suggestions = suggestions.slice(0, 8);
-    if (val && !suggestions.some(g => g.name.toLowerCase() === val) && !existing.has(val)) {
-      suggestions.unshift({name: val, count: 0, isNew: true});
-    }
-    if (!suggestions.length) { dropdown.style.display = 'none'; return; }
-    dropdown.innerHTML = suggestions.map((g, i) =>
-      '<div class="tag-autocomplete-item' + (i === activeIdx ? ' active' : '') + '" data-group="' + esc(g.name) + '">' +
-      (g.isNew ? '<span class="tag-autocomplete-new">create "' + esc(g.name) + '"</span>' : '<span>' + esc(g.name) + '</span>') +
-      '<span class="tag-count">' + (g.count || '') + '</span></div>'
-    ).join('');
-    dropdown.style.display = 'block';
-    dropdown.querySelectorAll('.tag-autocomplete-item').forEach(item => {
-      item.onmousedown = (ev) => { ev.preventDefault(); selectGroup(item.dataset.group); };
-    });
-  }
-
-  async function selectGroup(val) {
-    if (!val) return;
-    await postApi('/api/experiment/' + id + '/group', {group: val});
-    if (!groups.includes(val)) groups.push(val);
-    if (exp) exp.groups = [...groups];
-    input.value = '';
-    dropdown.style.display = 'none';
-    activeIdx = -1;
-    loadAllGroups();
-    if (onUpdate) onUpdate();
-  }
-
-  input.addEventListener('input', () => { activeIdx = -1; showSuggestions(); });
-  input.addEventListener('focus', showSuggestions);
-  input.addEventListener('blur', () => { setTimeout(() => dropdown.style.display = 'none', 150); });
-  input.addEventListener('keydown', (ev) => {
-    const items = dropdown.querySelectorAll('.tag-autocomplete-item');
-    if (ev.key === 'ArrowDown') { ev.preventDefault(); activeIdx = Math.min(activeIdx + 1, items.length - 1); showSuggestions(); }
-    else if (ev.key === 'ArrowUp') { ev.preventDefault(); activeIdx = Math.max(activeIdx - 1, -1); showSuggestions(); }
-    else if (ev.key === 'Enter') {
-      ev.preventDefault();
-      if (activeIdx >= 0 && items[activeIdx]) selectGroup(items[activeIdx].dataset.group);
-      else if (input.value.trim()) selectGroup(input.value.trim());
-    }
-    else if (ev.key === 'Escape') { dropdown.style.display = 'none'; if (opts.onEscape) opts.onEscape(); }
-  });
-  return { wrapper, input };
-}
-
-function startInlineGroup(id, el) {
-  // Inline group editing on double-click — same pattern as startInlineTag
-  const exp = allExperiments.find(e => e.id === id);
-  if (!exp) return;
-  const groups = [...(exp.groups || [])];
-  const container = document.createElement('div');
-  container.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;align-items:center;min-width:120px';
-  container.onclick = (ev) => ev.stopPropagation();
-
-  function render() {
-    container.innerHTML = '';
-    groups.forEach((g, i) => {
-      const chip = document.createElement('span');
-      chip.className = 'tag';
-      chip.style.cssText = 'display:inline-flex;align-items:center;gap:2px;background:rgba(44,90,160,0.1);color:var(--blue)';
-      chip.textContent = g;
-      const x = document.createElement('span');
-      x.textContent = '\u00d7';
-      x.style.cssText = 'cursor:pointer;margin-left:2px;color:var(--red);font-weight:bold';
-      x.onclick = async (ev) => {
-        ev.stopPropagation();
-        await postApi('/api/experiment/' + id + '/delete-group', {group: g});
-        groups.splice(i, 1);
-        if (exp) exp.groups = [...groups];
-        render();
-        renderExpList();
-        loadAllGroups();
-      };
-      chip.appendChild(x);
-      container.appendChild(chip);
-    });
-    const { wrapper, input } = createGroupInput(id, groups, exp, () => { render(); renderExpList(); }, {
-      onEscape: () => { renderExperiments(); renderExpList(); }
-    });
-    container.appendChild(wrapper);
-    setTimeout(() => input.focus(), 0);
-  }
-  el.innerHTML = '';
-  el.appendChild(container);
-  render();
-}
+// ── Inline group editing — uses unified startInlineItems from JS_INLINE_EDIT ─
 
 async function promptBulkAddToGroup() {
   const name = prompt('Group name to add ' + selectedIds.size + ' experiment(s) to:');
@@ -1972,6 +2017,12 @@ async function promptBulkAddToGroup() {
 async function deleteGroupInline(id, group) {
   const exp = allExperiments.find(e => e.id === id);
   if (exp) exp.groups = (exp.groups||[]).filter(g => g !== group);
+  const area = document.getElementById('detail-groups-area');
+  if (area) {
+    area.querySelectorAll('.tag-removable').forEach(el => {
+      if (el.textContent.trim().replace(/\u00d7$/, '').trim() === group) el.remove();
+    });
+  }
   const d = await postApi('/api/experiment/' + id + '/delete-group', {group});
   if (d.ok) { loadAllGroups(); loadExperiments().then(() => { if (currentDetailId === id) refreshDetail(id); }); }
 }

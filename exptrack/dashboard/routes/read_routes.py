@@ -100,6 +100,48 @@ def api_groups(conn) -> dict:
     return {"groups": get_groups(conn)}
 
 
+def api_list_images(conn, exp_id: str) -> dict:
+    """List image files in an experiment's output directory (recursive)."""
+    from ...core.queries import find_experiment
+    from ...config import project_root
+    import os
+
+    exp = find_experiment(conn, exp_id)
+    if not exp:
+        return {"error": "not found"}
+    output_dir = exp["output_dir"]
+    if not output_dir:
+        return {"images": [], "output_dir": ""}
+
+    root = str(project_root())
+    if not root:
+        return {"images": [], "output_dir": output_dir}
+
+    abs_dir = os.path.join(root, output_dir)
+    if not os.path.isdir(abs_dir):
+        return {"images": [], "output_dir": output_dir}
+
+    image_exts = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.tiff', '.webp'}
+    images = []
+    for dirpath, _, filenames in os.walk(abs_dir):
+        for fn in sorted(filenames):
+            ext = os.path.splitext(fn)[1].lower()
+            if ext in image_exts:
+                full = os.path.join(dirpath, fn)
+                rel = os.path.relpath(full, root)
+                stat = os.stat(full)
+                images.append({
+                    "name": fn,
+                    "path": rel,
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                    "dir": os.path.relpath(dirpath, abs_dir) or ".",
+                })
+    # Sort by modification time, newest first
+    images.sort(key=lambda x: x["modified"], reverse=True)
+    return {"images": images, "output_dir": output_dir}
+
+
 def _export_markdown(data: dict) -> str:
     """Generate a markdown summary of an experiment."""
     import json

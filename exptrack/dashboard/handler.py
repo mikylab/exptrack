@@ -59,6 +59,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_groups(conn))
         elif path == "/api/all-groups":
             self._json(write_routes.api_all_groups(conn))
+        elif path.startswith("/api/images/"):
+            exp_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
+            self._json(read_routes.api_list_images(conn, exp_id))
+        elif path.startswith("/api/file/"):
+            # Serve a file from the project root (for image viewing)
+            file_path = "/".join(path.split("/")[3:])
+            file_path = urllib.parse.unquote(file_path)
+            self._serve_file(file_path)
         else:
             self.send_error(404)
 
@@ -134,3 +142,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _serve_file(self, rel_path: str):
+        """Serve a file from the project root (images only, with path validation)."""
+        import os
+        from exptrack.config import project_root
+        root = str(project_root())
+        if not root:
+            self.send_error(404, "No project root")
+            return
+        abs_path = os.path.normpath(os.path.join(root, rel_path))
+        # Security: ensure path is within project root
+        if not abs_path.startswith(os.path.normpath(root)):
+            self.send_error(403, "Access denied")
+            return
+        if not os.path.isfile(abs_path):
+            self.send_error(404, "File not found")
+            return
+        # Only serve image types
+        ext = os.path.splitext(abs_path)[1].lower()
+        mime_types = {
+            '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
+            '.tiff': 'image/tiff', '.webp': 'image/webp',
+        }
+        content_type = mime_types.get(ext)
+        if not content_type:
+            self.send_error(403, "Only image files can be served")
+            return
+        with open(abs_path, 'rb') as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "max-age=60")
+        self.end_headers()
+        self.wfile.write(data)

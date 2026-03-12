@@ -495,8 +495,29 @@ CSS_GROUPS = """
 """
 
 
+# Image gallery
+CSS_IMAGES = """
+  .img-gallery-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  .img-filter-select { font-family: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 3px; background: var(--card-bg); color: var(--fg); }
+  .img-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  .img-card { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; cursor: pointer; background: var(--card-bg); transition: box-shadow 0.15s, transform 0.15s; }
+  .img-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.15); transform: translateY(-1px); }
+  .img-thumb { width: 100%; aspect-ratio: 1; overflow: hidden; background: var(--code-bg); display: flex; align-items: center; justify-content: center; }
+  .img-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .img-info { padding: 6px 8px; }
+  .img-name { font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .img-dir { font-size: 10px; color: var(--blue); margin-top: 1px; }
+  .img-meta { font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .img-modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.85); z-index: 10000; display: flex; align-items: center; justify-content: center; }
+  .img-modal-content { max-width: 95vw; max-height: 95vh; display: flex; flex-direction: column; align-items: center; }
+  .img-modal-header { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 8px 12px; color: #fff; }
+  .img-modal-name { font-size: 13px; }
+  .img-modal-close { background: none; border: none; color: #fff; font-size: 24px; cursor: pointer; padding: 0 8px; }
+"""
+
+
 def get_all_css() -> str:
     """Concatenate all CSS sections."""
     return (CSS_RESET + CSS_LAYOUT + CSS_CARDS + CSS_TABLE +
             CSS_DETAIL + CSS_CODE + CSS_TIMELINE + CSS_COMPARE +
-            CSS_COMPONENTS + CSS_GROUPS)
+            CSS_COMPONENTS + CSS_GROUPS + CSS_IMAGES)
