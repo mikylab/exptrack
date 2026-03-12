@@ -1708,6 +1708,17 @@ loadExperiments().then(() => {
 # Group management UI (new feature)
 JS_GROUPS = r"""
 // ── Group management ─────────────────────────────────────────────────────────
+function toggleGroupPanel() {
+  const panel = document.getElementById('group-panel');
+  if (!panel) return;
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    renderGroupPanel();
+  } else {
+    panel.style.display = 'none';
+  }
+}
+
 async function loadGroups() {
   try {
     const data = await api('/api/groups');

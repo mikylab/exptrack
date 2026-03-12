@@ -121,8 +121,10 @@ HTML_BODY = r"""</style>
         <button class="compare-main-btn" onclick="showCompareView()" title="Compare two experiments">&#x2194; Compare</button>
         <div class="tag-filter-bar" id="tag-filter-bar" style="display:inline"></div>
         <span class="manage-tags-link" onclick="toggleTagManager()" title="Manage all tags">Tags&hellip;</span>
+        <span class="manage-tags-link" onclick="toggleGroupPanel()" title="Manage experiment groups">Groups&hellip;</span>
       </div>
       <div id="tag-manager-panel" class="tag-manager-panel" style="display:none"></div>
+      <div id="group-panel" class="group-panel" style="display:none"></div>
       <div class="group-bar" id="group-bar">
         <span>Group by:</span>
         <button data-group="git_commit" onclick="setGroup('git_commit')" class="active">Git Commit</button>
