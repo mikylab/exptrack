@@ -522,6 +522,22 @@ CSS_IMAGES = """
   .img-path-add input { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; background: var(--card-bg); color: var(--fg); flex: 1; }
   .img-path-add button { font-family: inherit; font-size: 12px; padding: 4px 12px; border: none; background: var(--blue); color: #fff; cursor: pointer; border-radius: 3px; }
   .group-chip { background: rgba(44,90,160,0.1); color: var(--blue); }
+  .filter-dropdown-wrap { display: inline-block; position: relative; }
+  .filter-search-input {
+    font-family: inherit; font-size: 12px; border: 1px solid var(--border);
+    padding: 3px 8px; border-radius: 3px; background: var(--card-bg); color: var(--fg);
+    width: 180px;
+  }
+  .filter-search-input:focus { outline: none; border-color: var(--blue); }
+  .filter-dropdown-list {
+    position: absolute; top: 100%; left: 0; z-index: 50;
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px;
+    max-height: 240px; overflow-y: auto; min-width: 220px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  .filter-dropdown-item {
+    padding: 5px 10px; cursor: pointer; font-size: 12px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .filter-dropdown-item:hover, .filter-dropdown-item.active { background: var(--code-bg); color: var(--blue); }
   .manage-section { margin-bottom: 12px; }
   .manage-section h4 { font-size: 13px; margin-bottom: 6px; }
   .tm-name-edit { cursor: pointer; }
