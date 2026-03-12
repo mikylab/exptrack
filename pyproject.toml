@@ -7,7 +7,7 @@ name = "exptrack"
 version = "2.0.0"
 description = "Local-first ML experiment tracker — zero friction, zero cloud"
 requires-python = ">=3.9"
-license = "MIT"
+license = {text = "MIT"}
 readme = "README.md"
 keywords = ["ml", "experiment-tracking", "machine-learning", "research"]
 classifiers = [
