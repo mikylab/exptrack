@@ -322,10 +322,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .notes-display { white-space: pre-wrap; background: var(--code-bg); padding: 10px; border-radius: 4px; margin: 4px 0; font-size: 13px; }
   .tag-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .tag-removable { background: var(--code-bg); padding: 3px 10px; font-size: 13px; border-radius: 3px; display: inline-flex; align-items: center; gap: 4px; cursor: default; }
-  .tag-removable .tag-delete { cursor: pointer; color: var(--muted); font-size: 14px; margin-left: 2px; line-height: 1; }
-  .tag-removable .tag-delete:hover { color: var(--red); }
+  .tag-removable .tag-delete { cursor: pointer; color: var(--muted); font-size: 15px; margin-left: 4px; line-height: 1; opacity: 0.6; }
+  .tag-removable:hover .tag-delete { opacity: 1; color: var(--red, #e55); }
+  .tag-removable .tag-delete:hover { opacity: 1; color: var(--red, #e55); }
   .tag-removable .tag-edit { cursor: pointer; color: var(--muted); font-size: 11px; }
   .tag-removable .tag-edit:hover { color: var(--blue); }
+  .manage-tags-link { font-size: 12px; color: var(--muted); cursor: pointer; margin-left: 8px; white-space: nowrap; }
+  .manage-tags-link:hover { color: var(--blue); text-decoration: underline; }
+  .tag-manager-panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px 16px; margin: 8px 16px; font-size: 13px; }
+  .tag-manager-panel h4 { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+  .tag-manager-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .tag-manager-row:last-child { border-bottom: none; }
+  .tag-manager-row .tm-name { color: var(--blue); }
+  .tag-manager-row .tm-count { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  .tag-manager-row .tm-delete { cursor: pointer; color: var(--muted); font-size: 14px; padding: 2px 6px; border-radius: 3px; }
+  .tag-manager-row .tm-delete:hover { color: var(--red); background: rgba(192,57,43,0.1); }
   .notes-display { position: relative; }
   .notes-edit-btn { position: absolute; top: 4px; right: 4px; font-size: 11px; cursor: pointer; color: var(--muted); background: var(--card-bg); border: 1px solid var(--border); padding: 1px 6px; border-radius: 3px; }
   .notes-edit-btn:hover { color: var(--blue); border-color: var(--blue); }
@@ -587,7 +598,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <input type="text" id="main-search" class="main-search-input" placeholder="Search experiments..." oninput="searchQuery=this.value;renderExperiments();renderExpList()">
         <button class="compare-main-btn" onclick="showCompareView()" title="Compare two experiments">&#x2194; Compare</button>
         <div class="tag-filter-bar" id="tag-filter-bar" style="display:inline"></div>
+        <span class="manage-tags-link" onclick="toggleTagManager()" title="Manage all tags">Tags&hellip;</span>
       </div>
+      <div id="tag-manager-panel" class="tag-manager-panel" style="display:none"></div>
       <div class="group-bar" id="group-bar">
         <span>Group by:</span>
         <button data-group="git_commit" onclick="setGroup('git_commit')" class="active">Git Commit</button>
@@ -703,7 +716,36 @@ async function deleteTagGlobal(tag) {
     if (tagFilter === tag) tagFilter = '';
     await loadAllTags();
     await loadExperiments();
+    renderTagManager();
   }
+}
+
+function toggleTagManager() {
+  const panel = document.getElementById('tag-manager-panel');
+  if (!panel) return;
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    renderTagManager();
+  } else {
+    panel.style.display = 'none';
+  }
+}
+
+function renderTagManager() {
+  const panel = document.getElementById('tag-manager-panel');
+  if (!panel || panel.style.display === 'none') return;
+  if (!allKnownTags.length) {
+    panel.innerHTML = '<div style="color:var(--muted)">No tags yet.</div>';
+    return;
+  }
+  let html = '<h4>All Tags</h4>';
+  for (const t of allKnownTags) {
+    html += '<div class="tag-manager-row">'
+      + '<span><span class="tm-name">#' + esc(t.name) + '</span><span class="tm-count">(' + t.count + ')</span></span>'
+      + '<span class="tm-delete" onclick="deleteTagGlobal(\'' + esc(t.name) + '\')" title="Remove from all experiments">&times;</span>'
+      + '</div>';
+  }
+  panel.innerHTML = html;
 }
 
 function fmtDur(s) {
@@ -1641,10 +1683,11 @@ async function refreshDetail(id) {
     }).join('\n');
   }
 
+  const expTags = exp.tags || [];
   const tagsHtml = '<span class="detail-tags-inline" id="detail-tags-area">' +
-    (exp.tags.length
-      ? exp.tags.map(t => '<span class="tag-removable">#' + esc(t) +
-        ' <span class="tag-delete" onclick="event.stopPropagation();deleteTagInline(\'' + exp.id + '\',\'' + esc(t) + '\')" title="Remove">&times;</span>' +
+    (expTags.length
+      ? expTags.map(t => '<span class="tag-removable">#' + esc(t) +
+        ' <span class="tag-delete" onclick="event.stopPropagation();deleteTagInline(\'' + exp.id + '\',\'' + esc(t) + '\')" title="Remove tag from this experiment">&times;</span>' +
         '</span>').join('')
       : '') +
     '<span class="tag-input-area" id="detail-tag-input-area"></span>' +
@@ -1934,6 +1977,15 @@ async function addArtifact(id) {
 
 
 async function deleteTagInline(id, tag) {
+  // Optimistic removal: hide the tag chip immediately
+  const exp = allExperiments.find(e => e.id === id);
+  if (exp) exp.tags = (exp.tags||[]).filter(t => t !== tag);
+  const area = document.getElementById('detail-tags-area');
+  if (area) {
+    area.querySelectorAll('.tag-removable').forEach(el => {
+      if (el.textContent.trim().replace(/×$/, '').trim() === '#' + tag) el.remove();
+    });
+  }
   const d = await postApi('/api/experiment/' + id + '/delete-tag', {tag});
   if (d.ok) { loadAllTags(); loadExperiments().then(() => refreshDetail(id)); }
 }
