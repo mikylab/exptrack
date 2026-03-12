@@ -32,7 +32,7 @@ exptrack run-finish $EXP_ID --metrics results.json
 exptrack run-fail $EXP_ID "reason"
 
 # CLI commands: ls, show, diff, compare, history, timeline, tag, untag, note,
-#   edit-note, rm, clean, finish, stale, upgrade, storage, export, verify, ui
+#   edit-note, rm, clean, finish, delete-tag, stale, upgrade, storage, export, verify, ui
 ```
 
 ## Testing & Linting
@@ -67,7 +67,7 @@ exptrack/
     main.py                   Argument parsing, subcommand dispatch
     pipeline_cmds.py          run-start, run-finish, run-fail, log-metric, log-artifact
     inspect_cmds.py           ls, show, diff, compare, history, timeline, export, verify
-    mutate_cmds.py            tag, untag, note, edit-note, rm, finish
+    mutate_cmds.py            tag, untag, delete-tag, note, edit-note, rm, finish
     admin_cmds.py             clean, stale, upgrade, storage
   plugins/
     __init__.py               Plugin base class + event registry singleton
@@ -141,3 +141,44 @@ Indexed on: metrics(exp_id, key), params(exp_id), artifacts(exp_id), timeline(ex
   "plugins": { "enabled": [] }
 }
 ```
+
+## Coding Best Practices
+
+### General Principles
+- **stdlib only**: No external dependencies. Every import must come from the Python standard library
+- **Keep functions focused**: Each function should do one thing. If a function exceeds ~40 lines, consider splitting it
+- **Reuse existing utilities**: Check `core/db.py` (`get_db`, `_find_exp`), `cli/formatting.py` (ANSI color helpers), and `config.py` (project root, config loading) before writing new helpers
+- **Deduplication**: `log_artifact()` already deduplicates by resolved path. Use this pattern — check before insert — for any new data types
+- **Error boundaries**: Wrap external operations (file I/O, git, plugin calls) in try/except. Never let a capture failure crash the user's training script
+
+### Dashboard Modularization
+
+`dashboard/static.py` (~2200 lines) contains all HTML, CSS, and JS as Python string constants. This is the largest file and the primary candidate for incremental modularization.
+
+**Current structure within static.py:**
+- Lines 1-30: CSS variables and reset
+- Lines 30-420: All CSS styles
+- Lines 420-610: HTML structure (sidebar, main content, compare view, modals)
+- Lines 610-780: Core JS (state, init, data loading, rendering)
+- Lines 780-960: Selection, view switching, sidebar actions
+- Lines 960-1500: Table rendering, inline editing, tag management
+- Lines 1500-1810: Detail view, tabs, export
+- Lines 1810-1900: Compare view logic
+- Lines 1900-2200: Timeline, within-compare, utilities
+
+**Incremental modularization strategy:**
+1. Extract CSS into `dashboard/styles.py` — one string constant per section
+2. Extract JS into logical modules in `dashboard/js/` — each as a Python string constant:
+   - `experiment_list.py` — table rendering, sorting, filtering, grouping
+   - `detail_view.py` — experiment detail panel, tabs, inline editing
+   - `compare_view.py` — compare dropdowns, diff rendering, within-compare
+   - `timeline_view.py` — timeline rendering, cell source viewer
+   - `tag_manager.py` — tag autocomplete, inline tag editing, global tag operations
+3. `static.py` becomes the assembler: imports all parts and concatenates into `DASHBOARD_HTML`
+4. Each module should be independently testable by checking the JS string for syntax errors
+
+**Rules for dashboard changes:**
+- When modifying JS, keep the existing function signatures stable — other parts of the JS may call them
+- All API calls should go through `api()` (GET) or `postApi()` (POST) helpers
+- New UI features should follow the inline-editing pattern (double-click to edit, Enter/Escape to save/cancel)
+- CSS custom properties (variables) are defined in `:root` — use them instead of hardcoded colors

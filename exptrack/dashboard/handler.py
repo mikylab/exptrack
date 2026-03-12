@@ -111,6 +111,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/experiment/") and path.endswith("/edit-artifact"):
             exp_id = path.split("/")[-2]
             self._json_response(self._api_edit_artifact(exp_id, body))
+        elif path == "/api/delete-tag-global":
+            self._json_response(self._api_delete_tag_global(body))
         elif path == "/api/bulk-delete":
             self._json_response(self._api_bulk_delete(body))
         elif path == "/api/bulk-export":
@@ -518,6 +520,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         return {"tags": [{"name": t, "count": c} for t, c in sorted(all_tags.items(), key=lambda x: -x[1])]}
+
+    def _api_delete_tag_global(self, body):
+        """Remove a tag from ALL experiments."""
+        tag = body.get("tag", "").strip()
+        if not tag:
+            return {"error": "empty tag"}
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT id, tags FROM experiments WHERE tags LIKE ?",
+            (f'%"{tag}"%',)
+        ).fetchall()
+        count = 0
+        now = datetime.now(timezone.utc).isoformat()
+        for r in rows:
+            tags = json.loads(r["tags"] or "[]")
+            if tag in tags:
+                tags = [t for t in tags if t != tag]
+                conn.execute("UPDATE experiments SET tags=?, updated_at=? WHERE id=?",
+                             (json.dumps(tags), now, r["id"]))
+                count += 1
+        conn.commit()
+        return {"ok": True, "deleted_from": count}
 
     def _api_get_timezone(self):
         from exptrack import config as cfg

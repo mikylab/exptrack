@@ -270,8 +270,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .view-source-btn { font-family: inherit; font-size: 11px; padding: 1px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; margin-left: 6px; color: var(--blue); }
   .view-source-btn:hover { background: var(--code-bg); }
   /* Compare */
+  .compare-main-btn { font-family: inherit; font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; color: var(--blue); margin-left: 8px; white-space: nowrap; }
+  .compare-main-btn:hover { background: var(--code-bg); border-color: var(--blue); }
+  .compare-header { margin-bottom: 12px; }
+  .compare-header h3 { font-size: 18px; }
+  .back-link { font-family: inherit; font-size: 13px; background: none; border: none; color: var(--blue); cursor: pointer; padding: 0; }
+  .back-link:hover { text-decoration: underline; }
   .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-  .compare-input { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
+  .compare-input { display: flex; gap: 10px; margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap; }
+  .compare-selector { display: flex; flex-direction: column; gap: 4px; }
+  .compare-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
   .compare-input select, .compare-input input {
     font-family: inherit; font-size: 14px;
     border: 1px solid var(--border); padding: 6px 12px; min-width: 260px;
@@ -282,8 +290,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     background: var(--fg); color: var(--bg); border: none;
     padding: 6px 16px; cursor: pointer; border-radius: 3px;
   }
-  .compare-input .vs-label { font-weight: 600; color: var(--muted); }
+  .compare-input button.primary { background: var(--blue); color: #fff; }
+  .compare-input .vs-label { font-weight: 600; color: var(--muted); font-size: 16px; padding-bottom: 6px; }
   .differs { color: var(--yellow); font-weight: 600; }
+  .diff-added { color: var(--green, #3fb950); background: rgba(63,185,80,0.1); }
+  .diff-removed { color: var(--red, #f85149); background: rgba(248,81,73,0.1); }
   .only-differs-toggle { font-family: inherit; font-size: 12px; margin-left: 12px; cursor: pointer; }
   /* Tabs */
   .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border); }
@@ -311,10 +322,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .notes-display { white-space: pre-wrap; background: var(--code-bg); padding: 10px; border-radius: 4px; margin: 4px 0; font-size: 13px; }
   .tag-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .tag-removable { background: var(--code-bg); padding: 3px 10px; font-size: 13px; border-radius: 3px; display: inline-flex; align-items: center; gap: 4px; cursor: default; }
-  .tag-removable .tag-delete { cursor: pointer; color: var(--muted); font-size: 14px; margin-left: 2px; line-height: 1; }
-  .tag-removable .tag-delete:hover { color: var(--red); }
+  .tag-removable .tag-delete { cursor: pointer; color: var(--muted); font-size: 15px; margin-left: 4px; line-height: 1; opacity: 0.6; }
+  .tag-removable:hover .tag-delete { opacity: 1; color: var(--red, #e55); }
+  .tag-removable .tag-delete:hover { opacity: 1; color: var(--red, #e55); }
   .tag-removable .tag-edit { cursor: pointer; color: var(--muted); font-size: 11px; }
   .tag-removable .tag-edit:hover { color: var(--blue); }
+  .manage-tags-link { font-size: 12px; color: var(--muted); cursor: pointer; margin-left: 8px; white-space: nowrap; }
+  .manage-tags-link:hover { color: var(--blue); text-decoration: underline; }
+  .tag-manager-panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px 16px; margin: 8px 16px; font-size: 13px; }
+  .tag-manager-panel h4 { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+  .tag-manager-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .tag-manager-row:last-child { border-bottom: none; }
+  .tag-manager-row .tm-name { color: var(--blue); }
+  .tag-manager-row .tm-count { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  .tag-manager-row .tm-delete { cursor: pointer; color: var(--muted); font-size: 14px; padding: 2px 6px; border-radius: 3px; }
+  .tag-manager-row .tm-delete:hover { color: var(--red); background: rgba(192,57,43,0.1); }
   .notes-display { position: relative; }
   .notes-edit-btn { position: absolute; top: 4px; right: 4px; font-size: 11px; cursor: pointer; color: var(--muted); background: var(--card-bg); border: 1px solid var(--border); padding: 1px 6px; border-radius: 3px; }
   .notes-edit-btn:hover { color: var(--blue); border-color: var(--blue); }
@@ -411,6 +433,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .tag-filter-bar .tag-chip { font-family: inherit; font-size: 11px; background: var(--code-bg); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); }
   .tag-filter-bar .tag-chip:hover { background: var(--border); color: var(--fg); }
   .tag-filter-bar .tag-chip.active { background: var(--fg); color: var(--bg); }
+  .tag-delete-x { position:absolute; right:3px; top:50%; transform:translateY(-50%); font-size:12px; opacity:0; cursor:pointer; color:var(--red,#e55); line-height:1; }
+  .tag-chip:hover .tag-delete-x { opacity:0.7; }
+  .tag-delete-x:hover { opacity:1 !important; }
   .group-bar { display: flex; gap: 4px; align-items: center; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
   .group-bar button { font-family: inherit; font-size: 11px; background: var(--code-bg); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); }
   .group-bar button:hover { background: var(--border); color: var(--fg); }
@@ -571,8 +596,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="stats" id="stats"></div>
       <div class="table-toolbar">
         <input type="text" id="main-search" class="main-search-input" placeholder="Search experiments..." oninput="searchQuery=this.value;renderExperiments();renderExpList()">
+        <button class="compare-main-btn" onclick="showCompareView()" title="Compare two experiments">&#x2194; Compare</button>
         <div class="tag-filter-bar" id="tag-filter-bar" style="display:inline"></div>
+        <span class="manage-tags-link" onclick="toggleTagManager()" title="Manage all tags">Tags&hellip;</span>
       </div>
+      <div id="tag-manager-panel" class="tag-manager-panel" style="display:none"></div>
       <div class="group-bar" id="group-bar">
         <span>Group by:</span>
         <button data-group="git_commit" onclick="setGroup('git_commit')" class="active">Git Commit</button>
@@ -593,11 +621,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     <!-- Compare state -->
     <div id="compare-view" style="display:none">
+      <div class="compare-header">
+        <button class="back-link" onclick="showWelcome()">&larr; Back to experiments</button>
+        <h3 style="margin:8px 0 4px">Compare Experiments</h3>
+      </div>
       <div class="compare-input">
-        <select id="cmp-id1"><option value="">-- Select experiment 1 --</option></select>
-        <span class="vs-label">vs</span>
-        <select id="cmp-id2"><option value="">-- Select experiment 2 --</option></select>
-        <button onclick="doCompare()">Compare</button>
+        <div class="compare-selector">
+          <label class="compare-label">base</label>
+          <select id="cmp-id1"><option value="">-- Select base experiment --</option></select>
+        </div>
+        <span class="vs-label">&larr;&rarr;</span>
+        <div class="compare-selector">
+          <label class="compare-label">compare</label>
+          <select id="cmp-id2"><option value="">-- Select compare experiment --</option></select>
+        </div>
+        <button class="primary" onclick="doCompare()">Compare</button>
       </div>
       <div id="compare-result"></div>
     </div>
@@ -649,7 +687,10 @@ function renderTagFilterBar() {
   let html = '<span style="font-size:11px;color:var(--muted);margin-right:4px">Filter:</span>';
   html += '<span class="tag-chip' + (tagFilter===''?' active':'') + '" onclick="tagFilter=\'\';renderExperiments();renderExpList();renderTagFilterBar()">All</span>';
   for (const t of [...allTags].sort()) {
-    html += '<span class="tag-chip' + (tagFilter===t?' active':'') + '" onclick="tagFilter=\'' + esc(t) + '\';renderExperiments();renderExpList();renderTagFilterBar()">#' + esc(t) + '</span>';
+    html += '<span class="tag-chip' + (tagFilter===t?' active':'') + '" style="position:relative;padding-right:18px">';
+    html += '<span onclick="tagFilter=\'' + esc(t) + '\';renderExperiments();renderExpList();renderTagFilterBar()">#' + esc(t) + '</span>';
+    html += '<span class="tag-delete-x" onclick="event.stopPropagation();deleteTagGlobal(\'' + esc(t) + '\')" title="Delete tag from all experiments">&times;</span>';
+    html += '</span>';
   }
   bar.innerHTML = html;
 }
@@ -665,6 +706,46 @@ async function postApi(path, body = {}) {
     body: JSON.stringify(body)
   });
   return r.json();
+}
+
+async function deleteTagGlobal(tag) {
+  const count = allExperiments.filter(e => (e.tags||[]).includes(tag)).length;
+  if (!confirm('Remove #' + tag + ' from ' + count + ' experiment(s)? This cannot be undone.')) return;
+  const res = await postApi('/api/delete-tag-global', {tag});
+  if (res.ok) {
+    if (tagFilter === tag) tagFilter = '';
+    await loadAllTags();
+    await loadExperiments();
+    renderTagManager();
+  }
+}
+
+function toggleTagManager() {
+  const panel = document.getElementById('tag-manager-panel');
+  if (!panel) return;
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    renderTagManager();
+  } else {
+    panel.style.display = 'none';
+  }
+}
+
+function renderTagManager() {
+  const panel = document.getElementById('tag-manager-panel');
+  if (!panel || panel.style.display === 'none') return;
+  if (!allKnownTags.length) {
+    panel.innerHTML = '<div style="color:var(--muted)">No tags yet.</div>';
+    return;
+  }
+  let html = '<h4>All Tags</h4>';
+  for (const t of allKnownTags) {
+    html += '<div class="tag-manager-row">'
+      + '<span><span class="tm-name">#' + esc(t.name) + '</span><span class="tm-count">(' + t.count + ')</span></span>'
+      + '<span class="tm-delete" onclick="deleteTagGlobal(\'' + esc(t.name) + '\')" title="Remove from all experiments">&times;</span>'
+      + '</div>';
+  }
+  panel.innerHTML = html;
 }
 
 function fmtDur(s) {
@@ -1602,10 +1683,11 @@ async function refreshDetail(id) {
     }).join('\n');
   }
 
+  const expTags = exp.tags || [];
   const tagsHtml = '<span class="detail-tags-inline" id="detail-tags-area">' +
-    (exp.tags.length
-      ? exp.tags.map(t => '<span class="tag-removable">#' + esc(t) +
-        ' <span class="tag-delete" onclick="event.stopPropagation();deleteTagInline(\'' + exp.id + '\',\'' + esc(t) + '\')" title="Remove">&times;</span>' +
+    (expTags.length
+      ? expTags.map(t => '<span class="tag-removable">#' + esc(t) +
+        ' <span class="tag-delete" onclick="event.stopPropagation();deleteTagInline(\'' + exp.id + '\',\'' + esc(t) + '\')" title="Remove tag from this experiment">&times;</span>' +
         '</span>').join('')
       : '') +
     '<span class="tag-input-area" id="detail-tag-input-area"></span>' +
@@ -1805,46 +1887,49 @@ async function doCompare() {
   html += '<label class="only-differs-toggle"><input type="checkbox" ' + (onlyDiffers ? 'checked' : '') + ' onchange="onlyDiffers=this.checked;doCompare()"> Show only differences</label>';
 
   if (allPKeys.length) {
-    html += '<h2>Params</h2><table class="params-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Params</summary><table class="params-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
     for (const k of allPKeys) {
       const v1 = JSON.stringify(e1.params[k] ?? '--');
       const v2 = JSON.stringify(e2.params[k] ?? '--');
       const differs = v1 !== v2;
       if (onlyDiffers && !differs) continue;
-      const cls = differs ? ' class="differs"' : '';
-      html += '<tr><td>' + esc(k) + '</td><td' + cls + '>' + esc(v1) + '</td><td' + cls + '>' + esc(v2) + '</td></tr>';
+      const cls1 = differs ? (e1.params[k]!==undefined ? ' class="diff-removed"' : '') : '';
+      const cls2 = differs ? (e2.params[k]!==undefined ? ' class="diff-added"' : '') : '';
+      html += '<tr><td>' + esc(k) + '</td><td' + cls1 + '>' + esc(v1) + '</td><td' + cls2 + '>' + esc(v2) + '</td></tr>';
     }
-    html += '</table>';
+    html += '</table></details>';
   }
 
   if (allVarKeysFromTimeline.length) {
-    html += '<h2>Variables <span class="help-icon" title="Final variable state from the execution timeline of each experiment.">?</span></h2><table class="params-table"><tr><th>Variable</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Variables <span class="help-icon" title="Final variable state from the execution timeline of each experiment.">?</span></summary><table class="params-table"><tr><th>Variable</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';
     for (const k of allVarKeysFromTimeline) {
       const v1 = String(tlVars1[k] ?? '--').slice(0, 60);
       const v2 = String(tlVars2[k] ?? '--').slice(0, 60);
       const differs = v1 !== v2;
       if (onlyDiffers && !differs) continue;
-      const cls = differs ? ' class="differs"' : '';
-      html += '<tr><td class="var-name">' + esc(k) + '</td><td' + cls + '>' + esc(v1) + '</td><td' + cls + '>' + esc(v2) + '</td></tr>';
+      const cls1 = differs ? ' class="diff-removed"' : '';
+      const cls2 = differs ? ' class="diff-added"' : '';
+      html += '<tr><td class="var-name">' + esc(k) + '</td><td' + cls1 + '>' + esc(v1) + '</td><td' + cls2 + '>' + esc(v2) + '</td></tr>';
     }
-    html += '</table>';
+    html += '</table></details>';
   }
 
   if (allMKeys.length) {
-    html += '<h2>Metrics (last)</h2><table class="metrics-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th><th>Delta</th></tr>';
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Metrics (last)</summary><table class="metrics-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th><th>Delta</th></tr>';
     for (const k of allMKeys) {
       const v1 = m1[k], v2 = m2[k];
       const sv1 = v1 !== undefined ? v1.toFixed(4) : '--';
       const sv2 = v2 !== undefined ? v2.toFixed(4) : '--';
       let delta = '';
       if (v1 !== undefined && v2 !== undefined) {
-        const d = v1 - v2;
+        const d = v2 - v1;
         if (onlyDiffers && Math.abs(d) < 0.0001) continue;
-        delta = '<span style="color:' + (d>0?'var(--red)':'var(--green)') + '">' + (d>0?'+':'') + d.toFixed(4) + '</span>';
+        const arrow = d > 0 ? '&#x25B2;' : d < 0 ? '&#x25BC;' : '';
+        delta = '<span style="color:' + (d>0?'var(--green,#3fb950)':'var(--red,#f85149)') + '">' + arrow + ' ' + (d>0?'+':'') + d.toFixed(4) + '</span>';
       }
       html += '<tr><td>' + esc(k) + '</td><td>' + sv1 + '</td><td>' + sv2 + '</td><td>' + delta + '</td></tr>';
     }
-    html += '</table>';
+    html += '</table></details>';
   }
   document.getElementById('compare-result').innerHTML = html;
 }
@@ -1892,6 +1977,15 @@ async function addArtifact(id) {
 
 
 async function deleteTagInline(id, tag) {
+  // Optimistic removal: hide the tag chip immediately
+  const exp = allExperiments.find(e => e.id === id);
+  if (exp) exp.tags = (exp.tags||[]).filter(t => t !== tag);
+  const area = document.getElementById('detail-tags-area');
+  if (area) {
+    area.querySelectorAll('.tag-removable').forEach(el => {
+      if (el.textContent.trim().replace(/×$/, '').trim() === '#' + tag) el.remove();
+    });
+  }
   const d = await postApi('/api/experiment/' + id + '/delete-tag', {tag});
   if (d.ok) { loadAllTags(); loadExperiments().then(() => refreshDetail(id)); }
 }

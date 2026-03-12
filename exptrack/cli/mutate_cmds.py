@@ -49,6 +49,33 @@ def cmd_untag(args):
     print(col(f"Removed #{args.tag}", G))
 
 
+def cmd_delete_tag(args):
+    """Remove a tag from ALL experiments globally."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, tags FROM experiments WHERE tags LIKE ?",
+        (f'%"{args.tag}"%',)
+    ).fetchall()
+    matches = []
+    for r in rows:
+        tags = json.loads(r["tags"] or "[]")
+        if args.tag in tags:
+            matches.append(r["id"])
+    if not matches:
+        print(dim(f"Tag '{args.tag}' not found on any experiment.")); return
+    if not getattr(args, "yes", False):
+        confirm = input(f"Remove #{args.tag} from {len(matches)} experiment(s)? [y/N] ")
+        if confirm.lower() != "y":
+            print(dim("Cancelled.")); return
+    for exp_id in matches:
+        row = conn.execute("SELECT tags FROM experiments WHERE id=?", (exp_id,)).fetchone()
+        tags = [t for t in json.loads(row["tags"] or "[]") if t != args.tag]
+        conn.execute("UPDATE experiments SET tags=?, updated_at=? WHERE id=?",
+                     (json.dumps(tags), datetime.now(timezone.utc).isoformat(), exp_id))
+    conn.commit()
+    print(col(f"Removed #{args.tag} from {len(matches)} experiment(s).", G))
+
+
 def cmd_edit_note(args):
     conn = get_db()
     exp = conn.execute("SELECT id, notes FROM experiments WHERE id LIKE ?",
