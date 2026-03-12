@@ -20,9 +20,9 @@ def _coerce_str(v: str):
     if v.lower() == "true":  return True
     if v.lower() == "false": return False
     try:    return int(v)
-    except Exception: pass
+    except Exception: pass  # not an int, try float
     try:    return float(v)
-    except Exception: pass
+    except Exception: pass  # not a float, return as string
     return v
 
 
@@ -189,8 +189,8 @@ def cmd_run_finish(args):
                             "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
                             (exp_id, p.name, resolved, ts)
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[exptrack] warning: could not register artifact: {e}", file=sys.stderr)
             if new_files:
                 conn.commit()
                 if len(new_files) <= 5:

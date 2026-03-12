@@ -137,15 +137,15 @@ def var_fingerprint(val) -> str:
             j = json.dumps(val, default=str, sort_keys=True)
             if len(j) < 10000:
                 return j
-        except Exception:
-            pass
+        except Exception as e:
+            import sys; print(f"[exptrack] warning: could not fingerprint {tname}: {e}", file=sys.stderr)
         return f"{tname}:{len(val)}:{id(val)}"
     try:
         r = repr(val)
         if len(r) < 1000:
             return r
-    except Exception:
-        pass
+    except Exception as e:
+        import sys; print(f"[exptrack] warning: repr failed for {tname}: {e}", file=sys.stderr)
     return f"{tname}:{id(val)}"
 
 

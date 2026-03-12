@@ -64,7 +64,7 @@ class Experiment:
                 frame = sys._getframe(_caller_depth)
                 script = frame.f_globals.get("__file__", "") or sys.argv[0]
             except Exception:
-                script = sys.argv[0]
+                script = sys.argv[0]  # frame detection failed, fall back to argv
         self.script = str(Path(script).resolve()) if script else ""
 
         # Build initial name (may be updated after argparse capture)
@@ -142,8 +142,8 @@ class Experiment:
         # Log output_dir as artifact so it's visible immediately
         try:
             self.log_artifact(self._output_dir, label="output_dir")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: could not log output_dir artifact: {e}", file=sys.stderr)
 
     def _write_params(self, conn, params: dict):
         conn.executemany(
@@ -284,8 +284,8 @@ class Experiment:
         for p in new_files:
             try:
                 self.log_artifact(str(p))
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[exptrack] warning: could not log artifact {p}: {e}", file=sys.stderr)
         if len(new_files) <= 5:
             for p in new_files:
                 print(f"[exptrack] artifact: {p}", file=sys.stderr)
@@ -375,8 +375,8 @@ class Experiment:
                     conf = _cfg.load()
                     max_bytes = int(conf.get("hash_max_mb", 500)) * 1024 * 1024
                     content_hash, size_bytes = file_hash(rp, max_bytes=max_bytes)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[exptrack] warning: could not hash artifact {resolved}: {e}", file=sys.stderr)
 
         with get_db() as conn:
             existing = conn.execute(

@@ -4,6 +4,7 @@ exptrack/capture/script_tracking.py — Script source change tracking via git di
 from __future__ import annotations
 import hashlib
 import subprocess
+import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -21,7 +22,8 @@ def capture_script_snapshot(exp: "Experiment", script_path: str):
 
     try:
         src = _Path(script_path).read_text()
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: could not read script {script_path}: {e}", file=sys.stderr)
         return
 
     src_hash = hashlib.md5(src.encode()).hexdigest()[:12]
@@ -39,7 +41,8 @@ def capture_script_snapshot(exp: "Experiment", script_path: str):
             cwd=str(root),
         )
         script_diff = r.stdout.strip() if r.returncode == 0 else ""
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: git diff failed for script: {e}", file=sys.stderr)
         script_diff = ""
 
     changed = []

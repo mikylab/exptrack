@@ -131,8 +131,8 @@ def cmd_upgrade(args):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_exp_created ON experiments(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_exp_status ON experiments(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_exp ON artifacts(exp_id)")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: could not create indexes: {e}", file=sys.stderr)
 
     conn.commit()
 
@@ -173,7 +173,8 @@ def cmd_storage(args):
     artifact_count = conn.execute("SELECT COUNT(*) as n FROM artifacts").fetchone()["n"]
     try:
         timeline_count = conn.execute("SELECT COUNT(*) as n FROM timeline").fetchone()["n"]
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: could not count timeline rows: {e}", file=sys.stderr)
         timeline_count = 0
 
     git_diff_rows = conn.execute(
@@ -187,7 +188,8 @@ def cmd_storage(args):
             "SELECT SUM(LENGTH(value)) + SUM(LENGTH(source_diff)) as sz FROM timeline"
         ).fetchone()
         timeline_size = timeline_rows["sz"] or 0
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: could not compute timeline size: {e}", file=sys.stderr)
         timeline_size = 0
 
     def fmt(b):

@@ -3,6 +3,7 @@ exptrack/core/git.py — Git state capture
 """
 from __future__ import annotations
 import subprocess
+import sys
 
 from .. import config as cfg
 
@@ -12,7 +13,8 @@ def _git(*cmd) -> str:
         r = subprocess.run(["git", *cmd], capture_output=True, text=True, timeout=10,
                            cwd=str(cfg.project_root()))
         return r.stdout.strip() if r.returncode == 0 else ""
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: git command failed: {e}", file=sys.stderr)
         return ""
 
 

@@ -127,11 +127,11 @@ def _unregister_hook(ip):
         try:
             ip.events.unregister("post_run_cell", hook_fn)
         except (ValueError, Exception):
-            pass
+            pass  # hook may not be registered
         try:
             ip.events.unregister("post_execute", hook_fn)
         except (ValueError, Exception):
-            pass
+            pass  # hook may not be registered
 
 
 def _post_run_cell(result=None):
@@ -159,8 +159,8 @@ def _post_run_cell(result=None):
                     output = repr(result.result)
                 elif hasattr(result, 'info') and hasattr(result.info, 'result'):
                     output = repr(result.info.result) if result.info.result is not None else None
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[exptrack] warning: could not capture cell output: {e}", file=sys.stderr)
         if not source:
             try:
                 source = ip.history_manager.input_hist_raw[-1]
@@ -181,8 +181,8 @@ def _post_run_cell(result=None):
                     output = repr(out_dict[exec_count])
                 elif exec_count - 1 in out_dict:
                     output = repr(out_dict[exec_count - 1])
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[exptrack] warning: could not get cell output from Out dict: {e}", file=sys.stderr)
 
         # ── 0b. Handle deferred start ────────────────────────────────────────
         if _nb_state.get("deferred"):

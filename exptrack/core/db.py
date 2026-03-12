@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 
 from .. import config as cfg
@@ -119,7 +120,7 @@ def _ensure_schema(conn):
         if "size_bytes" not in cols:
             conn.execute("ALTER TABLE artifacts ADD COLUMN size_bytes INTEGER")
     except Exception:
-        pass
+        pass  # column may already exist
 
     # Add output_dir to experiments if missing
     try:
@@ -127,7 +128,7 @@ def _ensure_schema(conn):
         if "output_dir" not in cols:
             conn.execute("ALTER TABLE experiments ADD COLUMN output_dir TEXT")
     except Exception:
-        pass
+        pass  # column may already exist
 
     conn.commit()
 
@@ -164,8 +165,8 @@ def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str):
             fp = Path(p)
             if fp.is_file():
                 fp.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: could not delete artifact {p}: {e}", file=sys.stderr)
 
     # Delete the experiment's output directory
     exp_row = conn.execute(
@@ -183,14 +184,14 @@ def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str):
                 dirs_to_try.append(
                     cfg.project_root() / conf.get("outputs_dir", "outputs") / exp_row["name"]
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[exptrack] warning: could not resolve output dir: {e}", file=sys.stderr)
         for out_dir in dirs_to_try:
             try:
                 if out_dir.is_dir():
                     shutil.rmtree(str(out_dir), ignore_errors=True)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[exptrack] warning: could not remove output dir {out_dir}: {e}", file=sys.stderr)
 
     # Delete notebook history snapshots for this experiment
     _delete_notebook_history(exp_id)
@@ -213,16 +214,16 @@ def _delete_notebook_history(exp_id: str):
                     snap = _json.loads(snap_file.read_text())
                     if snap.get("exp_id") == exp_id:
                         snap_file.unlink()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[exptrack] warning: could not process snapshot {snap_file}: {e}", file=sys.stderr)
             # Remove the notebook dir if empty
             try:
                 if nb_dir.is_dir() and not any(nb_dir.iterdir()):
                     nb_dir.rmdir()
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as e:
+                print(f"[exptrack] warning: could not remove empty dir {nb_dir}: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"[exptrack] warning: notebook history cleanup failed: {e}", file=sys.stderr)
 
 
 def rename_output_folder(conn: sqlite3.Connection, exp_id: str,

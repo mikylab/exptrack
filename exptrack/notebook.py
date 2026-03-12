@@ -45,7 +45,7 @@ def start(name: str = "", nb_file: str = "", **params) -> Experiment:
     global _active
     if _active is not None:
         try: _active.finish()
-        except Exception: pass
+        except Exception as e: print(f"[exptrack] warning: could not finish previous experiment: {e}", file=sys.stderr)
 
     # Try to detect notebook filename
     if not nb_file:
@@ -149,10 +149,11 @@ def _detect_nb_name() -> str:
                 for s in sessions:
                     if kernel_id in s.get("kernel", {}).get("id", ""):
                         return s.get("notebook", {}).get("path", "")
-            except Exception:
+            except Exception as e:
+                print(f"[exptrack] warning: could not query Jupyter sessions on port {port}: {e}", file=sys.stderr)
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: notebook name detection failed: {e}", file=sys.stderr)
     return ""
 
 
@@ -206,8 +207,8 @@ def load_ipython_extension(ip):
     # Finish experiment on kernel shutdown
     try:
         ip.events.register("shutdown_hook", lambda: done() if _active else None)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: could not register shutdown hook: {e}", file=sys.stderr)
 
     print(f"[exptrack] Loaded. Use %exp_status, %exp_done, %exp_tag, %exp_note")
 
@@ -216,7 +217,7 @@ def _auto_start(nb_file: str = "", name: str = "", ip=None):
     global _active
     if _active is not None:
         try: _active.finish()
-        except Exception: pass
+        except Exception as e: print(f"[exptrack] warning: could not finish previous experiment: {e}", file=sys.stderr)
         detach_notebook()
 
     _active = Experiment(
