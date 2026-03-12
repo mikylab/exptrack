@@ -7,6 +7,7 @@ Project root = nearest ancestor directory containing .git or .exptrack/
 from __future__ import annotations
 import json
 import os
+import sys
 from pathlib import Path
 
 DEFAULTS: dict = {
@@ -70,7 +71,7 @@ def load() -> dict:
             _cache = _deep_merge(DEFAULTS, user)
             return _cache
         except Exception as e:
-            print(f"[exptrack] Config error: {e} — using defaults")
+            print(f"[exptrack] Config error: {e} — using defaults", file=sys.stderr)
     _cache = dict(DEFAULTS)
     return _cache
 

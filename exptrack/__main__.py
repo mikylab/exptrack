@@ -118,7 +118,8 @@ def _auto_detect_outputs(exp, start_ts):
     try:
         conf = _cfg.load()
         outputs_dir = conf.get("outputs_dir", "outputs")
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: could not load config for outputs dir: {e}", file=sys.stderr)
         outputs_dir = "outputs"
 
     skip_dirs = _SKIP_DIRS | {outputs_dir}
@@ -135,10 +136,11 @@ def _auto_detect_outputs(exp, start_ts):
             if r["path"]:
                 try:
                     already_registered.add(str(Path(r["path"]).resolve()))
-                except Exception:
+                except Exception as e:
+                    print(f"[exptrack] warning: could not resolve artifact path: {e}", file=sys.stderr)
                     already_registered.add(r["path"])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: could not load existing artifacts: {e}", file=sys.stderr)
 
     try:
         for root, dirs, files in os.walk('.'):
@@ -155,8 +157,8 @@ def _auto_detect_outputs(exp, start_ts):
                         already_registered.add(resolved)
                 except OSError:
                     pass
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: auto-detect outputs scan failed: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

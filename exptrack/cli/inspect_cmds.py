@@ -5,6 +5,7 @@ ls, show, timeline, diff, compare, history, export, verify
 """
 from __future__ import annotations
 import json
+import sys
 from pathlib import Path
 
 from ..core import get_db
@@ -464,7 +465,8 @@ def cmd_history(args):
     for f in files:
         try:
             snap = json.loads(f.read_text())
-        except Exception:
+        except Exception as e:
+            print(f"[exptrack] warning: could not read snapshot {f}: {e}", file=sys.stderr)
             continue
 
         changed = bool(snap.get("source_diff")) or bool(snap.get("changed_vars"))
@@ -504,7 +506,8 @@ def cmd_history(args):
 def _snap_exp_id(f: Path) -> str:
     try:
         return json.loads(f.read_text()).get("exp_id", "")
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: could not read snapshot {f}: {e}", file=sys.stderr)
         return ""
 
 
@@ -637,7 +640,8 @@ def cmd_verify(args):
                     )
                     status_str = col("[backfilled]", C)
                     counts["backfilled"] += 1
-                except Exception:
+                except Exception as e:
+                    print(f"[exptrack] warning: could not hash {p}: {e}", file=sys.stderr)
                     status_str = dim("[no-hash]")
                     counts["no-hash"] += 1
             else:
@@ -652,7 +656,8 @@ def cmd_verify(args):
                 else:
                     status_str = col("[modified]", Y)
                     counts["modified"] += 1
-            except Exception:
+            except Exception as e:
+                print(f"[exptrack] warning: could not verify {p}: {e}", file=sys.stderr)
                 status_str = col("[error]", R)
                 counts["missing"] += 1
 

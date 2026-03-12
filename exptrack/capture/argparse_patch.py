@@ -120,7 +120,7 @@ def _coerce(v: str):
     if v.lower() == "true":  return True
     if v.lower() == "false": return False
     try:    return int(v)
-    except Exception: pass
+    except Exception: pass  # not an int, try float
     try:    return float(v)
-    except Exception: pass
+    except Exception: pass  # not a float, return as string
     return v

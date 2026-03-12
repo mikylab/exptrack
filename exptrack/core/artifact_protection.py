@@ -43,7 +43,8 @@ def protect_previous_artifacts(new_exp_id: str) -> list[str]:
         conn = get_db()
         # Use BEGIN IMMEDIATE to serialize with any concurrent run starts
         conn.execute("BEGIN IMMEDIATE")
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: artifact protection DB access failed: {e}", file=sys.stderr)
         return archived
 
     try:
@@ -97,7 +98,7 @@ def protect_previous_artifacts(new_exp_id: str) -> list[str]:
         try:
             conn.rollback()
         except Exception:
-            pass
+            pass  # rollback failed; outer error is logged below
         print(f"[exptrack] artifact protection warning: {e}", file=sys.stderr)
 
     return archived

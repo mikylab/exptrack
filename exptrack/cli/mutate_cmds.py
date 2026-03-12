@@ -5,6 +5,7 @@ tag, untag, note, edit-note, rm, clean, finish
 """
 from __future__ import annotations
 import json
+import sys
 from datetime import datetime, timezone
 
 from ..core import get_db, delete_experiment
@@ -105,7 +106,8 @@ def cmd_clean(args):
     if getattr(args, "baselines", False):
         try:
             n = conn.execute("SELECT COUNT(*) FROM code_baselines").fetchone()[0]
-        except Exception:
+        except Exception as e:
+            print(f"[exptrack] warning: could not count code baselines: {e}", file=sys.stderr)
             n = 0
         if not n:
             print(dim("No code baselines stored.")); return

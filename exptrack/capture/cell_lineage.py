@@ -3,6 +3,7 @@ exptrack/capture/cell_lineage.py — Content-addressed cell lineage and diffing
 """
 from __future__ import annotations
 import hashlib
+import sys
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 
@@ -26,7 +27,8 @@ def find_parent_hash(notebook: str, source: str, current_hash: str) -> str | Non
             "SELECT cell_hash, source FROM cell_lineage WHERE notebook=?",
             (notebook,)
         ).fetchall()
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: could not query cell lineage: {e}", file=sys.stderr)
         return None
 
     if not rows:
@@ -66,8 +68,8 @@ def store_cell_lineage(notebook: str, source: str, parent_hash: str = None):
                      datetime.now(timezone.utc).isoformat())
                 )
                 conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: could not store cell lineage: {e}", file=sys.stderr)
 
 
 def get_cell_source(cell_hash_val: str) -> str | None:
@@ -79,7 +81,8 @@ def get_cell_source(cell_hash_val: str) -> str | None:
             "SELECT source FROM cell_lineage WHERE cell_hash=?", (cell_hash_val,)
         ).fetchone()
         return row["source"] if row else None
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: could not get cell source: {e}", file=sys.stderr)
         return None
 
 
@@ -95,7 +98,8 @@ def get_cell_baseline(notebook: str, cell_seq: int) -> str | None:
             (notebook, cell_seq),
         ).fetchone()
         return row["source"] if row else None
-    except Exception:
+    except Exception as e:
+        print(f"[exptrack] warning: could not get cell baseline: {e}", file=sys.stderr)
         return None
 
 
@@ -113,8 +117,8 @@ def update_cell_baseline(notebook: str, cell_seq: int, source: str):
                  datetime.now(timezone.utc).isoformat()),
             )
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: could not update cell baseline: {e}", file=sys.stderr)
 
 
 def simple_diff(old: str, new: str) -> list[dict]:

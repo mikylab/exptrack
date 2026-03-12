@@ -9,6 +9,7 @@ from .db import get_db, delete_experiment, finish_experiment, rename_output_fold
 from .git import git_info
 from .naming import make_run_name, output_path
 from .experiment import Experiment
+from . import queries
 
 __all__ = [
     "get_db",
@@ -19,4 +20,5 @@ __all__ = [
     "make_run_name",
     "output_path",
     "Experiment",
+    "queries",
 ]

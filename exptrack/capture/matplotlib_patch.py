@@ -62,7 +62,8 @@ def patch_savefig(exp: "Experiment | None" = None):
                     try:
                         import matplotlib as _mpl
                         fmt = _mpl.rcParams.get("savefig.format", "png")
-                    except Exception:
+                    except Exception as e:
+                        print(f"[exptrack] warning: could not detect savefig format: {e}", file=sys.stderr)
                         fmt = "png"
                 candidate = orig_path.with_suffix("." + fmt)
                 if candidate.exists():
@@ -105,8 +106,8 @@ def patch_savefig(exp: "Experiment | None" = None):
                         break
             if fig_title:
                 _nb_state["_last_fig_title"] = fig_title
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: could not extract figure title: {e}", file=sys.stderr)
         return _namespace_and_save(fname, lambda f, *a, **kw: _orig_fig_savefig(self_fig, f, *a, **kw), *args, **kwargs)
 
     plt.savefig = _hooked_plt_savefig
@@ -125,8 +126,8 @@ def _register_and_protect(exp, orig_path, fig_title=""):
             key=orig_path.name,
             value=str(orig_path),
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: could not log artifact event: {e}", file=sys.stderr)
 
     # Copy the file to the experiment's output directory so it's protected
     # from being overwritten by subsequent saves to the same path.

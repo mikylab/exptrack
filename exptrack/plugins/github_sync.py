@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sys
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -43,7 +44,7 @@ class GitHubSyncPlugin(Plugin):
         self.branch    = config.get("branch", "main")
         self.token_env = config.get("token_env", "GITHUB_TOKEN")
         if not self.repo:
-            print("[exptrack] github_sync: set plugins.github_sync.repo in config.json")
+            print("[exptrack] github_sync: set plugins.github_sync.repo in config.json", file=sys.stderr)
 
     def on_finish(self, exp: "Experiment"):
         self._push(exp)
@@ -56,7 +57,7 @@ class GitHubSyncPlugin(Plugin):
             return
         tok = os.environ.get(self.token_env, "")
         if not tok:
-            print(f"[exptrack] github_sync: ${self.token_env} not set — skipping sync")
+            print(f"[exptrack] github_sync: ${self.token_env} not set — skipping sync", file=sys.stderr)
             return
 
         record = {
@@ -84,7 +85,7 @@ class GitHubSyncPlugin(Plugin):
                            msg=f"exptrack: {exp.status} {exp.name[:50]} [{exp.id[:6]}]")
             print(f"[exptrack] Synced to {self.repo}/{self.file}")
         except Exception as e:
-            print(f"[exptrack] github_sync failed: {e}")
+            print(f"[exptrack] github_sync failed: {e}", file=sys.stderr)
 
     def _api(self, method: str, path: str, body: dict, tok: str) -> dict:
         url = f"https://api.github.com/{path.lstrip('/')}"
