@@ -68,6 +68,9 @@ def attach_notebook_deferred(nb_file: str = "", ip=None, start_fn=None):
     Install the post_run_cell hook but DON'T create an experiment yet.
     The experiment is created on the first real (non-magic) cell execution,
     so that `%load_ext exptrack` itself is never counted as a run.
+
+    Eagerly patches plt.savefig so plots saved before the experiment is
+    created are buffered and registered once the experiment starts.
     """
     _nb_state["deferred"] = True
     _nb_state["deferred_start_fn"] = start_fn
@@ -80,6 +83,11 @@ def attach_notebook_deferred(nb_file: str = "", ip=None, start_fn=None):
     _nb_state["exp"] = None
     _nb_state["last_cell_hash"] = None
     _nb_state["hash_to_last_exec_hash"] = {}
+
+    # Eagerly patch savefig so plots saved before the experiment is created
+    # are buffered and flushed when the experiment starts.
+    from .matplotlib_patch import patch_savefig
+    patch_savefig()
 
     if ip is None:
         try:
@@ -184,7 +192,9 @@ def _post_run_cell(result=None):
             nb_file = _nb_state.get("deferred_nb_file", "")
             _nb_state["deferred"] = False
             _nb_state["deferred_start_fn"] = None
-            if start_fn:
+            # Only create an experiment if one wasn't already started by
+            # an explicit start() call during this cell's execution.
+            if _nb_state.get("exp") is None and start_fn:
                 start_fn(nb_file, ip=ip)
 
         exp = _nb_state["exp"]
