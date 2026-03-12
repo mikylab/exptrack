@@ -513,6 +513,19 @@ CSS_IMAGES = """
   .img-modal-header { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 8px 12px; color: #fff; }
   .img-modal-name { font-size: 13px; }
   .img-modal-close { background: none; border: none; color: #fff; font-size: 24px; cursor: pointer; padding: 0 8px; }
+  .img-paths-section { margin-bottom: 16px; }
+  .img-path-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 3px; margin-bottom: 4px; background: var(--card-bg); }
+  .img-path-val { flex: 1; font-size: 13px; cursor: pointer; }
+  .img-path-val:hover { color: var(--blue); }
+  .img-path-del { background: none; border: none; color: var(--red); font-size: 16px; cursor: pointer; padding: 0 4px; font-weight: bold; }
+  .img-path-add { display: flex; gap: 8px; margin-top: 6px; }
+  .img-path-add input { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; background: var(--card-bg); color: var(--fg); flex: 1; }
+  .img-path-add button { font-family: inherit; font-size: 12px; padding: 4px 12px; border: none; background: var(--blue); color: #fff; cursor: pointer; border-radius: 3px; }
+  .group-chip { background: rgba(44,90,160,0.1); color: var(--blue); }
+  .manage-section { margin-bottom: 12px; }
+  .manage-section h4 { font-size: 13px; margin-bottom: 6px; }
+  .tm-name-edit { cursor: pointer; }
+  .tm-name-edit:hover { color: var(--blue); }
 """
 
 

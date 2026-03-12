@@ -130,6 +130,8 @@ def _ensure_schema(conn):
             conn.execute("ALTER TABLE experiments ADD COLUMN output_dir TEXT")
         if "groups" not in cols:
             conn.execute("ALTER TABLE experiments ADD COLUMN groups TEXT")
+        if "image_paths" not in cols:
+            conn.execute("ALTER TABLE experiments ADD COLUMN image_paths TEXT")
     except Exception:
         pass  # column may already exist
 

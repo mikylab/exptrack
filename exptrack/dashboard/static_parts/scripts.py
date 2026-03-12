@@ -10,6 +10,7 @@ JS_CORE = r"""
 let currentFilter = '';
 let searchQuery = '';
 let tagFilter = '';
+let groupFilter = '';
 let charts = {};
 let selectedIds = new Set();
 let pinnedIds = new Set(JSON.parse(localStorage.getItem('exptrack-pinned') || '[]'));
@@ -43,22 +44,35 @@ function togglePin(id) {
   renderExperiments();
 }
 
-function renderTagFilterBar() {
-  const bar = document.getElementById('tag-filter-bar');
+function renderFilterBar() {
+  const bar = document.getElementById('filter-bar');
   if (!bar) return;
   const allTags = new Set();
-  allExperiments.forEach(e => (e.tags||[]).forEach(t => allTags.add(t)));
-  if (allTags.size === 0) { bar.innerHTML = ''; return; }
+  const allGroups = new Set();
+  allExperiments.forEach(e => {
+    (e.tags||[]).forEach(t => allTags.add(t));
+    (e.groups||[]).forEach(g => allGroups.add(g));
+  });
+  if (allTags.size === 0 && allGroups.size === 0) { bar.innerHTML = ''; return; }
+  const hasFilter = tagFilter || groupFilter;
   let html = '<span style="font-size:11px;color:var(--muted);margin-right:4px">Filter:</span>';
-  html += '<span class="tag-chip' + (tagFilter===''?' active':'') + '" onclick="tagFilter=\'\';renderExperiments();renderExpList();renderTagFilterBar()">All</span>';
+  html += '<span class="tag-chip' + (!hasFilter?' active':'') + '" onclick="tagFilter=\'\';groupFilter=\'\';rerender()">All</span>';
   for (const t of [...allTags].sort()) {
     html += '<span class="tag-chip' + (tagFilter===t?' active':'') + '" style="position:relative;padding-right:18px">';
-    html += '<span onclick="tagFilter=\'' + esc(t) + '\';renderExperiments();renderExpList();renderTagFilterBar()">#' + esc(t) + '</span>';
-    html += '<span class="tag-delete-x" onclick="event.stopPropagation();deleteTagGlobal(\'' + esc(t) + '\')" title="Delete tag from all experiments">&times;</span>';
+    html += '<span onclick="groupFilter=\'\';tagFilter=\'' + esc(t) + '\';rerender()">#' + esc(t) + '</span>';
+    html += '<span class="tag-delete-x" onclick="event.stopPropagation();deleteTagGlobal(\'' + esc(t) + '\')" title="Delete tag globally">&times;</span>';
+    html += '</span>';
+  }
+  for (const g of [...allGroups].sort()) {
+    html += '<span class="tag-chip group-chip' + (groupFilter===g?' active':'') + '" style="position:relative;padding-right:18px">';
+    html += '<span onclick="tagFilter=\'\';groupFilter=\'' + esc(g) + '\';rerender()">' + esc(g) + '</span>';
+    html += '<span class="tag-delete-x" onclick="event.stopPropagation();deleteGroupGlobal(\'' + esc(g) + '\')" title="Delete group globally">&times;</span>';
     html += '</span>';
   }
   bar.innerHTML = html;
 }
+
+function rerender() { renderExperiments(); renderExpList(); renderFilterBar(); }
 
 async function api(path) {
   const r = await fetch(path);
@@ -81,36 +95,116 @@ async function deleteTagGlobal(tag) {
     if (tagFilter === tag) tagFilter = '';
     await loadAllTags();
     await loadExperiments();
-    renderTagManager();
+    renderManagePanel();
   }
 }
 
-function toggleTagManager() {
-  const panel = document.getElementById('tag-manager-panel');
+function toggleManagePanel() {
+  const panel = document.getElementById('manage-panel');
   if (!panel) return;
   if (panel.style.display === 'none') {
     panel.style.display = 'block';
-    renderTagManager();
+    renderManagePanel();
   } else {
     panel.style.display = 'none';
   }
 }
 
-function renderTagManager() {
-  const panel = document.getElementById('tag-manager-panel');
+function renderManagePanel() {
+  const panel = document.getElementById('manage-panel');
   if (!panel || panel.style.display === 'none') return;
+  let html = '';
+
+  // Tags section
+  html += '<div class="manage-section"><h4>Tags</h4>';
   if (!allKnownTags.length) {
-    panel.innerHTML = '<div style="color:var(--muted)">No tags yet.</div>';
-    return;
+    html += '<div style="color:var(--muted);font-size:12px">No tags yet.</div>';
+  } else {
+    for (const t of allKnownTags) {
+      html += '<div class="tag-manager-row">'
+        + '<span class="tm-name-edit" ondblclick="startEditGlobalTag(this,\'' + esc(t.name) + '\')">#' + esc(t.name) + ' <span class="tm-count">(' + t.count + ')</span></span>'
+        + '<span class="tm-delete" onclick="deleteTagGlobal(\'' + esc(t.name) + '\')" title="Remove from all experiments">&times;</span>'
+        + '</div>';
+    }
   }
-  let html = '<h4>All Tags</h4>';
-  for (const t of allKnownTags) {
-    html += '<div class="tag-manager-row">'
-      + '<span><span class="tm-name">#' + esc(t.name) + '</span><span class="tm-count">(' + t.count + ')</span></span>'
-      + '<span class="tm-delete" onclick="deleteTagGlobal(\'' + esc(t.name) + '\')" title="Remove from all experiments">&times;</span>'
-      + '</div>';
+  html += '</div>';
+
+  // Groups section
+  html += '<div class="manage-section"><h4>Groups</h4>';
+  if (!allKnownGroups.length) {
+    html += '<div style="color:var(--muted);font-size:12px">No groups yet.</div>';
+  } else {
+    for (const g of allKnownGroups) {
+      html += '<div class="tag-manager-row">'
+        + '<span class="tm-name-edit" ondblclick="startEditGlobalGroup(this,\'' + esc(g.name) + '\')">' + esc(g.name) + ' <span class="tm-count">(' + g.count + ')</span></span>'
+        + '<span class="tm-delete" onclick="deleteGroupGlobal(\'' + esc(g.name) + '\')" title="Remove from all experiments">&times;</span>'
+        + '</div>';
+    }
   }
+  if (selectedIds.size > 0) {
+    html += '<div class="group-create-form" style="margin-top:8px">';
+    html += '<input type="text" id="new-group-name" placeholder="New group for ' + selectedIds.size + ' selected...">';
+    html += '<button onclick="createGroupFromPanel()">Create</button>';
+    html += '</div>';
+  }
+  html += '</div>';
   panel.innerHTML = html;
+}
+
+async function startEditGlobalTag(el, oldName) {
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'name-edit-input';
+  input.value = oldName; input.style.cssText = 'width:120px;font-size:12px;padding:2px 4px';
+  el.innerHTML = ''; el.appendChild(input); input.focus(); input.select();
+  let saved = false;
+  async function doSave() {
+    if (saved) return; saved = true;
+    const newName = input.value.trim();
+    if (newName && newName !== oldName) {
+      // Rename tag across all experiments
+      for (const e of allExperiments) {
+        if ((e.tags||[]).includes(oldName)) {
+          await postApi('/api/experiment/' + e.id + '/edit-tag', {old_tag: oldName, new_tag: newName});
+        }
+      }
+      await loadAllTags(); await loadExperiments();
+    }
+    renderManagePanel();
+  }
+  input.addEventListener('blur', doSave);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { saved = true; renderManagePanel(); }
+  });
+}
+
+async function startEditGlobalGroup(el, oldName) {
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'name-edit-input';
+  input.value = oldName; input.style.cssText = 'width:120px;font-size:12px;padding:2px 4px';
+  el.innerHTML = ''; el.appendChild(input); input.focus(); input.select();
+  let saved = false;
+  async function doSave() {
+    if (saved) return; saved = true;
+    const newName = input.value.trim();
+    if (newName && newName !== oldName) {
+      // Rename: add new, remove old for each experiment
+      for (const e of allExperiments) {
+        if ((e.groups||[]).includes(oldName)) {
+          await postApi('/api/experiment/' + e.id + '/group', {group: newName});
+          await postApi('/api/experiment/' + e.id + '/delete-group', {group: oldName});
+        }
+      }
+      if (groupFilter === oldName) groupFilter = newName;
+      await loadAllGroups(); await loadExperiments();
+    }
+    renderManagePanel();
+  }
+  input.addEventListener('blur', doSave);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { saved = true; renderManagePanel(); }
+  });
 }
 
 function fmtDur(s) {
@@ -548,6 +642,9 @@ function getFilteredExperiments() {
   if (tagFilter) {
     exps = exps.filter(e => (e.tags || []).includes(tagFilter));
   }
+  if (groupFilter) {
+    exps = exps.filter(e => (e.groups || []).includes(groupFilter));
+  }
   if (searchQuery) {
     const q = searchQuery.toLowerCase();
     exps = exps.filter(e =>
@@ -675,7 +772,7 @@ function renderExperiments() {
   const exps = getFilteredExperiments();
   const tbody = document.getElementById('exp-body');
   if (!tbody) return;
-  renderTagFilterBar();
+  renderFilterBar();
   updateSortHeaders();
   renderTableActionsBar();
 
@@ -1722,75 +1819,140 @@ let imageSort = 'newest';
 async function loadImages(expId) {
   const container = document.getElementById('detail-tab-images');
   if (!container) return;
-  container.innerHTML = '<p style="color:var(--muted)">Loading images...</p>';
+  container.innerHTML = '<p style="color:var(--muted)">Loading...</p>';
 
   const data = await api('/api/images/' + expId);
-  if (data.error) {
+  if (data.error && data.error !== 'not found') {
     container.innerHTML = '<p style="color:var(--muted)">Error: ' + esc(data.error) + '</p>';
     return;
   }
 
+  const paths = data.paths || [];
+  const suggestedPaths = data.suggested_paths || [];
   let images = data.images || [];
-  if (!images.length) {
-    container.innerHTML = '<p style="color:var(--muted)">No images found in output directory' + (data.output_dir ? ' (' + esc(data.output_dir) + ')' : '') + '.</p>';
-    return;
-  }
 
-  // Collect unique directories for filtering
-  const dirs = [...new Set(images.map(img => img.dir))].sort();
+  let html = '<div class="img-paths-section">';
+  html += '<h3 style="font-size:14px;margin-bottom:8px">Image Paths</h3>';
+  html += '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">Add folders to scan for images. Paths are relative to project root.</p>';
 
-  // Apply filter
-  if (imageFilter) {
-    images = images.filter(img => img.dir === imageFilter);
-  }
-
-  // Apply sort
-  if (imageSort === 'oldest') {
-    images = [...images].sort((a, b) => a.modified - b.modified);
-  } else if (imageSort === 'name') {
-    images = [...images].sort((a, b) => a.name.localeCompare(b.name));
-  }
-  // 'newest' is default (already sorted by API)
-
-  let html = '<div class="img-gallery-toolbar">';
-  html += '<span style="color:var(--muted);font-size:13px">' + data.images.length + ' image' + (data.images.length !== 1 ? 's' : '') + ' in ' + esc(data.output_dir) + '</span>';
-
-  // Directory filter
-  if (dirs.length > 1) {
-    html += ' <select class="img-filter-select" onchange="imageFilter=this.value;loadImages(\'' + expId + '\')">';
-    html += '<option value=""' + (imageFilter === '' ? ' selected' : '') + '>All folders</option>';
-    for (const d of dirs) {
-      html += '<option value="' + esc(d) + '"' + (imageFilter === d ? ' selected' : '') + '>' + esc(d) + '</option>';
+  // Show saved paths
+  if (paths.length) {
+    for (let i = 0; i < paths.length; i++) {
+      const p = paths[i];
+      html += '<div class="img-path-row">';
+      html += '<span class="img-path-val" ondblclick="startEditImagePath(\'' + expId + '\',' + i + ',this)">' + esc(p) + '</span>';
+      html += '<button class="img-path-del" onclick="deleteImagePath(\'' + expId + '\',' + i + ')" title="Remove path">&times;</button>';
+      html += '</div>';
     }
+  }
+
+  // Add path form
+  html += '<div class="img-path-add">';
+  html += '<input type="text" id="img-path-input" placeholder="e.g. outputs/samples" style="flex:1">';
+  html += '<button onclick="addImagePath(\'' + expId + '\')">Add Path</button>';
+  html += '</div>';
+
+  // Suggested paths from output_dir or params
+  if (suggestedPaths.length && paths.length === 0) {
+    html += '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Suggestions: ';
+    html += suggestedPaths.map(s => '<a href="#" style="color:var(--blue)" onclick="event.preventDefault();document.getElementById(\'img-path-input\').value=\'' + esc(s) + '\';addImagePath(\'' + expId + '\')">' + esc(s) + '</a>').join(', ');
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Show images if we have any
+  if (images.length) {
+    // Collect unique directories for filtering
+    const dirs = [...new Set(images.map(img => img.dir))].sort();
+
+    // Apply filter
+    let filtered = images;
+    if (imageFilter) {
+      filtered = filtered.filter(img => img.dir === imageFilter);
+    }
+
+    // Apply sort
+    if (imageSort === 'oldest') {
+      filtered = [...filtered].sort((a, b) => a.modified - b.modified);
+    } else if (imageSort === 'name') {
+      filtered = [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    html += '<div class="img-gallery-toolbar">';
+    html += '<span style="color:var(--muted);font-size:13px">' + images.length + ' image' + (images.length !== 1 ? 's' : '') + '</span>';
+
+    if (dirs.length > 1) {
+      html += ' <select class="img-filter-select" onchange="imageFilter=this.value;loadImages(\'' + expId + '\')">';
+      html += '<option value=""' + (imageFilter === '' ? ' selected' : '') + '>All folders</option>';
+      for (const d of dirs) {
+        html += '<option value="' + esc(d) + '"' + (imageFilter === d ? ' selected' : '') + '>' + esc(d) + '</option>';
+      }
+      html += '</select>';
+    }
+
+    html += ' <select class="img-filter-select" onchange="imageSort=this.value;loadImages(\'' + expId + '\')">';
+    html += '<option value="newest"' + (imageSort === 'newest' ? ' selected' : '') + '>Newest first</option>';
+    html += '<option value="oldest"' + (imageSort === 'oldest' ? ' selected' : '') + '>Oldest first</option>';
+    html += '<option value="name"' + (imageSort === 'name' ? ' selected' : '') + '>By name</option>';
     html += '</select>';
+    html += '</div>';
+
+    html += '<div class="img-gallery">';
+    for (const img of filtered) {
+      const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
+      const sizeKb = (img.size / 1024).toFixed(1);
+      html += '<div class="img-card" onclick="openImageModal(\'' + esc(src) + '\',\'' + esc(img.name) + '\')">';
+      html += '<div class="img-thumb"><img src="' + src + '" alt="' + esc(img.name) + '" loading="lazy"></div>';
+      html += '<div class="img-info">';
+      html += '<div class="img-name" title="' + esc(img.path) + '">' + esc(img.name) + '</div>';
+      if (img.dir !== '.') html += '<div class="img-dir">' + esc(img.dir) + '</div>';
+      html += '<div class="img-meta">' + sizeKb + ' KB</div>';
+      html += '</div></div>';
+    }
+    html += '</div>';
+  } else if (paths.length) {
+    html += '<p style="color:var(--muted);margin-top:12px">No images found in the specified path(s).</p>';
   }
 
-  // Sort
-  html += ' <select class="img-filter-select" onchange="imageSort=this.value;loadImages(\'' + expId + '\')">';
-  html += '<option value="newest"' + (imageSort === 'newest' ? ' selected' : '') + '>Newest first</option>';
-  html += '<option value="oldest"' + (imageSort === 'oldest' ? ' selected' : '') + '>Oldest first</option>';
-  html += '<option value="name"' + (imageSort === 'name' ? ' selected' : '') + '>By name</option>';
-  html += '</select>';
-  html += '</div>';
-
-  html += '<div class="img-gallery">';
-  for (const img of images) {
-    const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
-    const sizeKb = (img.size / 1024).toFixed(1);
-    html += '<div class="img-card" onclick="openImageModal(\'' + esc(src) + '\',\'' + esc(img.name) + '\')">';
-    html += '<div class="img-thumb"><img src="' + src + '" alt="' + esc(img.name) + '" loading="lazy"></div>';
-    html += '<div class="img-info">';
-    html += '<div class="img-name" title="' + esc(img.path) + '">' + esc(img.name) + '</div>';
-    if (img.dir !== '.') html += '<div class="img-dir">' + esc(img.dir) + '</div>';
-    html += '<div class="img-meta">' + sizeKb + ' KB</div>';
-    html += '</div></div>';
-  }
-  html += '</div>';
   container.innerHTML = html;
 }
 
+async function addImagePath(expId) {
+  const input = document.getElementById('img-path-input');
+  const path = input ? input.value.trim() : '';
+  if (!path) return;
+  await postApi('/api/experiment/' + expId + '/image-path', {action: 'add', path});
+  loadImages(expId);
+}
+
+async function deleteImagePath(expId, index) {
+  await postApi('/api/experiment/' + expId + '/image-path', {action: 'delete', index});
+  loadImages(expId);
+}
+
+function startEditImagePath(expId, index, el) {
+  const currentVal = el.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'name-edit-input';
+  input.value = currentVal; input.style.cssText = 'width:200px;font-size:12px;padding:2px 4px';
+  el.innerHTML = ''; el.appendChild(input); input.focus(); input.select();
+  let saved = false;
+  async function doSave() {
+    if (saved) return; saved = true;
+    const newVal = input.value.trim();
+    if (newVal && newVal !== currentVal) {
+      await postApi('/api/experiment/' + expId + '/image-path', {action: 'edit', index, path: newVal});
+    }
+    loadImages(expId);
+  }
+  input.addEventListener('blur', doSave);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { saved = true; loadImages(expId); }
+  });
+}
+
 function openImageModal(src, name) {
-  // Create a fullscreen overlay to view the image
   const overlay = document.createElement('div');
   overlay.className = 'img-modal-overlay';
   overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
@@ -1802,7 +1964,6 @@ function openImageModal(src, name) {
   overlay.appendChild(content);
   document.body.appendChild(overlay);
 
-  // Close on Escape
   const handler = (ev) => { if (ev.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
   document.addEventListener('keydown', handler);
 }
@@ -1898,58 +2059,16 @@ loadExperiments().then(() => {
 JS_GROUPS = r"""
 // ── Group management ─────────────────────────────────────────────────────────
 
-function toggleGroupPanel() {
-  const panel = document.getElementById('group-panel');
-  if (!panel) return;
-  if (panel.style.display === 'none') {
-    panel.style.display = 'block';
-    renderGroupPanel();
-  } else {
-    panel.style.display = 'none';
+async function deleteGroupGlobal(name) {
+  const count = allExperiments.filter(e => (e.groups||[]).includes(name)).length;
+  if (!confirm('Delete group "' + name + '" from ' + count + ' experiment(s)? This cannot be undone.')) return;
+  const res = await postApi('/api/groups/delete', {name});
+  if (res.ok) {
+    if (groupFilter === name) groupFilter = '';
+    await loadAllGroups();
+    await loadExperiments();
+    renderManagePanel();
   }
-}
-
-async function renderGroupPanel() {
-  let groups;
-  try {
-    const data = await api('/api/groups');
-    groups = data.groups || [];
-  } catch(e) { groups = []; }
-  const panel = document.getElementById('group-panel');
-  if (!panel) return;
-  let html = '<h3>Groups / Pipelines</h3>';
-  if (groups.length === 0) {
-    html += '<p style="color:var(--muted);font-size:13px">No groups yet. Double-click the Groups column on any experiment, or select experiments and use "Add to Group" below.</p>';
-  } else {
-    for (const g of groups) {
-      html += '<div class="group-card">';
-      html += '<span class="group-card-name" onclick="filterByGroup(\'' + esc(g.name) + '\')">' + esc(g.name) + '</span>';
-      html += '<span class="group-card-meta">' + g.count + ' experiment' + (g.count !== 1 ? 's' : '') + '</span>';
-      html += '<div class="group-card-actions">';
-      html += '<button onclick="bulkAddToGroup(\'' + esc(g.name) + '\')">+ Add Selected</button>';
-      html += '<button class="danger" onclick="deleteGroupGlobal(\'' + esc(g.name) + '\')">Delete</button>';
-      html += '</div></div>';
-    }
-  }
-  html += '<div class="group-create-form">';
-  html += '<input type="text" id="new-group-name" placeholder="New group name...">';
-  html += '<button onclick="createGroupFromPanel()">Create Group</button>';
-  html += '</div>';
-  if (selectedIds.size > 0) {
-    html += '<p style="font-size:12px;color:var(--muted);margin-top:8px">' + selectedIds.size + ' experiment(s) selected — type a name and click Create, or click "+ Add Selected" on an existing group.</p>';
-  }
-  panel.innerHTML = html;
-}
-
-function filterByGroup(name) {
-  // Use search to filter by group name
-  searchQuery = name;
-  const mainSearch = document.getElementById('main-search');
-  if (mainSearch) mainSearch.value = name;
-  const sideSearch = document.getElementById('search-input');
-  if (sideSearch) sideSearch.value = name;
-  renderExperiments();
-  renderExpList();
 }
 
 async function createGroupFromPanel() {
@@ -1958,48 +2077,17 @@ async function createGroupFromPanel() {
   if (!name) return;
   const ids = [...selectedIds];
   if (ids.length > 0) {
-    // Add selected experiments to the new group
     const res = await postApi('/api/groups/create', {name, experiment_ids: ids});
-    if (res.ok) {
-      owlSay('Group "' + name + '" created with ' + ids.length + ' experiment(s)!');
-    }
+    if (res.ok) owlSay('Group "' + name + '" created with ' + ids.length + ' experiment(s)!');
   } else {
-    // Just create an empty group by name — user can add experiments later via inline editing
-    owlSay('Type a group name in the Groups column of any experiment, or select experiments first.');
+    owlSay('Select experiments first, then create a group.');
     return;
   }
   if (input) input.value = '';
   await loadAllGroups();
   await loadExperiments();
-  renderGroupPanel();
+  renderManagePanel();
 }
-
-async function bulkAddToGroup(groupName) {
-  if (selectedIds.size === 0) {
-    alert('Select experiments first (use checkboxes), then click "+ Add Selected".');
-    return;
-  }
-  const res = await postApi('/api/bulk-add-to-group', {group: groupName, ids: [...selectedIds]});
-  if (res.ok) {
-    await loadAllGroups();
-    await loadExperiments();
-    renderGroupPanel();
-    owlSay('Added ' + res.added + ' to "' + groupName + '"');
-  }
-}
-
-async function deleteGroupGlobal(name) {
-  if (!confirm('Delete group "' + name + '" from all experiments?')) return;
-  const res = await postApi('/api/groups/delete', {name});
-  if (res.ok) {
-    await loadAllGroups();
-    await loadExperiments();
-    renderGroupPanel();
-    owlSay('Group "' + name + '" deleted.');
-  }
-}
-
-// ── Inline group editing — uses unified startInlineItems from JS_INLINE_EDIT ─
 
 async function promptBulkAddToGroup() {
   const name = prompt('Group name to add ' + selectedIds.size + ' experiment(s) to:');
