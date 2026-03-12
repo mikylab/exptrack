@@ -57,6 +57,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_get_timezone())
         elif path == "/api/groups":
             self._json(read_routes.api_groups(conn))
+        elif path == "/api/all-groups":
+            self._json(write_routes.api_all_groups(conn))
         else:
             self.send_error(404)
 
@@ -90,6 +92,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "edit-notes":      lambda: write_routes.api_edit_notes(conn, exp_id, body),
                 "delete-artifact": lambda: write_routes.api_delete_artifact(conn, exp_id, body),
                 "edit-artifact":   lambda: write_routes.api_edit_artifact(conn, exp_id, body),
+                "group":           lambda: write_routes.api_add_group(conn, exp_id, body),
+                "delete-group":    lambda: write_routes.api_delete_exp_group(conn, exp_id, body),
             }
             handler = dispatch.get(action)
             if handler:
@@ -106,6 +110,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/groups/add":           lambda: write_routes.api_add_to_group(conn, body),
             "/api/groups/remove":        lambda: write_routes.api_remove_from_group(conn, body),
             "/api/groups/delete":        lambda: write_routes.api_delete_group(conn, body),
+            "/api/all-groups":           lambda: write_routes.api_all_groups(conn),
+            "/api/bulk-add-to-group":    lambda: write_routes.api_bulk_add_to_group(conn, body),
         }
         handler = global_dispatch.get(path)
         if handler:

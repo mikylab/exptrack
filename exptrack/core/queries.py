@@ -66,6 +66,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "python_ver": exp["python_ver"],
         "notes": exp["notes"],
         "tags": json.loads(exp["tags"] or "[]"),
+        "groups": json.loads(exp["groups"] or "[]"),
         "output_dir": exp["output_dir"] or "",
         "params": {p["key"]: json.loads(p["value"]) for p in params},
         "metrics": [{
@@ -84,7 +85,7 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
     params = (status, limit) if status else (limit,)
     query = f"""
         SELECT id, project, name, status, created_at, duration_s,
-               git_branch, git_commit, tags, notes, output_dir
+               git_branch, git_commit, tags, groups, notes, output_dir
         FROM experiments {where}
         ORDER BY created_at DESC LIMIT ?
     """
@@ -105,6 +106,7 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
             "git_branch": r["git_branch"],
             "git_commit": r["git_commit"],
             "tags": json.loads(r["tags"] or "[]"),
+            "groups": json.loads(r["groups"] or "[]"),
             "notes": r["notes"] or "",
             "output_dir": r["output_dir"] or "",
             "metrics": metrics,
@@ -422,73 +424,98 @@ def get_export_data(conn, exp_id: str) -> dict | None:
 
 # ── Groups ────────────────────────────────────────────────────────────────────
 
-def get_groups(conn) -> list[dict]:
-    """Get experiment groups (tag-based grouping with metadata)."""
-    # Groups are experiments that share the same tag prefix "group/"
-    tag_rows = conn.execute(
-        "SELECT id, tags FROM experiments WHERE tags IS NOT NULL AND tags != '[]'"
+def update_experiment_groups(conn, exp_id: str, groups: list[str]):
+    """Set the groups list for an experiment."""
+    from datetime import datetime, timezone
+    conn.execute(
+        "UPDATE experiments SET groups=?, updated_at=? WHERE id=?",
+        (json.dumps(groups), datetime.now(timezone.utc).isoformat(), exp_id)
+    )
+
+
+def get_all_groups(conn) -> list[dict]:
+    """Get all groups with usage counts (like get_all_tags)."""
+    rows = conn.execute(
+        "SELECT groups FROM experiments WHERE groups IS NOT NULL AND groups != '[]'"
     ).fetchall()
-    groups: dict[str, list[str]] = {}
-    for r in tag_rows:
+    counts: dict[str, int] = {}
+    for r in rows:
         try:
-            tags = json.loads(r["tags"] or "[]")
-            for t in tags:
-                if t.startswith("group/"):
-                    group_name = t[6:]
-                    groups.setdefault(group_name, []).append(r["id"])
+            for g in json.loads(r["groups"] or "[]"):
+                counts[g] = counts.get(g, 0) + 1
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+    return [{"name": n, "count": c} for n, c in sorted(counts.items())]
+
+
+def get_groups(conn) -> list[dict]:
+    """Get experiment groups with summary stats."""
+    rows = conn.execute(
+        "SELECT id, groups, status, created_at FROM experiments "
+        "WHERE groups IS NOT NULL AND groups != '[]'"
+    ).fetchall()
+    group_data: dict[str, list[dict]] = {}
+    for r in rows:
+        try:
+            for g in json.loads(r["groups"] or "[]"):
+                group_data.setdefault(g, []).append(dict(r))
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
     result = []
-    for name, exp_ids in sorted(groups.items()):
-        exp_count = len(exp_ids)
-        # Get summary stats for the group
-        placeholders = ",".join("?" * len(exp_ids))
-        done = conn.execute(
-            f"SELECT COUNT(*) as n FROM experiments WHERE id IN ({placeholders}) AND status='done'",
-            exp_ids
-        ).fetchone()["n"]
-        failed = conn.execute(
-            f"SELECT COUNT(*) as n FROM experiments WHERE id IN ({placeholders}) AND status='failed'",
-            exp_ids
-        ).fetchone()["n"]
-        latest = conn.execute(
-            f"SELECT created_at FROM experiments WHERE id IN ({placeholders}) ORDER BY created_at DESC LIMIT 1",
-            exp_ids
-        ).fetchone()
-
+    for name, exps in sorted(group_data.items()):
+        done = sum(1 for e in exps if e["status"] == "done")
+        failed = sum(1 for e in exps if e["status"] == "failed")
+        latest = max((e["created_at"] for e in exps), default=None)
         result.append({
             "name": name,
-            "experiment_ids": exp_ids,
-            "count": exp_count,
+            "experiment_ids": [e["id"] for e in exps],
+            "count": len(exps),
             "done": done,
             "failed": failed,
-            "running": exp_count - done - failed,
-            "latest": latest["created_at"] if latest else None,
+            "running": len(exps) - done - failed,
+            "latest": latest,
         })
     return result
 
 
-def add_to_group(conn, exp_id: str, group_name: str) -> list[str]:
-    """Add an experiment to a group (via tag)."""
-    tag = f"group/{group_name}"
-    exp = find_experiment(conn, exp_id, "id, tags")
+def add_to_group(conn, exp_id: str, group_name: str) -> list[str] | None:
+    """Add an experiment to a group. Returns updated groups list."""
+    exp = find_experiment(conn, exp_id, "id, groups")
     if not exp:
-        return []
-    tags = json.loads(exp["tags"] or "[]")
-    if tag not in tags:
-        tags.append(tag)
-        update_experiment_tags(conn, exp["id"], tags)
-    return tags
+        return None
+    groups = json.loads(exp["groups"] or "[]")
+    if group_name not in groups:
+        groups.append(group_name)
+        update_experiment_groups(conn, exp["id"], groups)
+    return groups
 
 
-def remove_from_group(conn, exp_id: str, group_name: str) -> list[str]:
-    """Remove an experiment from a group."""
-    tag = f"group/{group_name}"
-    exp = find_experiment(conn, exp_id, "id, tags")
+def remove_from_group(conn, exp_id: str, group_name: str) -> list[str] | None:
+    """Remove an experiment from a group. Returns updated groups list."""
+    exp = find_experiment(conn, exp_id, "id, groups")
     if not exp:
-        return []
-    tags = json.loads(exp["tags"] or "[]")
-    tags = [t for t in tags if t != tag]
-    update_experiment_tags(conn, exp["id"], tags)
-    return tags
+        return None
+    groups = json.loads(exp["groups"] or "[]")
+    groups = [g for g in groups if g != group_name]
+    update_experiment_groups(conn, exp["id"], groups)
+    return groups
+
+
+def remove_group_global(conn, group_name: str) -> int:
+    """Remove a group from all experiments. Returns count of affected rows."""
+    rows = conn.execute(
+        "SELECT id, groups FROM experiments WHERE groups LIKE ?",
+        (f'%"{group_name}"%',)
+    ).fetchall()
+    count = 0
+    for r in rows:
+        try:
+            groups = json.loads(r["groups"] or "[]")
+            if group_name in groups:
+                groups = [g for g in groups if g != group_name]
+                update_experiment_groups(conn, r["id"], groups)
+                count += 1
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+    return count

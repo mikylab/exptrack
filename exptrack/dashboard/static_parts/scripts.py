@@ -22,6 +22,7 @@ let collapsedGroups = new Set();
 let clickTimer = null;
 let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
+let allKnownGroups = []; // {name, count}[]
 
 // Dark mode
 function toggleTheme() {
@@ -185,6 +186,13 @@ async function loadAllTags() {
   } catch(e) { allKnownTags = []; }
 }
 
+async function loadAllGroups() {
+  try {
+    const data = await api('/api/all-groups');
+    allKnownGroups = data.groups || [];
+  } catch(e) { allKnownGroups = []; }
+}
+
 function toggleHelp() {
   document.getElementById('help-panel').classList.toggle('visible');
 }
@@ -291,6 +299,7 @@ function renderExpList() {
     const cbHtml = '<input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
       ' onclick="event.stopPropagation();toggleSelection(\'' + e.id + '\')" title="Select">';
     const tagsHtml = (e.tags||[]).length ? '<div class="exp-card-tags">' + (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') + '</div>' : '';
+    const cardGroupsHtml = (e.groups||[]).length ? '<div class="exp-card-tags">' + (e.groups||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') + '</div>' : '';
     return '<div class="exp-card' + active + '" onclick="showDetail(\'' + e.id + '\')">' +
       '<div class="exp-card-row1">' + cbHtml +
       '<span class="status-dot ' + statusCls + '"></span>' +
@@ -299,7 +308,7 @@ function renderExpList() {
         esc(e.git_branch || '') + ' &middot; ' + fmtDur(e.duration_s) + ' &middot; ' + fmtDt(e.created_at) +
       '</div>' +
       (metrics ? '<div class="exp-card-metrics">' + esc(metrics) + '</div>' : '') +
-      tagsHtml +
+      tagsHtml + cardGroupsHtml +
     '</div>';
   }).join('');
 
@@ -326,6 +335,7 @@ function renderSidebarActionsBar() {
   } else if (n === 1) {
     html += '<button class="primary" style="opacity:0.5" disabled title="Select 2 to compare">Compare (need 2)</button>';
   }
+  html += '<button class="export-btn" onclick="promptBulkAddToGroup()">Add to Group</button>';
   html += '<button class="export-btn" onclick="sidebarExport()">Export (' + n + ')</button>';
   html += '<button class="export-btn" onclick="sidebarCopyText()">Copy as Text</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
@@ -391,6 +401,7 @@ function renderTableActionsBar() {
   }
   bar.style.display = 'flex';
   let html = '<span class="sel-count">' + n + ' selected</span>';
+  html += '<button onclick="promptBulkAddToGroup()">Add to Group</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '<button onclick="sidebarExport()">Export JSON (' + n + ')</button>';
   html += '<button onclick="sidebarCopyText()">Copy Text (' + n + ')</button>';
@@ -623,6 +634,7 @@ function renderExpRow(e) {
   const isPinned = pinnedIds.has(e.id);
   const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '');
   const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
+  const groupsHtml = (e.groups||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('');
   const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>';
   const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
   let codeStatHtml = '--';
@@ -651,6 +663,7 @@ function renderExpRow(e) {
     </td>
     <td class="status-${e.status}">${e.status}</td>
     <td class="tags-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineTag('${e.id}',this)">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
+    <td class="tags-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineGroup('${e.id}',this)">${groupsHtml || '<span style="color:var(--muted)">--</span>'}</td>
     <td class="notes-cell-expanded" title="${esc(e.notes||'')}" ondblclick="event.stopPropagation();cancelRowClick();startInlineNote('${e.id}',this)">${notesPreview}</td>
     <td style="font-size:12px">${metricsHtml || '<span style="color:var(--muted)">--</span>'}</td>
     <td>${codeStatHtml}</td>
@@ -689,7 +702,7 @@ function renderExperiments() {
     if (groupBy === 'git_commit' && items[0].git_branch) {
       groupLabel = key + ' <span class="group-meta">' + esc(items[0].git_branch) + '</span>';
     }
-    html += '<tr class="group-header" onclick="toggleGroup(\'' + esc(key) + '\')"><td colspan="10">';
+    html += '<tr class="group-header" onclick="toggleGroup(\'' + esc(key) + '\')"><td colspan="11">';
     html += '<span class="group-toggle">' + (isCollapsed ? '\u25B6' : '\u25BC') + '</span> ';
     html += '<span class="group-label">' + groupLabel + '</span>';
     html += '<span class="group-meta"> \u2014 ' + items.length + ' run' + (items.length > 1 ? 's' : '') + '</span>';
@@ -1081,6 +1094,16 @@ async function refreshDetail(id) {
     '<span class="tag-input-area" id="detail-tag-input-area"></span>' +
     '</span>';
 
+  const expGroups = exp.groups || [];
+  const groupsHtml = '<span class="detail-tags-inline" id="detail-groups-area">' +
+    (expGroups.length
+      ? expGroups.map(g => '<span class="tag-removable" style="background:rgba(44,90,160,0.1);color:var(--blue)">' + esc(g) +
+        ' <span class="tag-delete" onclick="event.stopPropagation();deleteGroupInline(\'' + exp.id + '\',\'' + esc(g) + '\')" title="Remove group">&times;</span>' +
+        '</span>').join('')
+      : '') +
+    '<span class="tag-input-area" id="detail-group-input-area"></span>' +
+    '</span>';
+
   document.getElementById('detail-panel').innerHTML = `
     <div class="detail" style="border:none;padding:4px 16px;margin:0">
       <!-- Summary bar -->
@@ -1130,6 +1153,7 @@ async function refreshDetail(id) {
               <span class="label">Host</span><span>${exp.hostname||'--'}</span>
               <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
               <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
+              <span class="label">Groups</span><span class="tag-list" id="detail-groups">${groupsHtml}</span>
               <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" ondblclick="startDetailNoteEdit('${exp.id}',this)" title="Double-click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">double-click to add notes</span>'}</span>
             </div>
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
@@ -1165,6 +1189,16 @@ async function refreshDetail(id) {
       loadExperiments().then(() => refreshDetail(exp.id));
     }, { placeholder: '+ add tag', style: 'width:100px;font-size:12px;padding:2px 6px' });
     tagInputArea.appendChild(wrapper);
+  }
+
+  // Wire up inline group input in detail view
+  const groupInputArea = document.getElementById('detail-group-input-area');
+  if (groupInputArea) {
+    const detailGroups = [...(exp.groups || [])];
+    const { wrapper: gWrapper, input: gInput } = createGroupInput(exp.id, detailGroups, null, () => {
+      loadExperiments().then(() => refreshDetail(exp.id));
+    }, { placeholder: '+ add group', style: 'width:110px;font-size:12px;padding:2px 6px' });
+    groupInputArea.appendChild(gWrapper);
   }
 
   // Render metric charts
@@ -1698,6 +1732,7 @@ JS_INIT = r"""
 document.getElementById('exp-sidebar').classList.add('collapsed');
 loadTimezoneConfig();
 loadAllTags();
+loadAllGroups();
 loadStats();
 loadExperiments().then(() => {
   if (allExperiments.length === 0) owlSpeak('empty');
@@ -1705,9 +1740,10 @@ loadExperiments().then(() => {
 });
 """
 
-# Group management UI (new feature)
+# Group management UI — column-based groups with inline editing
 JS_GROUPS = r"""
 // ── Group management ─────────────────────────────────────────────────────────
+
 function toggleGroupPanel() {
   const panel = document.getElementById('group-panel');
   if (!panel) return;
@@ -1719,78 +1755,225 @@ function toggleGroupPanel() {
   }
 }
 
-async function loadGroups() {
+async function renderGroupPanel() {
+  let groups;
   try {
     const data = await api('/api/groups');
-    return data.groups || [];
-  } catch(e) { return []; }
-}
-
-async function renderGroupPanel() {
-  const groups = await loadGroups();
+    groups = data.groups || [];
+  } catch(e) { groups = []; }
   const panel = document.getElementById('group-panel');
   if (!panel) return;
   let html = '<h3>Groups / Pipelines</h3>';
   if (groups.length === 0) {
-    html += '<p style="color:var(--muted);font-size:13px">No groups yet. Create one to organize related experiments.</p>';
+    html += '<p style="color:var(--muted);font-size:13px">No groups yet. Double-click the Groups column on any experiment, or select experiments and use "Add to Group" below.</p>';
   } else {
     for (const g of groups) {
       html += '<div class="group-card">';
-      html += '<span class="group-card-name" onclick="tagFilter=\'group/' + esc(g.name) + '\';renderExperiments();renderExpList();renderTagFilterBar()">' + esc(g.name) + '</span>';
+      html += '<span class="group-card-name" onclick="filterByGroup(\'' + esc(g.name) + '\')">' + esc(g.name) + '</span>';
       html += '<span class="group-card-meta">' + g.count + ' experiment' + (g.count !== 1 ? 's' : '') + '</span>';
       html += '<div class="group-card-actions">';
-      html += '<button onclick="addToGroupPrompt(\'' + esc(g.name) + '\')">+ Add</button>';
-      html += '<button class="danger" onclick="deleteGroup(\'' + esc(g.name) + '\')">Delete</button>';
+      html += '<button onclick="bulkAddToGroup(\'' + esc(g.name) + '\')">+ Add Selected</button>';
+      html += '<button class="danger" onclick="deleteGroupGlobal(\'' + esc(g.name) + '\')">Delete</button>';
       html += '</div></div>';
     }
   }
   html += '<div class="group-create-form">';
   html += '<input type="text" id="new-group-name" placeholder="New group name...">';
-  html += '<button onclick="createGroup()">Create Group</button>';
+  html += '<button onclick="createGroupFromPanel()">Create Group</button>';
   html += '</div>';
+  if (selectedIds.size > 0) {
+    html += '<p style="font-size:12px;color:var(--muted);margin-top:8px">' + selectedIds.size + ' experiment(s) selected — type a name and click Create, or click "+ Add Selected" on an existing group.</p>';
+  }
   panel.innerHTML = html;
 }
 
-async function createGroup() {
+function filterByGroup(name) {
+  // Use search to filter by group name
+  searchQuery = name;
+  const mainSearch = document.getElementById('main-search');
+  if (mainSearch) mainSearch.value = name;
+  const sideSearch = document.getElementById('search-input');
+  if (sideSearch) sideSearch.value = name;
+  renderExperiments();
+  renderExpList();
+}
+
+async function createGroupFromPanel() {
   const input = document.getElementById('new-group-name');
   const name = input ? input.value.trim() : '';
   if (!name) return;
   const ids = [...selectedIds];
-  const res = await postApi('/api/groups/create', {name, experiment_ids: ids});
-  if (res.ok) {
-    if (input) input.value = '';
-    await renderGroupPanel();
-    await loadAllTags();
-    await loadExperiments();
-    owlSay('Group "' + name + '" created!' + (ids.length ? ' (' + ids.length + ' added)' : ''));
+  if (ids.length > 0) {
+    // Add selected experiments to the new group
+    const res = await postApi('/api/groups/create', {name, experiment_ids: ids});
+    if (res.ok) {
+      owlSay('Group "' + name + '" created with ' + ids.length + ' experiment(s)!');
+    }
   } else {
-    alert(res.error || 'Failed to create group');
-  }
-}
-
-async function addToGroupPrompt(groupName) {
-  if (selectedIds.size === 0) {
-    alert('Select experiments first (use checkboxes), then click + Add.');
+    // Just create an empty group by name — user can add experiments later via inline editing
+    owlSay('Type a group name in the Groups column of any experiment, or select experiments first.');
     return;
   }
-  for (const eid of selectedIds) {
-    await postApi('/api/groups/add', {group: groupName, experiment_id: eid});
-  }
-  await renderGroupPanel();
-  await loadAllTags();
+  if (input) input.value = '';
+  await loadAllGroups();
   await loadExperiments();
-  owlSay('Added ' + selectedIds.size + ' to "' + groupName + '"');
+  renderGroupPanel();
 }
 
-async function deleteGroup(name) {
-  if (!confirm('Delete group "' + name + '"? This removes the group tag from all experiments.')) return;
+async function bulkAddToGroup(groupName) {
+  if (selectedIds.size === 0) {
+    alert('Select experiments first (use checkboxes), then click "+ Add Selected".');
+    return;
+  }
+  const res = await postApi('/api/bulk-add-to-group', {group: groupName, ids: [...selectedIds]});
+  if (res.ok) {
+    await loadAllGroups();
+    await loadExperiments();
+    renderGroupPanel();
+    owlSay('Added ' + res.added + ' to "' + groupName + '"');
+  }
+}
+
+async function deleteGroupGlobal(name) {
+  if (!confirm('Delete group "' + name + '" from all experiments?')) return;
   const res = await postApi('/api/groups/delete', {name});
   if (res.ok) {
-    await renderGroupPanel();
-    await loadAllTags();
+    await loadAllGroups();
     await loadExperiments();
+    renderGroupPanel();
     owlSay('Group "' + name + '" deleted.');
   }
+}
+
+// ── Inline group editing (like tags) ─────────────────────────────────────────
+
+function createGroupInput(id, groups, exp, onUpdate, opts = {}) {
+  // Reusable group autocomplete input — same pattern as createTagInput
+  const wrapper = document.createElement('div');
+  wrapper.className = 'tag-autocomplete';
+  wrapper.style.cssText = 'display:inline-block;position:relative';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = opts.placeholder || '+ group';
+  input.className = 'name-edit-input';
+  input.style.cssText = opts.style || 'width:100px;font-size:12px;padding:2px 4px';
+  const dropdown = document.createElement('div');
+  dropdown.className = 'tag-autocomplete-list';
+  dropdown.style.display = 'none';
+  wrapper.appendChild(input);
+  wrapper.appendChild(dropdown);
+  let activeIdx = -1;
+
+  function showSuggestions() {
+    const val = input.value.trim().toLowerCase();
+    const existing = new Set(groups.map(g => g.toLowerCase()));
+    let suggestions = allKnownGroups.filter(g => !existing.has(g.name.toLowerCase()));
+    if (val) suggestions = suggestions.filter(g => g.name.toLowerCase().includes(val));
+    suggestions = suggestions.slice(0, 8);
+    if (val && !suggestions.some(g => g.name.toLowerCase() === val) && !existing.has(val)) {
+      suggestions.unshift({name: val, count: 0, isNew: true});
+    }
+    if (!suggestions.length) { dropdown.style.display = 'none'; return; }
+    dropdown.innerHTML = suggestions.map((g, i) =>
+      '<div class="tag-autocomplete-item' + (i === activeIdx ? ' active' : '') + '" data-group="' + esc(g.name) + '">' +
+      (g.isNew ? '<span class="tag-autocomplete-new">create "' + esc(g.name) + '"</span>' : '<span>' + esc(g.name) + '</span>') +
+      '<span class="tag-count">' + (g.count || '') + '</span></div>'
+    ).join('');
+    dropdown.style.display = 'block';
+    dropdown.querySelectorAll('.tag-autocomplete-item').forEach(item => {
+      item.onmousedown = (ev) => { ev.preventDefault(); selectGroup(item.dataset.group); };
+    });
+  }
+
+  async function selectGroup(val) {
+    if (!val) return;
+    await postApi('/api/experiment/' + id + '/group', {group: val});
+    if (!groups.includes(val)) groups.push(val);
+    if (exp) exp.groups = [...groups];
+    input.value = '';
+    dropdown.style.display = 'none';
+    activeIdx = -1;
+    loadAllGroups();
+    if (onUpdate) onUpdate();
+  }
+
+  input.addEventListener('input', () => { activeIdx = -1; showSuggestions(); });
+  input.addEventListener('focus', showSuggestions);
+  input.addEventListener('blur', () => { setTimeout(() => dropdown.style.display = 'none', 150); });
+  input.addEventListener('keydown', (ev) => {
+    const items = dropdown.querySelectorAll('.tag-autocomplete-item');
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); activeIdx = Math.min(activeIdx + 1, items.length - 1); showSuggestions(); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); activeIdx = Math.max(activeIdx - 1, -1); showSuggestions(); }
+    else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      if (activeIdx >= 0 && items[activeIdx]) selectGroup(items[activeIdx].dataset.group);
+      else if (input.value.trim()) selectGroup(input.value.trim());
+    }
+    else if (ev.key === 'Escape') { dropdown.style.display = 'none'; if (opts.onEscape) opts.onEscape(); }
+  });
+  return { wrapper, input };
+}
+
+function startInlineGroup(id, el) {
+  // Inline group editing on double-click — same pattern as startInlineTag
+  const exp = allExperiments.find(e => e.id === id);
+  if (!exp) return;
+  const groups = [...(exp.groups || [])];
+  const container = document.createElement('div');
+  container.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;align-items:center;min-width:120px';
+  container.onclick = (ev) => ev.stopPropagation();
+
+  function render() {
+    container.innerHTML = '';
+    groups.forEach((g, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'tag';
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:2px;background:rgba(44,90,160,0.1);color:var(--blue)';
+      chip.textContent = g;
+      const x = document.createElement('span');
+      x.textContent = '\u00d7';
+      x.style.cssText = 'cursor:pointer;margin-left:2px;color:var(--red);font-weight:bold';
+      x.onclick = async (ev) => {
+        ev.stopPropagation();
+        await postApi('/api/experiment/' + id + '/delete-group', {group: g});
+        groups.splice(i, 1);
+        if (exp) exp.groups = [...groups];
+        render();
+        renderExpList();
+        loadAllGroups();
+      };
+      chip.appendChild(x);
+      container.appendChild(chip);
+    });
+    const { wrapper, input } = createGroupInput(id, groups, exp, () => { render(); renderExpList(); }, {
+      onEscape: () => { renderExperiments(); renderExpList(); }
+    });
+    container.appendChild(wrapper);
+    setTimeout(() => input.focus(), 0);
+  }
+  el.innerHTML = '';
+  el.appendChild(container);
+  render();
+}
+
+async function promptBulkAddToGroup() {
+  const name = prompt('Group name to add ' + selectedIds.size + ' experiment(s) to:');
+  if (!name || !name.trim()) return;
+  const res = await postApi('/api/bulk-add-to-group', {group: name.trim(), ids: [...selectedIds]});
+  if (res.ok) {
+    await loadAllGroups();
+    await loadExperiments();
+    owlSay('Added ' + res.added + ' to "' + name.trim() + '"');
+  } else {
+    alert(res.error || 'Failed');
+  }
+}
+
+async function deleteGroupInline(id, group) {
+  const exp = allExperiments.find(e => e.id === id);
+  if (exp) exp.groups = (exp.groups||[]).filter(g => g !== group);
+  const d = await postApi('/api/experiment/' + id + '/delete-group', {group});
+  if (d.ok) { loadAllGroups(); loadExperiments().then(() => { if (currentDetailId === id) refreshDetail(id); }); }
 }
 """
 

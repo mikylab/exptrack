@@ -265,7 +265,7 @@ def api_set_timezone(body: dict) -> dict:
 # ── Group management ─────────────────────────────────────────────────────────
 
 def api_create_group(conn, body: dict) -> dict:
-    """Create a new group by adding group/ tag to specified experiments."""
+    """Create a new group, optionally adding specified experiments to it."""
     name = body.get("name", "").strip()
     exp_ids = body.get("experiment_ids", [])
     if not name:
@@ -273,23 +273,23 @@ def api_create_group(conn, body: dict) -> dict:
     from ...core.queries import add_to_group
     added = 0
     for eid in exp_ids:
-        tags = add_to_group(conn, eid, name)
-        if tags:
+        groups = add_to_group(conn, eid, name)
+        if groups is not None:
             added += 1
     conn.commit()
     return {"ok": True, "name": name, "added": added}
 
 
 def api_add_to_group(conn, body: dict) -> dict:
-    """Add an experiment to an existing group."""
+    """Add an experiment to a group."""
     name = body.get("group", "").strip()
     exp_id = body.get("experiment_id", "").strip()
     if not name or not exp_id:
         return {"error": "provide group and experiment_id"}
     from ...core.queries import add_to_group
-    tags = add_to_group(conn, exp_id, name)
+    groups = add_to_group(conn, exp_id, name)
     conn.commit()
-    return {"ok": True, "tags": tags}
+    return {"ok": True, "groups": groups}
 
 
 def api_remove_from_group(conn, body: dict) -> dict:
@@ -299,17 +299,74 @@ def api_remove_from_group(conn, body: dict) -> dict:
     if not name or not exp_id:
         return {"error": "provide group and experiment_id"}
     from ...core.queries import remove_from_group
-    tags = remove_from_group(conn, exp_id, name)
+    groups = remove_from_group(conn, exp_id, name)
     conn.commit()
-    return {"ok": True, "tags": tags}
+    return {"ok": True, "groups": groups}
 
 
 def api_delete_group(conn, body: dict) -> dict:
-    """Delete a group (remove group/ tag from all experiments)."""
+    """Delete a group from all experiments."""
     name = body.get("name", "").strip()
     if not name:
         return {"error": "empty group name"}
-    tag = f"group/{name}"
-    count = remove_tag_global(conn, tag)
+    from ...core.queries import remove_group_global
+    count = remove_group_global(conn, name)
     conn.commit()
     return {"ok": True, "deleted_from": count}
+
+
+def api_add_group(conn, exp_id: str, body: dict) -> dict:
+    """Add a single group to an experiment (inline editing)."""
+    from ...core.queries import find_experiment, update_experiment_groups
+    exp = find_experiment(conn, exp_id, "id, groups")
+    if not exp:
+        return {"error": "not found"}
+    group = body.get("group", "").strip()
+    if not group:
+        return {"error": "empty group"}
+    groups = json.loads(exp["groups"] or "[]")
+    if group not in groups:
+        groups.append(group)
+    update_experiment_groups(conn, exp["id"], groups)
+    conn.commit()
+    return {"ok": True, "groups": groups}
+
+
+def api_delete_exp_group(conn, exp_id: str, body: dict) -> dict:
+    """Remove a single group from an experiment (inline editing)."""
+    from ...core.queries import find_experiment, update_experiment_groups
+    exp = find_experiment(conn, exp_id, "id, groups")
+    if not exp:
+        return {"error": "not found"}
+    group = body.get("group", "").strip()
+    if not group:
+        return {"error": "empty group"}
+    groups = json.loads(exp["groups"] or "[]")
+    groups = [g for g in groups if g != group]
+    update_experiment_groups(conn, exp["id"], groups)
+    conn.commit()
+    return {"ok": True, "groups": groups}
+
+
+def api_all_groups(conn) -> dict:
+    """Get all groups with usage counts."""
+    from ...core.queries import get_all_groups
+    return {"groups": get_all_groups(conn)}
+
+
+def api_bulk_add_to_group(conn, body: dict) -> dict:
+    """Add multiple experiments to a group."""
+    name = body.get("group", "").strip()
+    ids = body.get("ids", [])
+    if not name:
+        return {"error": "empty group name"}
+    if not ids:
+        return {"error": "no ids provided"}
+    from ...core.queries import add_to_group
+    added = 0
+    for eid in ids:
+        groups = add_to_group(conn, eid, name)
+        if groups is not None:
+            added += 1
+    conn.commit()
+    return {"ok": True, "group": name, "added": added}

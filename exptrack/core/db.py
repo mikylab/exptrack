@@ -44,6 +44,7 @@ def _ensure_schema(conn):
             duration_s  REAL,
             notes       TEXT,
             tags        TEXT,
+            groups      TEXT,
             output_dir  TEXT
         );
         CREATE TABLE IF NOT EXISTS params (
@@ -122,11 +123,13 @@ def _ensure_schema(conn):
     except Exception:
         pass  # column may already exist
 
-    # Add output_dir to experiments if missing
+    # Add output_dir and groups to experiments if missing
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(experiments)").fetchall()}
         if "output_dir" not in cols:
             conn.execute("ALTER TABLE experiments ADD COLUMN output_dir TEXT")
+        if "groups" not in cols:
+            conn.execute("ALTER TABLE experiments ADD COLUMN groups TEXT")
     except Exception:
         pass  # column may already exist
 
