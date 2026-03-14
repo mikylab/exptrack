@@ -512,8 +512,22 @@ def _snap_exp_id(f: Path) -> str:
 
 
 def cmd_export(args):
-    """Export experiment data: exptrack export <id> [--format json|markdown]"""
+    """Export experiment data: exptrack export <id> [--format json|markdown|csv|tsv]"""
+    import csv as csv_mod
+    import io
+
     conn = get_db()
+    fmt = getattr(args, "format", "json")
+    export_all = getattr(args, "export_all", False)
+
+    if export_all or fmt in ("csv", "tsv"):
+        _export_batch(conn, fmt, export_all, getattr(args, "id", None))
+        return
+
+    if not args.id:
+        print(col("Error: experiment ID required (or use --all for batch export)", R))
+        return
+
     exp = conn.execute("SELECT * FROM experiments WHERE id LIKE ?",
                        (args.id + "%",)).fetchone()
     if not exp: print(col(f"Not found: {args.id}", R)); return
@@ -528,7 +542,6 @@ def cmd_export(args):
                  conn.execute("SELECT label, path, created_at FROM artifacts WHERE exp_id=?",
                               (eid,)).fetchall()]
 
-    fmt = getattr(args, "format", "json")
     if fmt == "markdown":
         tags = json.loads(exp["tags"] or "[]")
         print(f"# {exp['name']}")
@@ -580,18 +593,96 @@ def cmd_export(args):
         print(json.dumps(data, indent=2, default=str))
 
 
+def _export_batch(conn, fmt, export_all, exp_id_prefix):
+    """Export one or all experiments in CSV/TSV/JSON batch format."""
+    import csv as csv_mod
+    import io
+
+    if export_all:
+        rows = conn.execute(
+            "SELECT * FROM experiments ORDER BY created_at DESC"
+        ).fetchall()
+    elif exp_id_prefix:
+        rows = conn.execute(
+            "SELECT * FROM experiments WHERE id LIKE ? ORDER BY created_at DESC",
+            (exp_id_prefix + "%",)
+        ).fetchall()
+    else:
+        print(col("Error: provide experiment ID or use --all", R), file=sys.stderr)
+        return
+
+    if not rows:
+        print(dim("No experiments found.")); return
+
+    # Collect all param keys and metric keys across experiments
+    all_param_keys = set()
+    all_metric_keys = set()
+    exp_data = []
+    for r in rows:
+        eid = r["id"]
+        params = {p["key"]: json.loads(p["value"]) for p in
+                  conn.execute("SELECT key, value FROM params WHERE exp_id=?", (eid,)).fetchall()}
+        # Get last metric value per key
+        metric_rows = conn.execute("""
+            SELECT key, value FROM metrics m WHERE exp_id=?
+            GROUP BY key HAVING MAX(COALESCE(step, 0))
+        """, (eid,)).fetchall()
+        metrics = {mr["key"]: mr["value"] for mr in metric_rows}
+
+        all_param_keys.update(params.keys())
+        all_metric_keys.update(metrics.keys())
+        exp_data.append((r, params, metrics))
+
+    param_keys = sorted(k for k in all_param_keys if not k.startswith("_"))
+    metric_keys = sorted(all_metric_keys)
+
+    if fmt in ("csv", "tsv"):
+        delimiter = "\t" if fmt == "tsv" else ","
+        output = io.StringIO()
+        writer = csv_mod.writer(output, delimiter=delimiter)
+
+        # Header
+        header = ["id", "name", "status", "created_at", "duration_s",
+                  "git_branch", "git_commit", "tags"]
+        header += [f"param:{k}" for k in param_keys]
+        header += [f"metric:{k}" for k in metric_keys]
+        writer.writerow(header)
+
+        # Rows
+        for r, params, metrics in exp_data:
+            row = [
+                r["id"], r["name"], r["status"], r["created_at"],
+                r["duration_s"] or "", r["git_branch"] or "",
+                r["git_commit"] or "",
+                ";".join(json.loads(r["tags"] or "[]")),
+            ]
+            row += [str(params.get(k, "")) for k in param_keys]
+            row += [str(metrics.get(k, "")) for k in metric_keys]
+            writer.writerow(row)
+
+        print(output.getvalue(), end="")
+    else:
+        # JSON batch
+        all_data = []
+        for r, params, metrics in exp_data:
+            all_data.append({
+                "id": r["id"], "name": r["name"], "status": r["status"],
+                "created_at": r["created_at"], "duration_s": r["duration_s"],
+                "git_branch": r["git_branch"], "git_commit": r["git_commit"],
+                "tags": json.loads(r["tags"] or "[]"),
+                "params": params, "metrics": metrics,
+            })
+        print(json.dumps(all_data, indent=2, default=str))
+
+
 def cmd_verify(args):
     """Verify artifact file integrity against stored content hashes.
 
     Reports each artifact as: ok, missing, modified, or no-hash (legacy).
     With --backfill, computes hashes for legacy artifacts whose files exist.
+    With --dry-run, lists artifacts and their status without computing hashes.
     """
-    from ..core.hashing import file_hash
-    from .. import config as _cfg
-
     conn = get_db()
-    conf = _cfg.load()
-    max_bytes = int(conf.get("hash_max_mb", 500)) * 1024 * 1024
 
     where = ""
     params_q: list = []
@@ -611,7 +702,18 @@ def cmd_verify(args):
     if not rows:
         print(dim("No artifacts found.")); return
 
+    dry_run = getattr(args, "dry_run", False)
     backfill = getattr(args, "backfill", False)
+
+    if dry_run:
+        _verify_dry_run(rows)
+        return
+
+    from ..core.hashing import file_hash
+    from .. import config as _cfg
+    conf = _cfg.load()
+    max_bytes = int(conf.get("hash_max_mb", 500)) * 1024 * 1024
+
     counts = {"ok": 0, "missing": 0, "modified": 0, "no-hash": 0, "backfilled": 0}
 
     print()
@@ -673,4 +775,55 @@ def cmd_verify(args):
           col(f"{counts['modified']} modified", Y) + "  " +
           dim(f"{counts['no-hash']} no-hash") +
           (f"  {col(str(counts['backfilled']) + ' backfilled', C)}" if backfill else ""))
+    print()
+
+
+def _verify_dry_run(rows):
+    """List artifacts with their status, without computing any hashes."""
+    counts = {"exists": 0, "missing": 0, "has-hash": 0, "no-hash": 0}
+
+    print()
+    print(bold("  Artifact Inventory (dry run — no hashing)"))
+    print(dim("  " + "-" * 60))
+
+    cur_exp = None
+    for r in rows:
+        if r["name"] != cur_exp:
+            cur_exp = r["name"]
+            print(f"\n  {bold(cur_exp)}")
+
+        p = Path(r["path"])
+        label = r["label"] or p.name
+        exists = p.exists()
+        has_hash = bool(r["content_hash"])
+
+        if exists:
+            counts["exists"] += 1
+        else:
+            counts["missing"] += 1
+        if has_hash:
+            counts["has-hash"] += 1
+        else:
+            counts["no-hash"] += 1
+
+        file_status = col("[exists]", G) if exists else col("[missing]", R)
+        hash_status = dim("hash:yes") if has_hash else dim("hash:no")
+        size_str = ""
+        if r["size_bytes"]:
+            sz = r["size_bytes"]
+            if sz < 1024:
+                size_str = f" ({sz}B)"
+            elif sz < 1024**2:
+                size_str = f" ({sz/1024:.1f}KB)"
+            else:
+                size_str = f" ({sz/1024**2:.1f}MB)"
+
+        print(f"    {label:<30} {file_status} {hash_status}{size_str}")
+
+    print()
+    print(dim("  Summary: ") +
+          col(f"{counts['exists']} exist", G) + "  " +
+          col(f"{counts['missing']} missing", R) + "  " +
+          dim(f"{counts['has-hash']} with hash") + "  " +
+          dim(f"{counts['no-hash']} without hash"))
     print()

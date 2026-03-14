@@ -8,6 +8,7 @@ output file paths, and fires plugin hooks on lifecycle events.
 from __future__ import annotations
 import hashlib
 import json
+import math
 import platform
 import socket
 import sys
@@ -17,12 +18,38 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+_VALID_STATUSES = {"running", "done", "failed"}
+
+import re as _re
+
 from .. import config as cfg
 from ..plugins import registry as plugins
 from .db import get_db
 from .git import git_info
 from .db import rename_output_folder
 from .naming import make_run_name, output_path
+
+
+def _redact_params(params: dict) -> dict:
+    """Redact parameter values matching configured sensitive patterns."""
+    try:
+        conf = cfg.load()
+        patterns = conf.get("param_redact_patterns", [])
+        if not patterns:
+            return params
+        result = {}
+        for k, v in params.items():
+            redacted = False
+            for pat in patterns:
+                if _re.search(pat, k, _re.IGNORECASE):
+                    result[k] = "***REDACTED***"
+                    redacted = True
+                    break
+            if not redacted:
+                result[k] = v
+        return result
+    except Exception:
+        return params
 
 
 class Experiment:
@@ -84,6 +111,7 @@ class Experiment:
         self.hostname   = socket.gethostname()
         self.python_ver = platform.python_version()
         self.id         = uuid.uuid4().hex[:12]
+        self._finished  = False
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.project    = conf.get("project", cfg.project_root().name)
 
@@ -169,6 +197,10 @@ class Experiment:
     # ── Params ────────────────────────────────────────────────────────────────
 
     def log_params(self, params: dict[str, Any]):
+        if self._finished:
+            print(f"[exptrack] warning: logging params after experiment finished",
+                  file=sys.stderr)
+        params = _redact_params(params)
         self._params.update(params)
         with get_db() as conn:
             self._write_params(conn, params)
@@ -215,17 +247,32 @@ class Experiment:
     # ── Metrics ───────────────────────────────────────────────────────────────
 
     def log_metric(self, key: str, value: float, step: int = None):
+        if self._finished:
+            print(f"[exptrack] warning: logging metric '{key}' after experiment finished",
+                  file=sys.stderr)
+        fval = float(value)
+        if not math.isfinite(fval):
+            print(f"[exptrack] warning: metric '{key}' has non-finite value: {fval}",
+                  file=sys.stderr)
         ts = datetime.now(timezone.utc).isoformat()
         with get_db() as conn:
             conn.execute(
                 "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-                (self.id, key, float(value), step, ts)
+                (self.id, key, fval, step, ts)
             )
             conn.commit()
         plugins.on_metric(self, key, value, step)
 
     def log_metrics(self, metrics: dict[str, float], step: int = None):
+        if self._finished:
+            print(f"[exptrack] warning: logging metrics after experiment finished",
+                  file=sys.stderr)
         ts = datetime.now(timezone.utc).isoformat()
+        for k, v in metrics.items():
+            fv = float(v)
+            if not math.isfinite(fv):
+                print(f"[exptrack] warning: metric '{k}' has non-finite value: {fv}",
+                      file=sys.stderr)
         with get_db() as conn:
             conn.executemany(
                 "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
@@ -293,6 +340,16 @@ class Experiment:
             print(f"[exptrack] {len(new_files)} artifacts in {out_dir}/", file=sys.stderr)
 
     def finish(self, status: str = "done"):
+        if self._finished:
+            raise RuntimeError(
+                f"Experiment {self.id[:6]} already finished with status='{self.status}'. "
+                "Cannot finish twice."
+            )
+        if status not in _VALID_STATUSES:
+            raise ValueError(
+                f"Invalid status '{status}'. Must be one of: {_VALID_STATUSES}"
+            )
+        self._finished = True
         self.duration_s = time.time() - self._start
         self.status = status
 
