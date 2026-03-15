@@ -741,6 +741,7 @@ function _formatExpPlainText(d) {
   if (d.hostname) lines.push('Hostname: ' + d.hostname);
   if (d.tags && d.tags.length) lines.push('Tags: ' + d.tags.join(', '));
   if (d.studies && d.studies.length) lines.push('Studies: ' + d.studies.join(', '));
+  if (d.stage != null) lines.push('Stage: ' + d.stage + (d.stage_name ? ' (' + d.stage_name + ')' : ''));
   if (d.output_dir) lines.push('Output Dir: ' + d.output_dir);
   if (d.notes) lines.push('Notes: ' + d.notes);
   lines.push('');
@@ -881,6 +882,7 @@ function getFilteredExperiments() {
       case 'id': av = a.id; bv = b.id; break;
       case 'tags': av = (a.tags||[]).length; bv = (b.tags||[]).length; break;
       case 'studies': av = (a.studies||[]).length; bv = (b.studies||[]).length; break;
+      case 'stage': av = a.stage != null ? a.stage : Infinity; bv = b.stage != null ? b.stage : Infinity; break;
       case 'created_at': default: av = a.created_at||''; bv = b.created_at||''; break;
     }
     let cmp = av < bv ? -1 : av > bv ? 1 : 0;
@@ -979,6 +981,7 @@ function renderExpRow(e) {
     <td class="status-${e.status}">${e.status}</td>
     <td class="tags-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineTag('${e.id}',this)">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
     <td class="tags-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineStudy('${e.id}',this)">${studiesHtml || '<span style="color:var(--muted)">--</span>'}</td>
+    <td class="stage-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineStage('${e.id}',this)">${e.stage != null ? esc(String(e.stage)) + (e.stage_name ? ' <span style="color:var(--muted);font-size:11px">(' + esc(e.stage_name) + ')</span>' : '') : '<span style="color:var(--muted)">--</span>'}</td>
     <td class="notes-cell-expanded" title="${esc(e.notes||'')}" ondblclick="event.stopPropagation();cancelRowClick();startInlineNote('${e.id}',this)">${notesPreview}</td>
     <td style="font-size:12px">${metricsHtml || '<span style="color:var(--muted)">--</span>'}</td>
     <td>${codeStatHtml}</td>
@@ -1528,6 +1531,7 @@ async function refreshDetail(id) {
               <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
               <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
               <span class="label">Studies</span><span class="tag-list" id="detail-studies">${studiesDetailHtml}</span>
+              <span class="label">Stage</span><span id="detail-stage" class="editable-hint" ondblclick="startDetailStageEdit('${exp.id}',this)" title="Double-click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
               <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" ondblclick="startDetailNoteEdit('${exp.id}',this)" title="Double-click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">double-click to add notes</span>'}</span>
             </div>
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
@@ -2402,10 +2406,97 @@ async function deleteStudyInline(id, study) {
 }
 """
 
+# Stage inline editing
+JS_STAGE = r"""
+// ── Stage inline editing ─────────────────────────────────────────────────────
+
+function startInlineStage(id, td) {
+  const exp = allExperiments.find(e => e.id === id);
+  if (!exp) return;
+  const curStage = exp.stage != null ? exp.stage : '';
+  const curName = exp.stage_name || '';
+  td.innerHTML = '<div style="display:flex;gap:4px;align-items:center">'
+    + '<input type="number" class="inline-edit-input" style="width:60px;font-size:12px;padding:2px 4px" placeholder="#" value="' + esc(String(curStage)) + '" id="stage-num-' + id + '">'
+    + '<input type="text" class="inline-edit-input" style="width:80px;font-size:12px;padding:2px 4px" placeholder="label" value="' + esc(curName) + '" id="stage-name-' + id + '">'
+    + '<button style="font-size:11px;padding:1px 6px;cursor:pointer" onclick="saveInlineStage(\'' + id + '\')">&#10003;</button>'
+    + '</div>';
+  const numInput = document.getElementById('stage-num-' + id);
+  if (numInput) { numInput.focus(); numInput.select(); }
+  numInput.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') saveInlineStage(id);
+    if (ev.key === 'Escape') { renderExperiments(); }
+  });
+  const nameInput = document.getElementById('stage-name-' + id);
+  nameInput.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') saveInlineStage(id);
+    if (ev.key === 'Escape') { renderExperiments(); }
+  });
+}
+
+async function saveInlineStage(id) {
+  const numInput = document.getElementById('stage-num-' + id);
+  const nameInput = document.getElementById('stage-name-' + id);
+  const stageVal = numInput ? numInput.value.trim() : '';
+  const nameVal = nameInput ? nameInput.value.trim() : '';
+  const body = {};
+  if (stageVal !== '') body.stage = parseInt(stageVal, 10);
+  else body.stage = null;
+  if (nameVal) body.stage_name = nameVal;
+  const res = await postApi('/api/experiment/' + id + '/stage', body);
+  if (res.ok) {
+    const exp = allExperiments.find(e => e.id === id);
+    if (exp) { exp.stage = body.stage; exp.stage_name = nameVal; }
+    renderExperiments();
+    if (currentDetailId === id) refreshDetail(id);
+  }
+}
+
+function startDetailStageEdit(id, el) {
+  const exp = allExperiments.find(e => e.id === id);
+  if (!exp) return;
+  const curStage = exp.stage != null ? exp.stage : '';
+  const curName = exp.stage_name || '';
+  el.innerHTML = '<div style="display:inline-flex;gap:4px;align-items:center">'
+    + '<input type="number" class="inline-edit-input" style="width:60px;font-size:13px;padding:2px 6px" placeholder="stage #" value="' + esc(String(curStage)) + '" id="detail-stage-num">'
+    + '<input type="text" class="inline-edit-input" style="width:100px;font-size:13px;padding:2px 6px" placeholder="label (optional)" value="' + esc(curName) + '" id="detail-stage-name">'
+    + '<button style="font-size:12px;padding:2px 8px;cursor:pointer" onclick="saveDetailStage(\'' + id + '\')">Save</button>'
+    + '<button style="font-size:12px;padding:2px 8px;cursor:pointer" onclick="refreshDetail(\'' + id + '\')">Cancel</button>'
+    + '</div>';
+  const numInput = document.getElementById('detail-stage-num');
+  if (numInput) { numInput.focus(); numInput.select(); }
+  numInput.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') saveDetailStage(id);
+    if (ev.key === 'Escape') refreshDetail(id);
+  });
+  document.getElementById('detail-stage-name').addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') saveDetailStage(id);
+    if (ev.key === 'Escape') refreshDetail(id);
+  });
+}
+
+async function saveDetailStage(id) {
+  const numInput = document.getElementById('detail-stage-num');
+  const nameInput = document.getElementById('detail-stage-name');
+  const stageVal = numInput ? numInput.value.trim() : '';
+  const nameVal = nameInput ? nameInput.value.trim() : '';
+  const body = {};
+  if (stageVal !== '') body.stage = parseInt(stageVal, 10);
+  else body.stage = null;
+  if (nameVal) body.stage_name = nameVal;
+  const res = await postApi('/api/experiment/' + id + '/stage', body);
+  if (res.ok) {
+    const exp = allExperiments.find(e => e.id === id);
+    if (exp) { exp.stage = body.stage; exp.stage_name = nameVal; }
+    renderExperiments();
+    refreshDetail(id);
+  }
+}
+"""
+
 
 def get_all_js() -> str:
     """Concatenate all JavaScript sections."""
     return (JS_CORE + JS_OWL + JS_SIDEBAR + JS_TABLE +
             JS_EXPERIMENTS + JS_INLINE_EDIT + JS_DETAIL +
             JS_COMPARE + JS_MUTATIONS + JS_TIMELINE +
-            JS_STUDIES + JS_INIT)
+            JS_STUDIES + JS_STAGE + JS_INIT)

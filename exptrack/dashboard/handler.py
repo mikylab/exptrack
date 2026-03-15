@@ -102,6 +102,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "edit-artifact":   lambda: write_routes.api_edit_artifact(conn, exp_id, body),
                 "study":           lambda: write_routes.api_add_study(conn, exp_id, body),
                 "delete-study":    lambda: write_routes.api_delete_exp_study(conn, exp_id, body),
+                "stage":           lambda: write_routes.api_set_stage(conn, exp_id, body),
                 "image-path":      lambda: write_routes.api_image_path(conn, exp_id, body),
             }
             handler = dispatch.get(action)

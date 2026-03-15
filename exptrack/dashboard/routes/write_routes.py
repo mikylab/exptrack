@@ -360,6 +360,26 @@ def api_bulk_add_to_study(conn, body: dict) -> dict:
     return {"ok": True, "study": name, "added": added}
 
 
+def api_set_stage(conn, exp_id: str, body: dict) -> dict:
+    """Set stage number and optional stage_name for an experiment."""
+    from ...core.queries import update_experiment_stage
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    stage = body.get("stage")
+    stage_name = body.get("stage_name", "")
+    if stage is None and not stage_name:
+        return {"error": "provide stage or stage_name"}
+    if stage is not None:
+        try:
+            stage = int(stage)
+        except (ValueError, TypeError):
+            return {"error": "stage must be an integer"}
+    update_experiment_stage(conn, exp["id"], stage, stage_name or None)
+    conn.commit()
+    return {"ok": True, "stage": stage, "stage_name": stage_name}
+
+
 def api_image_path(conn, exp_id: str, body: dict) -> dict:
     """Manage image paths for an experiment (add/edit/delete).
 
