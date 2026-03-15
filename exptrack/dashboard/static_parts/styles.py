@@ -26,18 +26,18 @@ CSS_RESET = """
     font-family: 'IBM Plex Mono', monospace;
     background: var(--bg); color: var(--fg);
     margin: 0; padding: 0;
-    font-size: 15px; line-height: 1.6;
+    font-size: 15px; line-height: 1.5;
     overflow: hidden; height: 100vh;
   }
 """
 
 # Layout: header, sidebar, main content
 CSS_LAYOUT = """
-  .header { display: flex; justify-content: space-between; align-items: center; padding: 6px 20px; border-bottom: 1px solid var(--border); background: var(--card-bg); flex-shrink: 0; height: 48px; }
-  .header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.5px; margin: 0; cursor: pointer; }
+  .header { display: flex; justify-content: space-between; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--border); background: var(--card-bg); flex-shrink: 0; height: 52px; }
+  .header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.5px; margin: 0; cursor: pointer; }
   .header h1:hover { color: var(--blue); }
   .header-actions { display: flex; gap: 8px; align-items: center; }
-  #app-layout { display: flex; height: calc(100vh - 48px); overflow: hidden; }
+  #app-layout { display: flex; height: calc(100vh - 52px); overflow: hidden; }
   #exp-sidebar {
     width: 280px; min-width: 280px; border-right: 1px solid var(--border);
     display: flex; flex-direction: column; overflow: hidden;
@@ -48,23 +48,23 @@ CSS_LAYOUT = """
   #exp-sidebar.collapsed .sidebar-content { display: none; }
   #exp-sidebar.collapsed .collapse-strip { display: flex; }
   .sidebar-content { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-  .sidebar-header { display: flex; gap: 6px; padding: 10px 12px 6px; align-items: center; }
-  .sidebar-header input { flex: 1; font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 5px 8px; border-radius: 3px; background: var(--bg); min-width: 0; }
-  .collapse-btn { font-family: inherit; font-size: 16px; background: none; border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); flex-shrink: 0; }
+  .sidebar-header { display: flex; gap: 6px; padding: 10px 12px 8px; align-items: center; }
+  .sidebar-header input { flex: 1; font-family: inherit; font-size: 14px; border: 1px solid var(--border); padding: 7px 10px; border-radius: 4px; background: var(--bg); min-width: 0; }
+  .collapse-btn { font-family: inherit; font-size: 16px; background: none; border: 1px solid var(--border); padding: 4px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); flex-shrink: 0; }
   .collapse-btn:hover { background: var(--code-bg); color: var(--fg); }
   .collapse-strip { display: none; flex-direction: column; align-items: center; padding-top: 12px; cursor: pointer; width: 44px; height: 100%; }
   .collapse-strip:hover { background: var(--code-bg); }
-  .status-chips { display: flex; gap: 4px; padding: 4px 12px 8px; flex-wrap: wrap; }
-  .status-chips button { font-family: inherit; font-size: 11px; background: var(--bg); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .status-chips { display: flex; gap: 4px; padding: 6px 12px 8px; flex-wrap: wrap; }
+  .status-chips button { font-family: inherit; font-size: 12px; background: var(--bg); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; border-radius: 3px; color: var(--muted); }
   .status-chips button:hover { background: var(--code-bg); color: var(--fg); }
   .status-chips button.active { background: var(--fg); color: var(--bg); }
   #exp-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
-  #main-content { flex: 1; overflow-y: auto; min-width: 0; padding: 14px 20px; }
+  #main-content { flex: 1; overflow-y: auto; min-width: 0; padding: 16px 24px; }
 """
 
 # Cards: experiment cards, stats cards, status indicators
 CSS_CARDS = """
-  .exp-card { padding: 8px 10px; border-radius: 4px; cursor: pointer; margin-bottom: 2px; border: 1px solid transparent; }
+  .exp-card { padding: 10px 12px; border-radius: 4px; cursor: pointer; margin-bottom: 2px; border: 1px solid transparent; }
   .exp-card:hover { background: var(--code-bg); }
   .exp-card.active { background: rgba(44,90,160,0.08); border-color: var(--blue); }
   .exp-card-row1 { display: flex; align-items: center; gap: 6px; }
@@ -72,14 +72,14 @@ CSS_CARDS = """
   .status-dot.status-done { background: var(--green); }
   .status-dot.status-failed { background: var(--red); }
   .status-dot.status-running { background: var(--yellow); }
-  .exp-card-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .exp-card-meta { font-size: 11px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .exp-card-metrics { font-size: 11px; color: var(--blue); margin-top: 1px; }
-  .exp-card-tags { font-size: 10px; color: var(--muted); margin-top: 1px; }
-  .exp-card-tags .tag { font-size: 10px; padding: 0 4px; margin-left: 0; margin-right: 3px; }
+  .exp-card-name { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .exp-card-meta { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .exp-card-metrics { font-size: 12px; color: var(--blue); margin-top: 2px; }
+  .exp-card-tags { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .exp-card-tags .tag { font-size: 11px; padding: 1px 5px; margin-left: 0; margin-right: 3px; }
   .exp-card-cb { margin-right: 4px; cursor: pointer; }
   .sidebar-actions-bar { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--code-bg); display: flex; flex-direction: column; gap: 4px; }
-  .sidebar-actions-bar button { font-family: inherit; font-size: 12px; border: none; padding: 5px 12px; cursor: pointer; border-radius: 3px; width: 100%; }
+  .sidebar-actions-bar button { font-family: inherit; font-size: 13px; border: none; padding: 6px 12px; cursor: pointer; border-radius: 3px; width: 100%; }
   .sidebar-actions-bar button.primary { background: var(--blue); color: #fff; }
   .sidebar-actions-bar button.export-btn { background: var(--card-bg); border: 1px solid var(--border); color: var(--fg); }
   .sidebar-actions-bar button.export-btn:hover { background: var(--border); }
@@ -87,7 +87,7 @@ CSS_CARDS = """
   .sidebar-actions-bar button.danger:hover { background: var(--red); color: #fff; }
   .sidebar-actions-bar .action-count { font-size: 11px; color: var(--muted); text-align: center; }
   .stats { margin-bottom: 14px; }
-  .stats-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+  .stats-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
   .stats-row { display: grid; gap: 8px; margin-bottom: 8px; }
   .stats-row.runs { grid-template-columns: repeat(4, 1fr); }
   .stats-row.additional { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
@@ -96,8 +96,8 @@ CSS_CARDS = """
     padding: 10px 12px; text-align: center; border-radius: 4px;
     position: relative;
   }
-  .stat .num { font-size: 22px; font-weight: 600; }
-  .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+  .stat .num { font-size: 24px; font-weight: 600; }
+  .stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
   .stat .stat-hint { display: none; position: absolute; bottom: -30px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 4px 10px; border-radius: 3px; font-size: 11px; white-space: nowrap; z-index: 10; }
   .stat:hover .stat-hint { display: block; }
   .status-done { color: var(--green); font-weight: 500; }
@@ -109,7 +109,7 @@ CSS_CARDS = """
 CSS_TABLE = """
   .table-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
   .toolbar-btn {
-    font-family: inherit; font-size: 12px; padding: 6px 14px;
+    font-family: inherit; font-size: 13px; padding: 7px 16px;
     border: 1px solid var(--border); background: var(--card-bg); cursor: pointer;
     color: var(--fg); white-space: nowrap; line-height: 1.4;
     transition: background 0.15s, border-color 0.15s;
@@ -136,7 +136,7 @@ CSS_TABLE = """
   }
   .table-actions-bar .sel-count { font-size: 13px; color: var(--muted); margin-right: 4px; }
   .table-actions-bar button {
-    font-family: inherit; font-size: 12px; border: 1px solid var(--border); padding: 5px 14px;
+    font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 6px 14px;
     cursor: pointer; border-radius: 3px; background: var(--card-bg); color: var(--fg);
   }
   .table-actions-bar button:hover { background: var(--code-bg); }
@@ -171,8 +171,8 @@ CSS_TABLE = """
   td { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
   tr:hover { background: var(--code-bg); }
   tr.selected-row { background: rgba(44,90,160,0.08); }
-  .tag { background: var(--code-bg); padding: 2px 8px; font-size: 12px; margin-left: 6px; border-radius: 3px; }
-  .exp-metrics-preview { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .tag { background: var(--code-bg); padding: 3px 10px; font-size: 13px; margin-left: 6px; border-radius: 3px; }
+  .exp-metrics-preview { font-size: 13px; color: var(--muted); margin-top: 2px; }
   h2 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
   h2 .help-icon { font-size: 13px; cursor: help; color: var(--blue); margin-left: 6px; font-weight: normal; text-transform: none; letter-spacing: 0; }
   .filters { margin-bottom: 18px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -197,8 +197,8 @@ CSS_TABLE = """
 
 # Detail panel, info grid, params/metrics tables
 CSS_DETAIL = """
-  .detail-summary { display: flex; gap: 12px; flex-wrap: wrap; padding: 8px 12px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 12px; align-items: center; }
-  .detail-summary .sum-item { font-size: 12px; color: var(--muted); }
+  .detail-summary { display: flex; gap: 12px; flex-wrap: wrap; padding: 10px 14px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 12px; align-items: center; }
+  .detail-summary .sum-item { font-size: 13px; color: var(--muted); }
   .detail-summary .sum-item strong { color: var(--fg); }
   .detail-summary .sum-sep { color: var(--border); }
   .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -210,12 +210,12 @@ CSS_DETAIL = """
   .detail { background: var(--card-bg); border: 1px solid var(--border); padding: 16px; margin-top: 12px; border-radius: 4px; }
   .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
   .detail-export-bar { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-  .detail-header h2 { margin: 0; font-size: 15px; color: var(--fg); text-transform: none; letter-spacing: 0; }
+  .detail-header h2 { margin: 0; font-size: 16px; color: var(--fg); text-transform: none; letter-spacing: 0; }
   .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .detail-actions button, .action-btn {
     font-family: inherit; font-size: 13px;
     background: var(--code-bg); border: 1px solid var(--border);
-    padding: 5px 14px; cursor: pointer; border-radius: 3px;
+    padding: 6px 16px; cursor: pointer; border-radius: 4px;
   }
   .detail-actions button:hover, .action-btn:hover { background: var(--border); }
   .action-btn.danger { color: var(--red); border-color: var(--red); }
@@ -224,17 +224,17 @@ CSS_DETAIL = """
   .action-btn.primary:hover { opacity: 0.9; }
   .close-btn { cursor: pointer; font-size: 20px; background: none; border: none; font-family: inherit; padding: 4px 8px; }
   .close-btn:hover { background: var(--code-bg); border-radius: 3px; }
-  .info-grid { display: grid; grid-template-columns: 150px 1fr; gap: 6px 20px; margin-bottom: 20px; font-size: 14px; }
+  .info-grid { display: grid; grid-template-columns: 160px 1fr; gap: 8px 20px; margin-bottom: 20px; font-size: 14px; }
   .info-grid .label { color: var(--muted); font-weight: 500; }
   .params-table, .metrics-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-  .params-table td, .metrics-table td { padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 14px; }
-  .params-table th, .metrics-table th { padding: 8px 12px; font-size: 13px; text-align: left; border-bottom: 2px solid var(--border); }
+  .params-table td, .metrics-table td { padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .params-table th, .metrics-table th { padding: 9px 14px; font-size: 13px; text-align: left; border-bottom: 2px solid var(--border); }
   .chart-container { max-width: 550px; margin: 12px 0; }
   .summary-card { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; border-radius: 4px; margin-bottom: 20px; }
   .summary-card .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
   .summary-card .summary-item { text-align: center; }
-  .summary-card .summary-item .val { font-size: 16px; font-weight: 600; }
-  .summary-card .summary-item .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .summary-card .summary-item .val { font-size: 18px; font-weight: 600; }
+  .summary-card .summary-item .lbl { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
 """
 
 # Diff, code changes, variables
@@ -350,7 +350,7 @@ CSS_COMPONENTS = """
   .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border); }
   .tab {
     font-family: inherit; font-size: 14px;
-    background: none; border: none; padding: 10px 20px;
+    background: none; border: none; padding: 11px 22px;
     cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
     border-bottom: 2px solid transparent; margin-bottom: -2px;
   }
@@ -359,22 +359,22 @@ CSS_COMPONENTS = """
   #view { min-height: 200px; }
   .inline-form { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; }
   .inline-form input {
-    font-family: inherit; font-size: 13px; border: 1px solid var(--border);
-    padding: 3px 8px; border-radius: 3px; background: var(--card-bg);
+    font-family: inherit; font-size: 14px; border: 1px solid var(--border);
+    padding: 5px 10px; border-radius: 4px; background: var(--card-bg);
   }
   .inline-form button {
-    font-family: inherit; font-size: 12px; padding: 3px 10px;
+    font-family: inherit; font-size: 13px; padding: 5px 12px;
     border: 1px solid var(--border); background: var(--code-bg);
-    cursor: pointer; border-radius: 3px;
+    cursor: pointer; border-radius: 4px;
   }
   .inline-form button:hover { background: var(--border); }
-  .notes-display { white-space: pre-wrap; background: var(--code-bg); padding: 10px; border-radius: 4px; margin: 4px 0; font-size: 13px; position: relative; }
+  .notes-display { white-space: pre-wrap; background: var(--code-bg); padding: 12px; border-radius: 4px; margin: 4px 0; font-size: 14px; position: relative; }
   .notes-edit-btn { position: absolute; top: 4px; right: 4px; font-size: 11px; cursor: pointer; color: var(--muted); background: var(--card-bg); border: 1px solid var(--border); padding: 1px 6px; border-radius: 3px; }
   .notes-edit-btn:hover { color: var(--blue); border-color: var(--blue); }
-  .notes-edit-area { width: 100%; font-family: inherit; font-size: 13px; border: 1px solid var(--blue); padding: 8px; border-radius: 4px; background: var(--card-bg); min-height: 80px; resize: vertical; }
+  .notes-edit-area { width: 100%; font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 10px; border-radius: 4px; background: var(--card-bg); min-height: 90px; resize: vertical; }
   .tag-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-  .tag-removable { background: var(--code-bg); padding: 3px 10px; font-size: 13px; border-radius: 3px; display: inline-flex; align-items: center; gap: 4px; cursor: default; }
-  .tag-removable .tag-delete { cursor: pointer; color: var(--muted); font-size: 15px; margin-left: 4px; line-height: 1; opacity: 0.6; }
+  .tag-removable { background: var(--code-bg); padding: 5px 12px; font-size: 14px; border-radius: 4px; display: inline-flex; align-items: center; gap: 5px; cursor: default; }
+  .tag-removable .tag-delete { cursor: pointer; color: var(--muted); font-size: 16px; margin-left: 4px; line-height: 1; opacity: 0.6; }
   .tag-removable:hover .tag-delete { opacity: 1; color: var(--red, #e55); }
   .tag-removable .tag-delete:hover { opacity: 1; color: var(--red, #e55); }
   .tag-removable .tag-edit { cursor: pointer; color: var(--muted); font-size: 11px; }
@@ -418,12 +418,12 @@ CSS_COMPONENTS = """
   }
   .tag-manager-row {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 6px 8px; border-radius: 3px; margin-bottom: 2px;
+    padding: 8px 10px; border-radius: 3px; margin-bottom: 2px;
     transition: background 0.1s;
   }
   .tag-manager-row:hover { background: var(--code-bg); }
   .tag-manager-row .tm-name { color: var(--blue); }
-  .tag-manager-row .tm-count { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  .tag-manager-row .tm-count { color: var(--muted); font-size: 13px; margin-left: 8px; }
   .tag-manager-row .tm-delete {
     cursor: pointer; color: var(--muted); font-size: 14px; padding: 2px 6px;
     border-radius: 3px; opacity: 0; transition: opacity 0.1s;
@@ -436,8 +436,8 @@ CSS_COMPONENTS = """
   .artifact-type-badge.model { background: #cce5ff; color: #004085; }
   .artifact-type-badge.data { background: #fff3cd; color: #856404; }
   .artifact-add-form { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
-  .artifact-add-form input { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; background: var(--card-bg); }
-  .artifact-add-form button { font-family: inherit; font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); background: var(--code-bg); cursor: pointer; border-radius: 3px; }
+  .artifact-add-form input { font-family: inherit; font-size: 14px; border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px; background: var(--card-bg); }
+  .artifact-add-form button { font-family: inherit; font-size: 13px; padding: 6px 14px; border: 1px solid var(--border); background: var(--code-bg); cursor: pointer; border-radius: 4px; }
   .artifact-actions { display: flex; gap: 4px; }
   .artifact-actions button { font-family: inherit; font-size: 11px; padding: 1px 6px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; color: var(--muted); }
   .artifact-actions button:hover { color: var(--fg); border-color: var(--fg); }
@@ -485,7 +485,7 @@ CSS_COMPONENTS = """
   .section-toggle.collapsed::before { transform: rotate(-90deg); }
   .section-body { transition: max-height 0.2s ease; }
   .section-toggle.collapsed + .section-body { display: none; }
-  .editable-cell { cursor: default; padding: 4px 8px; border-radius: 3px; position: relative; min-height: 28px; }
+  .editable-cell { cursor: default; padding: 5px 8px; border-radius: 3px; position: relative; min-height: 32px; }
   .editable-cell:hover { background: rgba(44,90,160,0.08); }
   .edit-icon { display: none; font-size: 11px; color: var(--muted); margin-left: 4px; vertical-align: middle; }
   .editable-cell:hover .edit-icon { display: inline; }
@@ -513,7 +513,7 @@ CSS_COMPONENTS = """
   #exp-table th { position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 2px 6px; border-radius: 3px; background: var(--card-bg); width: 100%; max-width: 300px; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
-  .tags-cell .tag { font-size: 11px; padding: 1px 6px; }
+  .tags-cell .tag { font-size: 12px; padding: 2px 8px; }
   .pin-btn { cursor: pointer; font-size: 14px; background: none; border: none; color: var(--muted); padding: 0 2px; }
   .pin-btn:hover { color: var(--yellow); }
   .pin-btn.pinned { color: var(--yellow); }
@@ -523,8 +523,8 @@ CSS_COMPONENTS = """
   #exp-body tr:hover { background: var(--code-bg); }
   .tag-filter-bar { display: inline-flex; gap: 4px; flex-wrap: wrap; align-items: center; }
   .tag-filter-bar .tag-chip {
-    font-family: inherit; font-size: 12px; background: var(--card-bg); border: 1px solid var(--border);
-    padding: 4px 10px; cursor: pointer; border-radius: 3px; color: var(--muted);
+    font-family: inherit; font-size: 13px; background: var(--card-bg); border: 1px solid var(--border);
+    padding: 5px 12px; cursor: pointer; border-radius: 3px; color: var(--muted);
     transition: background 0.15s, border-color 0.15s;
   }
   .tag-filter-bar .tag-chip:hover { background: var(--code-bg); border-color: var(--blue); color: var(--blue); }
@@ -554,7 +554,7 @@ CSS_COMPONENTS = """
     max-height: 180px; overflow-y: auto; min-width: 160px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   }
   .tag-autocomplete-item {
-    padding: 4px 10px; cursor: pointer; font-size: 12px; display: flex; justify-content: space-between;
+    padding: 6px 12px; cursor: pointer; font-size: 13px; display: flex; justify-content: space-between;
   }
   .tag-autocomplete-item:hover, .tag-autocomplete-item.active { background: var(--code-bg); color: var(--blue); }
   .tag-autocomplete-item .tag-count { color: var(--muted); font-size: 11px; }
@@ -563,7 +563,7 @@ CSS_COMPONENTS = """
   .editable-hint:hover { border-bottom-color: var(--blue); }
   .detail-tags-inline { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .detail-tags-inline .tag-input-area { display: inline-flex; align-items: center; }
-  .detail-notes-inline { cursor: text; min-height: 24px; padding: 4px; border-radius: 3px; }
+  .detail-notes-inline { cursor: text; min-height: 28px; padding: 6px; border-radius: 4px; }
   .detail-notes-inline:hover { background: rgba(44,90,160,0.05); }
   .owl-mascot { cursor: pointer; transition: transform 0.3s; display: inline-block; }
   .owl-mascot:hover { transform: scale(1.2) rotate(-5deg); }
@@ -587,16 +587,16 @@ CSS_COMPONENTS = """
 CSS_STUDIES = """
   .study-panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; padding: 16px; margin-bottom: 16px; }
   .study-panel h3 { font-size: 14px; margin-bottom: 12px; }
-  .study-card { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 4px; }
+  .study-card { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 4px; }
   .study-card:hover { background: var(--code-bg); }
-  .study-card-name { font-weight: 600; color: var(--blue); cursor: pointer; }
-  .study-card-meta { font-size: 12px; color: var(--muted); }
-  .study-card-actions { display: flex; gap: 4px; }
-  .study-card-actions button { font-family: inherit; font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; }
+  .study-card-name { font-weight: 600; font-size: 14px; color: var(--blue); cursor: pointer; }
+  .study-card-meta { font-size: 13px; color: var(--muted); }
+  .study-card-actions { display: flex; gap: 6px; }
+  .study-card-actions button { font-family: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; }
   .study-card-actions button.danger:hover { color: var(--red); border-color: var(--red); }
   .study-create-form { display: flex; gap: 8px; margin-top: 8px; }
-  .study-create-form input { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; background: var(--card-bg); flex: 1; }
-  .study-create-form button { font-family: inherit; font-size: 12px; padding: 4px 12px; border: none; background: var(--blue); color: #fff; cursor: pointer; border-radius: 3px; }
+  .study-create-form input { font-family: inherit; font-size: 14px; border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px; background: var(--card-bg); flex: 1; }
+  .study-create-form button { font-family: inherit; font-size: 13px; padding: 6px 14px; border: none; background: var(--blue); color: #fff; cursor: pointer; border-radius: 4px; }
 """
 
 
