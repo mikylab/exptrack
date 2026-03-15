@@ -1504,7 +1504,7 @@ async function refreshDetail(id) {
   ).join('');
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
-    <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:190px">
+    <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:210px">
     <input type="text" id="art-path-${exp.id}" placeholder="Path (e.g. outputs/model.pt)" style="width:280px">
     <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
   </div>`;

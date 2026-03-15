@@ -644,7 +644,7 @@ CSS_IMAGES = """
   .filter-search-input {
     font-family: inherit; font-size: 13px; border: 1px solid var(--border);
     padding: 6px 12px; border-radius: 4px; background: var(--card-bg); color: var(--fg);
-    width: 200px; transition: border-color 0.15s;
+    width: 220px; transition: border-color 0.15s;
   }
   .filter-search-input:focus { outline: none; border-color: var(--blue); }
   .filter-dropdown-list {
