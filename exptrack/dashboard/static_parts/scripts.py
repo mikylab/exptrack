@@ -489,24 +489,8 @@ function renderSidebarActionsBar() {
     html += '<button class="primary" style="opacity:0.5" disabled title="Select 2 to compare">Compare (need 2)</button>';
   }
   html += '<button class="export-btn" onclick="promptBulkAddToGroup()">Add to Group</button>';
-  html += '<span style="position:relative;display:inline-block">';
-  html += '<button class="export-btn" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Export (' + n + ') \u25BE</button>';
-  html += '<div class="export-dropdown-menu" style="display:none">';
-  html += '<button class="action-btn" onclick="sidebarExportFmt(\'json\')">JSON</button>';
-  html += '<button class="action-btn" onclick="sidebarExportFmt(\'csv\')">CSV</button>';
-  html += '<button class="action-btn" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
-  html += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
-  html += '<button class="action-btn" onclick="sidebarExportFmt(\'plain\')">Plain Text</button>';
-  html += '</div></span>';
-  html += '<span style="position:relative;display:inline-block">';
-  html += '<button class="export-btn" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Copy \u25BE</button>';
-  html += '<div class="export-dropdown-menu" style="display:none">';
-  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'json\')">JSON</button>';
-  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'csv\')">CSV</button>';
-  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'tsv\')">TSV</button>';
-  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'markdown\')">Markdown</button>';
-  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'plain\')">Plain Text</button>';
-  html += '</div></span>';
+  html += _buildExportDropdown(n);
+  html += _buildCopyDropdown(n);
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '<button class="export-btn" onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear Selection</button>';
   html += '</div>';
@@ -560,6 +544,32 @@ function selectAllVisible() {
 # Table actions, bulk operations, sorting, filtering
 JS_TABLE = r"""
 
+function _buildExportDropdown(n) {
+  let h = '<span style="position:relative;display:inline-block">';
+  h += '<button class="export-btn" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Export (' + n + ') \u25BE</button>';
+  h += '<div class="export-dropdown-menu" style="display:none">';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'json\')">JSON</button>';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'csv\')">CSV</button>';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'plain\')">Plain Text</button>';
+  h += '</div></span>';
+  return h;
+}
+
+function _buildCopyDropdown(n) {
+  let h = '<span style="position:relative;display:inline-block">';
+  h += '<button class="export-btn" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Copy (' + n + ') \u25BE</button>';
+  h += '<div class="export-dropdown-menu" style="display:none">';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'json\')">JSON</button>';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'csv\')">CSV</button>';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'tsv\')">TSV</button>';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'markdown\')">Markdown</button>';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'plain\')">Plain Text</button>';
+  h += '</div></span>';
+  return h;
+}
+
 function renderTableActionsBar() {
   const bar = document.getElementById('table-actions-bar');
   if (!bar) return;
@@ -571,26 +581,8 @@ function renderTableActionsBar() {
   bar.style.display = 'flex';
   let html = '<span class="sel-count">' + n + ' selected</span>';
   html += '<button onclick="promptBulkAddToGroup()">Add to Group</button>';
-  // Export dropdown with format options
-  html += '<span style="position:relative;display:inline-block">';
-  html += '<button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Export (' + n + ') \u25BE</button>';
-  html += '<div class="export-dropdown-menu" style="display:none">';
-  html += '<button class="action-btn" onclick="sidebarExportFmt(\'json\')">JSON</button>';
-  html += '<button class="action-btn" onclick="sidebarExportFmt(\'csv\')">CSV</button>';
-  html += '<button class="action-btn" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
-  html += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
-  html += '<button class="action-btn" onclick="sidebarExportFmt(\'plain\')">Plain Text</button>';
-  html += '</div></span>';
-  // Copy dropdown with format options
-  html += '<span style="position:relative;display:inline-block">';
-  html += '<button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Copy (' + n + ') \u25BE</button>';
-  html += '<div class="export-dropdown-menu" style="display:none">';
-  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'json\')">JSON</button>';
-  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'csv\')">CSV</button>';
-  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'tsv\')">TSV</button>';
-  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'markdown\')">Markdown</button>';
-  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'plain\')">Plain Text</button>';
-  html += '</div></span>';
+  html += _buildExportDropdown(n);
+  html += _buildCopyDropdown(n);
   if (n === 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare</button>';
   }
