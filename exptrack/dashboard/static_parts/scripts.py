@@ -489,13 +489,13 @@ function renderSidebarActionsBar() {
     html += '<button class="primary" style="opacity:0.5" disabled title="Select 2 to compare">Compare (need 2)</button>';
   }
   html += '<button class="export-btn" onclick="promptBulkAddToGroup()">Add to Group</button>';
-  html += '<span class="export-dropdown" style="position:relative;display:inline-block">';
+  html += '<span style="position:relative;display:inline-block">';
   html += '<button class="export-btn" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Export (' + n + ') \u25BE</button>';
-  html += '<div style="display:none;position:absolute;bottom:100%;left:0;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px;z-index:100;min-width:100px">';
-  html += '<button class="action-btn" style="display:block;width:100%;text-align:left;margin:2px 0" onclick="sidebarExportFmt(\'json\')">JSON</button>';
-  html += '<button class="action-btn" style="display:block;width:100%;text-align:left;margin:2px 0" onclick="sidebarExportFmt(\'csv\')">CSV</button>';
-  html += '<button class="action-btn" style="display:block;width:100%;text-align:left;margin:2px 0" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
-  html += '<button class="action-btn" style="display:block;width:100%;text-align:left;margin:2px 0" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
+  html += '<div class="export-dropdown-menu" style="display:none">';
+  html += '<button class="action-btn" onclick="sidebarExportFmt(\'json\')">JSON</button>';
+  html += '<button class="action-btn" onclick="sidebarExportFmt(\'csv\')">CSV</button>';
+  html += '<button class="action-btn" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
+  html += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
   html += '</div></span>';
   html += '<button class="export-btn" onclick="sidebarCopyText()">Copy as Text</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
@@ -597,9 +597,21 @@ async function sidebarExportFmt(fmt) {
   } else {
     text = JSON.stringify(data, null, 2);
   }
-  await navigator.clipboard.writeText(text);
-  const label = fmt.toUpperCase();
-  owlSay('Exported ' + ids.length + ' experiment(s) as ' + label + ' to clipboard!');
+  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv'};
+  const filename = 'exptrack_export_' + ids.length + '_experiments' + (ext[fmt] || '.txt');
+  const mime = fmt === 'json' ? 'application/json' : 'text/plain';
+  const blob = new Blob([text], {type: mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  // Close dropdown
+  document.querySelectorAll('.export-dropdown-menu').forEach(d => d.style.display = 'none');
+  owlSay('Downloaded ' + filename);
 }
 
 function _formatExpPlainText(d) {
@@ -1476,48 +1488,76 @@ JS_COMPARE = r"""
 
 // ── Export ──────────────────────────────────────────────────────────────────────
 
+let _exportCache = {};
+
 async function exportExp(id) {
   owlSpeak('export');
+  _exportCache = {};
   const container = document.getElementById('export-container');
-  container.innerHTML = '<div class="export-panel"><div class="export-actions">' +
-    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'json\')">JSON</button>' +
-    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'markdown\')">Markdown</button>' +
-    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'csv\')">CSV</button>' +
-    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'tsv\')">TSV</button>' +
-    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'plain\')">Plain Text</button>' +
+  const fmts = ['json','markdown','csv','tsv','plain'];
+  let btns = fmts.map(f =>
+    '<button class="action-btn" id="export-btn-' + f + '" onclick="doExport(\'' + id + '\',\'' + f + '\')">' +
+    f.toUpperCase().replace('PLAIN','Plain Text').replace('MARKDOWN','Markdown') + '</button>'
+  ).join('');
+  container.innerHTML = '<div class="export-panel">' +
+    '<div class="export-actions">' + btns +
+    '<button class="action-btn" onclick="downloadExport()">Download File</button>' +
     '<button class="action-btn" onclick="copyExport()">Copy to Clipboard</button>' +
     '<button class="action-btn" onclick="this.closest(\'.export-panel\').remove()">Close</button>' +
-    '</div><pre id="export-content">Select a format above...</pre></div>';
+    '</div><pre id="export-content" style="display:none"></pre></div>';
 }
 
 async function doExport(id, fmt) {
+  // Highlight active format button
+  document.querySelectorAll('.export-actions .action-btn').forEach(b => b.classList.remove('active-fmt'));
+  const btn = document.getElementById('export-btn-' + fmt);
+  if (btn) btn.classList.add('active-fmt');
+
+  let text;
+  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt'};
   if (fmt === 'csv' || fmt === 'tsv') {
     const data = await postApi('/api/bulk-export', {ids: [id], format: fmt});
-    const pre = document.getElementById('export-content');
-    pre.textContent = data.content || JSON.stringify(data, null, 2);
-    return;
-  }
-  const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt));
-  const pre = document.getElementById('export-content');
-  if (fmt === 'markdown') {
-    pre.textContent = data.markdown || JSON.stringify(data, null, 2);
-  } else if (fmt === 'plain') {
-    const d = data.data || data;
-    pre.textContent = _formatExpPlainText(d);
+    text = data.content || JSON.stringify(data, null, 2);
   } else {
-    pre.textContent = JSON.stringify(data, null, 2);
+    const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt));
+    if (fmt === 'markdown') {
+      text = data.markdown || JSON.stringify(data, null, 2);
+    } else if (fmt === 'plain') {
+      text = _formatExpPlainText(data.data || data);
+    } else {
+      text = JSON.stringify(data, null, 2);
+    }
   }
+  const pre = document.getElementById('export-content');
+  pre.style.display = '';
+  pre.textContent = text;
+
+  // Find experiment name for filename
+  const exp = allExperiments.find(e => e.id.startsWith(id));
+  const name = exp ? exp.name.replace(/[^a-zA-Z0-9_-]/g, '_') : id.slice(0,8);
+  _exportCache = {text, filename: name + (ext[fmt] || '.txt'), mime: fmt === 'json' ? 'application/json' : 'text/plain'};
+}
+
+function downloadExport() {
+  if (!_exportCache.text) { owlSay('Select a format first.'); return; }
+  const blob = new Blob([_exportCache.text], {type: _exportCache.mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = _exportCache.filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  owlSay('Downloaded ' + _exportCache.filename);
 }
 
 function copyExport() {
   const pre = document.getElementById('export-content');
-  if (pre) {
-    navigator.clipboard.writeText(pre.textContent).then(() => {
-      const btn = event.target;
-      btn.textContent = 'Copied!';
-      setTimeout(() => btn.textContent = 'Copy to Clipboard', 1500);
-    });
-  }
+  if (!pre || !pre.textContent || pre.style.display === 'none') { owlSay('Select a format first.'); return; }
+  navigator.clipboard.writeText(pre.textContent).then(() => {
+    owlSay('Copied to clipboard!');
+  });
 }
 
 // ── Compare ────────────────────────────────────────────────────────────────────
