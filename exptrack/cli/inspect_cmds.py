@@ -73,7 +73,12 @@ def cmd_show(args):
     def sec(t): print(bold(col(f"  -- {t} ", C)) + dim("-"*32))
 
     sec("Info")
-    groups = exp.get("groups", [])
+    studies = exp.get("studies", [])
+    stage_str = "--"
+    if exp.get("stage") is not None:
+        stage_str = str(exp["stage"])
+        if exp.get("stage_name"):
+            stage_str += f" ({exp['stage_name']})"
     for k, v in [("Created", fmt_dt(exp["created_at"])),
                  ("Duration", fmt_dur(exp["duration_s"])),
                  ("Script", exp.get("script") or "--"),
@@ -86,7 +91,8 @@ def cmd_show(args):
                  ("Output dir", exp.get("output_dir") or "--"),
                  ("Notes", exp.get("notes") or "--"),
                  ("Tags", ", ".join(exp.get("tags", [])) or "--"),
-                 ("Groups", ", ".join(groups) or "--")]:
+                 ("Studies", ", ".join(studies) or "--"),
+                 ("Stage", stage_str)]:
         print(f"    {col(k+':', Y):<22} {v}")
     print()
 

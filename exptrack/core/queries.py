@@ -66,8 +66,10 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "python_ver": exp["python_ver"],
         "notes": exp["notes"],
         "tags": json.loads(exp["tags"] or "[]"),
-        "groups": json.loads(exp["groups"] or "[]"),
+        "studies": json.loads(exp["studies"] or "[]"),
         "output_dir": exp["output_dir"] or "",
+        "stage": exp["stage"],
+        "stage_name": exp["stage_name"],
         "params": {p["key"]: json.loads(p["value"]) for p in params},
         "metrics": [{
             "key": m["key"], "last": m["last_v"],
@@ -86,7 +88,8 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
     params = (status, limit) if status else (limit,)
     query = f"""
         SELECT id, project, name, status, created_at, duration_s,
-               git_branch, git_commit, tags, groups, notes, output_dir
+               git_branch, git_commit, tags, studies, notes, output_dir,
+               stage, stage_name
         FROM experiments {where}
         ORDER BY created_at DESC LIMIT ?
     """
@@ -107,9 +110,11 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
             "git_branch": r["git_branch"],
             "git_commit": r["git_commit"],
             "tags": json.loads(r["tags"] or "[]"),
-            "groups": json.loads(r["groups"] or "[]"),
+            "studies": json.loads(r["studies"] or "[]"),
             "notes": r["notes"] or "",
             "output_dir": r["output_dir"] or "",
+            "stage": r["stage"],
+            "stage_name": r["stage_name"],
             "metrics": metrics,
             "params": {p["key"]: json.loads(p["value"]) for p in ps},
         })
@@ -402,9 +407,11 @@ def get_export_data(conn, exp_id: str) -> dict | None:
         "git_commit": exp["git_commit"],
         "hostname": exp["hostname"],
         "tags": json.loads(exp["tags"] or "[]"),
-        "groups": json.loads(exp["groups"] or "[]"),
+        "studies": json.loads(exp["studies"] or "[]"),
         "notes": exp["notes"],
         "output_dir": exp["output_dir"] or "",
+        "stage": exp["stage"],
+        "stage_name": exp["stage_name"],
         "params": user_params,
         "variables": variables,
         "code_changes": code_changes,
@@ -545,8 +552,13 @@ def format_export_markdown(data: dict) -> str:
         lines.append(f"**Hostname:** {data['hostname']}  ")
     if data.get('tags'):
         lines.append(f"**Tags:** {', '.join(data['tags'])}  ")
-    if data.get('groups'):
-        lines.append(f"**Groups:** {', '.join(data['groups'])}  ")
+    if data.get('studies'):
+        lines.append(f"**Studies:** {', '.join(data['studies'])}  ")
+    if data.get('stage') is not None:
+        stage_str = str(data['stage'])
+        if data.get('stage_name'):
+            stage_str += f" ({data['stage_name']})"
+        lines.append(f"**Stage:** {stage_str}  ")
     if data.get('output_dir'):
         lines.append(f"**Output Dir:** `{data['output_dir']}`  ")
     if data.get('project'):
@@ -627,7 +639,7 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
     # Header — all fields from get_export_data()
     header = ["id", "name", "project", "status", "created_at", "duration_s",
               "script", "command", "python_ver", "git_branch", "git_commit",
-              "hostname", "tags", "groups", "notes", "output_dir"]
+              "hostname", "tags", "studies", "stage", "stage_name", "notes", "output_dir"]
     header += [f"param:{k}" for k in param_keys]
     header += [f"var:{k}" for k in var_keys]
     header += [f"metric:{k}" for k in metric_keys]
@@ -658,7 +670,9 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
             data.get("git_commit", "") or "",
             data.get("hostname", "") or "",
             ";".join(data.get("tags", [])),
-            ";".join(data.get("groups", []) if isinstance(data.get("groups"), list) else []),
+            ";".join(data.get("studies", []) if isinstance(data.get("studies"), list) else []),
+            data.get("stage", "") if data.get("stage") is not None else "",
+            data.get("stage_name", "") or "",
             data.get("notes", "") or "",
             data.get("output_dir", "") or "",
         ]
@@ -679,48 +693,48 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
     return output.getvalue()
 
 
-# ── Groups ────────────────────────────────────────────────────────────────────
+# ── Studies ───────────────────────────────────────────────────────────────────
 
-def update_experiment_groups(conn, exp_id: str, groups: list[str]):
-    """Set the groups list for an experiment."""
+def update_experiment_studies(conn, exp_id: str, studies: list[str]):
+    """Set the studies list for an experiment."""
     from datetime import datetime, timezone
     conn.execute(
-        "UPDATE experiments SET groups=?, updated_at=? WHERE id=?",
-        (json.dumps(groups), datetime.now(timezone.utc).isoformat(), exp_id)
+        "UPDATE experiments SET studies=?, updated_at=? WHERE id=?",
+        (json.dumps(studies), datetime.now(timezone.utc).isoformat(), exp_id)
     )
 
 
-def get_all_groups(conn) -> list[dict]:
-    """Get all groups with usage counts (like get_all_tags)."""
+def get_all_studies(conn) -> list[dict]:
+    """Get all studies with usage counts (like get_all_tags)."""
     rows = conn.execute(
-        "SELECT groups FROM experiments WHERE groups IS NOT NULL AND groups != '[]'"
+        "SELECT studies FROM experiments WHERE studies IS NOT NULL AND studies != '[]'"
     ).fetchall()
     counts: dict[str, int] = {}
     for r in rows:
         try:
-            for g in json.loads(r["groups"] or "[]"):
-                counts[g] = counts.get(g, 0) + 1
+            for s in json.loads(r["studies"] or "[]"):
+                counts[s] = counts.get(s, 0) + 1
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
     return [{"name": n, "count": c} for n, c in sorted(counts.items())]
 
 
-def get_groups(conn) -> list[dict]:
-    """Get experiment groups with summary stats."""
+def get_studies(conn) -> list[dict]:
+    """Get studies with summary stats."""
     rows = conn.execute(
-        "SELECT id, groups, status, created_at FROM experiments "
-        "WHERE groups IS NOT NULL AND groups != '[]'"
+        "SELECT id, studies, status, created_at FROM experiments "
+        "WHERE studies IS NOT NULL AND studies != '[]'"
     ).fetchall()
-    group_data: dict[str, list[dict]] = {}
+    study_data: dict[str, list[dict]] = {}
     for r in rows:
         try:
-            for g in json.loads(r["groups"] or "[]"):
-                group_data.setdefault(g, []).append(dict(r))
+            for s in json.loads(r["studies"] or "[]"):
+                study_data.setdefault(s, []).append(dict(r))
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
     result = []
-    for name, exps in sorted(group_data.items()):
+    for name, exps in sorted(study_data.items()):
         done = sum(1 for e in exps if e["status"] == "done")
         failed = sum(1 for e in exps if e["status"] == "failed")
         latest = max((e["created_at"] for e in exps), default=None)
@@ -736,43 +750,59 @@ def get_groups(conn) -> list[dict]:
     return result
 
 
-def add_to_group(conn, exp_id: str, group_name: str) -> list[str] | None:
-    """Add an experiment to a group. Returns updated groups list."""
-    exp = find_experiment(conn, exp_id, "id, groups")
+def add_to_study(conn, exp_id: str, study_name: str) -> list[str] | None:
+    """Add an experiment to a study. Returns updated studies list."""
+    exp = find_experiment(conn, exp_id, "id, studies")
     if not exp:
         return None
-    groups = json.loads(exp["groups"] or "[]")
-    if group_name not in groups:
-        groups.append(group_name)
-        update_experiment_groups(conn, exp["id"], groups)
-    return groups
+    studies = json.loads(exp["studies"] or "[]")
+    if study_name not in studies:
+        studies.append(study_name)
+        update_experiment_studies(conn, exp["id"], studies)
+    return studies
 
 
-def remove_from_group(conn, exp_id: str, group_name: str) -> list[str] | None:
-    """Remove an experiment from a group. Returns updated groups list."""
-    exp = find_experiment(conn, exp_id, "id, groups")
+def remove_from_study(conn, exp_id: str, study_name: str) -> list[str] | None:
+    """Remove an experiment from a study. Returns updated studies list."""
+    exp = find_experiment(conn, exp_id, "id, studies")
     if not exp:
         return None
-    groups = json.loads(exp["groups"] or "[]")
-    groups = [g for g in groups if g != group_name]
-    update_experiment_groups(conn, exp["id"], groups)
-    return groups
+    studies = json.loads(exp["studies"] or "[]")
+    studies = [s for s in studies if s != study_name]
+    update_experiment_studies(conn, exp["id"], studies)
+    return studies
 
 
-def remove_group_global(conn, group_name: str) -> int:
-    """Remove a group from all experiments. Returns count of affected rows."""
+def remove_study_global(conn, study_name: str) -> int:
+    """Remove a study from all experiments. Returns count of affected rows."""
     rows = conn.execute(
-        "SELECT id, groups FROM experiments WHERE groups LIKE ?",
-        (f'%"{group_name}"%',)
+        "SELECT id, studies FROM experiments WHERE studies LIKE ?",
+        (f'%"{study_name}"%',)
     ).fetchall()
     count = 0
     for r in rows:
         try:
-            groups = json.loads(r["groups"] or "[]")
-            if group_name in groups:
-                groups = [g for g in groups if g != group_name]
-                update_experiment_groups(conn, r["id"], groups)
+            studies = json.loads(r["studies"] or "[]")
+            if study_name in studies:
+                studies = [s for s in studies if s != study_name]
+                update_experiment_studies(conn, r["id"], studies)
                 count += 1
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
     return count
+
+
+def update_experiment_stage(conn, exp_id: str, stage: int, stage_name: str | None = None):
+    """Set stage number and optional label for a run."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    if stage_name is not None:
+        conn.execute(
+            "UPDATE experiments SET stage=?, stage_name=?, updated_at=? WHERE id=?",
+            (stage, stage_name, now, exp_id)
+        )
+    else:
+        conn.execute(
+            "UPDATE experiments SET stage=?, updated_at=? WHERE id=?",
+            (stage, now, exp_id)
+        )

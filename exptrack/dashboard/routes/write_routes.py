@@ -250,114 +250,114 @@ def api_set_timezone(body: dict) -> dict:
     return {"ok": True, "timezone": tz}
 
 
-# ── Group management ─────────────────────────────────────────────────────────
+# ── Study management ─────────────────────────────────────────────────────────
 
-def api_create_group(conn, body: dict) -> dict:
-    """Create a new group, optionally adding specified experiments to it."""
+def api_create_study(conn, body: dict) -> dict:
+    """Create a new study, optionally adding specified experiments to it."""
     name = body.get("name", "").strip()
     exp_ids = body.get("experiment_ids", [])
     if not name:
-        return {"error": "empty group name"}
-    from ...core.queries import add_to_group
+        return {"error": "empty study name"}
+    from ...core.queries import add_to_study
     added = 0
     for eid in exp_ids:
-        groups = add_to_group(conn, eid, name)
-        if groups is not None:
+        studies = add_to_study(conn, eid, name)
+        if studies is not None:
             added += 1
     conn.commit()
     return {"ok": True, "name": name, "added": added}
 
 
-def api_add_to_group(conn, body: dict) -> dict:
-    """Add an experiment to a group."""
-    name = body.get("group", "").strip()
+def api_add_to_study(conn, body: dict) -> dict:
+    """Add an experiment to a study."""
+    name = body.get("study", "").strip()
     exp_id = body.get("experiment_id", "").strip()
     if not name or not exp_id:
-        return {"error": "provide group and experiment_id"}
-    from ...core.queries import add_to_group
-    groups = add_to_group(conn, exp_id, name)
+        return {"error": "provide study and experiment_id"}
+    from ...core.queries import add_to_study
+    studies = add_to_study(conn, exp_id, name)
     conn.commit()
-    return {"ok": True, "groups": groups}
+    return {"ok": True, "studies": studies}
 
 
-def api_remove_from_group(conn, body: dict) -> dict:
-    """Remove an experiment from a group."""
-    name = body.get("group", "").strip()
+def api_remove_from_study(conn, body: dict) -> dict:
+    """Remove an experiment from a study."""
+    name = body.get("study", "").strip()
     exp_id = body.get("experiment_id", "").strip()
     if not name or not exp_id:
-        return {"error": "provide group and experiment_id"}
-    from ...core.queries import remove_from_group
-    groups = remove_from_group(conn, exp_id, name)
+        return {"error": "provide study and experiment_id"}
+    from ...core.queries import remove_from_study
+    studies = remove_from_study(conn, exp_id, name)
     conn.commit()
-    return {"ok": True, "groups": groups}
+    return {"ok": True, "studies": studies}
 
 
-def api_delete_group(conn, body: dict) -> dict:
-    """Delete a group from all experiments."""
+def api_delete_study(conn, body: dict) -> dict:
+    """Delete a study from all experiments."""
     name = body.get("name", "").strip()
     if not name:
-        return {"error": "empty group name"}
-    from ...core.queries import remove_group_global
-    count = remove_group_global(conn, name)
+        return {"error": "empty study name"}
+    from ...core.queries import remove_study_global
+    count = remove_study_global(conn, name)
     conn.commit()
     return {"ok": True, "deleted_from": count}
 
 
-def api_add_group(conn, exp_id: str, body: dict) -> dict:
-    """Add a single group to an experiment (inline editing)."""
-    from ...core.queries import find_experiment, update_experiment_groups
-    exp = find_experiment(conn, exp_id, "id, groups")
+def api_add_study(conn, exp_id: str, body: dict) -> dict:
+    """Add a single study to an experiment (inline editing)."""
+    from ...core.queries import find_experiment, update_experiment_studies
+    exp = find_experiment(conn, exp_id, "id, studies")
     if not exp:
         return {"error": "not found"}
-    group = body.get("group", "").strip()
-    if not group:
-        return {"error": "empty group"}
-    groups = json.loads(exp["groups"] or "[]")
-    if group not in groups:
-        groups.append(group)
-    update_experiment_groups(conn, exp["id"], groups)
+    study = body.get("study", "").strip()
+    if not study:
+        return {"error": "empty study"}
+    studies = json.loads(exp["studies"] or "[]")
+    if study not in studies:
+        studies.append(study)
+    update_experiment_studies(conn, exp["id"], studies)
     conn.commit()
-    return {"ok": True, "groups": groups}
+    return {"ok": True, "studies": studies}
 
 
-def api_delete_exp_group(conn, exp_id: str, body: dict) -> dict:
-    """Remove a single group from an experiment (inline editing)."""
-    from ...core.queries import find_experiment, update_experiment_groups
-    exp = find_experiment(conn, exp_id, "id, groups")
+def api_delete_exp_study(conn, exp_id: str, body: dict) -> dict:
+    """Remove a single study from an experiment (inline editing)."""
+    from ...core.queries import find_experiment, update_experiment_studies
+    exp = find_experiment(conn, exp_id, "id, studies")
     if not exp:
         return {"error": "not found"}
-    group = body.get("group", "").strip()
-    if not group:
-        return {"error": "empty group"}
-    groups = json.loads(exp["groups"] or "[]")
-    groups = [g for g in groups if g != group]
-    update_experiment_groups(conn, exp["id"], groups)
+    study = body.get("study", "").strip()
+    if not study:
+        return {"error": "empty study"}
+    studies = json.loads(exp["studies"] or "[]")
+    studies = [s for s in studies if s != study]
+    update_experiment_studies(conn, exp["id"], studies)
     conn.commit()
-    return {"ok": True, "groups": groups}
+    return {"ok": True, "studies": studies}
 
 
-def api_all_groups(conn) -> dict:
-    """Get all groups with usage counts."""
-    from ...core.queries import get_all_groups
-    return {"groups": get_all_groups(conn)}
+def api_all_studies(conn) -> dict:
+    """Get all studies with usage counts."""
+    from ...core.queries import get_all_studies
+    return {"studies": get_all_studies(conn)}
 
 
-def api_bulk_add_to_group(conn, body: dict) -> dict:
-    """Add multiple experiments to a group."""
-    name = body.get("group", "").strip()
+def api_bulk_add_to_study(conn, body: dict) -> dict:
+    """Add multiple experiments to a study."""
+    name = body.get("study", "").strip()
     ids = body.get("ids", [])
     if not name:
-        return {"error": "empty group name"}
+        return {"error": "empty study name"}
     if not ids:
         return {"error": "no ids provided"}
-    from ...core.queries import add_to_group
+    from ...core.queries import add_to_study
     added = 0
     for eid in ids:
-        groups = add_to_group(conn, eid, name)
-        if groups is not None:
+        studies = add_to_study(conn, eid, name)
+        if studies is not None:
             added += 1
     conn.commit()
-    return {"ok": True, "group": name, "added": added}
+    return {"ok": True, "study": name, "added": added}
 
 
 def api_image_path(conn, exp_id: str, body: dict) -> dict:

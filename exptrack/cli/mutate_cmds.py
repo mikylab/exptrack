@@ -210,68 +210,80 @@ def cmd_finish(args):
         print(f"[exptrack] warning: plugin hooks failed: {e}", file=sys.stderr)
 
 
-# ── Group commands ────────────────────────────────────────────────────────────
+# ── Study commands ────────────────────────────────────────────────────────────
 
-def cmd_group(args):
-    """Add an experiment to a group: exptrack group <id> <group>"""
-    from ..core.queries import add_to_group
+def cmd_study(args):
+    """Add a run to a study: exptrack study <id> <study>"""
+    from ..core.queries import add_to_study
     conn = get_db()
-    groups = add_to_group(conn, args.id, args.group)
-    if groups is None:
+    studies = add_to_study(conn, args.id, args.study)
+    if studies is None:
         print(col(f"Not found: {args.id}", R)); return
     conn.commit()
-    print(col(f"Added to group '{args.group}'", G))
+    print(col(f"Added to study '{args.study}'", G))
 
 
-def cmd_ungroup(args):
-    """Remove an experiment from a group: exptrack ungroup <id> <group>"""
-    from ..core.queries import remove_from_group
+def cmd_unstudy(args):
+    """Remove a run from a study: exptrack unstudy <id> <study>"""
+    from ..core.queries import remove_from_study
     conn = get_db()
-    groups = remove_from_group(conn, args.id, args.group)
-    if groups is None:
+    studies = remove_from_study(conn, args.id, args.study)
+    if studies is None:
         print(col(f"Not found: {args.id}", R)); return
     conn.commit()
-    print(col(f"Removed from group '{args.group}'", G))
+    print(col(f"Removed from study '{args.study}'", G))
 
 
-def cmd_groups(args):
-    """List all experiment groups: exptrack groups"""
-    from ..core.queries import get_groups
+def cmd_studies(args):
+    """List all studies: exptrack studies"""
+    from ..core.queries import get_studies
     from .formatting import bold, dim, col, C, W, G as GRN, R, Y, fmt_dt
     conn = get_db()
-    groups = get_groups(conn)
-    if not groups:
-        print(dim("No groups defined yet.")); return
+    studies = get_studies(conn)
+    if not studies:
+        print(dim("No studies defined yet.")); return
 
     print()
-    print(bold(col("  Experiment Groups", W)))
+    print(bold(col("  Studies", W)))
     print(dim("  " + "-" * 60))
-    for g in groups:
+    for s in studies:
         status_parts = []
-        if g["done"]: status_parts.append(col(f"{g['done']} done", GRN))
-        if g["failed"]: status_parts.append(col(f"{g['failed']} failed", R))
-        if g["running"]: status_parts.append(col(f"{g['running']} running", Y))
+        if s["done"]: status_parts.append(col(f"{s['done']} done", GRN))
+        if s["failed"]: status_parts.append(col(f"{s['failed']} failed", R))
+        if s["running"]: status_parts.append(col(f"{s['running']} running", Y))
         status_str = ", ".join(status_parts) if status_parts else dim("empty")
-        print(f"  {col(g['name'], C):<30} {g['count']} exp(s)  [{status_str}]")
-        if g.get("latest"):
-            print(dim(f"    latest: {fmt_dt(g['latest'])}"))
+        print(f"  {col(s['name'], C):<30} {s['count']} exp(s)  [{status_str}]")
+        if s.get("latest"):
+            print(dim(f"    latest: {fmt_dt(s['latest'])}"))
     print()
 
 
-def cmd_delete_group(args):
-    """Remove a group from ALL experiments globally: exptrack delete-group <name>"""
-    from ..core.queries import remove_group_global, get_all_groups
+def cmd_delete_study(args):
+    """Remove a study from ALL runs globally: exptrack delete-study <name>"""
+    from ..core.queries import remove_study_global, get_all_studies
     conn = get_db()
-    # Check if group exists
-    all_groups = get_all_groups(conn)
-    match = [g for g in all_groups if g["name"] == args.name]
+    all_studies = get_all_studies(conn)
+    match = [s for s in all_studies if s["name"] == args.name]
     if not match:
-        print(dim(f"Group '{args.name}' not found.")); return
+        print(dim(f"Study '{args.name}' not found.")); return
     count = match[0]["count"]
     if not getattr(args, "yes", False):
-        confirm = input(f"Remove group '{args.name}' from {count} experiment(s)? [y/N] ")
+        confirm = input(f"Remove study '{args.name}' from {count} experiment(s)? [y/N] ")
         if confirm.lower() != "y":
             print(dim("Cancelled.")); return
-    removed = remove_group_global(conn, args.name)
+    removed = remove_study_global(conn, args.name)
     conn.commit()
-    print(col(f"Removed group '{args.name}' from {removed} experiment(s).", G))
+    print(col(f"Removed study '{args.name}' from {removed} experiment(s).", G))
+
+
+def cmd_stage(args):
+    """Set stage number and optional label on a run: exptrack stage <id> <number> [--name label]"""
+    from ..core.queries import find_experiment, update_experiment_stage
+    conn = get_db()
+    exp = find_experiment(conn, args.id, "id")
+    if not exp:
+        print(col(f"Not found: {args.id}", R)); return
+    update_experiment_stage(conn, exp["id"], args.number, args.name)
+    conn.commit()
+    label = f" ({args.name})" if args.name else ""
+    print(col(f"Set stage {args.number}{label} on {exp['id'][:12]}", G))

@@ -16,7 +16,7 @@ Sections:
   - compare: Compare view logic
   - mutations: Tag/note/name mutation helpers
   - timeline: Timeline rendering, cell source viewer
-  - groups: Group management
+  - studies: Study management
   - init: Initialization and event binding
 """
 
@@ -31,7 +31,7 @@ from ..static_parts.scripts import (
     JS_COMPARE as compare,
     JS_MUTATIONS as mutations,
     JS_TIMELINE as timeline,
-    JS_GROUPS as groups,
+    JS_STUDIES as studies,
     JS_INIT as init,
     get_all_js,
 )
@@ -39,5 +39,5 @@ from ..static_parts.scripts import (
 __all__ = [
     "core", "owl", "sidebar", "table", "experiments",
     "inline_edit", "detail", "compare", "mutations",
-    "timeline", "groups", "init", "get_all_js",
+    "timeline", "studies", "init", "get_all_js",
 ]

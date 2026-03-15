@@ -120,7 +120,7 @@ HTML_BODY = r"""</style>
         <input type="text" id="main-search" class="main-search-input" placeholder="Search experiments..." oninput="searchQuery=this.value;renderExperiments();renderExpList()">
         <div class="toolbar-btn-group">
           <button class="toolbar-btn compare-main-btn" onclick="showCompareView()" title="Compare two experiments">&#x2194; Compare</button>
-          <button class="toolbar-btn" onclick="toggleManageDrawer()" title="Manage tags &amp; groups">&#x2699; Manage</button>
+          <button class="toolbar-btn" onclick="toggleManageDrawer()" title="Manage tags &amp; studies">&#x2699; Manage</button>
         </div>
         <div class="tag-filter-bar" id="filter-bar"></div>
       </div>
@@ -131,13 +131,13 @@ HTML_BODY = r"""</style>
         <button data-group="status" onclick="setGroup('status')">Status</button>
         <button data-group="" onclick="setGroup('')">None</button>
         <span style="margin-left:12px;border-left:1px solid var(--border);padding-left:12px" class="highlight-toggle">
-          <label><input type="checkbox" id="highlight-toggle" onchange="toggleHighlightMode(this.checked)"> Highlight by group</label>
+          <label><input type="checkbox" id="highlight-toggle" onchange="toggleHighlightMode(this.checked)"> Highlight by study</label>
         </span>
         <span class="highlight-legend" id="highlight-legend"></span>
       </div>
       <div id="table-actions-bar" class="table-actions-bar" style="display:none"></div>
       <table id="exp-table"><thead><tr>
-        <th style="width:28px"></th><th class="cb-col"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th><th class="sortable" onclick="toggleSort('id')">ID<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('name')">Name<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('status')">Status<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('tags')">Tags<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('groups')">Groups<span class="sort-arrow"></span></th><th>Notes</th><th>Key Metrics</th><th>Changes</th><th class="sortable" onclick="toggleSort('created_at')">Started<span class="sort-arrow"></span></th>
+        <th style="width:28px"></th><th class="cb-col"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th><th class="sortable" onclick="toggleSort('id')">ID<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('name')">Name<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('status')">Status<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('tags')">Tags<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('studies')">Studies<span class="sort-arrow"></span></th><th>Notes</th><th>Key Metrics</th><th>Changes</th><th class="sortable" onclick="toggleSort('created_at')">Started<span class="sort-arrow"></span></th>
       </tr></thead><tbody id="exp-body"></tbody></table>
     </div>
 
@@ -172,7 +172,7 @@ HTML_BODY = r"""</style>
 <div class="manage-drawer-overlay" id="manage-overlay" onclick="closeManageDrawer()"></div>
 <div class="manage-drawer" id="manage-drawer">
   <div class="manage-drawer-header">
-    <h3>Manage Tags &amp; Groups</h3>
+    <h3>Manage Tags &amp; Studies</h3>
     <button class="manage-drawer-close" onclick="closeManageDrawer()">&times;</button>
   </div>
   <div class="manage-drawer-body" id="manage-drawer-body"></div>
