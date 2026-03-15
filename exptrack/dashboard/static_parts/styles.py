@@ -485,8 +485,10 @@ CSS_COMPONENTS = """
   .section-toggle.collapsed::before { transform: rotate(-90deg); }
   .section-body { transition: max-height 0.2s ease; }
   .section-toggle.collapsed + .section-body { display: none; }
-  .editable-name { cursor: default; padding: 2px 4px; border-radius: 3px; }
-  .editable-name:hover { background: rgba(44,90,160,0.08); }
+  .editable-cell { cursor: default; padding: 2px 4px; border-radius: 3px; position: relative; }
+  .editable-cell:hover { background: rgba(44,90,160,0.08); }
+  .edit-icon { display: none; font-size: 11px; color: var(--muted); margin-left: 4px; }
+  .editable-cell:hover .edit-icon { display: inline; }
   .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 2px 6px; border-radius: 3px; background: var(--card-bg); width: 100%; max-width: 300px; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   .tags-cell .tag { font-size: 11px; padding: 1px 6px; }

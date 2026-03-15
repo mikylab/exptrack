@@ -949,42 +949,23 @@ function renderExpRow(e) {
   const hlStudy = getHighlightStudy(e);
   const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '') + (hlStudy ? ' highlighted-row' : '');
   const rowStyle = hlStudy ? ' style="background:' + hlStudy.bg + '"' : '';
-  const hlBorder = hlStudy ? ' style="border-left:3px solid ' + hlStudy.border + '"' : '';
   const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
   const studiesHtml = (e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('');
+  const allTagsHtml = [tagsHtml, studiesHtml].filter(Boolean).join(' ');
   const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>';
-  const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
-  let codeStatHtml = '--';
-  if (codeParams.length) {
-    let added = 0, removed = 0;
-    for (const k of codeParams) {
-      const v = String(e.params[k] || '');
-      const parts = v.split('; ');
-      for (const p of parts) {
-        if (p.trim().startsWith('+')) added++;
-        else if (p.trim().startsWith('-')) removed++;
-      }
-    }
-    codeStatHtml = '<span class="code-stat">' + codeParams.length + ' file' + (codeParams.length>1?'s':'');
-    if (added || removed) codeStatHtml += ' <span class="lines-added">+' + added + '</span> <span class="lines-removed">-' + removed + '</span>';
-    codeStatHtml += '</span>';
-  }
+  const editIcon = '<span class="edit-icon" title="Click to edit">&#9998;</span>';
   return `<tr class="${rowCls}"${rowStyle} onclick="onRowClick('${e.id}')">
-    <td${hlBorder} onclick="event.stopPropagation()"><button class="pin-btn${isPinned?' pinned':''}" onclick="togglePin('${e.id}')" title="${isPinned?'Unpin':'Pin'}">${isPinned?'\u2605':'\u2606'}</button></td>
     <td onclick="event.stopPropagation()">
       <label style="display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4px"><input type="checkbox" ${isSelected?'checked':''} onclick="toggleSelection('${e.id}')" title="Select" style="cursor:pointer"></label>
     </td>
-    <td>${e.id.slice(0,6)}</td>
     <td>
-      <span class="editable-name" ondblclick="event.stopPropagation();cancelRowClick();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}</span>
+      <span class="editable-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}${editIcon}</span>
     </td>
     <td class="status-${e.status}">${e.status}</td>
-    <td class="tags-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineTag('${e.id}',this)">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
-    <td class="tags-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineStudy('${e.id}',this)">${studiesHtml || '<span style="color:var(--muted)">--</span>'}</td>
-    <td class="stage-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineStage('${e.id}',this)">${e.stage != null ? esc(String(e.stage)) + (e.stage_name ? ' <span style="color:var(--muted);font-size:11px">(' + esc(e.stage_name) + ')</span>' : '') : '<span style="color:var(--muted)">--</span>'}</td>
-    <td class="notes-cell-expanded" title="${esc(e.notes||'')}" ondblclick="event.stopPropagation();cancelRowClick();startInlineNote('${e.id}',this)">${notesPreview}</td>
+    <td class="stage-cell editable-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineStage('${e.id}',this)">${e.stage != null ? esc(String(e.stage)) + (e.stage_name ? ' <span style="color:var(--muted);font-size:11px">(' + esc(e.stage_name) + ')</span>' : '') : '<span style="color:var(--muted)">--</span>'}${editIcon}</td>
+    <td class="tags-cell editable-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineTag('${e.id}',this)">${allTagsHtml || '<span style="color:var(--muted)">--</span>'}${editIcon}</td>
     <td style="font-size:12px">${metricsHtml || '<span style="color:var(--muted)">--</span>'}</td>
-    <td>${codeStatHtml}</td>
+    <td class="notes-cell-expanded editable-cell" title="${esc(e.notes||'')}" ondblclick="event.stopPropagation();cancelRowClick();startInlineNote('${e.id}',this)">${notesPreview}${editIcon}</td>
     <td>${fmtDt(e.created_at)}</td>
   </tr>`;
 }
@@ -1020,7 +1001,7 @@ function renderExperiments() {
     if (groupBy === 'git_commit' && items[0].git_branch) {
       groupLabel = key + ' <span class="group-meta">' + esc(items[0].git_branch) + '</span>';
     }
-    html += '<tr class="group-header" onclick="toggleGroup(\'' + esc(key) + '\')"><td colspan="11">';
+    html += '<tr class="group-header" onclick="toggleGroup(\'' + esc(key) + '\')"><td colspan="8">';
     html += '<span class="group-toggle">' + (isCollapsed ? '\u25B6' : '\u25BC') + '</span> ';
     html += '<span class="group-label">' + groupLabel + '</span>';
     html += '<span class="group-meta"> \u2014 ' + items.length + ' run' + (items.length > 1 ? 's' : '') + '</span>';
