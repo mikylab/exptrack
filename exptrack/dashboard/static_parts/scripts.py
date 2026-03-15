@@ -1087,7 +1087,7 @@ function renderExpRow(e) {
     status: '<td class="status-' + e.status + '">' + e.status + '</td>',
     tags: '<td class="tags-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineTag(\'' + e.id + '\',this)">' + ((e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     studies: '<td class="tags-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStudy(\'' + e.id + '\',this)">' + ((e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
-    stage: '<td class="stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? esc(String(e.stage)) + (e.stage_name ? ' <span style="color:var(--muted);font-size:12px">(' + esc(e.stage_name) + ')</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    stage: '<td class="stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? '<span style="font-weight:600">' + esc(String(e.stage)) + '</span>' + (e.stage_name ? ' <span style="color:var(--muted)">\u00b7</span> <span style="color:var(--muted)">' + esc(e.stage_name) + '</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     notes: '<td class="notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     metrics: (function() {
       const html = Object.entries(e.metrics || {}).slice(0, 3)
@@ -2541,10 +2541,11 @@ function startInlineStage(id, td) {
   if (!exp) return;
   const curStage = exp.stage != null ? exp.stage : '';
   const curName = exp.stage_name || '';
-  td.innerHTML = '<div style="display:flex;gap:4px;align-items:center" onclick="event.stopPropagation()">'
-    + '<input type="number" class="inline-edit-input" style="width:60px;font-size:12px;padding:2px 4px" placeholder="#" value="' + esc(String(curStage)) + '" id="stage-num-' + id + '">'
-    + '<input type="text" class="inline-edit-input" style="width:80px;font-size:12px;padding:2px 4px" placeholder="label" value="' + esc(curName) + '" id="stage-name-' + id + '">'
-    + '<button style="font-size:11px;padding:1px 6px;cursor:pointer" onclick="saveInlineStage(\'' + id + '\')">&#10003;</button>'
+  td.style.overflow = 'visible';
+  td.innerHTML = '<div style="display:flex;gap:4px;align-items:center;white-space:nowrap" onclick="event.stopPropagation()">'
+    + '<input type="number" class="inline-edit-input" style="width:50px;font-size:13px;padding:4px 6px" placeholder="#" value="' + esc(String(curStage)) + '" id="stage-num-' + id + '">'
+    + '<input type="text" class="inline-edit-input" style="width:70px;font-size:13px;padding:4px 6px" placeholder="label" value="' + esc(curName) + '" id="stage-name-' + id + '">'
+    + '<button style="font-size:12px;padding:3px 8px;cursor:pointer;border:1px solid var(--border);border-radius:3px;background:var(--code-bg)" onclick="saveInlineStage(\'' + id + '\')">&#10003;</button>'
     + '</div>';
   const numInput = document.getElementById('stage-num-' + id);
   if (numInput) { numInput.focus(); numInput.select(); }
