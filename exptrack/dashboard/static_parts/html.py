@@ -136,9 +136,8 @@ HTML_BODY = r"""</style>
         <span class="highlight-legend" id="highlight-legend"></span>
       </div>
       <div id="table-actions-bar" class="table-actions-bar" style="display:none"></div>
-      <table id="exp-table"><thead><tr>
-        <th style="width:28px"></th><th class="cb-col"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th><th class="sortable" onclick="toggleSort('id')">ID<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('name')">Name<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('status')">Status<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('tags')">Tags<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('studies')">Studies<span class="sort-arrow"></span></th><th class="sortable" onclick="toggleSort('stage')">Stage<span class="sort-arrow"></span></th><th>Notes</th><th>Key Metrics</th><th>Changes</th><th class="sortable" onclick="toggleSort('created_at')">Started<span class="sort-arrow"></span></th>
-      </tr></thead><tbody id="exp-body"></tbody></table>
+      <div class="col-settings-bar"><button class="col-settings-btn" onclick="toggleColumnSettings()" title="Show/hide columns">&#x2699; Columns</button><div class="col-settings-panel" id="col-settings-panel"></div></div>
+      <table id="exp-table"><thead id="exp-thead"></thead><tbody id="exp-body"></tbody></table>
     </div>
 
     <!-- Detail state: shown when an experiment is selected -->
