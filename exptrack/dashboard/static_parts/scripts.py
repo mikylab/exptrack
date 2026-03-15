@@ -2415,7 +2415,7 @@ function startInlineStage(id, td) {
   if (!exp) return;
   const curStage = exp.stage != null ? exp.stage : '';
   const curName = exp.stage_name || '';
-  td.innerHTML = '<div style="display:flex;gap:4px;align-items:center">'
+  td.innerHTML = '<div style="display:flex;gap:4px;align-items:center" onclick="event.stopPropagation()">'
     + '<input type="number" class="inline-edit-input" style="width:60px;font-size:12px;padding:2px 4px" placeholder="#" value="' + esc(String(curStage)) + '" id="stage-num-' + id + '">'
     + '<input type="text" class="inline-edit-input" style="width:80px;font-size:12px;padding:2px 4px" placeholder="label" value="' + esc(curName) + '" id="stage-name-' + id + '">'
     + '<button style="font-size:11px;padding:1px 6px;cursor:pointer" onclick="saveInlineStage(\'' + id + '\')">&#10003;</button>'
