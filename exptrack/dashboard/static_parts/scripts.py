@@ -1082,29 +1082,29 @@ function renderExpRow(e) {
   const cells = {
     pin: '<td' + hlBorder + ' onclick="event.stopPropagation()"><button class="pin-btn' + (isPinned?' pinned':'') + '" onclick="togglePin(\'' + e.id + '\')" title="' + (isPinned?'Unpin':'Pin') + '">' + (isPinned?'\u2605':'\u2606') + '</button></td>',
     cb: '<td onclick="event.stopPropagation()"><label style="display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4px"><input type="checkbox" ' + (isSelected?'checked':'') + ' onclick="toggleSelection(\'' + e.id + '\')" title="Select" style="cursor:pointer"></label></td>',
-    id: '<td>' + e.id.slice(0,6) + '</td>',
-    name: '<td><span class="editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name.slice(0,45)) + editIcon + '</span></td>',
-    status: '<td class="status-' + e.status + '">' + e.status + '</td>',
-    tags: '<td class="tags-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineTag(\'' + e.id + '\',this)">' + ((e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
-    studies: '<td class="tags-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStudy(\'' + e.id + '\',this)">' + ((e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
-    stage: '<td class="stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? '<span style="font-weight:600">' + esc(String(e.stage)) + '</span>' + (e.stage_name ? ' <span style="color:var(--muted)">\u00b7</span> <span style="color:var(--muted)">' + esc(e.stage_name) + '</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
-    notes: '<td class="notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    id: '<td class="truncate-cell">' + e.id.slice(0,6) + '</td>',
+    name: '<td class="truncate-cell"><span class="editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name.slice(0,45)) + editIcon + '</span></td>',
+    status: '<td class="truncate-cell status-' + e.status + '">' + e.status + '</td>',
+    tags: '<td class="tags-cell wrap-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineTag(\'' + e.id + '\',this)">' + ((e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    studies: '<td class="tags-cell wrap-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStudy(\'' + e.id + '\',this)">' + ((e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    stage: '<td class="wrap-cell stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? '<span style="font-weight:600">' + esc(String(e.stage)) + '</span>' + (e.stage_name ? ' <span style="color:var(--muted)">\u00b7</span> <span style="color:var(--muted)">' + esc(e.stage_name) + '</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    notes: '<td class="truncate-cell notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     metrics: (function() {
       const html = Object.entries(e.metrics || {}).slice(0, 3)
         .map(([k,v]) => '<span style="color:var(--blue)">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))))
         .join(', ');
-      return '<td style="font-size:13px">' + (html || '<span style="color:var(--muted)">--</span>') + '</td>';
+      return '<td class="truncate-cell" style="font-size:13px">' + (html || '<span style="color:var(--muted)">--</span>') + '</td>';
     })(),
     changes: (function() {
       const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
-      if (!codeParams.length) return '<td>--</td>';
+      if (!codeParams.length) return '<td class="truncate-cell">--</td>';
       let added = 0, removed = 0;
       for (const k of codeParams) { const v = String(e.params[k] || ''); for (const p of v.split('; ')) { if (p.trim().startsWith('+')) added++; else if (p.trim().startsWith('-')) removed++; } }
       let s = '<span class="code-stat">' + codeParams.length + ' file' + (codeParams.length>1?'s':'');
       if (added || removed) s += ' <span class="lines-added">+' + added + '</span> <span class="lines-removed">-' + removed + '</span>';
-      return '<td>' + s + '</span></td>';
+      return '<td class="truncate-cell">' + s + '</span></td>';
     })(),
-    started: '<td>' + fmtDt(e.created_at) + '</td>',
+    started: '<td class="truncate-cell">' + fmtDt(e.created_at) + '</td>',
   };
 
   let tds = '';

@@ -520,7 +520,10 @@ CSS_COMPONENTS = """
   .table-scroll-wrap { overflow-x: auto; overflow-y: visible; }
   #exp-table { table-layout: fixed; min-width: 100%; }
   #exp-table th { position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #exp-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+  #exp-table td { max-width: 0; }
+  #exp-table td.truncate-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #exp-table td.wrap-cell { overflow: visible; white-space: normal; word-break: break-word; }
+  #exp-table td.wrap-cell .tag { display: inline-block; margin-bottom: 2px; }
   .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 5px 8px; border-radius: 4px; background: var(--card-bg); width: 100%; max-width: 300px; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   .tags-cell .tag { font-size: 13px; padding: 3px 8px; }
