@@ -496,6 +496,7 @@ function renderSidebarActionsBar() {
   html += '<button class="action-btn" onclick="sidebarExportFmt(\'csv\')">CSV</button>';
   html += '<button class="action-btn" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
   html += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
+  html += '<button class="action-btn" onclick="sidebarExportFmt(\'plain\')">Plain Text</button>';
   html += '</div></span>';
   html += '<span style="position:relative;display:inline-block">';
   html += '<button class="export-btn" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Copy \u25BE</button>';
@@ -578,6 +579,7 @@ function renderTableActionsBar() {
   html += '<button class="action-btn" onclick="sidebarExportFmt(\'csv\')">CSV</button>';
   html += '<button class="action-btn" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
   html += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
+  html += '<button class="action-btn" onclick="sidebarExportFmt(\'plain\')">Plain Text</button>';
   html += '</div></span>';
   // Copy dropdown with format options
   html += '<span style="position:relative;display:inline-block">';
@@ -613,16 +615,23 @@ async function sidebarBulkDelete() {
 async function sidebarExportFmt(fmt) {
   owlSpeak('export');
   const ids = [...selectedIds];
-  const data = await postApi('/api/bulk-export', {ids, format: fmt});
   let text;
-  if (data.content) {
-    text = data.content;
-  } else if (Array.isArray(data)) {
-    text = JSON.stringify(data, null, 2);
+  if (fmt === 'plain') {
+    // Plain text: fetch JSON data and format client-side
+    const data = await postApi('/api/bulk-export', {ids, format: 'json'});
+    const exps = Array.isArray(data) ? data : [data];
+    text = exps.map(d => _formatExpPlainText(d)).join('\n' + '='.repeat(60) + '\n\n');
   } else {
-    text = JSON.stringify(data, null, 2);
+    const data = await postApi('/api/bulk-export', {ids, format: fmt});
+    if (data.content) {
+      text = data.content;
+    } else if (Array.isArray(data)) {
+      text = JSON.stringify(data, null, 2);
+    } else {
+      text = JSON.stringify(data, null, 2);
+    }
   }
-  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv'};
+  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt'};
   const filename = 'exptrack_export_' + ids.length + '_experiments' + (ext[fmt] || '.txt');
   const mime = fmt === 'json' ? 'application/json' : 'text/plain';
   const blob = new Blob([text], {type: mime});
