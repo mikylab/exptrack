@@ -36,7 +36,7 @@ const ALL_COLUMNS = [
   {id: 'status', label: 'Status', sortable: true, defaultOn: true, width: 70},
   {id: 'tags', label: 'Tags', sortable: true, defaultOn: true, width: 120},
   {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 120},
-  {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 80},
+  {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 120},
   {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 200},
   {id: 'metrics', label: 'Key Metrics', sortable: false, defaultOn: true, width: 160},
   {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 100},
@@ -1087,7 +1087,7 @@ function renderExpRow(e) {
     status: '<td class="status-' + e.status + '">' + e.status + '</td>',
     tags: '<td class="tags-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineTag(\'' + e.id + '\',this)">' + ((e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     studies: '<td class="tags-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStudy(\'' + e.id + '\',this)">' + ((e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
-    stage: '<td class="stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? esc(String(e.stage)) + (e.stage_name ? ' <span style="color:var(--muted);font-size:11px">(' + esc(e.stage_name) + ')</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    stage: '<td class="stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? esc(String(e.stage)) + (e.stage_name ? ' <span style="color:var(--muted);font-size:12px">(' + esc(e.stage_name) + ')</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     notes: '<td class="notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     metrics: (function() {
       const html = Object.entries(e.metrics || {}).slice(0, 3)

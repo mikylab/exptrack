@@ -76,7 +76,7 @@ CSS_CARDS = """
   .exp-card-meta { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .exp-card-metrics { font-size: 12px; color: var(--blue); margin-top: 2px; }
   .exp-card-tags { font-size: 11px; color: var(--muted); margin-top: 2px; }
-  .exp-card-tags .tag { font-size: 11px; padding: 1px 5px; margin-left: 0; margin-right: 3px; }
+  .exp-card-tags .tag { font-size: 12px; padding: 2px 6px; margin-left: 0; margin-right: 3px; }
   .exp-card-cb { margin-right: 4px; cursor: pointer; }
   .sidebar-actions-bar { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--code-bg); display: flex; flex-direction: column; gap: 4px; }
   .sidebar-actions-bar button { font-family: inherit; font-size: 13px; border: none; padding: 6px 12px; cursor: pointer; border-radius: 3px; width: 100%; }
@@ -171,7 +171,7 @@ CSS_TABLE = """
   td { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
   tr:hover { background: var(--code-bg); }
   tr.selected-row { background: rgba(44,90,160,0.08); }
-  .tag { background: var(--code-bg); padding: 3px 10px; font-size: 13px; margin-left: 6px; border-radius: 3px; }
+  .tag { background: var(--code-bg); padding: 4px 10px; font-size: 14px; margin-left: 6px; border-radius: 3px; }
   .exp-metrics-preview { font-size: 13px; color: var(--muted); margin-top: 2px; }
   h2 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
   h2 .help-icon { font-size: 13px; cursor: help; color: var(--blue); margin-left: 6px; font-weight: normal; text-transform: none; letter-spacing: 0; }
@@ -377,7 +377,7 @@ CSS_COMPONENTS = """
   .tag-removable .tag-delete { cursor: pointer; color: var(--muted); font-size: 16px; margin-left: 4px; line-height: 1; opacity: 0.6; }
   .tag-removable:hover .tag-delete { opacity: 1; color: var(--red, #e55); }
   .tag-removable .tag-delete:hover { opacity: 1; color: var(--red, #e55); }
-  .tag-removable .tag-edit { cursor: pointer; color: var(--muted); font-size: 11px; }
+  .tag-removable .tag-edit { cursor: pointer; color: var(--muted); font-size: 12px; }
   .tag-removable .tag-edit:hover { color: var(--blue); }
   .manage-tags-link {
     font-family: inherit; font-size: 13px; padding: 7px 16px;
@@ -490,10 +490,11 @@ CSS_COMPONENTS = """
   .edit-icon { display: none; font-size: 11px; color: var(--muted); margin-left: 4px; vertical-align: middle; }
   .editable-cell:hover .edit-icon { display: inline; }
   .col-resizer {
-    position: absolute; right: 0; top: 0; width: 5px; height: 100%;
-    cursor: col-resize; background: transparent; z-index: 2;
+    position: absolute; right: -3px; top: 0; width: 7px; height: 100%;
+    cursor: col-resize; z-index: 2;
+    border-right: 2px solid var(--border);
   }
-  .col-resizer:hover, .col-resizer:active { background: var(--blue); opacity: 0.4; }
+  .col-resizer:hover, .col-resizer:active { border-right-color: var(--blue); background: rgba(44,90,160,0.10); }
   .col-settings-bar { display: flex; justify-content: flex-end; margin-bottom: 4px; position: relative; }
   .col-settings-btn {
     font-family: inherit; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border);
@@ -521,7 +522,7 @@ CSS_COMPONENTS = """
   #exp-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
   .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 5px 8px; border-radius: 4px; background: var(--card-bg); width: 100%; max-width: 300px; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
-  .tags-cell .tag { font-size: 12px; padding: 2px 8px; }
+  .tags-cell .tag { font-size: 13px; padding: 3px 8px; }
   .pin-btn { cursor: pointer; font-size: 14px; background: none; border: none; color: var(--muted); padding: 0 2px; }
   .pin-btn:hover { color: var(--yellow); }
   .pin-btn.pinned { color: var(--yellow); }
