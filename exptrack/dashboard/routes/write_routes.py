@@ -13,20 +13,15 @@ from ...core.queries import find_experiment, update_experiment_tags, remove_tag_
 
 
 def api_add_note(conn, exp_id: str, body: dict) -> dict:
-    exp = find_experiment(conn, exp_id, "id, notes")
-    if not exp:
-        return {"error": "not found"}
+    from ...core.queries import append_note
     text = body.get("note", "").strip()
     if not text:
         return {"error": "empty note"}
-    existing = exp["notes"] or ""
-    new_notes = (existing + "\n" + text).strip() if existing else text
-    conn.execute(
-        "UPDATE experiments SET notes=?, updated_at=? WHERE id=?",
-        (new_notes, datetime.now(timezone.utc).isoformat(), exp["id"])
-    )
+    result = append_note(conn, exp_id, text)
+    if result.get("error"):
+        return result
     conn.commit()
-    return {"ok": True, "notes": new_notes}
+    return result
 
 
 def api_add_tag(conn, exp_id: str, body: dict) -> dict:
@@ -73,22 +68,12 @@ def api_delete(conn, exp_id: str) -> dict:
 
 
 def api_finish(conn, exp_id: str) -> dict:
-    exp = conn.execute(
-        "SELECT id, status, created_at FROM experiments WHERE id LIKE ?",
-        (exp_id + "%",)
-    ).fetchone()
-    if not exp:
-        return {"error": "not found"}
-    if exp["status"] == "done":
-        return {"ok": True, "status": "done", "message": "already done"}
-    now = datetime.now(timezone.utc).isoformat()
-    duration = (datetime.fromisoformat(now) -
-                datetime.fromisoformat(exp["created_at"])).total_seconds()
-    conn.execute("""
-        UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?
-    """, (now, duration, exp["id"]))
+    from ...core.queries import finish_experiment
+    result = finish_experiment(conn, exp_id)
+    if result.get("error"):
+        return result
     conn.commit()
-    return {"ok": True, "status": "done", "duration_s": duration}
+    return result
 
 
 def api_add_artifact(conn, exp_id: str, body: dict) -> dict:
@@ -140,16 +125,13 @@ def api_edit_tag(conn, exp_id: str, body: dict) -> dict:
 
 
 def api_edit_notes(conn, exp_id: str, body: dict) -> dict:
-    exp = find_experiment(conn, exp_id)
-    if not exp:
-        return {"error": "not found"}
+    from ...core.queries import replace_notes
     notes = body.get("notes", "")
-    conn.execute(
-        "UPDATE experiments SET notes=?, updated_at=? WHERE id=?",
-        (notes, datetime.now(timezone.utc).isoformat(), exp["id"])
-    )
+    result = replace_notes(conn, exp_id, notes)
+    if result.get("error"):
+        return result
     conn.commit()
-    return {"ok": True, "notes": notes}
+    return result
 
 
 def api_delete_artifact(conn, exp_id: str, body: dict) -> dict:
@@ -223,18 +205,24 @@ def api_bulk_delete(conn, body: dict) -> dict:
     return {"ok": True, "deleted": deleted}
 
 
-def api_bulk_export(conn, body: dict) -> list:
-    from .read_routes import api_export
+def api_bulk_export(conn, body: dict) -> dict | list:
+    from ...core.queries import (get_batch_export_data, format_export_csv,
+                                 format_export_markdown)
     ids = body.get("ids", [])
     fmt = body.get("format", "json")
     if not ids:
-        return [{"error": "no ids provided"}]
-    results = []
-    for eid in ids:
-        data = api_export(conn, eid, {"format": fmt})
-        if not data.get("error"):
-            results.append(data)
-    return results
+        return {"error": "no ids provided"}
+    batch = get_batch_export_data(conn, exp_ids=ids)
+    if not batch:
+        return {"error": "no experiments found"}
+    if fmt in ("csv", "tsv"):
+        delimiter = "\t" if fmt == "tsv" else ","
+        return {"format": fmt, "content": format_export_csv(batch, delimiter=delimiter)}
+    elif fmt == "markdown":
+        md_parts = [format_export_markdown(d) for d in batch]
+        return {"format": "markdown", "content": "\n\n---\n\n".join(md_parts)}
+    else:
+        return batch
 
 
 def api_delete_tag_global(conn, body: dict) -> dict:

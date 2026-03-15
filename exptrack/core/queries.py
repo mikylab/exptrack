@@ -44,7 +44,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         FROM metrics WHERE exp_id=? GROUP BY key ORDER BY key
     """, (full_id,)).fetchall()
     artifacts = conn.execute(
-        "SELECT label, path, created_at FROM artifacts WHERE exp_id=?",
+        "SELECT label, path, created_at, timeline_seq FROM artifacts WHERE exp_id=?",
         (full_id,)
     ).fetchall()
 
@@ -73,7 +73,8 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
             "key": m["key"], "last": m["last_v"],
             "min": m["min_v"], "max": m["max_v"], "n": m["n"]
         } for m in metrics],
-        "artifacts": [{"label": a["label"], "path": a["path"]} for a in artifacts],
+        "artifacts": [{"label": a["label"], "path": a["path"],
+                       "timeline_seq": a["timeline_seq"]} for a in artifacts],
     }
 
 
@@ -401,6 +402,7 @@ def get_export_data(conn, exp_id: str) -> dict | None:
         "git_commit": exp["git_commit"],
         "hostname": exp["hostname"],
         "tags": json.loads(exp["tags"] or "[]"),
+        "groups": json.loads(exp["groups"] or "[]"),
         "notes": exp["notes"],
         "output_dir": exp["output_dir"] or "",
         "params": user_params,
@@ -420,6 +422,261 @@ def get_export_data(conn, exp_id: str) -> dict | None:
             "value": m["value"], "step": m["step"]
         })
     return data
+
+
+# ── Finish ─────────────────────────────────────────────────────────────────────
+
+def finish_experiment(conn, exp_id_prefix: str) -> dict:
+    """Mark a running experiment as done. Returns result dict.
+
+    Used by both CLI cmd_finish and dashboard api_finish.
+    """
+    from datetime import datetime, timezone
+    exp = conn.execute(
+        "SELECT id, name, status, created_at FROM experiments WHERE id LIKE ?",
+        (exp_id_prefix + "%",)
+    ).fetchone()
+    if not exp:
+        return {"error": "not found"}
+    if exp["status"] == "done":
+        return {"ok": True, "id": exp["id"], "name": exp["name"],
+                "status": "done", "message": "already done", "duration_s": None}
+    now = datetime.now(timezone.utc).isoformat()
+    duration = (datetime.fromisoformat(now) -
+                datetime.fromisoformat(exp["created_at"])).total_seconds()
+    prev_status = exp["status"]
+    conn.execute("""
+        UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?
+    """, (now, duration, exp["id"]))
+    return {
+        "ok": True, "id": exp["id"], "name": exp["name"],
+        "prev_status": prev_status, "status": "done", "duration_s": duration,
+    }
+
+
+# ── Notes ─────────────────────────────────────────────────────────────────────
+
+def append_note(conn, exp_id_prefix: str, text: str) -> dict:
+    """Append text to an experiment's notes. Returns result dict."""
+    from datetime import datetime, timezone
+    exp = find_experiment(conn, exp_id_prefix, "id, notes")
+    if not exp:
+        return {"error": "not found"}
+    existing = exp["notes"] or ""
+    new_notes = (existing + "\n" + text).strip() if existing else text.strip()
+    conn.execute(
+        "UPDATE experiments SET notes=?, updated_at=? WHERE id=?",
+        (new_notes, datetime.now(timezone.utc).isoformat(), exp["id"])
+    )
+    return {"ok": True, "notes": new_notes}
+
+
+def replace_notes(conn, exp_id_prefix: str, text: str) -> dict:
+    """Replace an experiment's notes entirely. Records old notes in timeline."""
+    from datetime import datetime, timezone
+    exp = find_experiment(conn, exp_id_prefix, "id, notes")
+    if not exp:
+        return {"error": "not found"}
+    old_notes = exp["notes"] or ""
+    now = datetime.now(timezone.utc).isoformat()
+    # Record note edit in timeline for history
+    if old_notes and old_notes != text:
+        try:
+            max_seq = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM timeline WHERE exp_id=?",
+                (exp["id"],)
+            ).fetchone()[0]
+            conn.execute("""
+                INSERT INTO timeline (exp_id, seq, event_type, key, value, prev_value, ts)
+                VALUES (?, ?, 'note_edit', 'notes', ?, ?, ?)
+            """, (exp["id"], max_seq + 1, json.dumps(text), json.dumps(old_notes), now))
+        except Exception:
+            pass  # Don't fail the edit if timeline insert fails
+    conn.execute(
+        "UPDATE experiments SET notes=?, updated_at=? WHERE id=?",
+        (text, now, exp["id"])
+    )
+    return {"ok": True, "notes": text}
+
+
+# ── Export formatting ─────────────────────────────────────────────────────────
+
+def get_batch_export_data(conn, exp_ids: list[str] | None = None,
+                          export_all: bool = False) -> list[dict]:
+    """Get export data for multiple experiments."""
+    if export_all:
+        rows = conn.execute(
+            "SELECT id FROM experiments ORDER BY created_at DESC"
+        ).fetchall()
+    elif exp_ids:
+        rows = []
+        for eid in exp_ids:
+            r = conn.execute(
+                "SELECT id FROM experiments WHERE id LIKE ?",
+                (eid + "%",)
+            ).fetchone()
+            if r:
+                rows.append(r)
+    else:
+        return []
+    return [get_export_data(conn, r["id"]) for r in rows if r]
+
+
+def format_export_markdown(data: dict) -> str:
+    """Generate a markdown summary of an experiment from export data."""
+    lines = [
+        f"# {data['name']}",
+        f"",
+        f"**ID:** {data['id']}  ",
+        f"**Status:** {data['status']}  ",
+        f"**Created:** {data['created_at']}  ",
+    ]
+    if data.get('duration_s'):
+        lines.append(f"**Duration:** {data['duration_s']}s  ")
+    if data.get('script'):
+        lines.append(f"**Script:** `{data['script']}`  ")
+    if data.get('command'):
+        lines.append(f"**Command:** `{data['command']}`  ")
+    if data.get('python_ver'):
+        lines.append(f"**Python:** {data['python_ver']}  ")
+    if data.get('git_branch'):
+        lines.append(f"**Git:** {data['git_branch']} @ {data['git_commit']}  ")
+    if data.get('hostname'):
+        lines.append(f"**Hostname:** {data['hostname']}  ")
+    if data.get('tags'):
+        lines.append(f"**Tags:** {', '.join(data['tags'])}  ")
+    if data.get('groups'):
+        lines.append(f"**Groups:** {', '.join(data['groups'])}  ")
+    if data.get('output_dir'):
+        lines.append(f"**Output Dir:** `{data['output_dir']}`  ")
+    if data.get('project'):
+        lines.append(f"**Project:** {data['project']}  ")
+    lines.append("")
+    if data.get("notes"):
+        lines += [f"## Notes", f"", data["notes"], f""]
+    if data.get("params"):
+        lines += [f"## Parameters", f"", "| Key | Value |", "| --- | --- |"]
+        for k, v in data["params"].items():
+            lines.append(f"| {k} | {json.dumps(v)} |")
+        lines.append("")
+    if data.get("variables"):
+        lines += [f"## Variables", f"", "| Name | Value |", "| --- | --- |"]
+        for k, v in data["variables"].items():
+            lines.append(f"| {k} | {json.dumps(v)} |")
+        lines.append("")
+    if data.get("metrics_series"):
+        lines += [f"## Metrics", f"", "| Key | Last | Steps |", "| --- | --- | --- |"]
+        for k, pts in data["metrics_series"].items():
+            last = pts[-1]["value"] if pts else "--"
+            lines.append(f"| {k} | {last} | {len(pts)} |")
+        lines.append("")
+    if data.get("artifacts"):
+        lines += [f"## Artifacts", f""]
+        for a in data["artifacts"]:
+            lines.append(f"- **{a['label']}**: `{a['path']}`")
+        lines.append("")
+    if data.get("code_changes"):
+        lines += [f"## Code Changes", f""]
+        for name, diff in data["code_changes"].items():
+            lines.append(f"### {name}")
+            lines.append("```diff")
+            lines.append(str(diff))
+            lines.append("```")
+            lines.append("")
+    ts = data.get("timeline_summary", {})
+    if ts.get("total_events"):
+        lines += [
+            f"## Timeline Summary",
+            f"",
+            f"- Total events: {ts['total_events']}",
+            f"- Cell executions: {ts['cell_executions']}",
+            f"- Variable changes: {ts['variable_sets']}",
+            f"- Artifacts saved: {ts['artifact_events']}",
+        ]
+    return "\n".join(lines)
+
+
+def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
+    """Format batch export data as CSV/TSV string.
+
+    Includes all the same data as JSON export: metadata, params, variables,
+    metrics (last value), code_changes, artifacts, and timeline summary.
+    """
+    import csv as csv_mod
+    import io
+
+    if not experiments:
+        return ""
+
+    # Collect all dynamic keys across experiments
+    all_param_keys: set[str] = set()
+    all_metric_keys: set[str] = set()
+    all_var_keys: set[str] = set()
+    for data in experiments:
+        all_param_keys.update(k for k in data.get("params", {}) if not k.startswith("_"))
+        all_metric_keys.update(data.get("metrics_series", {}).keys())
+        all_var_keys.update(data.get("variables", {}).keys())
+
+    param_keys = sorted(all_param_keys)
+    metric_keys = sorted(all_metric_keys)
+    var_keys = sorted(all_var_keys)
+
+    output = io.StringIO()
+    writer = csv_mod.writer(output, delimiter=delimiter)
+
+    # Header — all fields from get_export_data()
+    header = ["id", "name", "project", "status", "created_at", "duration_s",
+              "script", "command", "python_ver", "git_branch", "git_commit",
+              "hostname", "tags", "groups", "notes", "output_dir"]
+    header += [f"param:{k}" for k in param_keys]
+    header += [f"var:{k}" for k in var_keys]
+    header += [f"metric:{k}" for k in metric_keys]
+    header += ["artifacts", "code_changes",
+               "timeline_total", "timeline_cells", "timeline_vars", "timeline_artifacts"]
+    writer.writerow(header)
+
+    # Rows
+    for data in experiments:
+        params = data.get("params", {})
+        variables = data.get("variables", {})
+        metrics_series = data.get("metrics_series", {})
+        artifacts = data.get("artifacts", [])
+        code_changes = data.get("code_changes", {})
+        ts = data.get("timeline_summary", {})
+
+        row = [
+            data.get("id", ""),
+            data.get("name", ""),
+            data.get("project", ""),
+            data.get("status", ""),
+            data.get("created_at", ""),
+            data.get("duration_s", "") or "",
+            data.get("script", "") or "",
+            data.get("command", "") or "",
+            data.get("python_ver", "") or "",
+            data.get("git_branch", "") or "",
+            data.get("git_commit", "") or "",
+            data.get("hostname", "") or "",
+            ";".join(data.get("tags", [])),
+            ";".join(data.get("groups", []) if isinstance(data.get("groups"), list) else []),
+            data.get("notes", "") or "",
+            data.get("output_dir", "") or "",
+        ]
+        row += [str(params.get(k, "")) for k in param_keys]
+        row += [str(variables.get(k, "")) for k in var_keys]
+        for k in metric_keys:
+            pts = metrics_series.get(k, [])
+            row.append(str(pts[-1]["value"]) if pts else "")
+        # Artifacts as semicolon-separated label:path pairs
+        art_str = ";".join(f"{a.get('label','')}:{a.get('path','')}" for a in artifacts)
+        # Code changes as semicolon-separated key:value
+        cc_str = ";".join(f"{k}" for k in code_changes.keys()) if code_changes else ""
+        row += [art_str, cc_str,
+                ts.get("total_events", ""), ts.get("cell_executions", ""),
+                ts.get("variable_sets", ""), ts.get("artifact_events", "")]
+        writer.writerow(row)
+
+    return output.getvalue()
 
 
 # ── Groups ────────────────────────────────────────────────────────────────────

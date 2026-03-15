@@ -14,28 +14,19 @@ from .formatting import G, R, Y, C, M, W, DIM, col, dim, bold, fmt_dt, fmt_dur, 
 
 
 def cmd_ls(args):
+    from ..core.queries import list_experiments
     conn = get_db()
-    rows = conn.execute("""
-        SELECT id, project, name, status, created_at, duration_s, git_branch, tags
-        FROM experiments ORDER BY created_at DESC LIMIT ?
-    """, (args.n,)).fetchall()
+    experiments = list_experiments(conn, limit=args.n)
 
-    if not rows:
+    if not experiments:
         print(dim("No experiments yet. Run one with:  exptrack run script.py")); return
 
-    # Gather last metrics to build dynamic columns
-    all_m = conn.execute("""
-        SELECT exp_id, key, value FROM metrics m
-        WHERE step=(SELECT MAX(step) FROM metrics m2
-                    WHERE m2.exp_id=m.exp_id AND m2.key=m.key)
-        GROUP BY exp_id, key
-    """).fetchall()
-    metrics_by_exp: dict[str, dict] = {}
+    # Build dynamic metric columns from returned data
     metric_keys: list[str] = []
-    for r in all_m:
-        metrics_by_exp.setdefault(r["exp_id"], {})[r["key"]] = r["value"]
-        if r["key"] not in metric_keys:
-            metric_keys.append(r["key"])
+    for exp in experiments:
+        for k in exp.get("metrics", {}):
+            if k not in metric_keys:
+                metric_keys.append(k)
     shown_m = metric_keys[:3]
 
     # Header
@@ -44,20 +35,20 @@ def cmd_ls(args):
     hdr = "  ".join(bold(col(h.ljust(w), W)) for w, h in cols)
     print(); print(hdr); print(dim("-" * 100))
 
-    for r in rows:
-        sc = STATUS_C.get(r["status"], W)
-        si = STATUS_I.get(r["status"], "?")
-        tags = json.loads(r["tags"] or "[]")
-        m = metrics_by_exp.get(r["id"], {})
+    for exp in experiments:
+        sc = STATUS_C.get(exp["status"], W)
+        si = STATUS_I.get(exp["status"], "?")
+        tags = exp.get("tags", [])
+        m = exp.get("metrics", {})
         mvals = [f"{m[k]:.4g}" if k in m else dim("--") for k in shown_m]
 
         vals = [
-            col(r["id"][:6], C),
-            r["name"][:30],
-            col(f"{si} {r['status']}", sc),
-            fmt_dt(r["created_at"]),
-            fmt_dur(r["duration_s"]),
-            dim(r["git_branch"] or "--"),
+            col(exp["id"][:6], C),
+            exp["name"][:30],
+            col(f"{si} {exp['status']}", sc),
+            fmt_dt(exp["created_at"]),
+            fmt_dur(exp["duration_s"]),
+            dim(exp["git_branch"] or "--"),
         ] + mvals
 
         line = "  ".join(str(v).ljust(w) for v, (w, _) in zip(vals, cols))
@@ -68,68 +59,62 @@ def cmd_ls(args):
 
 
 def cmd_show(args):
+    from ..core.queries import get_experiment_detail
     conn = get_db()
-    exp = conn.execute("SELECT * FROM experiments WHERE id LIKE ?",
-                       (args.id + "%",)).fetchone()
+    exp = get_experiment_detail(conn, args.id)
     if not exp:
         print(col(f"Not found: {args.id}", R)); return
 
     print()
     print(bold(col(f"  {STATUS_I.get(exp['status'],'')} {exp['name']}", W)))
-    print(dim(f"  id={exp['id']}  project={exp['project'] or '--'}  status={exp['status']}"))
+    print(dim(f"  id={exp['id']}  project={exp.get('project') or '--'}  status={exp['status']}"))
     print()
 
     def sec(t): print(bold(col(f"  -- {t} ", C)) + dim("-"*32))
 
     sec("Info")
+    groups = exp.get("groups", [])
     for k, v in [("Created", fmt_dt(exp["created_at"])),
                  ("Duration", fmt_dur(exp["duration_s"])),
-                 ("Script", exp["script"] or "--"),
-                 ("Command", exp["command"] or "--"),
-                 ("Branch", exp["git_branch"] or "--"),
-                 ("Commit", exp["git_commit"] or "--"),
-                 ("Diff lines", str(len((exp["git_diff"] or "").splitlines())) + " lines"),
-                 ("Host", exp["hostname"] or "--"),
-                 ("Python", exp["python_ver"] or "--"),
-                 ("Output dir", exp["output_dir"] or "--"),
-                 ("Notes", exp["notes"] or "--"),
-                 ("Tags", ", ".join(json.loads(exp["tags"] or "[]")) or "--")]:
+                 ("Script", exp.get("script") or "--"),
+                 ("Command", exp.get("command") or "--"),
+                 ("Branch", exp.get("git_branch") or "--"),
+                 ("Commit", exp.get("git_commit") or "--"),
+                 ("Diff lines", str(exp.get("diff_lines", 0)) + " lines"),
+                 ("Host", exp.get("hostname") or "--"),
+                 ("Python", exp.get("python_ver") or "--"),
+                 ("Output dir", exp.get("output_dir") or "--"),
+                 ("Notes", exp.get("notes") or "--"),
+                 ("Tags", ", ".join(exp.get("tags", [])) or "--"),
+                 ("Groups", ", ".join(groups) or "--")]:
         print(f"    {col(k+':', Y):<22} {v}")
     print()
 
-    params = conn.execute("SELECT key, value FROM params WHERE exp_id=? ORDER BY key",
-                          (exp["id"],)).fetchall()
+    params = exp.get("params", {})
     if params:
         sec("Params")
-        for p in params:
-            if not p["key"].startswith("_"):
-                print(f"    {col(p['key'], M):<30} {json.loads(p['value'])}")
+        for k, v in params.items():
+            if not k.startswith("_"):
+                print(f"    {col(k, M):<30} {v}")
         print()
 
-    metrics = conn.execute("""
-        SELECT key,
-               (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
-                AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v,
-               MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n
-        FROM metrics WHERE exp_id=? GROUP BY key ORDER BY key
-    """, (exp["id"],)).fetchall()
+    metrics = exp.get("metrics", [])
     if metrics:
         sec("Metrics")
         print(f"    {'KEY':<24} {'LAST':>10} {'MIN':>10} {'MAX':>10} {'STEPS':>6}")
         print(dim("    " + "-"*62))
         for m in metrics:
-            print(f"    {col(m['key'], G):<32} {m['last_v']:>10.4g}"
-                  f" {m['min_v']:>10.4g} {m['max_v']:>10.4g} {m['n']:>6}")
+            print(f"    {col(m['key'], G):<32} {m['last']:>10.4g}"
+                  f" {m['min']:>10.4g} {m['max']:>10.4g} {m['n']:>6}")
         print()
 
-    arts = conn.execute("SELECT label, path, timeline_seq FROM artifacts WHERE exp_id=?",
-                        (exp["id"],)).fetchall()
-    if arts:
+    artifacts = exp.get("artifacts", [])
+    if artifacts:
         sec("Outputs")
-        for a in arts:
+        for a in artifacts:
             exists = "[ok]" if Path(a["path"]).exists() else dim("[missing]")
             seq_info = ""
-            if a["timeline_seq"]:
+            if a.get("timeline_seq"):
                 seq_info = dim(f"  @seq={a['timeline_seq']}")
             print(f"    {col(a['label'] or 'file', Y):<30} {a['path']}  {exists}{seq_info}")
         print()
@@ -289,6 +274,7 @@ def cmd_diff(args):
 
 
 def cmd_compare(args):
+    from ..core.queries import get_experiment_detail, get_latest_metrics, get_vars_at_seq
     conn = get_db()
 
     seq1 = getattr(args, "seq1", None)
@@ -298,27 +284,14 @@ def cmd_compare(args):
         _compare_within(conn, args.id1, int(seq1), int(seq2))
         return
 
-    exps = []
-    for eid in [args.id1, args.id2]:
-        e = conn.execute("SELECT * FROM experiments WHERE id LIKE ?",
-                         (eid + "%",)).fetchone()
-        if not e: print(col(f"Not found: {eid}", R)); return
-        exps.append(e)
-    e1, e2 = exps
+    e1 = get_experiment_detail(conn, args.id1)
+    e2 = get_experiment_detail(conn, args.id2)
+    if not e1: print(col(f"Not found: {args.id1}", R)); return
+    if not e2: print(col(f"Not found: {args.id2}", R)); return
 
-    def get_params(eid):
-        rows = conn.execute("SELECT key, value FROM params WHERE exp_id=?", (eid,)).fetchall()
-        return {r["key"]: json.loads(r["value"]) for r in rows}
-
-    def get_metrics(eid):
-        rows = conn.execute("""
-            SELECT key, value FROM metrics m WHERE exp_id=?
-            GROUP BY key HAVING MAX(COALESCE(step, 0))
-        """, (eid,)).fetchall()
-        return {r["key"]: r["value"] for r in rows}
-
-    p1, p2 = get_params(e1["id"]), get_params(e2["id"])
-    m1, m2 = get_metrics(e1["id"]), get_metrics(e2["id"])
+    p1, p2 = e1["params"], e2["params"]
+    m1 = get_latest_metrics(conn, e1["id"])
+    m2 = get_latest_metrics(conn, e2["id"])
 
     print()
     print(f"  {'':26} {bold(col(e1['name'][:26], C)):<36} {bold(col(e2['name'][:26], M))}")
@@ -335,22 +308,8 @@ def cmd_compare(args):
             print(f"  {k:<26} {v1:<30} {v2:<30}{marker}")
         print()
 
-    def get_final_vars(eid):
-        rows = conn.execute("""
-            SELECT key, value FROM timeline
-            WHERE exp_id=? AND event_type='var_set'
-            ORDER BY seq DESC
-        """, (eid,)).fetchall()
-        ctx = {}
-        for r in rows:
-            if r["key"] not in ctx:
-                try:
-                    ctx[r["key"]] = json.loads(r["value"]) if r["value"] else None
-                except Exception:
-                    ctx[r["key"]] = r["value"]
-        return ctx
-
-    v1, v2 = get_final_vars(e1["id"]), get_final_vars(e2["id"])
+    v1 = get_vars_at_seq(conn, e1["id"])
+    v2 = get_vars_at_seq(conn, e2["id"])
     if v1 or v2:
         print(bold(col("  Variables (final state)", M)))
         for k in sorted(set(v1) | set(v2)):
@@ -375,29 +334,14 @@ def cmd_compare(args):
 
 def _compare_within(conn, exp_id_prefix, seq1, seq2):
     """Compare variable state at two timeline points within the same experiment."""
-    exp = conn.execute("SELECT id, name FROM experiments WHERE id LIKE ?",
-                       (exp_id_prefix + "%",)).fetchone()
+    from ..core.queries import find_experiment, get_vars_at_seq
+    exp = find_experiment(conn, exp_id_prefix, "id, name")
     if not exp:
         print(col(f"Not found: {exp_id_prefix}", R)); return
 
     eid = exp["id"]
-
-    def vars_at_seq(s):
-        rows = conn.execute("""
-            SELECT key, value FROM timeline
-            WHERE exp_id=? AND event_type='var_set' AND seq <= ?
-            ORDER BY seq DESC
-        """, (eid, s)).fetchall()
-        ctx = {}
-        for r in rows:
-            if r["key"] not in ctx:
-                try:
-                    ctx[r["key"]] = json.loads(r["value"]) if r["value"] else None
-                except Exception:
-                    ctx[r["key"]] = r["value"]
-        return ctx
-
-    v1, v2 = vars_at_seq(seq1), vars_at_seq(seq2)
+    v1 = get_vars_at_seq(conn, eid, seq=seq1)
+    v2 = get_vars_at_seq(conn, eid, seq=seq2)
 
     print()
     print(bold(f"  Within-experiment comparison: {exp['name']}"))
@@ -513,14 +457,13 @@ def _snap_exp_id(f: Path) -> str:
 
 def cmd_export(args):
     """Export experiment data: exptrack export <id> [--format json|markdown|csv|tsv]"""
-    import csv as csv_mod
-    import io
-
+    from ..core.queries import (get_export_data, get_batch_export_data,
+                                format_export_markdown, format_export_csv)
     conn = get_db()
     fmt = getattr(args, "format", "json")
     export_all = getattr(args, "export_all", False)
 
-    if export_all or fmt in ("csv", "tsv"):
+    if export_all or (fmt in ("csv", "tsv") and not args.id):
         _export_batch(conn, fmt, export_all, getattr(args, "id", None))
         return
 
@@ -528,151 +471,49 @@ def cmd_export(args):
         print(col("Error: experiment ID required (or use --all for batch export)", R))
         return
 
-    exp = conn.execute("SELECT * FROM experiments WHERE id LIKE ?",
-                       (args.id + "%",)).fetchone()
-    if not exp: print(col(f"Not found: {args.id}", R)); return
-
-    eid = exp["id"]
-    params = {r["key"]: json.loads(r["value"]) for r in
-              conn.execute("SELECT key, value FROM params WHERE exp_id=?", (eid,)).fetchall()}
-    metrics = [dict(r) for r in
-               conn.execute("SELECT key, value, step, ts FROM metrics WHERE exp_id=? ORDER BY ts",
-                            (eid,)).fetchall()]
-    artifacts = [dict(r) for r in
-                 conn.execute("SELECT label, path, created_at FROM artifacts WHERE exp_id=?",
-                              (eid,)).fetchall()]
+    data = get_export_data(conn, args.id)
+    if not data:
+        print(col(f"Not found: {args.id}", R)); return
 
     if fmt == "markdown":
-        tags = json.loads(exp["tags"] or "[]")
-        print(f"# {exp['name']}")
-        print(f"\n**ID:** {eid}  ")
-        print(f"**Status:** {exp['status']}  ")
-        print(f"**Created:** {exp['created_at']}  ")
-        if exp["duration_s"]:
-            m, s = divmod(exp["duration_s"], 60)
-            print(f"**Duration:** {int(m)}m {s:.0f}s  ")
-        if exp["git_branch"]:
-            print(f"**Git:** {exp['git_branch']} @ {exp['git_commit']}  ")
-        if tags:
-            print(f"**Tags:** {', '.join(tags)}  ")
-        if exp["notes"]:
-            print(f"\n## Notes\n{exp['notes']}")
-        if params:
-            print("\n## Parameters")
-            for k, v in params.items():
-                if not k.startswith("_"):
-                    print(f"- **{k}:** {v}")
-        if metrics:
-            print("\n## Metrics")
-            seen = {}
-            for m_row in metrics:
-                seen[m_row["key"]] = m_row["value"]
-            for k, v in seen.items():
-                print(f"- **{k}:** {v}")
-        if artifacts:
-            print("\n## Artifacts")
-            for a in artifacts:
-                print(f"- {a['label']}: `{a['path']}`")
+        print(format_export_markdown(data))
+    elif fmt in ("csv", "tsv"):
+        delimiter = "\t" if fmt == "tsv" else ","
+        print(format_export_csv([data], delimiter=delimiter), end="")
     else:
-        data = {
-            "id": eid,
-            "name": exp["name"],
-            "status": exp["status"],
-            "created_at": exp["created_at"],
-            "duration_s": exp["duration_s"],
-            "script": exp["script"],
-            "git_branch": exp["git_branch"],
-            "git_commit": exp["git_commit"],
-            "hostname": exp["hostname"],
-            "tags": json.loads(exp["tags"] or "[]"),
-            "notes": exp["notes"],
-            "params": params,
-            "metrics": metrics,
-            "artifacts": artifacts,
-        }
         print(json.dumps(data, indent=2, default=str))
 
 
 def _export_batch(conn, fmt, export_all, exp_id_prefix):
-    """Export one or all experiments in CSV/TSV/JSON batch format."""
-    import csv as csv_mod
-    import io
+    """Export one or all experiments in CSV/TSV/JSON/markdown batch format."""
+    from ..core.queries import (get_batch_export_data, format_export_csv,
+                                format_export_markdown)
 
-    if export_all:
+    exp_ids = None
+    if not export_all and exp_id_prefix:
         rows = conn.execute(
-            "SELECT * FROM experiments ORDER BY created_at DESC"
-        ).fetchall()
-    elif exp_id_prefix:
-        rows = conn.execute(
-            "SELECT * FROM experiments WHERE id LIKE ? ORDER BY created_at DESC",
+            "SELECT id FROM experiments WHERE id LIKE ? ORDER BY created_at DESC",
             (exp_id_prefix + "%",)
         ).fetchall()
-    else:
+        exp_ids = [r["id"] for r in rows]
+    elif not export_all:
         print(col("Error: provide experiment ID or use --all", R), file=sys.stderr)
         return
 
-    if not rows:
+    batch = get_batch_export_data(conn, exp_ids=exp_ids, export_all=export_all)
+    if not batch:
         print(dim("No experiments found.")); return
-
-    # Collect all param keys and metric keys across experiments
-    all_param_keys = set()
-    all_metric_keys = set()
-    exp_data = []
-    for r in rows:
-        eid = r["id"]
-        params = {p["key"]: json.loads(p["value"]) for p in
-                  conn.execute("SELECT key, value FROM params WHERE exp_id=?", (eid,)).fetchall()}
-        # Get last metric value per key
-        metric_rows = conn.execute("""
-            SELECT key, value FROM metrics m WHERE exp_id=?
-            GROUP BY key HAVING MAX(COALESCE(step, 0))
-        """, (eid,)).fetchall()
-        metrics = {mr["key"]: mr["value"] for mr in metric_rows}
-
-        all_param_keys.update(params.keys())
-        all_metric_keys.update(metrics.keys())
-        exp_data.append((r, params, metrics))
-
-    param_keys = sorted(k for k in all_param_keys if not k.startswith("_"))
-    metric_keys = sorted(all_metric_keys)
 
     if fmt in ("csv", "tsv"):
         delimiter = "\t" if fmt == "tsv" else ","
-        output = io.StringIO()
-        writer = csv_mod.writer(output, delimiter=delimiter)
-
-        # Header
-        header = ["id", "name", "status", "created_at", "duration_s",
-                  "git_branch", "git_commit", "tags"]
-        header += [f"param:{k}" for k in param_keys]
-        header += [f"metric:{k}" for k in metric_keys]
-        writer.writerow(header)
-
-        # Rows
-        for r, params, metrics in exp_data:
-            row = [
-                r["id"], r["name"], r["status"], r["created_at"],
-                r["duration_s"] or "", r["git_branch"] or "",
-                r["git_commit"] or "",
-                ";".join(json.loads(r["tags"] or "[]")),
-            ]
-            row += [str(params.get(k, "")) for k in param_keys]
-            row += [str(metrics.get(k, "")) for k in metric_keys]
-            writer.writerow(row)
-
-        print(output.getvalue(), end="")
+        print(format_export_csv(batch, delimiter=delimiter), end="")
+    elif fmt == "markdown":
+        for i, data in enumerate(batch):
+            if i > 0:
+                print("\n---\n")
+            print(format_export_markdown(data))
     else:
-        # JSON batch
-        all_data = []
-        for r, params, metrics in exp_data:
-            all_data.append({
-                "id": r["id"], "name": r["name"], "status": r["status"],
-                "created_at": r["created_at"], "duration_s": r["duration_s"],
-                "git_branch": r["git_branch"], "git_commit": r["git_commit"],
-                "tags": json.loads(r["tags"] or "[]"),
-                "params": params, "metrics": metrics,
-            })
-        print(json.dumps(all_data, indent=2, default=str))
+        print(json.dumps(batch, indent=2, default=str))
 
 
 def cmd_verify(args):

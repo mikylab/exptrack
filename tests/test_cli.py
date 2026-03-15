@@ -174,7 +174,7 @@ def test_cmd_export_json():
         assert data["name"] == exp.name, "Export name mismatch"
         assert data["status"] == "done", "Export status should be done"
         assert "lr" in data["params"], "Params should contain lr"
-        assert len(data["metrics"]) > 0, "Metrics should not be empty"
+        assert len(data["metrics_series"]) > 0, "Metrics should not be empty"
 
         print("  [PASS] test_cmd_export_json")
 

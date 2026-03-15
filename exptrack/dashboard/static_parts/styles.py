@@ -381,9 +381,12 @@ CSS_COMPONENTS = """
   .help-panel .help-item span { font-size: 12px; color: var(--muted); }
   .help-close { float: right; cursor: pointer; font-size: 18px; background: none; border: none; font-family: inherit; color: var(--muted); }
   .help-close:hover { color: var(--fg); }
-  .export-panel { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; border-radius: 4px; margin-top: 16px; }
-  .export-panel pre { white-space: pre-wrap; font-size: 12px; max-height: 400px; overflow-y: auto; }
-  .export-panel .export-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+  .export-panel { background: var(--card-bg); border: 1px solid var(--border); padding: 16px; border-radius: 6px; margin-top: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); position: relative; z-index: 10; }
+  .export-panel pre { white-space: pre-wrap; font-size: 12px; max-height: 400px; overflow-y: auto; background: var(--code-bg); padding: 12px; border-radius: 4px; border: 1px solid var(--border); }
+  .export-panel .export-actions { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .export-panel .export-actions .action-btn.active-fmt { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .export-dropdown-menu { position: absolute; bottom: 100%; left: 0; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px; z-index: 100; min-width: 110px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  .export-dropdown-menu button { display: block; width: 100%; text-align: left; margin: 2px 0; }
   .tooltip { position: relative; display: inline-block; }
   .tooltip .tooltip-text {
     visibility: hidden; background: var(--fg); color: var(--bg);

@@ -489,8 +489,8 @@ function renderSidebarActionsBar() {
     html += '<button class="primary" style="opacity:0.5" disabled title="Select 2 to compare">Compare (need 2)</button>';
   }
   html += '<button class="export-btn" onclick="promptBulkAddToGroup()">Add to Group</button>';
-  html += '<button class="export-btn" onclick="sidebarExport()">Export (' + n + ')</button>';
-  html += '<button class="export-btn" onclick="sidebarCopyText()">Copy as Text</button>';
+  html += _buildExportDropdown(n);
+  html += _buildCopyDropdown(n);
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '<button class="export-btn" onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear Selection</button>';
   html += '</div>';
@@ -544,6 +544,32 @@ function selectAllVisible() {
 # Table actions, bulk operations, sorting, filtering
 JS_TABLE = r"""
 
+function _buildExportDropdown(n) {
+  let h = '<span style="position:relative;display:inline-block">';
+  h += '<button class="export-btn" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Export (' + n + ') \u25BE</button>';
+  h += '<div class="export-dropdown-menu" style="display:none">';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'json\')">JSON</button>';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'csv\')">CSV</button>';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'plain\')">Plain Text</button>';
+  h += '</div></span>';
+  return h;
+}
+
+function _buildCopyDropdown(n) {
+  let h = '<span style="position:relative;display:inline-block">';
+  h += '<button class="export-btn" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Copy (' + n + ') \u25BE</button>';
+  h += '<div class="export-dropdown-menu" style="display:none">';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'json\')">JSON</button>';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'csv\')">CSV</button>';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'tsv\')">TSV</button>';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'markdown\')">Markdown</button>';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'plain\')">Plain Text</button>';
+  h += '</div></span>';
+  return h;
+}
+
 function renderTableActionsBar() {
   const bar = document.getElementById('table-actions-bar');
   if (!bar) return;
@@ -555,12 +581,12 @@ function renderTableActionsBar() {
   bar.style.display = 'flex';
   let html = '<span class="sel-count">' + n + ' selected</span>';
   html += '<button onclick="promptBulkAddToGroup()">Add to Group</button>';
-  html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
-  html += '<button onclick="sidebarExport()">Export JSON (' + n + ')</button>';
-  html += '<button onclick="sidebarCopyText()">Copy Text (' + n + ')</button>';
+  html += _buildExportDropdown(n);
+  html += _buildCopyDropdown(n);
   if (n === 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare</button>';
   }
+  html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '<button onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear</button>';
   bar.innerHTML = html;
 }
@@ -578,13 +604,40 @@ async function sidebarBulkDelete() {
   } else alert(d.error || 'Failed');
 }
 
-async function sidebarExport() {
+async function sidebarExportFmt(fmt) {
   owlSpeak('export');
   const ids = [...selectedIds];
-  const data = await postApi('/api/bulk-export', {ids, format: 'json'});
-  const text = JSON.stringify(data, null, 2);
-  await navigator.clipboard.writeText(text);
-  alert('Exported ' + data.length + ' experiments to clipboard (JSON)');
+  let text;
+  if (fmt === 'plain') {
+    // Plain text: fetch JSON data and format client-side
+    const data = await postApi('/api/bulk-export', {ids, format: 'json'});
+    const exps = Array.isArray(data) ? data : [data];
+    text = exps.map(d => _formatExpPlainText(d)).join('\n' + '='.repeat(60) + '\n\n');
+  } else {
+    const data = await postApi('/api/bulk-export', {ids, format: fmt});
+    if (data.content) {
+      text = data.content;
+    } else if (Array.isArray(data)) {
+      text = JSON.stringify(data, null, 2);
+    } else {
+      text = JSON.stringify(data, null, 2);
+    }
+  }
+  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt'};
+  const filename = 'exptrack_export_' + ids.length + '_experiments' + (ext[fmt] || '.txt');
+  const mime = fmt === 'json' ? 'application/json' : 'text/plain';
+  const blob = new Blob([text], {type: mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  // Close dropdown
+  document.querySelectorAll('.export-dropdown-menu').forEach(d => d.style.display = 'none');
+  owlSay('Downloaded ' + filename);
 }
 
 function _formatExpPlainText(d) {
@@ -602,6 +655,8 @@ function _formatExpPlainText(d) {
   if (d.git_commit) lines.push('Commit: ' + d.git_commit);
   if (d.hostname) lines.push('Hostname: ' + d.hostname);
   if (d.tags && d.tags.length) lines.push('Tags: ' + d.tags.join(', '));
+  if (d.groups && d.groups.length) lines.push('Groups: ' + d.groups.join(', '));
+  if (d.output_dir) lines.push('Output Dir: ' + d.output_dir);
   if (d.notes) lines.push('Notes: ' + d.notes);
   lines.push('');
   const params = d.params || {};
@@ -646,18 +701,30 @@ function _formatExpPlainText(d) {
   return lines.join('\n');
 }
 
-async function sidebarCopyText() {
+async function sidebarCopyFmt(fmt) {
   const ids = [...selectedIds];
-  // Fetch full export data for each experiment (same data as detail view)
-  const data = await postApi('/api/bulk-export', {ids, format: 'json'});
-  let sections = [];
-  for (const d of data) {
-    sections.push(_formatExpPlainText(d));
+  let text;
+  if (fmt === 'plain') {
+    const data = await postApi('/api/bulk-export', {ids, format: 'json'});
+    const sections = (Array.isArray(data) ? data : []).map(d => _formatExpPlainText(d));
+    text = sections.join('\n\n---\n\n');
+  } else {
+    const data = await postApi('/api/bulk-export', {ids, format: fmt});
+    if (data.content) {
+      text = data.content;
+    } else if (Array.isArray(data)) {
+      text = JSON.stringify(data, null, 2);
+    } else {
+      text = JSON.stringify(data, null, 2);
+    }
   }
-  const text = sections.join('\n\n---\n\n');
   await navigator.clipboard.writeText(text);
-  owlSay('Copied ' + data.length + ' experiment(s) to clipboard!');
-  alert('Copied ' + data.length + ' experiments to clipboard (plain text)');
+  document.querySelectorAll('.export-dropdown-menu').forEach(d => d.style.display = 'none');
+  owlSay('Copied ' + ids.length + ' experiment(s) as ' + fmt.toUpperCase() + ' to clipboard!');
+}
+
+async function sidebarCopyText() {
+  sidebarCopyFmt('plain');
 }
 
 function setGroup(field) {
@@ -1461,40 +1528,76 @@ JS_COMPARE = r"""
 
 // ── Export ──────────────────────────────────────────────────────────────────────
 
+let _exportCache = {};
+
 async function exportExp(id) {
   owlSpeak('export');
+  _exportCache = {};
   const container = document.getElementById('export-container');
-  container.innerHTML = '<div class="export-panel"><div class="export-actions">' +
-    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'json\')">JSON</button>' +
-    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'markdown\')">Markdown</button>' +
-    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'plain\')">Plain Text</button>' +
+  const fmts = ['json','markdown','csv','tsv','plain'];
+  let btns = fmts.map(f =>
+    '<button class="action-btn" id="export-btn-' + f + '" onclick="doExport(\'' + id + '\',\'' + f + '\')">' +
+    f.toUpperCase().replace('PLAIN','Plain Text').replace('MARKDOWN','Markdown') + '</button>'
+  ).join('');
+  container.innerHTML = '<div class="export-panel">' +
+    '<div class="export-actions">' + btns +
+    '<button class="action-btn" onclick="downloadExport()">Download File</button>' +
     '<button class="action-btn" onclick="copyExport()">Copy to Clipboard</button>' +
     '<button class="action-btn" onclick="this.closest(\'.export-panel\').remove()">Close</button>' +
-    '</div><pre id="export-content">Select a format above...</pre></div>';
+    '</div><pre id="export-content" style="display:none"></pre></div>';
 }
 
 async function doExport(id, fmt) {
-  const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt));
-  const pre = document.getElementById('export-content');
-  if (fmt === 'markdown') {
-    pre.textContent = data.markdown || JSON.stringify(data, null, 2);
-  } else if (fmt === 'plain') {
-    const d = data.data || data;
-    pre.textContent = _formatExpPlainText(d);
+  // Highlight active format button
+  document.querySelectorAll('.export-actions .action-btn').forEach(b => b.classList.remove('active-fmt'));
+  const btn = document.getElementById('export-btn-' + fmt);
+  if (btn) btn.classList.add('active-fmt');
+
+  let text;
+  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt'};
+  if (fmt === 'csv' || fmt === 'tsv') {
+    const data = await postApi('/api/bulk-export', {ids: [id], format: fmt});
+    text = data.content || JSON.stringify(data, null, 2);
   } else {
-    pre.textContent = JSON.stringify(data, null, 2);
+    const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt));
+    if (fmt === 'markdown') {
+      text = data.markdown || JSON.stringify(data, null, 2);
+    } else if (fmt === 'plain') {
+      text = _formatExpPlainText(data.data || data);
+    } else {
+      text = JSON.stringify(data, null, 2);
+    }
   }
+  const pre = document.getElementById('export-content');
+  pre.style.display = '';
+  pre.textContent = text;
+
+  // Find experiment name for filename
+  const exp = allExperiments.find(e => e.id.startsWith(id));
+  const name = exp ? exp.name.replace(/[^a-zA-Z0-9_-]/g, '_') : id.slice(0,8);
+  _exportCache = {text, filename: name + (ext[fmt] || '.txt'), mime: fmt === 'json' ? 'application/json' : 'text/plain'};
+}
+
+function downloadExport() {
+  if (!_exportCache.text) { owlSay('Select a format first.'); return; }
+  const blob = new Blob([_exportCache.text], {type: _exportCache.mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = _exportCache.filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  owlSay('Downloaded ' + _exportCache.filename);
 }
 
 function copyExport() {
   const pre = document.getElementById('export-content');
-  if (pre) {
-    navigator.clipboard.writeText(pre.textContent).then(() => {
-      const btn = event.target;
-      btn.textContent = 'Copied!';
-      setTimeout(() => btn.textContent = 'Copy to Clipboard', 1500);
-    });
-  }
+  if (!pre || !pre.textContent || pre.style.display === 'none') { owlSay('Select a format first.'); return; }
+  navigator.clipboard.writeText(pre.textContent).then(() => {
+    owlSay('Copied to clipboard!');
+  });
 }
 
 // ── Compare ────────────────────────────────────────────────────────────────────
