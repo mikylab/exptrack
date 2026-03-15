@@ -27,6 +27,123 @@ let allKnownStudies = []; // {name, count}[]
 let highlightMode = localStorage.getItem('exptrack-highlight') === 'true';
 let highlightColors = {}; // study -> color mapping
 
+// Column configuration: id, label, default visibility, sortable, min-width
+const ALL_COLUMNS = [
+  {id: 'pin', label: '', sortable: false, defaultOn: true, width: 28},
+  {id: 'cb', label: '', sortable: false, defaultOn: true, width: 36},
+  {id: 'id', label: 'ID', sortable: true, defaultOn: true, width: 60},
+  {id: 'name', label: 'Name', sortable: true, defaultOn: true, width: 180},
+  {id: 'status', label: 'Status', sortable: true, defaultOn: true, width: 70},
+  {id: 'tags', label: 'Tags', sortable: true, defaultOn: true, width: 120},
+  {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 120},
+  {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 80},
+  {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 200},
+  {id: 'metrics', label: 'Key Metrics', sortable: false, defaultOn: true, width: 160},
+  {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 100},
+  {id: 'started', label: 'Started', sortable: true, defaultOn: true, width: 140},
+];
+let visibleCols = JSON.parse(localStorage.getItem('exptrack-cols') || 'null') || ALL_COLUMNS.filter(c => c.defaultOn).map(c => c.id);
+let colWidths = JSON.parse(localStorage.getItem('exptrack-col-widths') || '{}');
+
+function saveColPrefs() {
+  localStorage.setItem('exptrack-cols', JSON.stringify(visibleCols));
+  localStorage.setItem('exptrack-col-widths', JSON.stringify(colWidths));
+}
+
+function getColWidth(colId) {
+  const def = ALL_COLUMNS.find(c => c.id === colId);
+  return colWidths[colId] || (def ? def.width : 100);
+}
+
+function toggleColumnSettings() {
+  const panel = document.getElementById('col-settings-panel');
+  if (panel.style.display === 'block') { panel.style.display = 'none'; return; }
+  let html = '<div class="col-settings-list">';
+  for (const col of ALL_COLUMNS) {
+    if (col.id === 'cb') continue; // checkbox always visible
+    const checked = visibleCols.includes(col.id) ? 'checked' : '';
+    const label = col.label || (col.id === 'pin' ? 'Pin' : col.id);
+    html += '<label class="col-setting-item"><input type="checkbox" ' + checked + ' onchange="toggleColumn(\'' + col.id + '\',this.checked)"> ' + label + '</label>';
+  }
+  html += '</div>';
+  panel.innerHTML = html;
+  panel.style.display = 'block';
+  // close on outside click
+  setTimeout(() => {
+    function closePanel(ev) { if (!panel.contains(ev.target) && !ev.target.closest('.col-settings-btn')) { panel.style.display = 'none'; document.removeEventListener('click', closePanel); } }
+    document.addEventListener('click', closePanel);
+  }, 0);
+}
+
+function toggleColumn(colId, on) {
+  if (on && !visibleCols.includes(colId)) {
+    // Insert in canonical order
+    const order = ALL_COLUMNS.map(c => c.id);
+    visibleCols.push(colId);
+    visibleCols.sort((a,b) => order.indexOf(a) - order.indexOf(b));
+  } else if (!on) {
+    visibleCols = visibleCols.filter(c => c !== colId);
+  }
+  saveColPrefs();
+  renderTableHeader();
+  renderExperiments();
+}
+
+function renderTableHeader() {
+  const thead = document.getElementById('exp-thead');
+  if (!thead) return;
+  let html = '<tr>';
+  for (const colId of visibleCols) {
+    const col = ALL_COLUMNS.find(c => c.id === colId);
+    if (!col) continue;
+    const w = getColWidth(colId);
+    const resizer = '<span class="col-resizer" onmousedown="startColResize(event,\'' + colId + '\')"></span>';
+    if (colId === 'cb') {
+      html += '<th class="cb-col" style="width:' + w + 'px"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th>';
+    } else if (colId === 'pin') {
+      html += '<th style="width:' + w + 'px;position:relative">' + resizer + '</th>';
+    } else if (col.sortable) {
+      html += '<th class="sortable" style="width:' + w + 'px;min-width:50px;position:relative" onclick="toggleSort(\'' + (colId === 'started' ? 'created_at' : colId) + '\')">' + col.label + '<span class="sort-arrow"></span>' + resizer + '</th>';
+    } else {
+      html += '<th style="width:' + w + 'px;min-width:50px;position:relative">' + col.label + resizer + '</th>';
+    }
+  }
+  html += '</tr>';
+  thead.innerHTML = html;
+  updateSortHeaders();
+}
+
+// Column resize via drag
+let resizeState = null;
+function startColResize(ev, colId) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const th = ev.target.closest('th');
+  const startX = ev.clientX;
+  const startW = th.offsetWidth;
+  resizeState = {colId, th, startX, startW};
+  document.addEventListener('mousemove', doColResize);
+  document.addEventListener('mouseup', endColResize);
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+}
+function doColResize(ev) {
+  if (!resizeState) return;
+  const newW = Math.max(40, resizeState.startW + ev.clientX - resizeState.startX);
+  resizeState.th.style.width = newW + 'px';
+}
+function endColResize(ev) {
+  if (!resizeState) return;
+  const newW = Math.max(40, resizeState.startW + ev.clientX - resizeState.startX);
+  colWidths[resizeState.colId] = newW;
+  saveColPrefs();
+  resizeState = null;
+  document.removeEventListener('mousemove', doColResize);
+  document.removeEventListener('mouseup', endColResize);
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+}
+
 // Dark mode
 function toggleTheme() {
   document.body.classList.toggle('dark');
@@ -941,33 +1058,47 @@ function cancelRowClick() {
 }
 
 function renderExpRow(e) {
-  const metricsHtml = Object.entries(e.metrics || {}).slice(0, 3)
-    .map(([k,v]) => '<span style="color:var(--blue)">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))))
-    .join(', ');
   const isSelected = selectedIds.has(e.id);
   const isPinned = pinnedIds.has(e.id);
   const hlStudy = getHighlightStudy(e);
   const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '') + (hlStudy ? ' highlighted-row' : '');
   const rowStyle = hlStudy ? ' style="background:' + hlStudy.bg + '"' : '';
-  const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
-  const studiesHtml = (e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('');
-  const allTagsHtml = [tagsHtml, studiesHtml].filter(Boolean).join(' ');
-  const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>';
+  const hlBorder = hlStudy ? ' style="border-left:3px solid ' + hlStudy.border + '"' : '';
   const editIcon = '<span class="edit-icon" title="Click to edit">&#9998;</span>';
-  return `<tr class="${rowCls}"${rowStyle} onclick="onRowClick('${e.id}')">
-    <td onclick="event.stopPropagation()">
-      <label style="display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4px"><input type="checkbox" ${isSelected?'checked':''} onclick="toggleSelection('${e.id}')" title="Select" style="cursor:pointer"></label>
-    </td>
-    <td>
-      <span class="editable-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineRename('${e.id}',this)">${esc(e.name.slice(0,45))}${editIcon}</span>
-    </td>
-    <td class="status-${e.status}">${e.status}</td>
-    <td class="stage-cell editable-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineStage('${e.id}',this)">${e.stage != null ? esc(String(e.stage)) + (e.stage_name ? ' <span style="color:var(--muted);font-size:11px">(' + esc(e.stage_name) + ')</span>' : '') : '<span style="color:var(--muted)">--</span>'}${editIcon}</td>
-    <td class="tags-cell editable-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineTag('${e.id}',this)">${allTagsHtml || '<span style="color:var(--muted)">--</span>'}${editIcon}</td>
-    <td style="font-size:12px">${metricsHtml || '<span style="color:var(--muted)">--</span>'}</td>
-    <td class="notes-cell-expanded editable-cell" title="${esc(e.notes||'')}" ondblclick="event.stopPropagation();cancelRowClick();startInlineNote('${e.id}',this)">${notesPreview}${editIcon}</td>
-    <td>${fmtDt(e.created_at)}</td>
-  </tr>`;
+
+  // Pre-compute cell content for all possible columns
+  const cells = {
+    pin: '<td' + hlBorder + ' onclick="event.stopPropagation()"><button class="pin-btn' + (isPinned?' pinned':'') + '" onclick="togglePin(\'' + e.id + '\')" title="' + (isPinned?'Unpin':'Pin') + '">' + (isPinned?'\u2605':'\u2606') + '</button></td>',
+    cb: '<td onclick="event.stopPropagation()"><label style="display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4px"><input type="checkbox" ' + (isSelected?'checked':'') + ' onclick="toggleSelection(\'' + e.id + '\')" title="Select" style="cursor:pointer"></label></td>',
+    id: '<td>' + e.id.slice(0,6) + '</td>',
+    name: '<td><span class="editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name.slice(0,45)) + editIcon + '</span></td>',
+    status: '<td class="status-' + e.status + '">' + e.status + '</td>',
+    tags: '<td class="tags-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineTag(\'' + e.id + '\',this)">' + ((e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    studies: '<td class="tags-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStudy(\'' + e.id + '\',this)">' + ((e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    stage: '<td class="stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? esc(String(e.stage)) + (e.stage_name ? ' <span style="color:var(--muted);font-size:11px">(' + esc(e.stage_name) + ')</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    notes: '<td class="notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    metrics: (function() {
+      const html = Object.entries(e.metrics || {}).slice(0, 3)
+        .map(([k,v]) => '<span style="color:var(--blue)">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))))
+        .join(', ');
+      return '<td style="font-size:12px">' + (html || '<span style="color:var(--muted)">--</span>') + '</td>';
+    })(),
+    changes: (function() {
+      const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
+      if (!codeParams.length) return '<td>--</td>';
+      let added = 0, removed = 0;
+      for (const k of codeParams) { const v = String(e.params[k] || ''); for (const p of v.split('; ')) { if (p.trim().startsWith('+')) added++; else if (p.trim().startsWith('-')) removed++; } }
+      let s = '<span class="code-stat">' + codeParams.length + ' file' + (codeParams.length>1?'s':'');
+      if (added || removed) s += ' <span class="lines-added">+' + added + '</span> <span class="lines-removed">-' + removed + '</span>';
+      return '<td>' + s + '</span></td>';
+    })(),
+    started: '<td>' + fmtDt(e.created_at) + '</td>',
+  };
+
+  let tds = '';
+  for (const colId of visibleCols) { tds += cells[colId] || ''; }
+  return '<tr class="' + rowCls + '"' + rowStyle + ' onclick="onRowClick(\'' + e.id + '\')">' + tds + '</tr>';
+}
 }
 
 function renderExperiments() {
@@ -1001,7 +1132,7 @@ function renderExperiments() {
     if (groupBy === 'git_commit' && items[0].git_branch) {
       groupLabel = key + ' <span class="group-meta">' + esc(items[0].git_branch) + '</span>';
     }
-    html += '<tr class="group-header" onclick="toggleGroup(\'' + esc(key) + '\')"><td colspan="8">';
+    html += '<tr class="group-header" onclick="toggleGroup(\'' + esc(key) + '\')"><td colspan="' + visibleCols.length + '">';
     html += '<span class="group-toggle">' + (isCollapsed ? '\u25B6' : '\u25BC') + '</span> ';
     html += '<span class="group-label">' + groupLabel + '</span>';
     html += '<span class="group-meta"> \u2014 ' + items.length + ' run' + (items.length > 1 ? 's' : '') + '</span>';
@@ -1017,9 +1148,11 @@ function renderExperiments() {
 # Inline editing: rename, tags, notes
 JS_INLINE_EDIT = r"""
 
-// ── Inline rename on double-click ────────────────────────────────────────────
+// ── Inline rename ────────────────────────────────────────────────────────────
 function startInlineRename(id, el) {
-  const currentName = el.textContent.trim();
+  // Strip edit icon text from the element content
+  const iconEl = el.querySelector('.edit-icon');
+  const currentName = iconEl ? el.textContent.replace(iconEl.textContent, '').trim() : el.textContent.trim();
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'name-edit-input';
@@ -2316,6 +2449,7 @@ JS_INIT = r"""
 document.getElementById('exp-sidebar').classList.add('collapsed');
 syncHighlightCheckbox();
 loadTimezoneConfig();
+renderTableHeader();
 loadAllTags();
 loadAllStudies();
 loadStats();

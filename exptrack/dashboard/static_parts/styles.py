@@ -485,10 +485,32 @@ CSS_COMPONENTS = """
   .section-toggle.collapsed::before { transform: rotate(-90deg); }
   .section-body { transition: max-height 0.2s ease; }
   .section-toggle.collapsed + .section-body { display: none; }
-  .editable-cell { cursor: default; padding: 2px 4px; border-radius: 3px; position: relative; }
+  .editable-cell { cursor: default; padding: 4px 8px; border-radius: 3px; position: relative; min-height: 28px; }
   .editable-cell:hover { background: rgba(44,90,160,0.08); }
-  .edit-icon { display: none; font-size: 11px; color: var(--muted); margin-left: 4px; }
+  .edit-icon { display: none; font-size: 11px; color: var(--muted); margin-left: 4px; vertical-align: middle; }
   .editable-cell:hover .edit-icon { display: inline; }
+  .col-resizer {
+    position: absolute; right: 0; top: 0; width: 5px; height: 100%;
+    cursor: col-resize; background: transparent; z-index: 2;
+  }
+  .col-resizer:hover, .col-resizer:active { background: var(--blue); opacity: 0.4; }
+  .col-settings-bar { display: flex; justify-content: flex-end; margin-bottom: 4px; position: relative; }
+  .col-settings-btn {
+    font-family: inherit; font-size: 11px; background: var(--code-bg); border: 1px solid var(--border);
+    padding: 3px 10px; cursor: pointer; border-radius: 3px; color: var(--muted);
+  }
+  .col-settings-btn:hover { color: var(--fg); border-color: var(--fg); }
+  .col-settings-panel {
+    display: none; position: absolute; top: 100%; right: 0; z-index: 50;
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 160px;
+  }
+  .col-settings-list { display: flex; flex-direction: column; gap: 4px; }
+  .col-setting-item { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; padding: 2px 0; }
+  .col-setting-item:hover { color: var(--blue); }
+  .col-setting-item input { cursor: pointer; accent-color: var(--blue); }
+  #exp-table { table-layout: fixed; width: 100%; }
+  #exp-table th { position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 2px 6px; border-radius: 3px; background: var(--card-bg); width: 100%; max-width: 300px; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   .tags-cell .tag { font-size: 11px; padding: 1px 6px; }
