@@ -38,7 +38,7 @@ def test_hash_stored_on_log_artifact():
 
         with get_db() as conn:
             row = conn.execute(
-                "SELECT content_hash, size_bytes FROM artifacts WHERE exp_id=?",
+                "SELECT content_hash, size_bytes FROM artifacts WHERE exp_id=? AND label != 'output_dir'",
                 (exp.id,)
             ).fetchone()
 
@@ -110,7 +110,7 @@ def test_protection_archives_on_rerun():
         # Check DB: run 1's artifact path updated to archived location
         with get_db() as conn:
             row = conn.execute(
-                "SELECT path, content_hash FROM artifacts WHERE exp_id=?",
+                "SELECT path, content_hash FROM artifacts WHERE exp_id=? AND label != 'output_dir'",
                 (exp1.id,)
             ).fetchone()
         archived_path = Path(row["path"])
@@ -126,10 +126,10 @@ def test_protection_archives_on_rerun():
         # Both files should exist at different paths
         with get_db() as conn:
             art1 = conn.execute(
-                "SELECT path FROM artifacts WHERE exp_id=?", (exp1.id,)
+                "SELECT path FROM artifacts WHERE exp_id=? AND label != 'output_dir'", (exp1.id,)
             ).fetchone()
             art2 = conn.execute(
-                "SELECT path FROM artifacts WHERE exp_id=?", (exp2.id,)
+                "SELECT path FROM artifacts WHERE exp_id=? AND label != 'output_dir'", (exp2.id,)
             ).fetchone()
         assert Path(art1["path"]).exists(), "Run 1 archived artifact missing"
         assert Path(art2["path"]).exists(), "Run 2 artifact missing"
@@ -247,7 +247,7 @@ def test_verify_detects_missing():
         # Verify hash matches
         with get_db() as conn:
             row = conn.execute(
-                "SELECT path, content_hash FROM artifacts WHERE exp_id=?",
+                "SELECT path, content_hash FROM artifacts WHERE exp_id=? AND label != 'output_dir'",
                 (exp.id,)
             ).fetchone()
         h, _ = file_hash(row["path"])
@@ -260,7 +260,7 @@ def test_verify_detects_missing():
         # DB record still exists — verify would report [missing]
         with get_db() as conn:
             row = conn.execute(
-                "SELECT path FROM artifacts WHERE exp_id=?", (exp.id,)
+                "SELECT path FROM artifacts WHERE exp_id=? AND label != 'output_dir'", (exp.id,)
             ).fetchone()
         assert row is not None, "DB record should persist after manual delete"
         assert not Path(row["path"]).exists(), "File gone but record remains"

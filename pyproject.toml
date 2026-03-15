@@ -34,6 +34,13 @@ Issues = "https://github.com/mikylab/expTrack/issues"
 [project.scripts]
 exptrack = "exptrack.cli:main"
 
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["exptrack*"]

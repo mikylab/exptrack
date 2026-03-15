@@ -157,14 +157,20 @@ def main():
     p_edit_note = sub.add_parser("edit-note", help="Replace an experiment's notes")
     p_edit_note.add_argument("id"); p_edit_note.add_argument("text")
 
-    p_export = sub.add_parser("export", help="Export experiment data (JSON or markdown)")
-    p_export.add_argument("id")
-    p_export.add_argument("--format", choices=["json", "markdown"], default="json")
+    p_export = sub.add_parser("export", help="Export experiment data (JSON, markdown, or CSV)")
+    p_export.add_argument("id", nargs="?", default=None)
+    p_export.add_argument("--format", choices=["json", "markdown", "csv", "tsv"], default="json")
+    p_export.add_argument("--all", action="store_true", dest="export_all",
+                          help="Export all experiments (batch export)")
 
     sub.add_parser("rm").add_argument("id")
     p_clean = sub.add_parser("clean")
     p_clean.add_argument("--baselines", action="store_true",
                          help="Delete code baselines (next run re-records full code)")
+    p_clean.add_argument("--older-than", dest="older_than", default=None,
+                         help="Delete experiments older than N days (e.g. 30d, 7d)")
+    p_clean.add_argument("--all-statuses", action="store_true",
+                         help="Include done experiments (default: only failed)")
 
     p_ui = sub.add_parser("ui")
     p_ui.add_argument("--port", type=int, default=7331)
@@ -177,6 +183,8 @@ def main():
                           help="Experiment ID (prefix match), or omit for all")
     p_verify.add_argument("--backfill", action="store_true",
                           help="Compute hashes for legacy artifacts missing them")
+    p_verify.add_argument("--dry-run", action="store_true", dest="dry_run",
+                          help="List artifacts and their status without hashing")
 
     p_finish = sub.add_parser("finish", help="Manually mark a running experiment as done")
     p_finish.add_argument("id")

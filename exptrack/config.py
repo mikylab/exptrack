@@ -27,6 +27,9 @@ DEFAULTS: dict = {
         "max_param_keys": 4,
         "key_max_len":    8,
     },
+    "param_redact_patterns": [
+        "api.key", "password", "token", "secret", "credential",
+    ],
     "plugins": {
         "enabled": [],
     },

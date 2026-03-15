@@ -120,8 +120,10 @@ def _ensure_schema(conn):
             conn.execute("ALTER TABLE artifacts ADD COLUMN content_hash TEXT")
         if "size_bytes" not in cols:
             conn.execute("ALTER TABLE artifacts ADD COLUMN size_bytes INTEGER")
-    except Exception:
+    except sqlite3.OperationalError:
         pass  # column may already exist
+    except Exception as e:
+        print(f"[exptrack] warning: artifact migration error: {e}", file=sys.stderr)
 
     # Add output_dir and groups to experiments if missing
     try:
@@ -132,8 +134,10 @@ def _ensure_schema(conn):
             conn.execute("ALTER TABLE experiments ADD COLUMN groups TEXT")
         if "image_paths" not in cols:
             conn.execute("ALTER TABLE experiments ADD COLUMN image_paths TEXT")
-    except Exception:
+    except sqlite3.OperationalError:
         pass  # column may already exist
+    except Exception as e:
+        print(f"[exptrack] warning: experiment migration error: {e}", file=sys.stderr)
 
     conn.commit()
 
