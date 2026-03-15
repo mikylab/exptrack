@@ -10,7 +10,7 @@ JS_CORE = r"""
 let currentFilter = '';
 let searchQuery = '';
 let tagFilter = '';
-let groupFilter = '';
+let studyFilter = '';
 let charts = {};
 let selectedIds = new Set();
 let pinnedIds = new Set(JSON.parse(localStorage.getItem('exptrack-pinned') || '[]'));
@@ -23,9 +23,9 @@ let collapsedGroups = new Set();
 let clickTimer = null;
 let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
-let allKnownGroups = []; // {name, count}[]
+let allKnownStudies = []; // {name, count}[]
 let highlightMode = localStorage.getItem('exptrack-highlight') === 'true';
-let highlightColors = {}; // group -> color mapping
+let highlightColors = {}; // study -> color mapping
 
 // Dark mode
 function toggleTheme() {
@@ -50,13 +50,13 @@ function renderFilterBar() {
   const bar = document.getElementById('filter-bar');
   if (!bar) return;
   const allTags = new Set();
-  const allGroups = new Set();
+  const allStudies = new Set();
   allExperiments.forEach(e => {
     (e.tags||[]).forEach(t => allTags.add(t));
-    (e.groups||[]).forEach(g => allGroups.add(g));
+    (e.studies||[]).forEach(g => allStudies.add(g));
   });
-  if (allTags.size === 0 && allGroups.size === 0) { bar.innerHTML = ''; return; }
-  const hasFilter = tagFilter || groupFilter;
+  if (allTags.size === 0 && allStudies.size === 0) { bar.innerHTML = ''; return; }
+  const hasFilter = tagFilter || studyFilter;
   let html = '';
   // Active filter chip
   if (tagFilter) {
@@ -64,19 +64,19 @@ function renderFilterBar() {
     html += '<span onclick="tagFilter=\'\';rerender()">#' + esc(tagFilter) + '</span>';
     html += '<span class="tag-delete-x" style="opacity:1" onclick="event.stopPropagation();tagFilter=\'\';rerender()" title="Clear filter">&times;</span>';
     html += '</span>';
-  } else if (groupFilter) {
+  } else if (studyFilter) {
     html += '<span class="tag-chip active" style="position:relative;padding-right:18px">';
-    html += '<span onclick="groupFilter=\'\';rerender()">' + esc(groupFilter) + '</span>';
-    html += '<span class="tag-delete-x" style="opacity:1" onclick="event.stopPropagation();groupFilter=\'\';rerender()" title="Clear filter">&times;</span>';
+    html += '<span onclick="studyFilter=\'\';rerender()">' + esc(studyFilter) + '</span>';
+    html += '<span class="tag-delete-x" style="opacity:1" onclick="event.stopPropagation();studyFilter=\'\';rerender()" title="Clear filter">&times;</span>';
     html += '</span>';
   }
   // Searchable dropdown
   html += '<div class="filter-dropdown-wrap">';
-  html += '<input type="text" class="filter-search-input" id="filter-search-input" placeholder="' + (hasFilter ? 'Change filter...' : 'Filter by tag/group...') + '" oninput="renderFilterDropdown()" onfocus="renderFilterDropdown()" autocomplete="off">';
+  html += '<input type="text" class="filter-search-input" id="filter-search-input" placeholder="' + (hasFilter ? 'Change filter...' : 'Filter by tag/study...') + '" oninput="renderFilterDropdown()" onfocus="renderFilterDropdown()" autocomplete="off">';
   html += '<div class="filter-dropdown-list" id="filter-dropdown-list" style="display:none"></div>';
   html += '</div>';
   if (hasFilter) {
-    html += '<span class="tag-chip" style="cursor:pointer" onclick="tagFilter=\'\';groupFilter=\'\';rerender()">&times; Clear</span>';
+    html += '<span class="tag-chip" style="cursor:pointer" onclick="tagFilter=\'\';studyFilter=\'\';rerender()">&times; Clear</span>';
   }
   bar.innerHTML = html;
   // Close dropdown on outside click
@@ -103,19 +103,19 @@ function renderFilterDropdown() {
   if (!dd || !input) return;
   const q = input.value.trim().toLowerCase();
   const allTags = new Set();
-  const allGroups = new Set();
+  const allStudies = new Set();
   allExperiments.forEach(e => {
     (e.tags||[]).forEach(t => allTags.add(t));
-    (e.groups||[]).forEach(g => allGroups.add(g));
+    (e.studies||[]).forEach(g => allStudies.add(g));
   });
   let items = [];
   for (const t of [...allTags].sort()) {
     const count = allExperiments.filter(e => (e.tags||[]).includes(t)).length;
     if (!q || t.toLowerCase().includes(q)) items.push({type: 'tag', name: t, count});
   }
-  for (const g of [...allGroups].sort()) {
-    const count = allExperiments.filter(e => (e.groups||[]).includes(g)).length;
-    if (!q || g.toLowerCase().includes(q)) items.push({type: 'group', name: g, count});
+  for (const g of [...allStudies].sort()) {
+    const count = allExperiments.filter(e => (e.studies||[]).includes(g)).length;
+    if (!q || g.toLowerCase().includes(q)) items.push({type: 'study', name: g, count});
   }
   if (items.length === 0) { dd.innerHTML = '<div style="padding:6px 10px;color:var(--muted);font-size:12px">No matches</div>'; dd.style.display = 'block'; return; }
   dd.innerHTML = items.map(item =>
@@ -128,8 +128,8 @@ function renderFilterDropdown() {
 }
 
 function applyFilterFromDropdown(type, name) {
-  if (type === 'tag') { tagFilter = name; groupFilter = ''; }
-  else { groupFilter = name; tagFilter = ''; }
+  if (type === 'tag') { tagFilter = name; studyFilter = ''; }
+  else { studyFilter = name; tagFilter = ''; }
   rerender();
 }
 
@@ -200,22 +200,22 @@ function renderManagePanel() {
   }
   html += '</div>';
 
-  // Groups section
-  html += '<div class="manage-section"><h4>Groups</h4>';
-  if (!allKnownGroups.length) {
-    html += '<div style="color:var(--muted);font-size:12px;padding:4px 0">No groups yet.</div>';
+  // Studies section
+  html += '<div class="manage-section"><h4>Studies</h4>';
+  if (!allKnownStudies.length) {
+    html += '<div style="color:var(--muted);font-size:12px;padding:4px 0">No studies yet.</div>';
   } else {
-    for (const g of allKnownGroups) {
+    for (const g of allKnownStudies) {
       html += '<div class="tag-manager-row">'
-        + '<span class="tm-name-edit" ondblclick="startEditGlobalGroup(this,\'' + esc(g.name) + '\')">' + esc(g.name) + ' <span class="tm-count">(' + g.count + ')</span></span>'
-        + '<span class="tm-delete" onclick="deleteGroupGlobal(\'' + esc(g.name) + '\')" title="Remove from all experiments">&times;</span>'
+        + '<span class="tm-name-edit" ondblclick="startEditGlobalStudy(this,\'' + esc(g.name) + '\')">' + esc(g.name) + ' <span class="tm-count">(' + g.count + ')</span></span>'
+        + '<span class="tm-delete" onclick="deleteStudyGlobal(\'' + esc(g.name) + '\')" title="Remove from all experiments">&times;</span>'
         + '</div>';
     }
   }
   if (selectedIds.size > 0) {
-    html += '<div class="group-create-form" style="margin-top:8px">';
-    html += '<input type="text" id="new-group-name" placeholder="New group for ' + selectedIds.size + ' selected...">';
-    html += '<button onclick="createGroupFromPanel()">Create</button>';
+    html += '<div class="study-create-form" style="margin-top:8px">';
+    html += '<input type="text" id="new-study-name" placeholder="New study for ' + selectedIds.size + ' selected...">';
+    html += '<button onclick="createStudyFromPanel()">Create</button>';
     html += '</div>';
   }
   html += '</div>';
@@ -249,7 +249,7 @@ async function startEditGlobalTag(el, oldName) {
   });
 }
 
-async function startEditGlobalGroup(el, oldName) {
+async function startEditGlobalStudy(el, oldName) {
   const input = document.createElement('input');
   input.type = 'text'; input.className = 'name-edit-input';
   input.value = oldName; input.style.cssText = 'width:120px;font-size:12px;padding:2px 4px';
@@ -261,13 +261,13 @@ async function startEditGlobalGroup(el, oldName) {
     if (newName && newName !== oldName) {
       // Rename: add new, remove old for each experiment
       for (const e of allExperiments) {
-        if ((e.groups||[]).includes(oldName)) {
-          await postApi('/api/experiment/' + e.id + '/group', {group: newName});
-          await postApi('/api/experiment/' + e.id + '/delete-group', {group: oldName});
+        if ((e.studies||[]).includes(oldName)) {
+          await postApi('/api/experiment/' + e.id + '/study', {study: newName});
+          await postApi('/api/experiment/' + e.id + '/delete-study', {study: oldName});
         }
       }
-      if (groupFilter === oldName) groupFilter = newName;
-      await loadAllGroups(); await loadExperiments();
+      if (studyFilter === oldName) studyFilter = newName;
+      await loadAllStudies(); await loadExperiments();
     }
     renderManagePanel();
   }
@@ -351,11 +351,11 @@ async function loadAllTags() {
   } catch(e) { allKnownTags = []; }
 }
 
-async function loadAllGroups() {
+async function loadAllStudies() {
   try {
-    const data = await api('/api/all-groups');
-    allKnownGroups = data.groups || [];
-  } catch(e) { allKnownGroups = []; }
+    const data = await api('/api/all-studies');
+    allKnownStudies = data.studies || [];
+  } catch(e) { allKnownStudies = []; }
 }
 
 function toggleHelp() {
@@ -464,8 +464,8 @@ function renderExpList() {
     const cbHtml = '<label style="display:inline-flex;align-items:center;cursor:pointer;padding:2px" onclick="event.stopPropagation()"><input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
       ' onclick="toggleSelection(\'' + e.id + '\')" title="Select"></label>';
     const tagsHtml = (e.tags||[]).length ? '<div class="exp-card-tags">' + (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') + '</div>' : '';
-    const cardGroupsHtml = (e.groups||[]).length ? '<div class="exp-card-tags">' + (e.groups||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') + '</div>' : '';
-    const cardHl = getHighlightGroup(e);
+    const cardStudiesHtml = (e.studies||[]).length ? '<div class="exp-card-tags">' + (e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') + '</div>' : '';
+    const cardHl = getHighlightStudy(e);
     const cardHlStyle = cardHl ? ' style="border-left:3px solid ' + cardHl.border + ';background:' + cardHl.bg + '"' : '';
     return '<div class="exp-card' + active + '"' + cardHlStyle + ' onclick="showDetail(\'' + e.id + '\')">' +
       '<div class="exp-card-row1">' + cbHtml +
@@ -475,7 +475,7 @@ function renderExpList() {
         esc(e.git_branch || '') + ' &middot; ' + fmtDur(e.duration_s) + ' &middot; ' + fmtDt(e.created_at) +
       '</div>' +
       (metrics ? '<div class="exp-card-metrics">' + esc(metrics) + '</div>' : '') +
-      tagsHtml + cardGroupsHtml +
+      tagsHtml + cardStudiesHtml +
     '</div>';
   }).join('');
 
@@ -503,7 +503,7 @@ function renderSidebarActionsBar() {
   } else if (n === 1) {
     html += '<button class="primary" style="opacity:0.5" disabled title="Select 2 to compare">Compare (need 2)</button>';
   }
-  html += '<button class="export-btn" onclick="promptBulkAddToGroup()">Add to Group</button>';
+  html += '<button class="export-btn" onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
@@ -584,24 +584,24 @@ function buildHighlightColors() {
     '#c0392b', '#b8860b', '#009688', '#e91e63'
   ];
   highlightColors = {};
-  const groups = new Set();
+  const studies = new Set();
   for (const e of allExperiments) {
-    if (e.groups && e.groups.length) {
-      e.groups.forEach(g => groups.add(g));
+    if (e.studies && e.studies.length) {
+      e.studies.forEach(g => studies.add(g));
     }
   }
   let i = 0;
-  for (const g of [...groups].sort()) {
+  for (const g of [...studies].sort()) {
     highlightColors[g] = { bg: palette[i % palette.length], border: borderPalette[i % borderPalette.length] };
     i++;
   }
 }
 
-function getHighlightGroup(e) {
+function getHighlightStudy(e) {
   if (!highlightMode) return null;
-  if (e.groups && e.groups.length) {
-    const grp = e.groups[0];
-    return highlightColors[grp] || null;
+  if (e.studies && e.studies.length) {
+    const s = e.studies[0];
+    return highlightColors[s] || null;
   }
   return null;
 }
@@ -669,7 +669,7 @@ function renderTableActionsBar() {
   if (n === 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare</button>';
   }
-  html += '<button onclick="promptBulkAddToGroup()">Add to Group</button>';
+  html += '<button onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
@@ -740,7 +740,8 @@ function _formatExpPlainText(d) {
   if (d.git_commit) lines.push('Commit: ' + d.git_commit);
   if (d.hostname) lines.push('Hostname: ' + d.hostname);
   if (d.tags && d.tags.length) lines.push('Tags: ' + d.tags.join(', '));
-  if (d.groups && d.groups.length) lines.push('Groups: ' + d.groups.join(', '));
+  if (d.studies && d.studies.length) lines.push('Studies: ' + d.studies.join(', '));
+  if (d.stage != null) lines.push('Stage: ' + d.stage + (d.stage_name ? ' (' + d.stage_name + ')' : ''));
   if (d.output_dir) lines.push('Output Dir: ' + d.output_dir);
   if (d.notes) lines.push('Notes: ' + d.notes);
   lines.push('');
@@ -853,8 +854,8 @@ function getFilteredExperiments() {
   if (tagFilter) {
     exps = exps.filter(e => (e.tags || []).includes(tagFilter));
   }
-  if (groupFilter) {
-    exps = exps.filter(e => (e.groups || []).includes(groupFilter));
+  if (studyFilter) {
+    exps = exps.filter(e => (e.studies || []).includes(studyFilter));
   }
   if (searchQuery) {
     const q = searchQuery.toLowerCase();
@@ -862,7 +863,7 @@ function getFilteredExperiments() {
       e.name.toLowerCase().includes(q) ||
       e.id.toLowerCase().includes(q) ||
       (e.tags || []).some(t => t.toLowerCase().includes(q)) ||
-      (e.groups || []).some(g => g.toLowerCase().includes(q)) ||
+      (e.studies || []).some(g => g.toLowerCase().includes(q)) ||
       Object.keys(e.params || {}).some(k => k.toLowerCase().includes(q)) ||
       Object.values(e.params || {}).some(v => String(v).toLowerCase().includes(q)) ||
       (e.git_branch || '').toLowerCase().includes(q) ||
@@ -880,7 +881,8 @@ function getFilteredExperiments() {
       case 'status': av = a.status; bv = b.status; break;
       case 'id': av = a.id; bv = b.id; break;
       case 'tags': av = (a.tags||[]).length; bv = (b.tags||[]).length; break;
-      case 'groups': av = (a.groups||[]).length; bv = (b.groups||[]).length; break;
+      case 'studies': av = (a.studies||[]).length; bv = (b.studies||[]).length; break;
+      case 'stage': av = a.stage != null ? a.stage : Infinity; bv = b.stage != null ? b.stage : Infinity; break;
       case 'created_at': default: av = a.created_at||''; bv = b.created_at||''; break;
     }
     let cmp = av < bv ? -1 : av > bv ? 1 : 0;
@@ -944,12 +946,12 @@ function renderExpRow(e) {
     .join(', ');
   const isSelected = selectedIds.has(e.id);
   const isPinned = pinnedIds.has(e.id);
-  const hlGroup = getHighlightGroup(e);
-  const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '') + (hlGroup ? ' highlighted-row' : '');
-  const rowStyle = hlGroup ? ' style="background:' + hlGroup.bg + '"' : '';
-  const hlBorder = hlGroup ? ' style="border-left:3px solid ' + hlGroup.border + '"' : '';
+  const hlStudy = getHighlightStudy(e);
+  const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '') + (hlStudy ? ' highlighted-row' : '');
+  const rowStyle = hlStudy ? ' style="background:' + hlStudy.bg + '"' : '';
+  const hlBorder = hlStudy ? ' style="border-left:3px solid ' + hlStudy.border + '"' : '';
   const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
-  const groupsHtml = (e.groups||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('');
+  const studiesHtml = (e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('');
   const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>';
   const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
   let codeStatHtml = '--';
@@ -978,7 +980,8 @@ function renderExpRow(e) {
     </td>
     <td class="status-${e.status}">${e.status}</td>
     <td class="tags-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineTag('${e.id}',this)">${tagsHtml || '<span style="color:var(--muted)">--</span>'}</td>
-    <td class="tags-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineGroup('${e.id}',this)">${groupsHtml || '<span style="color:var(--muted)">--</span>'}</td>
+    <td class="tags-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineStudy('${e.id}',this)">${studiesHtml || '<span style="color:var(--muted)">--</span>'}</td>
+    <td class="stage-cell" ondblclick="event.stopPropagation();cancelRowClick();startInlineStage('${e.id}',this)">${e.stage != null ? esc(String(e.stage)) + (e.stage_name ? ' <span style="color:var(--muted);font-size:11px">(' + esc(e.stage_name) + ')</span>' : '') : '<span style="color:var(--muted)">--</span>'}</td>
     <td class="notes-cell-expanded" title="${esc(e.notes||'')}" ondblclick="event.stopPropagation();cancelRowClick();startInlineNote('${e.id}',this)">${notesPreview}</td>
     <td style="font-size:12px">${metricsHtml || '<span style="color:var(--muted)">--</span>'}</td>
     <td>${codeStatHtml}</td>
@@ -1074,15 +1077,15 @@ function startInlineRename(id, el) {
   });
 }
 
-// ── Unified item autocomplete helper (tags & groups) ─────────────────────────
+// ── Unified item autocomplete helper (tags & studies) ────────────────────────
 function createItemInput(id, items, exp, onUpdate, opts = {}) {
-  // opts.kind: 'tag' or 'group'
-  // opts.allKnown: allKnownTags or allKnownGroups
-  // opts.apiAdd: e.g. '/tag' or '/group'
-  // opts.bodyKey: e.g. 'tag' or 'group'
-  // opts.expKey: e.g. 'tags' or 'groups'
-  // opts.loadAll: e.g. loadAllTags or loadAllGroups
-  // opts.prefix: display prefix, e.g. '#' for tags, '' for groups
+  // opts.kind: 'tag' or 'study'
+  // opts.allKnown: allKnownTags or allKnownStudies
+  // opts.apiAdd: e.g. '/tag' or '/study'
+  // opts.bodyKey: e.g. 'tag' or 'study'
+  // opts.expKey: e.g. 'tags' or 'studies'
+  // opts.loadAll: e.g. loadAllTags or loadAllStudies
+  // opts.prefix: display prefix, e.g. '#' for tags, '' for studies
   const kind = opts.kind || 'tag';
   const allKnown = opts.allKnown || allKnownTags;
   const apiAdd = opts.apiAdd || '/tag';
@@ -1164,22 +1167,22 @@ function createTagInput(id, tags, exp, onUpdate, opts = {}) {
     expKey: 'tags', loadAll: loadAllTags, prefix: '#'
   }, opts));
 }
-function createGroupInput(id, groups, exp, onUpdate, opts = {}) {
-  return createItemInput(id, groups, exp, onUpdate, Object.assign({
-    kind: 'group', allKnown: allKnownGroups, apiAdd: '/group', bodyKey: 'group',
-    expKey: 'groups', loadAll: loadAllGroups, prefix: ''
+function createStudyInput(id, studies, exp, onUpdate, opts = {}) {
+  return createItemInput(id, studies, exp, onUpdate, Object.assign({
+    kind: 'study', allKnown: allKnownStudies, apiAdd: '/study', bodyKey: 'study',
+    expKey: 'studies', loadAll: loadAllStudies, prefix: ''
   }, opts));
 }
 
-// ── Unified inline item editing (tags & groups) ──────────────────────────────
+// ── Unified inline item editing (tags & studies) ─────────────────────────────
 function startInlineItems(id, el, opts) {
-  // opts.expKey: 'tags' or 'groups'
+  // opts.expKey: 'tags' or 'studies'
   // opts.prefix: '#' or ''
   // opts.chipStyle: extra CSS for chips
-  // opts.deleteApi: e.g. '/delete-tag' or '/delete-group'
-  // opts.deleteBodyKey: e.g. 'tag' or 'group'
-  // opts.createInput: createTagInput or createGroupInput
-  // opts.loadAll: loadAllTags or loadAllGroups
+  // opts.deleteApi: e.g. '/delete-tag' or '/delete-study'
+  // opts.deleteBodyKey: e.g. 'tag' or 'study'
+  // opts.createInput: createTagInput or createStudyInput
+  // opts.loadAll: loadAllTags or loadAllStudies
   const exp = allExperiments.find(e => e.id === id);
   if (!exp) return;
   const items = [...(exp[opts.expKey] || [])];
@@ -1233,11 +1236,11 @@ function startInlineTag(id, el) {
   });
 }
 
-function startInlineGroup(id, el) {
+function startInlineStudy(id, el) {
   startInlineItems(id, el, {
-    expKey: 'groups', prefix: '', chipStyle: 'background:rgba(44,90,160,0.1);color:var(--blue)',
-    deleteApi: '/delete-group', deleteBodyKey: 'group',
-    createInput: createGroupInput, loadAll: loadAllGroups
+    expKey: 'studies', prefix: '', chipStyle: 'background:rgba(44,90,160,0.1);color:var(--blue)',
+    deleteApi: '/delete-study', deleteBodyKey: 'study',
+    createInput: createStudyInput, loadAll: loadAllStudies
   });
 }
 
@@ -1467,14 +1470,14 @@ async function refreshDetail(id) {
     '<span class="tag-input-area" id="detail-tag-input-area"></span>' +
     '</span>';
 
-  const expGroups = exp.groups || [];
-  const groupsHtml = '<span class="detail-tags-inline" id="detail-groups-area">' +
-    (expGroups.length
-      ? expGroups.map(g => '<span class="tag-removable" style="background:rgba(44,90,160,0.1);color:var(--blue)">' + esc(g) +
-        ' <span class="tag-delete" onclick="event.stopPropagation();deleteGroupInline(\'' + exp.id + '\',\'' + esc(g) + '\')" title="Remove group">&times;</span>' +
+  const expStudies = exp.studies || [];
+  const studiesDetailHtml = '<span class="detail-tags-inline" id="detail-studies-area">' +
+    (expStudies.length
+      ? expStudies.map(g => '<span class="tag-removable" style="background:rgba(44,90,160,0.1);color:var(--blue)">' + esc(g) +
+        ' <span class="tag-delete" onclick="event.stopPropagation();deleteStudyInline(\'' + exp.id + '\',\'' + esc(g) + '\')" title="Remove study">&times;</span>' +
         '</span>').join('')
       : '') +
-    '<span class="tag-input-area" id="detail-group-input-area"></span>' +
+    '<span class="tag-input-area" id="detail-study-input-area"></span>' +
     '</span>';
 
   document.getElementById('detail-panel').innerHTML = `
@@ -1527,7 +1530,8 @@ async function refreshDetail(id) {
               <span class="label">Host</span><span>${exp.hostname||'--'}</span>
               <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
               <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
-              <span class="label">Groups</span><span class="tag-list" id="detail-groups">${groupsHtml}</span>
+              <span class="label">Studies</span><span class="tag-list" id="detail-studies">${studiesDetailHtml}</span>
+              <span class="label">Stage</span><span id="detail-stage" class="editable-hint" ondblclick="startDetailStageEdit('${exp.id}',this)" title="Double-click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
               <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" ondblclick="startDetailNoteEdit('${exp.id}',this)" title="Double-click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">double-click to add notes</span>'}</span>
             </div>
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
@@ -1566,14 +1570,14 @@ async function refreshDetail(id) {
     tagInputArea.appendChild(wrapper);
   }
 
-  // Wire up inline group input in detail view
-  const groupInputArea = document.getElementById('detail-group-input-area');
-  if (groupInputArea) {
-    const detailGroups = [...(exp.groups || [])];
-    const { wrapper: gWrapper, input: gInput } = createGroupInput(exp.id, detailGroups, null, () => {
+  // Wire up inline study input in detail view
+  const studyInputArea = document.getElementById('detail-study-input-area');
+  if (studyInputArea) {
+    const detailStudies = [...(exp.studies || [])];
+    const { wrapper: sWrapper, input: sInput } = createStudyInput(exp.id, detailStudies, null, () => {
       loadExperiments().then(() => refreshDetail(exp.id));
-    }, { placeholder: '+ add group', style: 'width:110px;font-size:12px;padding:2px 6px' });
-    groupInputArea.appendChild(gWrapper);
+    }, { placeholder: '+ add study', style: 'width:110px;font-size:12px;padding:2px 6px' });
+    studyInputArea.appendChild(sWrapper);
   }
 
   // Render metric charts
@@ -2332,7 +2336,7 @@ document.getElementById('exp-sidebar').classList.add('collapsed');
 syncHighlightCheckbox();
 loadTimezoneConfig();
 loadAllTags();
-loadAllGroups();
+loadAllStudies();
 loadStats();
 loadExperiments().then(() => {
   if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
@@ -2341,46 +2345,46 @@ loadExperiments().then(() => {
 });
 """
 
-# Group management UI — column-based groups with inline editing
-JS_GROUPS = r"""
-// ── Group management ─────────────────────────────────────────────────────────
+# Study management UI — column-based studies with inline editing
+JS_STUDIES = r"""
+// ── Study management ─────────────────────────────────────────────────────────
 
-async function deleteGroupGlobal(name) {
-  const count = allExperiments.filter(e => (e.groups||[]).includes(name)).length;
-  if (!confirm('Delete group "' + name + '" from ' + count + ' experiment(s)? This cannot be undone.')) return;
-  const res = await postApi('/api/groups/delete', {name});
+async function deleteStudyGlobal(name) {
+  const count = allExperiments.filter(e => (e.studies||[]).includes(name)).length;
+  if (!confirm('Delete study "' + name + '" from ' + count + ' experiment(s)? This cannot be undone.')) return;
+  const res = await postApi('/api/studies/delete', {name});
   if (res.ok) {
-    if (groupFilter === name) groupFilter = '';
-    await loadAllGroups();
+    if (studyFilter === name) studyFilter = '';
+    await loadAllStudies();
     await loadExperiments();
     renderManagePanel();
   }
 }
 
-async function createGroupFromPanel() {
-  const input = document.getElementById('new-group-name');
+async function createStudyFromPanel() {
+  const input = document.getElementById('new-study-name');
   const name = input ? input.value.trim() : '';
   if (!name) return;
   const ids = [...selectedIds];
   if (ids.length > 0) {
-    const res = await postApi('/api/groups/create', {name, experiment_ids: ids});
-    if (res.ok) owlSay('Group "' + name + '" created with ' + ids.length + ' experiment(s)!');
+    const res = await postApi('/api/studies/create', {name, experiment_ids: ids});
+    if (res.ok) owlSay('Study "' + name + '" created with ' + ids.length + ' experiment(s)!');
   } else {
-    owlSay('Select experiments first, then create a group.');
+    owlSay('Select experiments first, then create a study.');
     return;
   }
   if (input) input.value = '';
-  await loadAllGroups();
+  await loadAllStudies();
   await loadExperiments();
   renderManagePanel();
 }
 
-async function promptBulkAddToGroup() {
-  const name = prompt('Group name to add ' + selectedIds.size + ' experiment(s) to:');
+async function promptBulkAddToStudy() {
+  const name = prompt('Study name to add ' + selectedIds.size + ' experiment(s) to:');
   if (!name || !name.trim()) return;
-  const res = await postApi('/api/bulk-add-to-group', {group: name.trim(), ids: [...selectedIds]});
+  const res = await postApi('/api/bulk-add-to-study', {study: name.trim(), ids: [...selectedIds]});
   if (res.ok) {
-    await loadAllGroups();
+    await loadAllStudies();
     await loadExperiments();
     owlSay('Added ' + res.added + ' to "' + name.trim() + '"');
   } else {
@@ -2388,17 +2392,104 @@ async function promptBulkAddToGroup() {
   }
 }
 
-async function deleteGroupInline(id, group) {
+async function deleteStudyInline(id, study) {
   const exp = allExperiments.find(e => e.id === id);
-  if (exp) exp.groups = (exp.groups||[]).filter(g => g !== group);
-  const area = document.getElementById('detail-groups-area');
+  if (exp) exp.studies = (exp.studies||[]).filter(s => s !== study);
+  const area = document.getElementById('detail-studies-area');
   if (area) {
     area.querySelectorAll('.tag-removable').forEach(el => {
-      if (el.textContent.trim().replace(/\u00d7$/, '').trim() === group) el.remove();
+      if (el.textContent.trim().replace(/\u00d7$/, '').trim() === study) el.remove();
     });
   }
-  const d = await postApi('/api/experiment/' + id + '/delete-group', {group});
-  if (d.ok) { loadAllGroups(); loadExperiments().then(() => { if (currentDetailId === id) refreshDetail(id); }); }
+  const d = await postApi('/api/experiment/' + id + '/delete-study', {study});
+  if (d.ok) { loadAllStudies(); loadExperiments().then(() => { if (currentDetailId === id) refreshDetail(id); }); }
+}
+"""
+
+# Stage inline editing
+JS_STAGE = r"""
+// ── Stage inline editing ─────────────────────────────────────────────────────
+
+function startInlineStage(id, td) {
+  const exp = allExperiments.find(e => e.id === id);
+  if (!exp) return;
+  const curStage = exp.stage != null ? exp.stage : '';
+  const curName = exp.stage_name || '';
+  td.innerHTML = '<div style="display:flex;gap:4px;align-items:center" onclick="event.stopPropagation()">'
+    + '<input type="number" class="inline-edit-input" style="width:60px;font-size:12px;padding:2px 4px" placeholder="#" value="' + esc(String(curStage)) + '" id="stage-num-' + id + '">'
+    + '<input type="text" class="inline-edit-input" style="width:80px;font-size:12px;padding:2px 4px" placeholder="label" value="' + esc(curName) + '" id="stage-name-' + id + '">'
+    + '<button style="font-size:11px;padding:1px 6px;cursor:pointer" onclick="saveInlineStage(\'' + id + '\')">&#10003;</button>'
+    + '</div>';
+  const numInput = document.getElementById('stage-num-' + id);
+  if (numInput) { numInput.focus(); numInput.select(); }
+  numInput.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') saveInlineStage(id);
+    if (ev.key === 'Escape') { renderExperiments(); }
+  });
+  const nameInput = document.getElementById('stage-name-' + id);
+  nameInput.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') saveInlineStage(id);
+    if (ev.key === 'Escape') { renderExperiments(); }
+  });
+}
+
+async function saveInlineStage(id) {
+  const numInput = document.getElementById('stage-num-' + id);
+  const nameInput = document.getElementById('stage-name-' + id);
+  const stageVal = numInput ? numInput.value.trim() : '';
+  const nameVal = nameInput ? nameInput.value.trim() : '';
+  const body = {};
+  if (stageVal !== '') body.stage = parseInt(stageVal, 10);
+  else body.stage = null;
+  if (nameVal) body.stage_name = nameVal;
+  const res = await postApi('/api/experiment/' + id + '/stage', body);
+  if (res.ok) {
+    const exp = allExperiments.find(e => e.id === id);
+    if (exp) { exp.stage = body.stage; exp.stage_name = nameVal; }
+    renderExperiments();
+    if (currentDetailId === id) refreshDetail(id);
+  }
+}
+
+function startDetailStageEdit(id, el) {
+  const exp = allExperiments.find(e => e.id === id);
+  if (!exp) return;
+  const curStage = exp.stage != null ? exp.stage : '';
+  const curName = exp.stage_name || '';
+  el.innerHTML = '<div style="display:inline-flex;gap:4px;align-items:center">'
+    + '<input type="number" class="inline-edit-input" style="width:60px;font-size:13px;padding:2px 6px" placeholder="stage #" value="' + esc(String(curStage)) + '" id="detail-stage-num">'
+    + '<input type="text" class="inline-edit-input" style="width:100px;font-size:13px;padding:2px 6px" placeholder="label (optional)" value="' + esc(curName) + '" id="detail-stage-name">'
+    + '<button style="font-size:12px;padding:2px 8px;cursor:pointer" onclick="saveDetailStage(\'' + id + '\')">Save</button>'
+    + '<button style="font-size:12px;padding:2px 8px;cursor:pointer" onclick="refreshDetail(\'' + id + '\')">Cancel</button>'
+    + '</div>';
+  const numInput = document.getElementById('detail-stage-num');
+  if (numInput) { numInput.focus(); numInput.select(); }
+  numInput.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') saveDetailStage(id);
+    if (ev.key === 'Escape') refreshDetail(id);
+  });
+  document.getElementById('detail-stage-name').addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') saveDetailStage(id);
+    if (ev.key === 'Escape') refreshDetail(id);
+  });
+}
+
+async function saveDetailStage(id) {
+  const numInput = document.getElementById('detail-stage-num');
+  const nameInput = document.getElementById('detail-stage-name');
+  const stageVal = numInput ? numInput.value.trim() : '';
+  const nameVal = nameInput ? nameInput.value.trim() : '';
+  const body = {};
+  if (stageVal !== '') body.stage = parseInt(stageVal, 10);
+  else body.stage = null;
+  if (nameVal) body.stage_name = nameVal;
+  const res = await postApi('/api/experiment/' + id + '/stage', body);
+  if (res.ok) {
+    const exp = allExperiments.find(e => e.id === id);
+    if (exp) { exp.stage = body.stage; exp.stage_name = nameVal; }
+    renderExperiments();
+    refreshDetail(id);
+  }
 }
 """
 
@@ -2408,4 +2499,4 @@ def get_all_js() -> str:
     return (JS_CORE + JS_OWL + JS_SIDEBAR + JS_TABLE +
             JS_EXPERIMENTS + JS_INLINE_EDIT + JS_DETAIL +
             JS_COMPARE + JS_MUTATIONS + JS_TIMELINE +
-            JS_GROUPS + JS_INIT)
+            JS_STUDIES + JS_STAGE + JS_INIT)

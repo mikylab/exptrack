@@ -8,7 +8,7 @@ from __future__ import annotations
 from ...core.queries import (
     get_stats, list_experiments, get_experiment_detail, get_metrics_series,
     get_experiment_diff, get_timeline_events, get_vars_at_seq,
-    get_cell_source, get_export_data, get_all_tags, get_groups,
+    get_cell_source, get_export_data, get_all_tags, get_studies,
 )
 
 
@@ -97,8 +97,8 @@ def api_get_timezone() -> dict:
     return {"timezone": conf.get("timezone", "")}
 
 
-def api_groups(conn) -> dict:
-    return {"groups": get_groups(conn)}
+def api_studies(conn) -> dict:
+    return {"studies": get_studies(conn)}
 
 
 def api_list_images(conn, exp_id: str) -> dict:

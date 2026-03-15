@@ -44,8 +44,10 @@ def _ensure_schema(conn):
             duration_s  REAL,
             notes       TEXT,
             tags        TEXT,
-            groups      TEXT,
-            output_dir  TEXT
+            studies     TEXT,
+            output_dir  TEXT,
+            stage       INTEGER,
+            stage_name  TEXT
         );
         CREATE TABLE IF NOT EXISTS params (
             exp_id  TEXT NOT NULL REFERENCES experiments(id),
@@ -125,15 +127,28 @@ def _ensure_schema(conn):
     except Exception as e:
         print(f"[exptrack] warning: artifact migration error: {e}", file=sys.stderr)
 
-    # Add output_dir and groups to experiments if missing
+    # Add output_dir, studies, stage columns to experiments if missing
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(experiments)").fetchall()}
         if "output_dir" not in cols:
             conn.execute("ALTER TABLE experiments ADD COLUMN output_dir TEXT")
-        if "groups" not in cols:
-            conn.execute("ALTER TABLE experiments ADD COLUMN groups TEXT")
+        if "studies" not in cols:
+            conn.execute("ALTER TABLE experiments ADD COLUMN studies TEXT")
+            # Migrate data from old 'groups' column if it exists
+            if "groups" in cols:
+                conn.execute("UPDATE experiments SET studies = groups WHERE groups IS NOT NULL")
+        if "stage" not in cols:
+            conn.execute("ALTER TABLE experiments ADD COLUMN stage INTEGER")
+        if "stage_name" not in cols:
+            conn.execute("ALTER TABLE experiments ADD COLUMN stage_name TEXT")
         if "image_paths" not in cols:
             conn.execute("ALTER TABLE experiments ADD COLUMN image_paths TEXT")
+        # Drop old 'groups' column if it exists (renamed to 'studies')
+        if "groups" in cols:
+            try:
+                conn.execute("ALTER TABLE experiments DROP COLUMN groups")
+            except sqlite3.OperationalError:
+                pass  # SQLite < 3.35 doesn't support DROP COLUMN; harmless dead column
     except sqlite3.OperationalError:
         pass  # column may already exist
     except Exception as e:

@@ -559,20 +559,20 @@ CSS_COMPONENTS = """
   .tz-setting select:hover { background: var(--border); color: var(--fg); }
 """
 
-# Group management panel
-CSS_GROUPS = """
-  .group-panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; padding: 16px; margin-bottom: 16px; }
-  .group-panel h3 { font-size: 14px; margin-bottom: 12px; }
-  .group-card { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 4px; }
-  .group-card:hover { background: var(--code-bg); }
-  .group-card-name { font-weight: 600; color: var(--blue); cursor: pointer; }
-  .group-card-meta { font-size: 12px; color: var(--muted); }
-  .group-card-actions { display: flex; gap: 4px; }
-  .group-card-actions button { font-family: inherit; font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; }
-  .group-card-actions button.danger:hover { color: var(--red); border-color: var(--red); }
-  .group-create-form { display: flex; gap: 8px; margin-top: 8px; }
-  .group-create-form input { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; background: var(--card-bg); flex: 1; }
-  .group-create-form button { font-family: inherit; font-size: 12px; padding: 4px 12px; border: none; background: var(--blue); color: #fff; cursor: pointer; border-radius: 3px; }
+# Study management panel
+CSS_STUDIES = """
+  .study-panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; padding: 16px; margin-bottom: 16px; }
+  .study-panel h3 { font-size: 14px; margin-bottom: 12px; }
+  .study-card { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 4px; }
+  .study-card:hover { background: var(--code-bg); }
+  .study-card-name { font-weight: 600; color: var(--blue); cursor: pointer; }
+  .study-card-meta { font-size: 12px; color: var(--muted); }
+  .study-card-actions { display: flex; gap: 4px; }
+  .study-card-actions button { font-family: inherit; font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; }
+  .study-card-actions button.danger:hover { color: var(--red); border-color: var(--red); }
+  .study-create-form { display: flex; gap: 8px; margin-top: 8px; }
+  .study-create-form input { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; background: var(--card-bg); flex: 1; }
+  .study-create-form button { font-family: inherit; font-size: 12px; padding: 4px 12px; border: none; background: var(--blue); color: #fff; cursor: pointer; border-radius: 3px; }
 """
 
 
@@ -602,7 +602,7 @@ CSS_IMAGES = """
   .img-path-add { display: flex; gap: 8px; margin-top: 6px; }
   .img-path-add input { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; background: var(--card-bg); color: var(--fg); flex: 1; }
   .img-path-add button { font-family: inherit; font-size: 12px; padding: 4px 12px; border: none; background: var(--blue); color: #fff; cursor: pointer; border-radius: 3px; }
-  .group-chip { background: rgba(44,90,160,0.1); color: var(--blue); }
+  .study-chip { background: rgba(44,90,160,0.1); color: var(--blue); }
   .filter-dropdown-wrap { display: inline-block; position: relative; }
   .filter-search-input {
     font-family: inherit; font-size: 12px; border: 1px solid var(--border);
@@ -630,4 +630,4 @@ def get_all_css() -> str:
     """Concatenate all CSS sections."""
     return (CSS_RESET + CSS_LAYOUT + CSS_CARDS + CSS_TABLE +
             CSS_DETAIL + CSS_CODE + CSS_TIMELINE + CSS_COMPARE +
-            CSS_COMPONENTS + CSS_GROUPS + CSS_IMAGES)
+            CSS_COMPONENTS + CSS_STUDIES + CSS_IMAGES)

@@ -55,10 +55,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_all_tags(conn))
         elif path == "/api/config/timezone":
             self._json(read_routes.api_get_timezone())
-        elif path == "/api/groups":
-            self._json(read_routes.api_groups(conn))
-        elif path == "/api/all-groups":
-            self._json(write_routes.api_all_groups(conn))
+        elif path == "/api/studies":
+            self._json(read_routes.api_studies(conn))
+        elif path == "/api/all-studies":
+            self._json(write_routes.api_all_studies(conn))
         elif path.startswith("/api/images/"):
             exp_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
             self._json(read_routes.api_list_images(conn, exp_id))
@@ -100,8 +100,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "edit-notes":      lambda: write_routes.api_edit_notes(conn, exp_id, body),
                 "delete-artifact": lambda: write_routes.api_delete_artifact(conn, exp_id, body),
                 "edit-artifact":   lambda: write_routes.api_edit_artifact(conn, exp_id, body),
-                "group":           lambda: write_routes.api_add_group(conn, exp_id, body),
-                "delete-group":    lambda: write_routes.api_delete_exp_group(conn, exp_id, body),
+                "study":           lambda: write_routes.api_add_study(conn, exp_id, body),
+                "delete-study":    lambda: write_routes.api_delete_exp_study(conn, exp_id, body),
+                "stage":           lambda: write_routes.api_set_stage(conn, exp_id, body),
                 "image-path":      lambda: write_routes.api_image_path(conn, exp_id, body),
             }
             handler = dispatch.get(action)
@@ -115,12 +116,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/bulk-delete":          lambda: write_routes.api_bulk_delete(conn, body),
             "/api/bulk-export":          lambda: write_routes.api_bulk_export(conn, body),
             "/api/config/timezone":      lambda: write_routes.api_set_timezone(body),
-            "/api/groups/create":        lambda: write_routes.api_create_group(conn, body),
-            "/api/groups/add":           lambda: write_routes.api_add_to_group(conn, body),
-            "/api/groups/remove":        lambda: write_routes.api_remove_from_group(conn, body),
-            "/api/groups/delete":        lambda: write_routes.api_delete_group(conn, body),
-            "/api/all-groups":           lambda: write_routes.api_all_groups(conn),
-            "/api/bulk-add-to-group":    lambda: write_routes.api_bulk_add_to_group(conn, body),
+            "/api/studies/create":       lambda: write_routes.api_create_study(conn, body),
+            "/api/studies/add":          lambda: write_routes.api_add_to_study(conn, body),
+            "/api/studies/remove":       lambda: write_routes.api_remove_from_study(conn, body),
+            "/api/studies/delete":       lambda: write_routes.api_delete_study(conn, body),
+            "/api/all-studies":          lambda: write_routes.api_all_studies(conn),
+            "/api/bulk-add-to-study":    lambda: write_routes.api_bulk_add_to_study(conn, body),
         }
         handler = global_dispatch.get(path)
         if handler:
