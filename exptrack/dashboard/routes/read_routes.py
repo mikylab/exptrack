@@ -76,12 +76,13 @@ def api_cell_source(conn, cell_hash: str) -> dict:
 
 
 def api_export(conn, exp_id: str, qs: dict) -> dict:
+    from ...core.queries import format_export_markdown
     data = get_export_data(conn, exp_id)
     if not data:
         return {"error": "not found"}
     fmt = qs.get("format", "json")
     if fmt == "markdown":
-        md = _export_markdown(data)
+        md = format_export_markdown(data)
         return {"markdown": md, "data": data}
     return data
 
@@ -159,63 +160,3 @@ def api_list_images(conn, exp_id: str) -> dict:
     return {"images": images, "paths": paths, "suggested_paths": suggested}
 
 
-def _export_markdown(data: dict) -> str:
-    """Generate a markdown summary of an experiment."""
-    import json
-    lines = [
-        f"# {data['name']}",
-        f"",
-        f"**ID:** {data['id']}  ",
-        f"**Status:** {data['status']}  ",
-        f"**Created:** {data['created_at']}  ",
-        f"**Duration:** {data['duration_s']}s  " if data.get('duration_s') else "",
-        f"**Script:** `{data['script']}`  " if data.get('script') else "",
-        f"**Command:** `{data['command']}`  " if data.get('command') else "",
-        f"**Python:** {data['python_ver']}  " if data.get('python_ver') else "",
-        f"**Git:** {data['git_branch']} @ {data['git_commit']}  " if data.get('git_branch') else "",
-        f"**Hostname:** {data['hostname']}  " if data.get('hostname') else "",
-        f"**Tags:** {', '.join(data['tags'])}  " if data.get('tags') else "",
-        f"",
-    ]
-    if data.get("notes"):
-        lines += [f"## Notes", f"", data["notes"], f""]
-    if data.get("params"):
-        lines += [f"## Parameters", f"", "| Key | Value |", "| --- | --- |"]
-        for k, v in data["params"].items():
-            lines.append(f"| {k} | {json.dumps(v)} |")
-        lines.append("")
-    if data.get("variables"):
-        lines += [f"## Variables", f"", "| Name | Value |", "| --- | --- |"]
-        for k, v in data["variables"].items():
-            lines.append(f"| {k} | {json.dumps(v)} |")
-        lines.append("")
-    if data.get("metrics_series"):
-        lines += [f"## Metrics", f"", "| Key | Last | Steps |", "| --- | --- | --- |"]
-        for k, pts in data["metrics_series"].items():
-            last = pts[-1]["value"] if pts else "--"
-            lines.append(f"| {k} | {last} | {len(pts)} |")
-        lines.append("")
-    if data.get("artifacts"):
-        lines += [f"## Artifacts", f""]
-        for a in data["artifacts"]:
-            lines.append(f"- **{a['label']}**: `{a['path']}`")
-        lines.append("")
-    if data.get("code_changes"):
-        lines += [f"## Code Changes", f""]
-        for name, diff in data["code_changes"].items():
-            lines.append(f"### {name}")
-            lines.append("```diff")
-            lines.append(str(diff))
-            lines.append("```")
-            lines.append("")
-    ts = data.get("timeline_summary", {})
-    if ts.get("total_events"):
-        lines += [
-            f"## Timeline Summary",
-            f"",
-            f"- Total events: {ts['total_events']}",
-            f"- Cell executions: {ts['cell_executions']}",
-            f"- Variable changes: {ts['variable_sets']}",
-            f"- Artifacts saved: {ts['artifact_events']}",
-        ]
-    return "\n".join(lines)

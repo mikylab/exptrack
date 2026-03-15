@@ -24,7 +24,8 @@ from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_s
 from .inspect_cmds import (cmd_ls, cmd_show, cmd_timeline, cmd_diff,
                            cmd_compare, cmd_history, cmd_export, cmd_verify)
 from .mutate_cmds import (cmd_tag, cmd_untag, cmd_delete_tag, cmd_note,
-                          cmd_edit_note, cmd_rm, cmd_clean, cmd_finish)
+                          cmd_edit_note, cmd_rm, cmd_clean, cmd_finish,
+                          cmd_group, cmd_ungroup, cmd_groups, cmd_delete_group)
 from .pipeline_cmds import (cmd_run_start, cmd_run_finish, cmd_run_fail,
                             cmd_log_metric, cmd_log_artifact)
 
@@ -157,6 +158,20 @@ def main():
     p_edit_note = sub.add_parser("edit-note", help="Replace an experiment's notes")
     p_edit_note.add_argument("id"); p_edit_note.add_argument("text")
 
+    p_grp = sub.add_parser("group", help="Add an experiment to a group")
+    p_grp.add_argument("id"); p_grp.add_argument("group")
+
+    p_ungrp = sub.add_parser("ungroup", help="Remove an experiment from a group")
+    p_ungrp.add_argument("id"); p_ungrp.add_argument("group")
+
+    sub.add_parser("groups", help="List all experiment groups")
+
+    p_delgrp = sub.add_parser("delete-group",
+        help="Remove a group from ALL experiments globally")
+    p_delgrp.add_argument("name", help="Group name to delete everywhere")
+    p_delgrp.add_argument("--yes", "-y", action="store_true",
+                           help="Skip confirmation prompt")
+
     p_export = sub.add_parser("export", help="Export experiment data (JSON, markdown, or CSV)")
     p_export.add_argument("id", nargs="?", default=None)
     p_export.add_argument("--format", choices=["json", "markdown", "csv", "tsv"], default="json")
@@ -171,6 +186,8 @@ def main():
                          help="Delete experiments older than N days (e.g. 30d, 7d)")
     p_clean.add_argument("--all-statuses", action="store_true",
                          help="Include done experiments (default: only failed)")
+    p_clean.add_argument("--dry-run", action="store_true", dest="dry_run",
+                         help="List what would be deleted without deleting")
 
     p_ui = sub.add_parser("ui")
     p_ui.add_argument("--port", type=int, default=7331)
@@ -216,6 +233,10 @@ def main():
         "delete-tag":   cmd_delete_tag,
         "note":         cmd_note,
         "edit-note":    cmd_edit_note,
+        "group":        cmd_group,
+        "ungroup":      cmd_ungroup,
+        "groups":       cmd_groups,
+        "delete-group": cmd_delete_group,
         "export":       cmd_export,
         "verify":       cmd_verify,
         "rm":           cmd_rm,

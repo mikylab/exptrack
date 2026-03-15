@@ -174,6 +174,17 @@ class Experiment:
             print(f"[exptrack] warning: could not log output_dir artifact: {e}", file=sys.stderr)
 
     def _write_params(self, conn, params: dict):
+        # Warn on param overwrites with different values
+        for k, v in params.items():
+            existing = conn.execute(
+                "SELECT value FROM params WHERE exp_id=? AND key=?",
+                (self.id, k)
+            ).fetchone()
+            if existing:
+                old_val = json.loads(existing["value"])
+                if old_val != v:
+                    print(f"[exptrack] warning: param '{k}' overwritten: "
+                          f"{old_val!r} -> {v!r}", file=sys.stderr)
         conn.executemany(
             "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
             [(self.id, k, json.dumps(v)) for k, v in params.items()]
