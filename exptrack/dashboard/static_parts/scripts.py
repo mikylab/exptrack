@@ -36,7 +36,7 @@ const ALL_COLUMNS = [
   {id: 'status', label: 'Status', sortable: true, defaultOn: true, width: 70},
   {id: 'tags', label: 'Tags', sortable: true, defaultOn: true, width: 120},
   {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 120},
-  {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 80},
+  {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 120},
   {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 200},
   {id: 'metrics', label: 'Key Metrics', sortable: false, defaultOn: true, width: 160},
   {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 100},
@@ -66,6 +66,7 @@ function toggleColumnSettings() {
     html += '<label class="col-setting-item"><input type="checkbox" ' + checked + ' onchange="toggleColumn(\'' + col.id + '\',this.checked)"> ' + label + '</label>';
   }
   html += '</div>';
+  html += '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px"><button class="col-reset-btn" onclick="resetColumnDefaults()">Reset to defaults</button></div>';
   panel.innerHTML = html;
   panel.style.display = 'block';
   // close on outside click
@@ -73,6 +74,15 @@ function toggleColumnSettings() {
     function closePanel(ev) { if (!panel.contains(ev.target) && !ev.target.closest('.col-settings-btn')) { panel.style.display = 'none'; document.removeEventListener('click', closePanel); } }
     document.addEventListener('click', closePanel);
   }, 0);
+}
+
+function resetColumnDefaults() {
+  visibleCols = ALL_COLUMNS.filter(c => c.defaultOn).map(c => c.id);
+  colWidths = {};
+  saveColPrefs();
+  renderTableHeader();
+  renderExperiments();
+  document.getElementById('col-settings-panel').style.display = 'none';
 }
 
 function toggleColumn(colId, on) {
@@ -142,6 +152,8 @@ function endColResize(ev) {
   document.removeEventListener('mouseup', endColResize);
   document.body.style.cursor = '';
   document.body.style.userSelect = '';
+  renderTableHeader();
+  renderExperiments();
 }
 
 // Dark mode
@@ -1070,29 +1082,29 @@ function renderExpRow(e) {
   const cells = {
     pin: '<td' + hlBorder + ' onclick="event.stopPropagation()"><button class="pin-btn' + (isPinned?' pinned':'') + '" onclick="togglePin(\'' + e.id + '\')" title="' + (isPinned?'Unpin':'Pin') + '">' + (isPinned?'\u2605':'\u2606') + '</button></td>',
     cb: '<td onclick="event.stopPropagation()"><label style="display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4px"><input type="checkbox" ' + (isSelected?'checked':'') + ' onclick="toggleSelection(\'' + e.id + '\')" title="Select" style="cursor:pointer"></label></td>',
-    id: '<td>' + e.id.slice(0,6) + '</td>',
-    name: '<td><span class="editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name.slice(0,45)) + editIcon + '</span></td>',
-    status: '<td class="status-' + e.status + '">' + e.status + '</td>',
-    tags: '<td class="tags-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineTag(\'' + e.id + '\',this)">' + ((e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
-    studies: '<td class="tags-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStudy(\'' + e.id + '\',this)">' + ((e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
-    stage: '<td class="stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? esc(String(e.stage)) + (e.stage_name ? ' <span style="color:var(--muted);font-size:11px">(' + esc(e.stage_name) + ')</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
-    notes: '<td class="notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    id: '<td class="truncate-cell">' + e.id.slice(0,6) + '</td>',
+    name: '<td class="truncate-cell"><span class="editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name.slice(0,45)) + editIcon + '</span></td>',
+    status: '<td class="truncate-cell status-' + e.status + '">' + e.status + '</td>',
+    tags: '<td class="tags-cell wrap-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineTag(\'' + e.id + '\',this)">' + ((e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    studies: '<td class="tags-cell wrap-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStudy(\'' + e.id + '\',this)">' + ((e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    stage: '<td class="wrap-cell stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? '<span style="font-weight:600">' + esc(String(e.stage)) + '</span>' + (e.stage_name ? ' <span style="color:var(--muted)">\u00b7</span> <span style="color:var(--muted)">' + esc(e.stage_name) + '</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
+    notes: '<td class="truncate-cell notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     metrics: (function() {
       const html = Object.entries(e.metrics || {}).slice(0, 3)
         .map(([k,v]) => '<span style="color:var(--blue)">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))))
         .join(', ');
-      return '<td style="font-size:12px">' + (html || '<span style="color:var(--muted)">--</span>') + '</td>';
+      return '<td class="truncate-cell" style="font-size:13px">' + (html || '<span style="color:var(--muted)">--</span>') + '</td>';
     })(),
     changes: (function() {
       const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
-      if (!codeParams.length) return '<td>--</td>';
+      if (!codeParams.length) return '<td class="truncate-cell">--</td>';
       let added = 0, removed = 0;
       for (const k of codeParams) { const v = String(e.params[k] || ''); for (const p of v.split('; ')) { if (p.trim().startsWith('+')) added++; else if (p.trim().startsWith('-')) removed++; } }
       let s = '<span class="code-stat">' + codeParams.length + ' file' + (codeParams.length>1?'s':'');
       if (added || removed) s += ' <span class="lines-added">+' + added + '</span> <span class="lines-removed">-' + removed + '</span>';
-      return '<td>' + s + '</span></td>';
+      return '<td class="truncate-cell">' + s + '</span></td>';
     })(),
-    started: '<td>' + fmtDt(e.created_at) + '</td>',
+    started: '<td class="truncate-cell">' + fmtDt(e.created_at) + '</td>',
   };
 
   let tds = '';
@@ -1492,8 +1504,8 @@ async function refreshDetail(id) {
   ).join('');
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
-    <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:150px">
-    <input type="text" id="art-path-${exp.id}" placeholder="Path (e.g. outputs/model.pt)" style="width:250px">
+    <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:210px">
+    <input type="text" id="art-path-${exp.id}" placeholder="Path (e.g. outputs/model.pt)" style="width:280px">
     <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
   </div>`;
 
@@ -1679,7 +1691,7 @@ async function refreshDetail(id) {
     const detailTags = [...(exp.tags || [])];
     const { wrapper, input } = createTagInput(exp.id, detailTags, null, () => {
       loadExperiments().then(() => refreshDetail(exp.id));
-    }, { placeholder: '+ add tag', style: 'width:100px;font-size:12px;padding:2px 6px' });
+    }, { placeholder: '+ add tag', style: 'width:120px;font-size:13px;padding:4px 6px' });
     tagInputArea.appendChild(wrapper);
   }
 
@@ -1689,7 +1701,7 @@ async function refreshDetail(id) {
     const detailStudies = [...(exp.studies || [])];
     const { wrapper: sWrapper, input: sInput } = createStudyInput(exp.id, detailStudies, null, () => {
       loadExperiments().then(() => refreshDetail(exp.id));
-    }, { placeholder: '+ add study', style: 'width:110px;font-size:12px;padding:2px 6px' });
+    }, { placeholder: '+ add study', style: 'width:130px;font-size:13px;padding:4px 6px' });
     studyInputArea.appendChild(sWrapper);
   }
 
@@ -2529,10 +2541,11 @@ function startInlineStage(id, td) {
   if (!exp) return;
   const curStage = exp.stage != null ? exp.stage : '';
   const curName = exp.stage_name || '';
-  td.innerHTML = '<div style="display:flex;gap:4px;align-items:center" onclick="event.stopPropagation()">'
-    + '<input type="number" class="inline-edit-input" style="width:60px;font-size:12px;padding:2px 4px" placeholder="#" value="' + esc(String(curStage)) + '" id="stage-num-' + id + '">'
-    + '<input type="text" class="inline-edit-input" style="width:80px;font-size:12px;padding:2px 4px" placeholder="label" value="' + esc(curName) + '" id="stage-name-' + id + '">'
-    + '<button style="font-size:11px;padding:1px 6px;cursor:pointer" onclick="saveInlineStage(\'' + id + '\')">&#10003;</button>'
+  td.style.overflow = 'visible';
+  td.innerHTML = '<div style="display:flex;gap:4px;align-items:center;white-space:nowrap" onclick="event.stopPropagation()">'
+    + '<input type="number" class="inline-edit-input" style="width:50px;font-size:13px;padding:4px 6px" placeholder="#" value="' + esc(String(curStage)) + '" id="stage-num-' + id + '">'
+    + '<input type="text" class="inline-edit-input" style="width:70px;font-size:13px;padding:4px 6px" placeholder="label" value="' + esc(curName) + '" id="stage-name-' + id + '">'
+    + '<button style="font-size:12px;padding:3px 8px;cursor:pointer;border:1px solid var(--border);border-radius:3px;background:var(--code-bg)" onclick="saveInlineStage(\'' + id + '\')">&#10003;</button>'
     + '</div>';
   const numInput = document.getElementById('stage-num-' + id);
   if (numInput) { numInput.focus(); numInput.select(); }
@@ -2571,8 +2584,8 @@ function startDetailStageEdit(id, el) {
   const curStage = exp.stage != null ? exp.stage : '';
   const curName = exp.stage_name || '';
   el.innerHTML = '<div style="display:inline-flex;gap:4px;align-items:center">'
-    + '<input type="number" class="inline-edit-input" style="width:60px;font-size:13px;padding:2px 6px" placeholder="stage #" value="' + esc(String(curStage)) + '" id="detail-stage-num">'
-    + '<input type="text" class="inline-edit-input" style="width:100px;font-size:13px;padding:2px 6px" placeholder="label (optional)" value="' + esc(curName) + '" id="detail-stage-name">'
+    + '<input type="number" class="inline-edit-input" style="width:70px;font-size:13px;padding:4px 6px" placeholder="stage #" value="' + esc(String(curStage)) + '" id="detail-stage-num">'
+    + '<input type="text" class="inline-edit-input" style="width:130px;font-size:13px;padding:4px 6px" placeholder="label (optional)" value="' + esc(curName) + '" id="detail-stage-name">'
     + '<button style="font-size:12px;padding:2px 8px;cursor:pointer" onclick="saveDetailStage(\'' + id + '\')">Save</button>'
     + '<button style="font-size:12px;padding:2px 8px;cursor:pointer" onclick="refreshDetail(\'' + id + '\')">Cancel</button>'
     + '</div>';
