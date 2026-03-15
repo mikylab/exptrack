@@ -146,9 +146,14 @@ CSS_TABLE = """
   .table-actions-bar button.primary:hover { opacity: 0.85; }
   .table-actions-bar button.deselect-btn { background: var(--card-bg); color: var(--fg); border-color: var(--border); font-weight: 500; }
   .table-actions-bar button.deselect-btn:hover { background: var(--border); }
-  .table-actions-bar button.highlight-btn { color: var(--purple); border-color: var(--purple); }
-  .table-actions-bar button.highlight-btn:hover { background: var(--purple); color: #fff; }
-  .table-actions-bar button.highlight-btn.active { background: var(--purple); color: #fff; }
+  .highlight-toggle {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-left: 4px;
+  }
+  .highlight-toggle label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+  .highlight-toggle input[type="checkbox"] { accent-color: var(--purple); width: 14px; height: 14px; cursor: pointer; }
+  .highlight-legend { display: inline-flex; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); margin-left: 6px; }
+  .highlight-legend-item { display: inline-flex; align-items: center; gap: 3px; }
+  .highlight-legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
   .cb-col { width: 36px; text-align: center; }
   .cb-col input { cursor: pointer; width: 16px; height: 16px; accent-color: var(--blue); }
   .exp-card-cb { accent-color: var(--blue); width: 15px; height: 15px; }
@@ -381,13 +386,49 @@ CSS_COMPONENTS = """
     transition: background 0.15s, border-color 0.15s; margin-left: -1px;
   }
   .manage-tags-link:hover { background: var(--code-bg); border-color: var(--blue); color: var(--blue); text-decoration: none; }
-  .tag-manager-panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px 16px; margin: 8px 16px; font-size: 13px; }
-  .tag-manager-panel h4 { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-  .tag-manager-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
-  .tag-manager-row:last-child { border-bottom: none; }
+  .manage-drawer-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.3); z-index: 999;
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  }
+  .manage-drawer-overlay.visible { opacity: 1; pointer-events: auto; }
+  .manage-drawer {
+    position: fixed; top: 0; right: -360px; bottom: 0; width: 340px;
+    background: var(--card-bg); border-left: 1px solid var(--border);
+    box-shadow: -4px 0 20px rgba(0,0,0,0.12); z-index: 1000;
+    display: flex; flex-direction: column;
+    transition: right 0.25s ease;
+  }
+  .manage-drawer.visible { right: 0; }
+  .manage-drawer-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .manage-drawer-header h3 { font-size: 15px; font-weight: 600; margin: 0; }
+  .manage-drawer-close {
+    background: none; border: none; font-size: 20px; cursor: pointer;
+    color: var(--muted); padding: 4px 8px; border-radius: 3px; font-family: inherit;
+  }
+  .manage-drawer-close:hover { background: var(--code-bg); color: var(--fg); }
+  .manage-drawer-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
+  .manage-section { margin-bottom: 20px; }
+  .manage-section h4 {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--muted); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+  }
+  .tag-manager-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 8px; border-radius: 3px; margin-bottom: 2px;
+    transition: background 0.1s;
+  }
+  .tag-manager-row:hover { background: var(--code-bg); }
   .tag-manager-row .tm-name { color: var(--blue); }
   .tag-manager-row .tm-count { color: var(--muted); font-size: 12px; margin-left: 8px; }
-  .tag-manager-row .tm-delete { cursor: pointer; color: var(--muted); font-size: 14px; padding: 2px 6px; border-radius: 3px; }
+  .tag-manager-row .tm-delete {
+    cursor: pointer; color: var(--muted); font-size: 14px; padding: 2px 6px;
+    border-radius: 3px; opacity: 0; transition: opacity 0.1s;
+  }
+  .tag-manager-row:hover .tm-delete { opacity: 1; }
   .tag-manager-row .tm-delete:hover { color: var(--red); background: rgba(192,57,43,0.1); }
   .artifact-row { display: flex; align-items: center; gap: 8px; }
   .artifact-type-badge { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--code-bg); color: var(--muted); }
@@ -456,10 +497,14 @@ CSS_COMPONENTS = """
   .pinned-row:hover { background: rgba(184,134,11,0.1); }
   #exp-body tr { cursor: pointer; }
   #exp-body tr:hover { background: var(--code-bg); }
-  .tag-filter-bar { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; align-items: center; }
-  .tag-filter-bar .tag-chip { font-family: inherit; font-size: 11px; background: var(--code-bg); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); }
-  .tag-filter-bar .tag-chip:hover { background: var(--border); color: var(--fg); }
-  .tag-filter-bar .tag-chip.active { background: var(--fg); color: var(--bg); }
+  .tag-filter-bar { display: inline-flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .tag-filter-bar .tag-chip {
+    font-family: inherit; font-size: 12px; background: var(--card-bg); border: 1px solid var(--border);
+    padding: 4px 10px; cursor: pointer; border-radius: 3px; color: var(--muted);
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .tag-filter-bar .tag-chip:hover { background: var(--code-bg); border-color: var(--blue); color: var(--blue); }
+  .tag-filter-bar .tag-chip.active { background: var(--blue); color: #fff; border-color: var(--blue); }
   .tag-delete-x { position:absolute; right:3px; top:50%; transform:translateY(-50%); font-size:12px; opacity:0; cursor:pointer; color:var(--red,#e55); line-height:1; }
   .tag-chip:hover .tag-delete-x { opacity:0.7; }
   .tag-delete-x:hover { opacity:1 !important; }
@@ -561,8 +606,8 @@ CSS_IMAGES = """
   .filter-dropdown-wrap { display: inline-block; position: relative; }
   .filter-search-input {
     font-family: inherit; font-size: 12px; border: 1px solid var(--border);
-    padding: 3px 8px; border-radius: 3px; background: var(--card-bg); color: var(--fg);
-    width: 180px;
+    padding: 5px 10px; border-radius: 3px; background: var(--card-bg); color: var(--fg);
+    width: 160px; transition: border-color 0.15s;
   }
   .filter-search-input:focus { outline: none; border-color: var(--blue); }
   .filter-dropdown-list {

@@ -24,7 +24,7 @@ let clickTimer = null;
 let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
 let allKnownGroups = []; // {name, count}[]
-let highlightMode = false;
+let highlightMode = localStorage.getItem('exptrack-highlight') === 'true';
 let highlightColors = {}; // group -> color mapping
 
 // Dark mode
@@ -57,26 +57,26 @@ function renderFilterBar() {
   });
   if (allTags.size === 0 && allGroups.size === 0) { bar.innerHTML = ''; return; }
   const hasFilter = tagFilter || groupFilter;
-  let html = '<span style="font-size:11px;color:var(--muted);margin-right:4px">Filter:</span>';
-  // Active filter chip (always visible)
+  let html = '';
+  // Active filter chip
   if (tagFilter) {
     html += '<span class="tag-chip active" style="position:relative;padding-right:18px">';
     html += '<span onclick="tagFilter=\'\';rerender()">#' + esc(tagFilter) + '</span>';
     html += '<span class="tag-delete-x" style="opacity:1" onclick="event.stopPropagation();tagFilter=\'\';rerender()" title="Clear filter">&times;</span>';
     html += '</span>';
   } else if (groupFilter) {
-    html += '<span class="tag-chip group-chip active" style="position:relative;padding-right:18px">';
+    html += '<span class="tag-chip active" style="position:relative;padding-right:18px">';
     html += '<span onclick="groupFilter=\'\';rerender()">' + esc(groupFilter) + '</span>';
     html += '<span class="tag-delete-x" style="opacity:1" onclick="event.stopPropagation();groupFilter=\'\';rerender()" title="Clear filter">&times;</span>';
     html += '</span>';
   }
-  // Searchable dropdown trigger
-  html += '<div class="filter-dropdown-wrap" style="display:inline-block;position:relative">';
-  html += '<input type="text" class="filter-search-input" id="filter-search-input" placeholder="' + (hasFilter ? 'Change filter...' : 'Search tags/groups...') + '" oninput="renderFilterDropdown()" onfocus="renderFilterDropdown()" autocomplete="off">';
+  // Searchable dropdown
+  html += '<div class="filter-dropdown-wrap">';
+  html += '<input type="text" class="filter-search-input" id="filter-search-input" placeholder="' + (hasFilter ? 'Change filter...' : 'Filter by tag/group...') + '" oninput="renderFilterDropdown()" onfocus="renderFilterDropdown()" autocomplete="off">';
   html += '<div class="filter-dropdown-list" id="filter-dropdown-list" style="display:none"></div>';
   html += '</div>';
   if (hasFilter) {
-    html += ' <span class="tag-chip" style="cursor:pointer" onclick="tagFilter=\'\';groupFilter=\'\';rerender()">Clear</span>';
+    html += '<span class="tag-chip" style="cursor:pointer" onclick="tagFilter=\'\';groupFilter=\'\';rerender()">&times; Clear</span>';
   }
   bar.innerHTML = html;
   // Close dropdown on outside click
@@ -160,26 +160,36 @@ async function deleteTagGlobal(tag) {
   }
 }
 
-function toggleManagePanel() {
-  const panel = document.getElementById('manage-panel');
-  if (!panel) return;
-  if (panel.style.display === 'none') {
-    panel.style.display = 'block';
-    renderManagePanel();
+function toggleManageDrawer() {
+  const drawer = document.getElementById('manage-drawer');
+  const overlay = document.getElementById('manage-overlay');
+  if (!drawer) return;
+  const isOpen = drawer.classList.contains('visible');
+  if (isOpen) {
+    closeManageDrawer();
   } else {
-    panel.style.display = 'none';
+    drawer.classList.add('visible');
+    overlay.classList.add('visible');
+    renderManagePanel();
   }
 }
 
+function closeManageDrawer() {
+  const drawer = document.getElementById('manage-drawer');
+  const overlay = document.getElementById('manage-overlay');
+  if (drawer) drawer.classList.remove('visible');
+  if (overlay) overlay.classList.remove('visible');
+}
+
 function renderManagePanel() {
-  const panel = document.getElementById('manage-panel');
-  if (!panel || panel.style.display === 'none') return;
+  const panel = document.getElementById('manage-drawer-body');
+  if (!panel) return;
   let html = '';
 
   // Tags section
   html += '<div class="manage-section"><h4>Tags</h4>';
   if (!allKnownTags.length) {
-    html += '<div style="color:var(--muted);font-size:12px">No tags yet.</div>';
+    html += '<div style="color:var(--muted);font-size:12px;padding:4px 0">No tags yet.</div>';
   } else {
     for (const t of allKnownTags) {
       html += '<div class="tag-manager-row">'
@@ -193,7 +203,7 @@ function renderManagePanel() {
   // Groups section
   html += '<div class="manage-section"><h4>Groups</h4>';
   if (!allKnownGroups.length) {
-    html += '<div style="color:var(--muted);font-size:12px">No groups yet.</div>';
+    html += '<div style="color:var(--muted);font-size:12px;padding:4px 0">No groups yet.</div>';
   } else {
     for (const g of allKnownGroups) {
       html += '<div class="tag-manager-row">'
@@ -493,7 +503,6 @@ function renderSidebarActionsBar() {
   } else if (n === 1) {
     html += '<button class="primary" style="opacity:0.5" disabled title="Select 2 to compare">Compare (need 2)</button>';
   }
-  html += '<button class="export-btn" style="color:var(--purple);border-color:var(--purple)' + (highlightMode ? ';background:var(--purple);color:#fff' : '') + '" onclick="toggleHighlightMode()">\u2588 Highlight</button>';
   html += '<button class="export-btn" onclick="promptBulkAddToGroup()">Add to Group</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
@@ -547,19 +556,19 @@ function selectAllVisible() {
 
 function deselectAll() {
   selectedIds.clear();
-  highlightMode = false;
-  highlightColors = {};
   renderExpList();
   renderExperiments();
 }
 
-function toggleHighlightMode() {
-  highlightMode = !highlightMode;
+function toggleHighlightMode(checked) {
+  highlightMode = checked;
+  localStorage.setItem('exptrack-highlight', highlightMode ? 'true' : 'false');
   if (highlightMode) {
     buildHighlightColors();
   } else {
     highlightColors = {};
   }
+  renderHighlightLegend();
   renderExpList();
   renderExperiments();
 }
@@ -576,30 +585,44 @@ function buildHighlightColors() {
   ];
   highlightColors = {};
   const groups = new Set();
-  const selExps = allExperiments.filter(e => selectedIds.has(e.id));
-  for (const e of selExps) {
-    let grp = '';
-    if (groupBy === 'git_commit') grp = e.git_commit ? e.git_commit.slice(0, 7) : 'no commit';
-    else if (groupBy === 'git_branch') grp = e.git_branch || 'no branch';
-    else if (groupBy === 'status') grp = e.status || 'unknown';
-    else grp = (e.groups && e.groups.length) ? e.groups[0] : (e.tags && e.tags.length ? e.tags[0] : 'ungrouped');
-    groups.add(grp);
+  for (const e of allExperiments) {
+    if (e.groups && e.groups.length) {
+      e.groups.forEach(g => groups.add(g));
+    }
   }
   let i = 0;
-  for (const g of groups) {
+  for (const g of [...groups].sort()) {
     highlightColors[g] = { bg: palette[i % palette.length], border: borderPalette[i % borderPalette.length] };
     i++;
   }
 }
 
 function getHighlightGroup(e) {
-  if (!highlightMode || !selectedIds.has(e.id)) return null;
-  let grp = '';
-  if (groupBy === 'git_commit') grp = e.git_commit ? e.git_commit.slice(0, 7) : 'no commit';
-  else if (groupBy === 'git_branch') grp = e.git_branch || 'no branch';
-  else if (groupBy === 'status') grp = e.status || 'unknown';
-  else grp = (e.groups && e.groups.length) ? e.groups[0] : (e.tags && e.tags.length ? e.tags[0] : 'ungrouped');
-  return highlightColors[grp] || null;
+  if (!highlightMode) return null;
+  if (e.groups && e.groups.length) {
+    const grp = e.groups[0];
+    return highlightColors[grp] || null;
+  }
+  return null;
+}
+
+function renderHighlightLegend() {
+  const el = document.getElementById('highlight-legend');
+  if (!el) return;
+  if (!highlightMode || Object.keys(highlightColors).length === 0) {
+    el.innerHTML = '';
+    return;
+  }
+  let html = '';
+  for (const [grp, col] of Object.entries(highlightColors)) {
+    html += '<span class="highlight-legend-item"><span class="highlight-legend-swatch" style="background:' + col.border + '"></span>' + esc(grp) + '</span>';
+  }
+  el.innerHTML = html;
+}
+
+function syncHighlightCheckbox() {
+  const cb = document.getElementById('highlight-toggle');
+  if (cb) cb.checked = highlightMode;
 }
 """
 
@@ -646,18 +669,10 @@ function renderTableActionsBar() {
   if (n === 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare</button>';
   }
-  html += '<button class="highlight-btn' + (highlightMode ? ' active' : '') + '" onclick="toggleHighlightMode()" title="Highlight selected by group">\u2588 Highlight</button>';
   html += '<button onclick="promptBulkAddToGroup()">Add to Group</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
-  if (highlightMode && Object.keys(highlightColors).length > 0) {
-    html += '<span style="margin-left:8px;display:inline-flex;gap:6px;align-items:center;font-size:11px;color:var(--muted)">';
-    for (const [grp, col] of Object.entries(highlightColors)) {
-      html += '<span style="display:inline-flex;align-items:center;gap:3px"><span style="width:10px;height:10px;border-radius:2px;background:' + col.border + ';display:inline-block"></span>' + esc(grp) + '</span>';
-    }
-    html += '</span>';
-  }
   bar.innerHTML = html;
 }
 
@@ -909,6 +924,7 @@ async function loadStats() {
 async function loadExperiments() {
   const url = currentFilter ? '/api/experiments?status=' + currentFilter : '/api/experiments';
   allExperiments = await api(url);
+  if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
   renderExperiments();
   renderExpList();
 }
@@ -2313,11 +2329,13 @@ JS_INIT = r"""
 
 // Init — sidebar starts collapsed (opens when entering detail view)
 document.getElementById('exp-sidebar').classList.add('collapsed');
+syncHighlightCheckbox();
 loadTimezoneConfig();
 loadAllTags();
 loadAllGroups();
 loadStats();
 loadExperiments().then(() => {
+  if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
   if (allExperiments.length === 0) owlSpeak('empty');
   else owlSpeak('welcome');
 });

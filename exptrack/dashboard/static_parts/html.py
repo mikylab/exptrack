@@ -120,18 +120,20 @@ HTML_BODY = r"""</style>
         <input type="text" id="main-search" class="main-search-input" placeholder="Search experiments..." oninput="searchQuery=this.value;renderExperiments();renderExpList()">
         <div class="toolbar-btn-group">
           <button class="toolbar-btn compare-main-btn" onclick="showCompareView()" title="Compare two experiments">&#x2194; Compare</button>
-          <button class="toolbar-btn" onclick="document.getElementById('filter-search-input')?.focus()" title="Filter by tags or groups">&#x1F50D; Filters</button>
-          <button class="toolbar-btn" onclick="toggleManagePanel()" title="Manage tags &amp; groups">&#x2699; Manage</button>
+          <button class="toolbar-btn" onclick="toggleManageDrawer()" title="Manage tags &amp; groups">&#x2699; Manage</button>
         </div>
-        <div class="tag-filter-bar" id="filter-bar" style="display:inline"></div>
+        <div class="tag-filter-bar" id="filter-bar"></div>
       </div>
-      <div id="manage-panel" class="tag-manager-panel" style="display:none"></div>
       <div class="group-bar" id="group-bar">
         <span>Group by:</span>
         <button data-group="git_commit" onclick="setGroup('git_commit')" class="active">Git Commit</button>
         <button data-group="git_branch" onclick="setGroup('git_branch')">Branch</button>
         <button data-group="status" onclick="setGroup('status')">Status</button>
         <button data-group="" onclick="setGroup('')">None</button>
+        <span style="margin-left:12px;border-left:1px solid var(--border);padding-left:12px" class="highlight-toggle">
+          <label><input type="checkbox" id="highlight-toggle" onchange="toggleHighlightMode(this.checked)"> Highlight by group</label>
+        </span>
+        <span class="highlight-legend" id="highlight-legend"></span>
       </div>
       <div id="table-actions-bar" class="table-actions-bar" style="display:none"></div>
       <table id="exp-table"><thead><tr>
@@ -165,6 +167,15 @@ HTML_BODY = r"""</style>
       <div id="compare-result"></div>
     </div>
   </div>
+</div>
+
+<div class="manage-drawer-overlay" id="manage-overlay" onclick="closeManageDrawer()"></div>
+<div class="manage-drawer" id="manage-drawer">
+  <div class="manage-drawer-header">
+    <h3>Manage Tags &amp; Groups</h3>
+    <button class="manage-drawer-close" onclick="closeManageDrawer()">&times;</button>
+  </div>
+  <div class="manage-drawer-body" id="manage-drawer-body"></div>
 </div>
 
 <script>
