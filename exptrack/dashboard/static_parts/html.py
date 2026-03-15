@@ -137,7 +137,7 @@ HTML_BODY = r"""</style>
       </div>
       <div id="table-actions-bar" class="table-actions-bar" style="display:none"></div>
       <div class="col-settings-bar"><button class="col-settings-btn" onclick="toggleColumnSettings()" title="Show/hide columns">&#x2699; Columns</button><div class="col-settings-panel" id="col-settings-panel"></div></div>
-      <table id="exp-table"><thead id="exp-thead"></thead><tbody id="exp-body"></tbody></table>
+      <div class="table-scroll-wrap"><table id="exp-table"><thead id="exp-thead"></thead><tbody id="exp-body"></tbody></table></div>
     </div>
 
     <!-- Detail state: shown when an experiment is selected -->

@@ -147,11 +147,11 @@ CSS_TABLE = """
   .table-actions-bar button.deselect-btn { background: var(--card-bg); color: var(--fg); border-color: var(--border); font-weight: 500; }
   .table-actions-bar button.deselect-btn:hover { background: var(--border); }
   .highlight-toggle {
-    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-left: 4px;
+    display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin-left: 4px;
   }
-  .highlight-toggle label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
-  .highlight-toggle input[type="checkbox"] { accent-color: var(--purple); width: 14px; height: 14px; cursor: pointer; }
-  .highlight-legend { display: inline-flex; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); margin-left: 6px; }
+  .highlight-toggle label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+  .highlight-toggle input[type="checkbox"] { accent-color: var(--purple); width: 16px; height: 16px; cursor: pointer; }
+  .highlight-legend { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin-left: 6px; }
   .highlight-legend-item { display: inline-flex; align-items: center; gap: 3px; }
   .highlight-legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
   .cb-col { width: 36px; text-align: center; }
@@ -285,11 +285,11 @@ CSS_TIMELINE = """
   .tl-var-arrow { color: var(--muted); }
   .tl-context { font-size: 11px; color: var(--muted); margin-top: 3px; }
   .tl-filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
-  .tl-filters button { font-family: inherit; font-size: 12px; background: var(--card-bg); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; border-radius: 3px; }
+  .tl-filters button { font-family: inherit; font-size: 13px; background: var(--card-bg); border: 1px solid var(--border); padding: 5px 12px; cursor: pointer; border-radius: 4px; }
   .tl-filters button:hover { background: var(--code-bg); }
   .tl-filters button.active { background: var(--fg); color: var(--bg); }
   .tl-compare-bar { background: var(--code-bg); padding: 10px 14px; margin-bottom: 12px; border-radius: 4px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; }
-  .tl-compare-bar button { font-family: inherit; font-size: 12px; background: var(--blue); color: #fff; border: none; padding: 4px 12px; cursor: pointer; border-radius: 3px; }
+  .tl-compare-bar button { font-family: inherit; font-size: 13px; background: var(--blue); color: #fff; border: none; padding: 6px 14px; cursor: pointer; border-radius: 4px; }
   .tl-seq-select { cursor: pointer; }
   .tl-seq-select:hover { background: rgba(44,90,160,0.1); }
   .tl-seq-select.selected { background: rgba(44,90,160,0.15); outline: 2px solid var(--blue); }
@@ -297,7 +297,7 @@ CSS_TIMELINE = """
   .within-compare h3 { font-size: 14px; margin-bottom: 12px; }
   .source-view { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; font-size: 13px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; margin-top: 6px; }
   .source-view .line-num { color: var(--muted); display: inline-block; min-width: 30px; text-align: right; margin-right: 12px; user-select: none; }
-  .view-source-btn { font-family: inherit; font-size: 11px; padding: 1px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; margin-left: 6px; color: var(--blue); }
+  .view-source-btn { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; margin-left: 6px; color: var(--blue); }
   .view-source-btn:hover { background: var(--code-bg); }
   .tl-type-label { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-right: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
   .tl-type-label.tl-type-cell_exec { background: rgba(44,90,160,0.12); color: var(--tl-cell); }
@@ -309,11 +309,11 @@ CSS_TIMELINE = """
 
 # Compare view
 CSS_COMPARE = """
-  .compare-main-btn { font-family: inherit; font-size: 12px; padding: 6px 14px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; color: var(--fg); white-space: nowrap; transition: background 0.15s, border-color 0.15s; }
+  .compare-main-btn { font-family: inherit; font-size: 13px; padding: 7px 16px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; color: var(--fg); white-space: nowrap; transition: background 0.15s, border-color 0.15s; border-radius: 4px; }
   .compare-main-btn:hover { background: var(--code-bg); border-color: var(--blue); color: var(--blue); }
   .compare-header { margin-bottom: 12px; }
   .compare-header h3 { font-size: 18px; }
-  .back-link { font-family: inherit; font-size: 13px; background: none; border: none; color: var(--blue); cursor: pointer; padding: 0; }
+  .back-link { font-family: inherit; font-size: 14px; background: none; border: none; color: var(--blue); cursor: pointer; padding: 2px 0; }
   .back-link:hover { text-decoration: underline; }
   .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
   .compare-input { display: flex; gap: 10px; margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap; }
@@ -321,31 +321,31 @@ CSS_COMPARE = """
   .compare-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
   .compare-input select, .compare-input input {
     font-family: inherit; font-size: 14px;
-    border: 1px solid var(--border); padding: 6px 12px; min-width: 260px;
-    background: var(--card-bg); border-radius: 3px;
+    border: 1px solid var(--border); padding: 8px 14px; min-width: 260px;
+    background: var(--card-bg); border-radius: 4px;
   }
   .compare-input button {
     font-family: inherit; font-size: 14px;
     background: var(--fg); color: var(--bg); border: none;
-    padding: 6px 16px; cursor: pointer; border-radius: 3px;
+    padding: 8px 18px; cursor: pointer; border-radius: 4px;
   }
   .compare-input button.primary { background: var(--blue); color: #fff; }
   .compare-input .vs-label { font-weight: 600; color: var(--muted); font-size: 16px; padding-bottom: 6px; }
   .differs { color: var(--yellow); font-weight: 600; }
   .diff-added { color: var(--green, #3fb950); background: rgba(63,185,80,0.1); }
   .diff-removed { color: var(--red, #f85149); background: rgba(248,81,73,0.1); }
-  .only-differs-toggle { font-family: inherit; font-size: 12px; margin-left: 12px; cursor: pointer; }
+  .only-differs-toggle { font-family: inherit; font-size: 13px; margin-left: 12px; cursor: pointer; }
 """
 
 # UI components: tabs, help, export, tags, inline editing, artifacts, owl
 CSS_COMPONENTS = """
   .help-btn {
-    font-family: inherit; font-size: 12px; background: var(--code-bg);
-    border: 1px solid var(--border); padding: 4px 10px; cursor: pointer;
+    font-family: inherit; font-size: 13px; background: var(--code-bg);
+    border: 1px solid var(--border); padding: 6px 12px; cursor: pointer;
     border-radius: 4px; color: var(--muted);
   }
   .help-btn:hover { background: var(--border); color: var(--fg); }
-  .theme-btn { font-family: inherit; font-size: 16px; background: var(--code-bg); border: 1px solid var(--border); padding: 4px 10px; cursor: pointer; border-radius: 4px; color: var(--muted); line-height: 1; }
+  .theme-btn { font-family: inherit; font-size: 18px; background: var(--code-bg); border: 1px solid var(--border); padding: 5px 12px; cursor: pointer; border-radius: 4px; color: var(--muted); line-height: 1; }
   .theme-btn:hover { background: var(--border); color: var(--fg); }
   .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border); }
   .tab {
@@ -369,7 +369,7 @@ CSS_COMPONENTS = """
   }
   .inline-form button:hover { background: var(--border); }
   .notes-display { white-space: pre-wrap; background: var(--code-bg); padding: 12px; border-radius: 4px; margin: 4px 0; font-size: 14px; position: relative; }
-  .notes-edit-btn { position: absolute; top: 4px; right: 4px; font-size: 11px; cursor: pointer; color: var(--muted); background: var(--card-bg); border: 1px solid var(--border); padding: 1px 6px; border-radius: 3px; }
+  .notes-edit-btn { position: absolute; top: 6px; right: 6px; font-size: 12px; cursor: pointer; color: var(--muted); background: var(--card-bg); border: 1px solid var(--border); padding: 3px 8px; border-radius: 3px; }
   .notes-edit-btn:hover { color: var(--blue); border-color: var(--blue); }
   .notes-edit-area { width: 100%; font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 10px; border-radius: 4px; background: var(--card-bg); min-height: 90px; resize: vertical; }
   .tag-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -380,7 +380,7 @@ CSS_COMPONENTS = """
   .tag-removable .tag-edit { cursor: pointer; color: var(--muted); font-size: 11px; }
   .tag-removable .tag-edit:hover { color: var(--blue); }
   .manage-tags-link {
-    font-family: inherit; font-size: 12px; padding: 6px 14px;
+    font-family: inherit; font-size: 13px; padding: 7px 16px;
     border: 1px solid var(--border); background: var(--card-bg); cursor: pointer;
     color: var(--fg); white-space: nowrap; border-radius: 0 4px 4px 0;
     transition: background 0.15s, border-color 0.15s; margin-left: -1px;
@@ -439,10 +439,10 @@ CSS_COMPONENTS = """
   .artifact-add-form input { font-family: inherit; font-size: 14px; border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px; background: var(--card-bg); }
   .artifact-add-form button { font-family: inherit; font-size: 13px; padding: 6px 14px; border: 1px solid var(--border); background: var(--code-bg); cursor: pointer; border-radius: 4px; }
   .artifact-actions { display: flex; gap: 4px; }
-  .artifact-actions button { font-family: inherit; font-size: 11px; padding: 1px 6px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .artifact-actions button { font-family: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; color: var(--muted); }
   .artifact-actions button:hover { color: var(--fg); border-color: var(--fg); }
   .artifact-actions button.art-del:hover { color: var(--red); border-color: var(--red); }
-  .home-btn { font-family: inherit; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border); padding: 5px 12px; cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .home-btn { font-family: inherit; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border); padding: 6px 14px; cursor: pointer; border-radius: 4px; color: var(--muted); }
   .home-btn:hover { background: var(--border); color: var(--fg); }
   .help-panel { display: none; background: var(--card-bg); border: 1px solid var(--border); padding: 24px; border-radius: 4px; margin-bottom: 20px; }
   .help-panel.visible { display: block; }
@@ -471,7 +471,7 @@ CSS_COMPONENTS = """
   .tooltip:hover .tooltip-text { visibility: visible; }
   .bulk-bar { display: flex; gap: 8px; align-items: center; padding: 8px 16px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 12px; }
   .bulk-bar .bulk-count { font-weight: 600; }
-  .bulk-bar button { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 12px; cursor: pointer; border-radius: 3px; background: var(--card-bg); }
+  .bulk-bar button { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 6px 14px; cursor: pointer; border-radius: 4px; background: var(--card-bg); }
   .bulk-bar button.danger { color: var(--red); border-color: var(--red); }
   .bulk-bar button.danger:hover { background: var(--red); color: #fff; }
   .section-toggle {
@@ -496,8 +496,8 @@ CSS_COMPONENTS = """
   .col-resizer:hover, .col-resizer:active { background: var(--blue); opacity: 0.4; }
   .col-settings-bar { display: flex; justify-content: flex-end; margin-bottom: 4px; position: relative; }
   .col-settings-btn {
-    font-family: inherit; font-size: 11px; background: var(--code-bg); border: 1px solid var(--border);
-    padding: 3px 10px; cursor: pointer; border-radius: 3px; color: var(--muted);
+    font-family: inherit; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border);
+    padding: 6px 12px; cursor: pointer; border-radius: 4px; color: var(--muted);
   }
   .col-settings-btn:hover { color: var(--fg); border-color: var(--fg); }
   .col-settings-panel {
@@ -506,12 +506,20 @@ CSS_COMPONENTS = """
     padding: 8px 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 160px;
   }
   .col-settings-list { display: flex; flex-direction: column; gap: 4px; }
-  .col-setting-item { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; padding: 2px 0; }
+  .col-setting-item { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; padding: 4px 0; }
   .col-setting-item:hover { color: var(--blue); }
   .col-setting-item input { cursor: pointer; accent-color: var(--blue); }
-  #exp-table { table-layout: fixed; width: 100%; }
+  .col-reset-btn {
+    font-family: inherit; font-size: 12px; width: 100%; padding: 5px 10px;
+    border: 1px solid var(--border); background: var(--code-bg); cursor: pointer;
+    border-radius: 3px; color: var(--muted);
+  }
+  .col-reset-btn:hover { background: var(--border); color: var(--fg); }
+  .table-scroll-wrap { overflow-x: auto; overflow-y: visible; }
+  #exp-table { table-layout: fixed; min-width: 100%; }
   #exp-table th { position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 2px 6px; border-radius: 3px; background: var(--card-bg); width: 100%; max-width: 300px; }
+  #exp-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+  .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 5px 8px; border-radius: 4px; background: var(--card-bg); width: 100%; max-width: 300px; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   .tags-cell .tag { font-size: 12px; padding: 2px 8px; }
   .pin-btn { cursor: pointer; font-size: 14px; background: none; border: none; color: var(--muted); padding: 0 2px; }
@@ -533,7 +541,7 @@ CSS_COMPONENTS = """
   .tag-chip:hover .tag-delete-x { opacity:0.7; }
   .tag-delete-x:hover { opacity:1 !important; }
   .group-bar { display: flex; gap: 4px; align-items: center; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
-  .group-bar button { font-family: inherit; font-size: 11px; background: var(--code-bg); border: 1px solid var(--border); padding: 2px 8px; cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .group-bar button { font-family: inherit; font-size: 12px; background: var(--code-bg); border: 1px solid var(--border); padding: 4px 10px; cursor: pointer; border-radius: 3px; color: var(--muted); }
   .group-bar button:hover { background: var(--border); color: var(--fg); }
   .group-bar button.active { background: var(--fg); color: var(--bg); }
   .group-header td { background: var(--code-bg); font-size: 12px; font-weight: 600; padding: 8px 16px; cursor: pointer; user-select: none; border-bottom: 2px solid var(--border); }
@@ -579,7 +587,7 @@ CSS_COMPONENTS = """
   .owl-speech::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: var(--border); }
   .owl-container { position: relative; display: inline-block; }
   .tz-setting { display: inline-flex; align-items: center; gap: 6px; }
-  .tz-setting select { font-family: inherit; font-size: 11px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 4px; background: var(--code-bg); color: var(--muted); cursor: pointer; }
+  .tz-setting select { font-family: inherit; font-size: 12px; border: 1px solid var(--border); padding: 5px 10px; border-radius: 4px; background: var(--code-bg); color: var(--muted); cursor: pointer; }
   .tz-setting select:hover { background: var(--border); color: var(--fg); }
 """
 
@@ -629,9 +637,9 @@ CSS_IMAGES = """
   .study-chip { background: rgba(44,90,160,0.1); color: var(--blue); }
   .filter-dropdown-wrap { display: inline-block; position: relative; }
   .filter-search-input {
-    font-family: inherit; font-size: 12px; border: 1px solid var(--border);
-    padding: 5px 10px; border-radius: 3px; background: var(--card-bg); color: var(--fg);
-    width: 160px; transition: border-color 0.15s;
+    font-family: inherit; font-size: 13px; border: 1px solid var(--border);
+    padding: 6px 12px; border-radius: 4px; background: var(--card-bg); color: var(--fg);
+    width: 170px; transition: border-color 0.15s;
   }
   .filter-search-input:focus { outline: none; border-color: var(--blue); }
   .filter-dropdown-list {
@@ -640,7 +648,7 @@ CSS_IMAGES = """
     max-height: 240px; overflow-y: auto; min-width: 220px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   }
   .filter-dropdown-item {
-    padding: 5px 10px; cursor: pointer; font-size: 12px; display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 12px; cursor: pointer; font-size: 13px; display: flex; justify-content: space-between; align-items: center;
   }
   .filter-dropdown-item:hover, .filter-dropdown-item.active { background: var(--code-bg); color: var(--blue); }
   .manage-section { margin-bottom: 12px; }

@@ -66,6 +66,7 @@ function toggleColumnSettings() {
     html += '<label class="col-setting-item"><input type="checkbox" ' + checked + ' onchange="toggleColumn(\'' + col.id + '\',this.checked)"> ' + label + '</label>';
   }
   html += '</div>';
+  html += '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px"><button class="col-reset-btn" onclick="resetColumnDefaults()">Reset to defaults</button></div>';
   panel.innerHTML = html;
   panel.style.display = 'block';
   // close on outside click
@@ -73,6 +74,15 @@ function toggleColumnSettings() {
     function closePanel(ev) { if (!panel.contains(ev.target) && !ev.target.closest('.col-settings-btn')) { panel.style.display = 'none'; document.removeEventListener('click', closePanel); } }
     document.addEventListener('click', closePanel);
   }, 0);
+}
+
+function resetColumnDefaults() {
+  visibleCols = ALL_COLUMNS.filter(c => c.defaultOn).map(c => c.id);
+  colWidths = {};
+  saveColPrefs();
+  renderTableHeader();
+  renderExperiments();
+  document.getElementById('col-settings-panel').style.display = 'none';
 }
 
 function toggleColumn(colId, on) {
@@ -142,6 +152,8 @@ function endColResize(ev) {
   document.removeEventListener('mouseup', endColResize);
   document.body.style.cursor = '';
   document.body.style.userSelect = '';
+  renderTableHeader();
+  renderExperiments();
 }
 
 // Dark mode
@@ -1081,7 +1093,7 @@ function renderExpRow(e) {
       const html = Object.entries(e.metrics || {}).slice(0, 3)
         .map(([k,v]) => '<span style="color:var(--blue)">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))))
         .join(', ');
-      return '<td style="font-size:12px">' + (html || '<span style="color:var(--muted)">--</span>') + '</td>';
+      return '<td style="font-size:13px">' + (html || '<span style="color:var(--muted)">--</span>') + '</td>';
     })(),
     changes: (function() {
       const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
