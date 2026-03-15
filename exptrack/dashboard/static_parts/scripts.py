@@ -1504,8 +1504,8 @@ async function refreshDetail(id) {
   ).join('');
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
-    <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:150px">
-    <input type="text" id="art-path-${exp.id}" placeholder="Path (e.g. outputs/model.pt)" style="width:250px">
+    <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:190px">
+    <input type="text" id="art-path-${exp.id}" placeholder="Path (e.g. outputs/model.pt)" style="width:280px">
     <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
   </div>`;
 
@@ -1691,7 +1691,7 @@ async function refreshDetail(id) {
     const detailTags = [...(exp.tags || [])];
     const { wrapper, input } = createTagInput(exp.id, detailTags, null, () => {
       loadExperiments().then(() => refreshDetail(exp.id));
-    }, { placeholder: '+ add tag', style: 'width:100px;font-size:12px;padding:2px 6px' });
+    }, { placeholder: '+ add tag', style: 'width:120px;font-size:13px;padding:4px 6px' });
     tagInputArea.appendChild(wrapper);
   }
 
@@ -1701,7 +1701,7 @@ async function refreshDetail(id) {
     const detailStudies = [...(exp.studies || [])];
     const { wrapper: sWrapper, input: sInput } = createStudyInput(exp.id, detailStudies, null, () => {
       loadExperiments().then(() => refreshDetail(exp.id));
-    }, { placeholder: '+ add study', style: 'width:110px;font-size:12px;padding:2px 6px' });
+    }, { placeholder: '+ add study', style: 'width:130px;font-size:13px;padding:4px 6px' });
     studyInputArea.appendChild(sWrapper);
   }
 
@@ -2584,8 +2584,8 @@ function startDetailStageEdit(id, el) {
   const curStage = exp.stage != null ? exp.stage : '';
   const curName = exp.stage_name || '';
   el.innerHTML = '<div style="display:inline-flex;gap:4px;align-items:center">'
-    + '<input type="number" class="inline-edit-input" style="width:60px;font-size:13px;padding:2px 6px" placeholder="stage #" value="' + esc(String(curStage)) + '" id="detail-stage-num">'
-    + '<input type="text" class="inline-edit-input" style="width:100px;font-size:13px;padding:2px 6px" placeholder="label (optional)" value="' + esc(curName) + '" id="detail-stage-name">'
+    + '<input type="number" class="inline-edit-input" style="width:70px;font-size:13px;padding:4px 6px" placeholder="stage #" value="' + esc(String(curStage)) + '" id="detail-stage-num">'
+    + '<input type="text" class="inline-edit-input" style="width:130px;font-size:13px;padding:4px 6px" placeholder="label (optional)" value="' + esc(curName) + '" id="detail-stage-name">'
     + '<button style="font-size:12px;padding:2px 8px;cursor:pointer" onclick="saveDetailStage(\'' + id + '\')">Save</button>'
     + '<button style="font-size:12px;padding:2px 8px;cursor:pointer" onclick="refreshDetail(\'' + id + '\')">Cancel</button>'
     + '</div>';
