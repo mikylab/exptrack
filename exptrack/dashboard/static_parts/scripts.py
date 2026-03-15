@@ -489,7 +489,14 @@ function renderSidebarActionsBar() {
     html += '<button class="primary" style="opacity:0.5" disabled title="Select 2 to compare">Compare (need 2)</button>';
   }
   html += '<button class="export-btn" onclick="promptBulkAddToGroup()">Add to Group</button>';
-  html += '<button class="export-btn" onclick="sidebarExport()">Export (' + n + ')</button>';
+  html += '<span class="export-dropdown" style="position:relative;display:inline-block">';
+  html += '<button class="export-btn" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Export (' + n + ') \u25BE</button>';
+  html += '<div style="display:none;position:absolute;bottom:100%;left:0;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px;z-index:100;min-width:100px">';
+  html += '<button class="action-btn" style="display:block;width:100%;text-align:left;margin:2px 0" onclick="sidebarExportFmt(\'json\')">JSON</button>';
+  html += '<button class="action-btn" style="display:block;width:100%;text-align:left;margin:2px 0" onclick="sidebarExportFmt(\'csv\')">CSV</button>';
+  html += '<button class="action-btn" style="display:block;width:100%;text-align:left;margin:2px 0" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
+  html += '<button class="action-btn" style="display:block;width:100%;text-align:left;margin:2px 0" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
+  html += '</div></span>';
   html += '<button class="export-btn" onclick="sidebarCopyText()">Copy as Text</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '<button class="export-btn" onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear Selection</button>';
@@ -578,13 +585,21 @@ async function sidebarBulkDelete() {
   } else alert(d.error || 'Failed');
 }
 
-async function sidebarExport() {
+async function sidebarExportFmt(fmt) {
   owlSpeak('export');
   const ids = [...selectedIds];
-  const data = await postApi('/api/bulk-export', {ids, format: 'json'});
-  const text = JSON.stringify(data, null, 2);
+  const data = await postApi('/api/bulk-export', {ids, format: fmt});
+  let text;
+  if (data.content) {
+    text = data.content;
+  } else if (Array.isArray(data)) {
+    text = JSON.stringify(data, null, 2);
+  } else {
+    text = JSON.stringify(data, null, 2);
+  }
   await navigator.clipboard.writeText(text);
-  alert('Exported ' + data.length + ' experiments to clipboard (JSON)');
+  const label = fmt.toUpperCase();
+  owlSay('Exported ' + ids.length + ' experiment(s) as ' + label + ' to clipboard!');
 }
 
 function _formatExpPlainText(d) {
@@ -1467,6 +1482,8 @@ async function exportExp(id) {
   container.innerHTML = '<div class="export-panel"><div class="export-actions">' +
     '<button class="action-btn" onclick="doExport(\'' + id + '\',\'json\')">JSON</button>' +
     '<button class="action-btn" onclick="doExport(\'' + id + '\',\'markdown\')">Markdown</button>' +
+    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'csv\')">CSV</button>' +
+    '<button class="action-btn" onclick="doExport(\'' + id + '\',\'tsv\')">TSV</button>' +
     '<button class="action-btn" onclick="doExport(\'' + id + '\',\'plain\')">Plain Text</button>' +
     '<button class="action-btn" onclick="copyExport()">Copy to Clipboard</button>' +
     '<button class="action-btn" onclick="this.closest(\'.export-panel\').remove()">Close</button>' +
@@ -1474,6 +1491,12 @@ async function exportExp(id) {
 }
 
 async function doExport(id, fmt) {
+  if (fmt === 'csv' || fmt === 'tsv') {
+    const data = await postApi('/api/bulk-export', {ids: [id], format: fmt});
+    const pre = document.getElementById('export-content');
+    pre.textContent = data.content || JSON.stringify(data, null, 2);
+    return;
+  }
   const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt));
   const pre = document.getElementById('export-content');
   if (fmt === 'markdown') {
