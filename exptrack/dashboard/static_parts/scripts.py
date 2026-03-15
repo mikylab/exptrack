@@ -24,6 +24,8 @@ let clickTimer = null;
 let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
 let allKnownGroups = []; // {name, count}[]
+let highlightMode = localStorage.getItem('exptrack-highlight') === 'true';
+let highlightColors = {}; // group -> color mapping
 
 // Dark mode
 function toggleTheme() {
@@ -55,26 +57,26 @@ function renderFilterBar() {
   });
   if (allTags.size === 0 && allGroups.size === 0) { bar.innerHTML = ''; return; }
   const hasFilter = tagFilter || groupFilter;
-  let html = '<span style="font-size:11px;color:var(--muted);margin-right:4px">Filter:</span>';
-  // Active filter chip (always visible)
+  let html = '';
+  // Active filter chip
   if (tagFilter) {
     html += '<span class="tag-chip active" style="position:relative;padding-right:18px">';
     html += '<span onclick="tagFilter=\'\';rerender()">#' + esc(tagFilter) + '</span>';
     html += '<span class="tag-delete-x" style="opacity:1" onclick="event.stopPropagation();tagFilter=\'\';rerender()" title="Clear filter">&times;</span>';
     html += '</span>';
   } else if (groupFilter) {
-    html += '<span class="tag-chip group-chip active" style="position:relative;padding-right:18px">';
+    html += '<span class="tag-chip active" style="position:relative;padding-right:18px">';
     html += '<span onclick="groupFilter=\'\';rerender()">' + esc(groupFilter) + '</span>';
     html += '<span class="tag-delete-x" style="opacity:1" onclick="event.stopPropagation();groupFilter=\'\';rerender()" title="Clear filter">&times;</span>';
     html += '</span>';
   }
-  // Searchable dropdown trigger
-  html += '<div class="filter-dropdown-wrap" style="display:inline-block;position:relative">';
-  html += '<input type="text" class="filter-search-input" id="filter-search-input" placeholder="' + (hasFilter ? 'Change filter...' : 'Search tags/groups...') + '" oninput="renderFilterDropdown()" onfocus="renderFilterDropdown()" autocomplete="off">';
+  // Searchable dropdown
+  html += '<div class="filter-dropdown-wrap">';
+  html += '<input type="text" class="filter-search-input" id="filter-search-input" placeholder="' + (hasFilter ? 'Change filter...' : 'Filter by tag/group...') + '" oninput="renderFilterDropdown()" onfocus="renderFilterDropdown()" autocomplete="off">';
   html += '<div class="filter-dropdown-list" id="filter-dropdown-list" style="display:none"></div>';
   html += '</div>';
   if (hasFilter) {
-    html += ' <span class="tag-chip" style="cursor:pointer" onclick="tagFilter=\'\';groupFilter=\'\';rerender()">Clear</span>';
+    html += '<span class="tag-chip" style="cursor:pointer" onclick="tagFilter=\'\';groupFilter=\'\';rerender()">&times; Clear</span>';
   }
   bar.innerHTML = html;
   // Close dropdown on outside click
@@ -158,26 +160,36 @@ async function deleteTagGlobal(tag) {
   }
 }
 
-function toggleManagePanel() {
-  const panel = document.getElementById('manage-panel');
-  if (!panel) return;
-  if (panel.style.display === 'none') {
-    panel.style.display = 'block';
-    renderManagePanel();
+function toggleManageDrawer() {
+  const drawer = document.getElementById('manage-drawer');
+  const overlay = document.getElementById('manage-overlay');
+  if (!drawer) return;
+  const isOpen = drawer.classList.contains('visible');
+  if (isOpen) {
+    closeManageDrawer();
   } else {
-    panel.style.display = 'none';
+    drawer.classList.add('visible');
+    overlay.classList.add('visible');
+    renderManagePanel();
   }
 }
 
+function closeManageDrawer() {
+  const drawer = document.getElementById('manage-drawer');
+  const overlay = document.getElementById('manage-overlay');
+  if (drawer) drawer.classList.remove('visible');
+  if (overlay) overlay.classList.remove('visible');
+}
+
 function renderManagePanel() {
-  const panel = document.getElementById('manage-panel');
-  if (!panel || panel.style.display === 'none') return;
+  const panel = document.getElementById('manage-drawer-body');
+  if (!panel) return;
   let html = '';
 
   // Tags section
   html += '<div class="manage-section"><h4>Tags</h4>';
   if (!allKnownTags.length) {
-    html += '<div style="color:var(--muted);font-size:12px">No tags yet.</div>';
+    html += '<div style="color:var(--muted);font-size:12px;padding:4px 0">No tags yet.</div>';
   } else {
     for (const t of allKnownTags) {
       html += '<div class="tag-manager-row">'
@@ -191,7 +203,7 @@ function renderManagePanel() {
   // Groups section
   html += '<div class="manage-section"><h4>Groups</h4>';
   if (!allKnownGroups.length) {
-    html += '<div style="color:var(--muted);font-size:12px">No groups yet.</div>';
+    html += '<div style="color:var(--muted);font-size:12px;padding:4px 0">No groups yet.</div>';
   } else {
     for (const g of allKnownGroups) {
       html += '<div class="tag-manager-row">'
@@ -449,11 +461,13 @@ function renderExpList() {
     const metrics = Object.entries(e.metrics || {}).slice(0, 2)
       .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v)).join('  ');
     const isSelected = selectedIds.has(e.id);
-    const cbHtml = '<input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
-      ' onclick="event.stopPropagation();toggleSelection(\'' + e.id + '\')" title="Select">';
+    const cbHtml = '<label style="display:inline-flex;align-items:center;cursor:pointer;padding:2px" onclick="event.stopPropagation()"><input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
+      ' onclick="toggleSelection(\'' + e.id + '\')" title="Select"></label>';
     const tagsHtml = (e.tags||[]).length ? '<div class="exp-card-tags">' + (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') + '</div>' : '';
     const cardGroupsHtml = (e.groups||[]).length ? '<div class="exp-card-tags">' + (e.groups||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') + '</div>' : '';
-    return '<div class="exp-card' + active + '" onclick="showDetail(\'' + e.id + '\')">' +
+    const cardHl = getHighlightGroup(e);
+    const cardHlStyle = cardHl ? ' style="border-left:3px solid ' + cardHl.border + ';background:' + cardHl.bg + '"' : '';
+    return '<div class="exp-card' + active + '"' + cardHlStyle + ' onclick="showDetail(\'' + e.id + '\')">' +
       '<div class="exp-card-row1">' + cbHtml +
       '<span class="status-dot ' + statusCls + '"></span>' +
       '<span class="exp-card-name" ondblclick="event.stopPropagation();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name) + '</span></div>' +
@@ -482,6 +496,7 @@ function renderSidebarActionsBar() {
     return;
   }
   let html = '<div class="sidebar-actions-bar">';
+  html += '<button class="export-btn" onclick="deselectAll()" style="font-weight:500">&times; Deselect All</button>';
   html += '<div class="action-count">' + n + ' selected</div>';
   if (n === 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare (2)</button>';
@@ -492,7 +507,6 @@ function renderSidebarActionsBar() {
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
-  html += '<button class="export-btn" onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear Selection</button>';
   html += '</div>';
   bar.innerHTML = html;
 }
@@ -539,6 +553,77 @@ function selectAllVisible() {
   renderExpList();
   renderExperiments();
 }
+
+function deselectAll() {
+  selectedIds.clear();
+  renderExpList();
+  renderExperiments();
+}
+
+function toggleHighlightMode(checked) {
+  highlightMode = checked;
+  localStorage.setItem('exptrack-highlight', highlightMode ? 'true' : 'false');
+  if (highlightMode) {
+    buildHighlightColors();
+  } else {
+    highlightColors = {};
+  }
+  renderHighlightLegend();
+  renderExpList();
+  renderExperiments();
+}
+
+function buildHighlightColors() {
+  const palette = [
+    'rgba(124,58,237,0.10)', 'rgba(44,90,160,0.10)', 'rgba(45,125,70,0.10)',
+    'rgba(212,130,15,0.10)', 'rgba(192,57,43,0.10)', 'rgba(255,193,7,0.10)',
+    'rgba(0,150,136,0.10)', 'rgba(233,30,99,0.10)'
+  ];
+  const borderPalette = [
+    '#7c3aed', '#2c5aa0', '#2d7d46', '#d4820f',
+    '#c0392b', '#b8860b', '#009688', '#e91e63'
+  ];
+  highlightColors = {};
+  const groups = new Set();
+  for (const e of allExperiments) {
+    if (e.groups && e.groups.length) {
+      e.groups.forEach(g => groups.add(g));
+    }
+  }
+  let i = 0;
+  for (const g of [...groups].sort()) {
+    highlightColors[g] = { bg: palette[i % palette.length], border: borderPalette[i % borderPalette.length] };
+    i++;
+  }
+}
+
+function getHighlightGroup(e) {
+  if (!highlightMode) return null;
+  if (e.groups && e.groups.length) {
+    const grp = e.groups[0];
+    return highlightColors[grp] || null;
+  }
+  return null;
+}
+
+function renderHighlightLegend() {
+  const el = document.getElementById('highlight-legend');
+  if (!el) return;
+  if (!highlightMode || Object.keys(highlightColors).length === 0) {
+    el.innerHTML = '';
+    return;
+  }
+  let html = '';
+  for (const [grp, col] of Object.entries(highlightColors)) {
+    html += '<span class="highlight-legend-item"><span class="highlight-legend-swatch" style="background:' + col.border + '"></span>' + esc(grp) + '</span>';
+  }
+  el.innerHTML = html;
+}
+
+function syncHighlightCheckbox() {
+  const cb = document.getElementById('highlight-toggle');
+  if (cb) cb.checked = highlightMode;
+}
 """
 
 # Table actions, bulk operations, sorting, filtering
@@ -579,15 +664,15 @@ function renderTableActionsBar() {
     return;
   }
   bar.style.display = 'flex';
-  let html = '<span class="sel-count">' + n + ' selected</span>';
-  html += '<button onclick="promptBulkAddToGroup()">Add to Group</button>';
-  html += _buildExportDropdown(n);
-  html += _buildCopyDropdown(n);
+  let html = '<button class="deselect-btn" onclick="deselectAll()" title="Deselect all">&times; Deselect All</button>';
+  html += '<span class="sel-count">' + n + ' selected</span>';
   if (n === 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare</button>';
   }
+  html += '<button onclick="promptBulkAddToGroup()">Add to Group</button>';
+  html += _buildExportDropdown(n);
+  html += _buildCopyDropdown(n);
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
-  html += '<button onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear</button>';
   bar.innerHTML = html;
 }
 
@@ -839,6 +924,7 @@ async function loadStats() {
 async function loadExperiments() {
   const url = currentFilter ? '/api/experiments?status=' + currentFilter : '/api/experiments';
   allExperiments = await api(url);
+  if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
   renderExperiments();
   renderExpList();
 }
@@ -858,7 +944,10 @@ function renderExpRow(e) {
     .join(', ');
   const isSelected = selectedIds.has(e.id);
   const isPinned = pinnedIds.has(e.id);
-  const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '');
+  const hlGroup = getHighlightGroup(e);
+  const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '') + (hlGroup ? ' highlighted-row' : '');
+  const rowStyle = hlGroup ? ' style="background:' + hlGroup.bg + '"' : '';
+  const hlBorder = hlGroup ? ' style="border-left:3px solid ' + hlGroup.border + '"' : '';
   const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
   const groupsHtml = (e.groups||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('');
   const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>';
@@ -878,10 +967,10 @@ function renderExpRow(e) {
     if (added || removed) codeStatHtml += ' <span class="lines-added">+' + added + '</span> <span class="lines-removed">-' + removed + '</span>';
     codeStatHtml += '</span>';
   }
-  return `<tr class="${rowCls}" onclick="onRowClick('${e.id}')">
-    <td onclick="event.stopPropagation()"><button class="pin-btn${isPinned?' pinned':''}" onclick="togglePin('${e.id}')" title="${isPinned?'Unpin':'Pin'}">${isPinned?'\u2605':'\u2606'}</button></td>
+  return `<tr class="${rowCls}"${rowStyle} onclick="onRowClick('${e.id}')">
+    <td${hlBorder} onclick="event.stopPropagation()"><button class="pin-btn${isPinned?' pinned':''}" onclick="togglePin('${e.id}')" title="${isPinned?'Unpin':'Pin'}">${isPinned?'\u2605':'\u2606'}</button></td>
     <td onclick="event.stopPropagation()">
-      <input type="checkbox" ${isSelected?'checked':''} onclick="toggleSelection('${e.id}')" title="Select" style="cursor:pointer">
+      <label style="display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4px"><input type="checkbox" ${isSelected?'checked':''} onclick="toggleSelection('${e.id}')" title="Select" style="cursor:pointer"></label>
     </td>
     <td>${e.id.slice(0,6)}</td>
     <td>
@@ -2240,11 +2329,13 @@ JS_INIT = r"""
 
 // Init — sidebar starts collapsed (opens when entering detail view)
 document.getElementById('exp-sidebar').classList.add('collapsed');
+syncHighlightCheckbox();
 loadTimezoneConfig();
 loadAllTags();
 loadAllGroups();
 loadStats();
 loadExperiments().then(() => {
+  if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
   if (allExperiments.length === 0) owlSpeak('empty');
   else owlSpeak('welcome');
 });
