@@ -163,12 +163,14 @@ CSS_TABLE = """
   tr.highlighted-row:hover { background: rgba(124,58,237,0.13); }
   tr.highlighted-row td:first-child { border-left: 3px solid var(--purple); }
   table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; }
-  th { text-align: left; padding: 12px 16px; border-bottom: 2px solid var(--fg); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; user-select: none; }
+  th { text-align: left; padding: 12px 16px; border-bottom: 2px solid var(--fg); border-right: 1px solid var(--border); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; user-select: none; }
+  th:last-child { border-right: none; }
   th.sortable { cursor: pointer; }
   th.sortable:hover { color: var(--blue); }
   th .sort-arrow { font-size: 10px; margin-left: 4px; opacity: 0.3; }
   th.sort-active .sort-arrow { opacity: 1; color: var(--blue); }
-  td { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  td { padding: 10px 16px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); font-size: 14px; }
+  td:last-child { border-right: none; }
   tr:hover { background: var(--code-bg); }
   tr.selected-row { background: rgba(44,90,160,0.08); }
   .tag { background: var(--code-bg); padding: 4px 10px; font-size: 14px; margin-left: 6px; border-radius: 3px; }
