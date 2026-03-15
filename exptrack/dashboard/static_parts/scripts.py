@@ -497,7 +497,15 @@ function renderSidebarActionsBar() {
   html += '<button class="action-btn" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
   html += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
   html += '</div></span>';
-  html += '<button class="export-btn" onclick="sidebarCopyText()">Copy as Text</button>';
+  html += '<span style="position:relative;display:inline-block">';
+  html += '<button class="export-btn" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Copy \u25BE</button>';
+  html += '<div class="export-dropdown-menu" style="display:none">';
+  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'json\')">JSON</button>';
+  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'csv\')">CSV</button>';
+  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'tsv\')">TSV</button>';
+  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'markdown\')">Markdown</button>';
+  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'plain\')">Plain Text</button>';
+  html += '</div></span>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '<button class="export-btn" onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear Selection</button>';
   html += '</div>';
@@ -562,12 +570,29 @@ function renderTableActionsBar() {
   bar.style.display = 'flex';
   let html = '<span class="sel-count">' + n + ' selected</span>';
   html += '<button onclick="promptBulkAddToGroup()">Add to Group</button>';
-  html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
-  html += '<button onclick="sidebarExport()">Export JSON (' + n + ')</button>';
-  html += '<button onclick="sidebarCopyText()">Copy Text (' + n + ')</button>';
+  // Export dropdown with format options
+  html += '<span style="position:relative;display:inline-block">';
+  html += '<button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Export (' + n + ') \u25BE</button>';
+  html += '<div class="export-dropdown-menu" style="display:none">';
+  html += '<button class="action-btn" onclick="sidebarExportFmt(\'json\')">JSON</button>';
+  html += '<button class="action-btn" onclick="sidebarExportFmt(\'csv\')">CSV</button>';
+  html += '<button class="action-btn" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
+  html += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
+  html += '</div></span>';
+  // Copy dropdown with format options
+  html += '<span style="position:relative;display:inline-block">';
+  html += '<button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">Copy (' + n + ') \u25BE</button>';
+  html += '<div class="export-dropdown-menu" style="display:none">';
+  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'json\')">JSON</button>';
+  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'csv\')">CSV</button>';
+  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'tsv\')">TSV</button>';
+  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'markdown\')">Markdown</button>';
+  html += '<button class="action-btn" onclick="sidebarCopyFmt(\'plain\')">Plain Text</button>';
+  html += '</div></span>';
   if (n === 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare</button>';
   }
+  html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '<button onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear</button>';
   bar.innerHTML = html;
 }
@@ -629,6 +654,8 @@ function _formatExpPlainText(d) {
   if (d.git_commit) lines.push('Commit: ' + d.git_commit);
   if (d.hostname) lines.push('Hostname: ' + d.hostname);
   if (d.tags && d.tags.length) lines.push('Tags: ' + d.tags.join(', '));
+  if (d.groups && d.groups.length) lines.push('Groups: ' + d.groups.join(', '));
+  if (d.output_dir) lines.push('Output Dir: ' + d.output_dir);
   if (d.notes) lines.push('Notes: ' + d.notes);
   lines.push('');
   const params = d.params || {};
@@ -673,18 +700,30 @@ function _formatExpPlainText(d) {
   return lines.join('\n');
 }
 
-async function sidebarCopyText() {
+async function sidebarCopyFmt(fmt) {
   const ids = [...selectedIds];
-  // Fetch full export data for each experiment (same data as detail view)
-  const data = await postApi('/api/bulk-export', {ids, format: 'json'});
-  let sections = [];
-  for (const d of data) {
-    sections.push(_formatExpPlainText(d));
+  let text;
+  if (fmt === 'plain') {
+    const data = await postApi('/api/bulk-export', {ids, format: 'json'});
+    const sections = (Array.isArray(data) ? data : []).map(d => _formatExpPlainText(d));
+    text = sections.join('\n\n---\n\n');
+  } else {
+    const data = await postApi('/api/bulk-export', {ids, format: fmt});
+    if (data.content) {
+      text = data.content;
+    } else if (Array.isArray(data)) {
+      text = JSON.stringify(data, null, 2);
+    } else {
+      text = JSON.stringify(data, null, 2);
+    }
   }
-  const text = sections.join('\n\n---\n\n');
   await navigator.clipboard.writeText(text);
-  owlSay('Copied ' + data.length + ' experiment(s) to clipboard!');
-  alert('Copied ' + data.length + ' experiments to clipboard (plain text)');
+  document.querySelectorAll('.export-dropdown-menu').forEach(d => d.style.display = 'none');
+  owlSay('Copied ' + ids.length + ' experiment(s) as ' + fmt.toUpperCase() + ' to clipboard!');
+}
+
+async function sidebarCopyText() {
+  sidebarCopyFmt('plain');
 }
 
 function setGroup(field) {

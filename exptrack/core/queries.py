@@ -402,6 +402,7 @@ def get_export_data(conn, exp_id: str) -> dict | None:
         "git_commit": exp["git_commit"],
         "hostname": exp["hostname"],
         "tags": json.loads(exp["tags"] or "[]"),
+        "groups": json.loads(exp["groups"] or "[]"),
         "notes": exp["notes"],
         "output_dir": exp["output_dir"] or "",
         "params": user_params,
@@ -544,6 +545,12 @@ def format_export_markdown(data: dict) -> str:
         lines.append(f"**Hostname:** {data['hostname']}  ")
     if data.get('tags'):
         lines.append(f"**Tags:** {', '.join(data['tags'])}  ")
+    if data.get('groups'):
+        lines.append(f"**Groups:** {', '.join(data['groups'])}  ")
+    if data.get('output_dir'):
+        lines.append(f"**Output Dir:** `{data['output_dir']}`  ")
+    if data.get('project'):
+        lines.append(f"**Project:** {data['project']}  ")
     lines.append("")
     if data.get("notes"):
         lines += [f"## Notes", f"", data["notes"], f""]
@@ -590,52 +597,83 @@ def format_export_markdown(data: dict) -> str:
 
 
 def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
-    """Format batch export data as CSV/TSV string."""
+    """Format batch export data as CSV/TSV string.
+
+    Includes all the same data as JSON export: metadata, params, variables,
+    metrics (last value), code_changes, artifacts, and timeline summary.
+    """
     import csv as csv_mod
     import io
 
     if not experiments:
         return ""
 
-    # Collect all param/metric keys across experiments
+    # Collect all dynamic keys across experiments
     all_param_keys: set[str] = set()
     all_metric_keys: set[str] = set()
+    all_var_keys: set[str] = set()
     for data in experiments:
         all_param_keys.update(k for k in data.get("params", {}) if not k.startswith("_"))
         all_metric_keys.update(data.get("metrics_series", {}).keys())
+        all_var_keys.update(data.get("variables", {}).keys())
 
     param_keys = sorted(all_param_keys)
     metric_keys = sorted(all_metric_keys)
+    var_keys = sorted(all_var_keys)
 
     output = io.StringIO()
     writer = csv_mod.writer(output, delimiter=delimiter)
 
-    # Header
-    header = ["id", "name", "status", "created_at", "duration_s",
-              "git_branch", "git_commit", "tags"]
+    # Header — all fields from get_export_data()
+    header = ["id", "name", "project", "status", "created_at", "duration_s",
+              "script", "command", "python_ver", "git_branch", "git_commit",
+              "hostname", "tags", "groups", "notes", "output_dir"]
     header += [f"param:{k}" for k in param_keys]
+    header += [f"var:{k}" for k in var_keys]
     header += [f"metric:{k}" for k in metric_keys]
+    header += ["artifacts", "code_changes",
+               "timeline_total", "timeline_cells", "timeline_vars", "timeline_artifacts"]
     writer.writerow(header)
 
     # Rows
     for data in experiments:
         params = data.get("params", {})
+        variables = data.get("variables", {})
         metrics_series = data.get("metrics_series", {})
+        artifacts = data.get("artifacts", [])
+        code_changes = data.get("code_changes", {})
+        ts = data.get("timeline_summary", {})
+
         row = [
             data.get("id", ""),
             data.get("name", ""),
+            data.get("project", ""),
             data.get("status", ""),
             data.get("created_at", ""),
             data.get("duration_s", "") or "",
+            data.get("script", "") or "",
+            data.get("command", "") or "",
+            data.get("python_ver", "") or "",
             data.get("git_branch", "") or "",
             data.get("git_commit", "") or "",
+            data.get("hostname", "") or "",
             ";".join(data.get("tags", [])),
+            ";".join(data.get("groups", []) if isinstance(data.get("groups"), list) else []),
+            data.get("notes", "") or "",
+            data.get("output_dir", "") or "",
         ]
         row += [str(params.get(k, "")) for k in param_keys]
-        # Last metric value per key
+        row += [str(variables.get(k, "")) for k in var_keys]
         for k in metric_keys:
             pts = metrics_series.get(k, [])
             row.append(str(pts[-1]["value"]) if pts else "")
+        # Artifacts as semicolon-separated label:path pairs
+        art_str = ";".join(f"{a.get('label','')}:{a.get('path','')}" for a in artifacts)
+        # Code changes as semicolon-separated key:value
+        cc_str = ";".join(f"{k}" for k in code_changes.keys()) if code_changes else ""
+        row += [art_str, cc_str,
+                ts.get("total_events", ""), ts.get("cell_executions", ""),
+                ts.get("variable_sets", ""), ts.get("artifact_events", "")]
         writer.writerow(row)
 
     return output.getvalue()
