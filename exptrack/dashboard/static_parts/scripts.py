@@ -1099,7 +1099,6 @@ function renderExpRow(e) {
   for (const colId of visibleCols) { tds += cells[colId] || ''; }
   return '<tr class="' + rowCls + '"' + rowStyle + ' onclick="onRowClick(\'' + e.id + '\')">' + tds + '</tr>';
 }
-}
 
 function renderExperiments() {
   const exps = getFilteredExperiments();
