@@ -24,6 +24,8 @@ let clickTimer = null;
 let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
 let allKnownGroups = []; // {name, count}[]
+let highlightMode = false;
+let highlightColors = {}; // group -> color mapping
 
 // Dark mode
 function toggleTheme() {
@@ -449,11 +451,13 @@ function renderExpList() {
     const metrics = Object.entries(e.metrics || {}).slice(0, 2)
       .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v)).join('  ');
     const isSelected = selectedIds.has(e.id);
-    const cbHtml = '<input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
-      ' onclick="event.stopPropagation();toggleSelection(\'' + e.id + '\')" title="Select">';
+    const cbHtml = '<label style="display:inline-flex;align-items:center;cursor:pointer;padding:2px" onclick="event.stopPropagation()"><input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
+      ' onclick="toggleSelection(\'' + e.id + '\')" title="Select"></label>';
     const tagsHtml = (e.tags||[]).length ? '<div class="exp-card-tags">' + (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') + '</div>' : '';
     const cardGroupsHtml = (e.groups||[]).length ? '<div class="exp-card-tags">' + (e.groups||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') + '</div>' : '';
-    return '<div class="exp-card' + active + '" onclick="showDetail(\'' + e.id + '\')">' +
+    const cardHl = getHighlightGroup(e);
+    const cardHlStyle = cardHl ? ' style="border-left:3px solid ' + cardHl.border + ';background:' + cardHl.bg + '"' : '';
+    return '<div class="exp-card' + active + '"' + cardHlStyle + ' onclick="showDetail(\'' + e.id + '\')">' +
       '<div class="exp-card-row1">' + cbHtml +
       '<span class="status-dot ' + statusCls + '"></span>' +
       '<span class="exp-card-name" ondblclick="event.stopPropagation();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name) + '</span></div>' +
@@ -482,17 +486,18 @@ function renderSidebarActionsBar() {
     return;
   }
   let html = '<div class="sidebar-actions-bar">';
+  html += '<button class="export-btn" onclick="deselectAll()" style="font-weight:500">&times; Deselect All</button>';
   html += '<div class="action-count">' + n + ' selected</div>';
   if (n === 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare (2)</button>';
   } else if (n === 1) {
     html += '<button class="primary" style="opacity:0.5" disabled title="Select 2 to compare">Compare (need 2)</button>';
   }
+  html += '<button class="export-btn" style="color:var(--purple);border-color:var(--purple)' + (highlightMode ? ';background:var(--purple);color:#fff' : '') + '" onclick="toggleHighlightMode()">\u2588 Highlight</button>';
   html += '<button class="export-btn" onclick="promptBulkAddToGroup()">Add to Group</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
-  html += '<button class="export-btn" onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear Selection</button>';
   html += '</div>';
   bar.innerHTML = html;
 }
@@ -539,6 +544,63 @@ function selectAllVisible() {
   renderExpList();
   renderExperiments();
 }
+
+function deselectAll() {
+  selectedIds.clear();
+  highlightMode = false;
+  highlightColors = {};
+  renderExpList();
+  renderExperiments();
+}
+
+function toggleHighlightMode() {
+  highlightMode = !highlightMode;
+  if (highlightMode) {
+    buildHighlightColors();
+  } else {
+    highlightColors = {};
+  }
+  renderExpList();
+  renderExperiments();
+}
+
+function buildHighlightColors() {
+  const palette = [
+    'rgba(124,58,237,0.10)', 'rgba(44,90,160,0.10)', 'rgba(45,125,70,0.10)',
+    'rgba(212,130,15,0.10)', 'rgba(192,57,43,0.10)', 'rgba(255,193,7,0.10)',
+    'rgba(0,150,136,0.10)', 'rgba(233,30,99,0.10)'
+  ];
+  const borderPalette = [
+    '#7c3aed', '#2c5aa0', '#2d7d46', '#d4820f',
+    '#c0392b', '#b8860b', '#009688', '#e91e63'
+  ];
+  highlightColors = {};
+  const groups = new Set();
+  const selExps = allExperiments.filter(e => selectedIds.has(e.id));
+  for (const e of selExps) {
+    let grp = '';
+    if (groupBy === 'git_commit') grp = e.git_commit ? e.git_commit.slice(0, 7) : 'no commit';
+    else if (groupBy === 'git_branch') grp = e.git_branch || 'no branch';
+    else if (groupBy === 'status') grp = e.status || 'unknown';
+    else grp = (e.groups && e.groups.length) ? e.groups[0] : (e.tags && e.tags.length ? e.tags[0] : 'ungrouped');
+    groups.add(grp);
+  }
+  let i = 0;
+  for (const g of groups) {
+    highlightColors[g] = { bg: palette[i % palette.length], border: borderPalette[i % borderPalette.length] };
+    i++;
+  }
+}
+
+function getHighlightGroup(e) {
+  if (!highlightMode || !selectedIds.has(e.id)) return null;
+  let grp = '';
+  if (groupBy === 'git_commit') grp = e.git_commit ? e.git_commit.slice(0, 7) : 'no commit';
+  else if (groupBy === 'git_branch') grp = e.git_branch || 'no branch';
+  else if (groupBy === 'status') grp = e.status || 'unknown';
+  else grp = (e.groups && e.groups.length) ? e.groups[0] : (e.tags && e.tags.length ? e.tags[0] : 'ungrouped');
+  return highlightColors[grp] || null;
+}
 """
 
 # Table actions, bulk operations, sorting, filtering
@@ -579,15 +641,23 @@ function renderTableActionsBar() {
     return;
   }
   bar.style.display = 'flex';
-  let html = '<span class="sel-count">' + n + ' selected</span>';
-  html += '<button onclick="promptBulkAddToGroup()">Add to Group</button>';
-  html += _buildExportDropdown(n);
-  html += _buildCopyDropdown(n);
+  let html = '<button class="deselect-btn" onclick="deselectAll()" title="Deselect all">&times; Deselect All</button>';
+  html += '<span class="sel-count">' + n + ' selected</span>';
   if (n === 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare</button>';
   }
+  html += '<button class="highlight-btn' + (highlightMode ? ' active' : '') + '" onclick="toggleHighlightMode()" title="Highlight selected by group">\u2588 Highlight</button>';
+  html += '<button onclick="promptBulkAddToGroup()">Add to Group</button>';
+  html += _buildExportDropdown(n);
+  html += _buildCopyDropdown(n);
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
-  html += '<button onclick="selectedIds.clear();renderExpList();renderExperiments()">Clear</button>';
+  if (highlightMode && Object.keys(highlightColors).length > 0) {
+    html += '<span style="margin-left:8px;display:inline-flex;gap:6px;align-items:center;font-size:11px;color:var(--muted)">';
+    for (const [grp, col] of Object.entries(highlightColors)) {
+      html += '<span style="display:inline-flex;align-items:center;gap:3px"><span style="width:10px;height:10px;border-radius:2px;background:' + col.border + ';display:inline-block"></span>' + esc(grp) + '</span>';
+    }
+    html += '</span>';
+  }
   bar.innerHTML = html;
 }
 
@@ -858,7 +928,10 @@ function renderExpRow(e) {
     .join(', ');
   const isSelected = selectedIds.has(e.id);
   const isPinned = pinnedIds.has(e.id);
-  const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '');
+  const hlGroup = getHighlightGroup(e);
+  const rowCls = (isSelected ? 'selected-row' : '') + (isPinned ? ' pinned-row' : '') + (hlGroup ? ' highlighted-row' : '');
+  const rowStyle = hlGroup ? ' style="background:' + hlGroup.bg + '"' : '';
+  const hlBorder = hlGroup ? ' style="border-left:3px solid ' + hlGroup.border + '"' : '';
   const tagsHtml = (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
   const groupsHtml = (e.groups||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('');
   const notesPreview = e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>';
@@ -878,10 +951,10 @@ function renderExpRow(e) {
     if (added || removed) codeStatHtml += ' <span class="lines-added">+' + added + '</span> <span class="lines-removed">-' + removed + '</span>';
     codeStatHtml += '</span>';
   }
-  return `<tr class="${rowCls}" onclick="onRowClick('${e.id}')">
-    <td onclick="event.stopPropagation()"><button class="pin-btn${isPinned?' pinned':''}" onclick="togglePin('${e.id}')" title="${isPinned?'Unpin':'Pin'}">${isPinned?'\u2605':'\u2606'}</button></td>
+  return `<tr class="${rowCls}"${rowStyle} onclick="onRowClick('${e.id}')">
+    <td${hlBorder} onclick="event.stopPropagation()"><button class="pin-btn${isPinned?' pinned':''}" onclick="togglePin('${e.id}')" title="${isPinned?'Unpin':'Pin'}">${isPinned?'\u2605':'\u2606'}</button></td>
     <td onclick="event.stopPropagation()">
-      <input type="checkbox" ${isSelected?'checked':''} onclick="toggleSelection('${e.id}')" title="Select" style="cursor:pointer">
+      <label style="display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4px"><input type="checkbox" ${isSelected?'checked':''} onclick="toggleSelection('${e.id}')" title="Select" style="cursor:pointer"></label>
     </td>
     <td>${e.id.slice(0,6)}</td>
     <td>

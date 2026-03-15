@@ -107,28 +107,56 @@ CSS_CARDS = """
 
 # Table, toolbar, actions
 CSS_TABLE = """
-  .table-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .table-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .toolbar-btn {
+    font-family: inherit; font-size: 12px; padding: 6px 14px;
+    border: 1px solid var(--border); background: var(--card-bg); cursor: pointer;
+    color: var(--fg); white-space: nowrap; line-height: 1.4;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .toolbar-btn:hover { background: var(--code-bg); border-color: var(--blue); color: var(--blue); }
+  .toolbar-btn:first-child { border-radius: 4px 0 0 4px; }
+  .toolbar-btn:last-child { border-radius: 0 4px 4px 0; }
+  .toolbar-btn:only-child { border-radius: 4px; }
+  .toolbar-btn + .toolbar-btn { margin-left: -1px; }
+  .toolbar-btn.active { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .toolbar-btn-group { display: inline-flex; }
+  .toolbar-btn-group .toolbar-btn + .toolbar-btn { margin-left: -1px; }
+  .toolbar-btn-group .toolbar-btn:first-child { border-radius: 4px 0 0 4px; }
+  .toolbar-btn-group .toolbar-btn:last-child { border-radius: 0 4px 4px 0; }
+  .toolbar-btn-group .toolbar-btn:only-child { border-radius: 4px; }
   .main-search-input {
     font-family: inherit; font-size: 14px; border: 1px solid var(--border);
     padding: 8px 14px; border-radius: 4px; background: var(--card-bg); min-width: 260px; color: var(--fg);
   }
   .main-search-input:focus { outline: none; border-color: var(--blue); }
   .table-actions-bar {
-    display: flex; gap: 8px; align-items: center; padding: 8px 12px; margin-bottom: 8px;
+    display: flex; gap: 6px; align-items: center; padding: 8px 12px; margin-bottom: 8px;
     background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
   }
-  .table-actions-bar .sel-count { font-size: 13px; color: var(--muted); margin-right: 8px; }
+  .table-actions-bar .sel-count { font-size: 13px; color: var(--muted); margin-right: 4px; }
   .table-actions-bar button {
     font-family: inherit; font-size: 12px; border: 1px solid var(--border); padding: 5px 14px;
     cursor: pointer; border-radius: 3px; background: var(--card-bg); color: var(--fg);
   }
   .table-actions-bar button:hover { background: var(--code-bg); }
-  .table-actions-bar button.danger { background: var(--red); color: #fff; border-color: var(--red); }
-  .table-actions-bar button.danger:hover { opacity: 0.85; }
+  .table-actions-bar button.danger { background: var(--card-bg); color: var(--red); border-color: var(--red); }
+  .table-actions-bar button.danger:hover { background: var(--red); color: #fff; }
   .table-actions-bar button.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
   .table-actions-bar button.primary:hover { opacity: 0.85; }
+  .table-actions-bar button.deselect-btn { background: var(--card-bg); color: var(--fg); border-color: var(--border); font-weight: 500; }
+  .table-actions-bar button.deselect-btn:hover { background: var(--border); }
+  .table-actions-bar button.highlight-btn { color: var(--purple); border-color: var(--purple); }
+  .table-actions-bar button.highlight-btn:hover { background: var(--purple); color: #fff; }
+  .table-actions-bar button.highlight-btn.active { background: var(--purple); color: #fff; }
   .cb-col { width: 36px; text-align: center; }
-  .cb-col input { cursor: pointer; width: 16px; height: 16px; }
+  .cb-col input { cursor: pointer; width: 16px; height: 16px; accent-color: var(--blue); }
+  .exp-card-cb { accent-color: var(--blue); width: 15px; height: 15px; }
+  tr td:nth-child(2) { padding: 10px 8px; }
+  tr td:nth-child(2) input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--blue); }
+  tr.highlighted-row { background: rgba(124,58,237,0.08); }
+  tr.highlighted-row:hover { background: rgba(124,58,237,0.13); }
+  tr.highlighted-row td:first-child { border-left: 3px solid var(--purple); }
   table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; }
   th { text-align: left; padding: 12px 16px; border-bottom: 2px solid var(--fg); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; user-select: none; }
   th.sortable { cursor: pointer; }
@@ -276,8 +304,8 @@ CSS_TIMELINE = """
 
 # Compare view
 CSS_COMPARE = """
-  .compare-main-btn { font-family: inherit; font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; color: var(--blue); margin-left: 8px; white-space: nowrap; }
-  .compare-main-btn:hover { background: var(--code-bg); border-color: var(--blue); }
+  .compare-main-btn { font-family: inherit; font-size: 12px; padding: 6px 14px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; color: var(--fg); white-space: nowrap; transition: background 0.15s, border-color 0.15s; }
+  .compare-main-btn:hover { background: var(--code-bg); border-color: var(--blue); color: var(--blue); }
   .compare-header { margin-bottom: 12px; }
   .compare-header h3 { font-size: 18px; }
   .back-link { font-family: inherit; font-size: 13px; background: none; border: none; color: var(--blue); cursor: pointer; padding: 0; }
@@ -346,8 +374,13 @@ CSS_COMPONENTS = """
   .tag-removable .tag-delete:hover { opacity: 1; color: var(--red, #e55); }
   .tag-removable .tag-edit { cursor: pointer; color: var(--muted); font-size: 11px; }
   .tag-removable .tag-edit:hover { color: var(--blue); }
-  .manage-tags-link { font-size: 12px; color: var(--muted); cursor: pointer; margin-left: 8px; white-space: nowrap; }
-  .manage-tags-link:hover { color: var(--blue); text-decoration: underline; }
+  .manage-tags-link {
+    font-family: inherit; font-size: 12px; padding: 6px 14px;
+    border: 1px solid var(--border); background: var(--card-bg); cursor: pointer;
+    color: var(--fg); white-space: nowrap; border-radius: 0 4px 4px 0;
+    transition: background 0.15s, border-color 0.15s; margin-left: -1px;
+  }
+  .manage-tags-link:hover { background: var(--code-bg); border-color: var(--blue); color: var(--blue); text-decoration: none; }
   .tag-manager-panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px 16px; margin: 8px 16px; font-size: 13px; }
   .tag-manager-panel h4 { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
   .tag-manager-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }

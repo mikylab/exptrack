@@ -118,9 +118,12 @@ HTML_BODY = r"""</style>
       <div class="stats" id="stats"></div>
       <div class="table-toolbar">
         <input type="text" id="main-search" class="main-search-input" placeholder="Search experiments..." oninput="searchQuery=this.value;renderExperiments();renderExpList()">
-        <button class="compare-main-btn" onclick="showCompareView()" title="Compare two experiments">&#x2194; Compare</button>
+        <div class="toolbar-btn-group">
+          <button class="toolbar-btn compare-main-btn" onclick="showCompareView()" title="Compare two experiments">&#x2194; Compare</button>
+          <button class="toolbar-btn" onclick="document.getElementById('filter-search-input')?.focus()" title="Filter by tags or groups">&#x1F50D; Filters</button>
+          <button class="toolbar-btn" onclick="toggleManagePanel()" title="Manage tags &amp; groups">&#x2699; Manage</button>
+        </div>
         <div class="tag-filter-bar" id="filter-bar" style="display:inline"></div>
-        <span class="manage-tags-link" onclick="toggleManagePanel()" title="Manage tags &amp; groups">Manage&hellip;</span>
       </div>
       <div id="manage-panel" class="tag-manager-panel" style="display:none"></div>
       <div class="group-bar" id="group-bar">
