@@ -1110,9 +1110,11 @@ function renderExpRow(e) {
     notes: '<td class="truncate-cell notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     metrics: (function() {
       const parts = [];
-      // All metrics (auto and manual now unified in metrics table)
-      for (const [k, v] of Object.entries(e.metrics || {}).slice(0, 3)) {
-        parts.push('<span style="color:var(--blue)" title="metric">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))) + miniSpark((e.sparklines||{})[k]));
+      for (const [k, m] of Object.entries(e.metrics || {}).slice(0, 3)) {
+        const v = typeof m === 'object' ? m.value : m;
+        const src = typeof m === 'object' ? m.source : 'auto';
+        const color = src === 'manual' ? 'var(--tl-metric)' : src === 'pipeline' ? 'var(--green)' : 'var(--blue)';
+        parts.push('<span style="color:' + color + '" title="' + src + '">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))) + miniSpark((e.sparklines||{})[k]));
       }
       return '<td class="truncate-cell" style="font-size:13px">' + (parts.join(', ') || '<span style="color:var(--muted)">--</span>') + '</td>';
     })(),
@@ -1587,25 +1589,11 @@ async function refreshDetail(id) {
     <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
   </div>`;
 
-  // Collect existing namespace prefixes from this experiment's metrics
-  const existingPrefixes = new Set();
-  for (const m of exp.metrics) {
-    const si = m.key.indexOf('/');
-    if (si > 0) existingPrefixes.add(m.key.slice(0, si));
-  }
-  const prefixOpts = [...existingPrefixes].sort().map(p => '<option value="' + esc(p) + '/">' + esc(p) + '/</option>').join('');
-
-  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center;flex-wrap:wrap;gap:4px" id="log-result-form-${exp.id}">
-    <select id="result-prefix-${exp.id}" style="width:100px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)" title="Namespace prefix (optional)">
-      <option value="">(none)</option>
-      ${prefixOpts}
-      <option value="__custom__">custom...</option>
-    </select>
-    <select id="result-key-${exp.id}" style="width:130px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
-      <option value="">Metric...</option>
-    </select>
-    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px" onkeydown="if(event.key==='Enter')logMetric('${exp.id}')">
-    <input type="text" id="result-step-${exp.id}" placeholder="Step (auto)" style="width:80px;font-size:12px" title="Optional step number. Leave blank to auto-increment.">
+  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center;gap:4px" id="log-result-form-${exp.id}">
+    <input type="text" id="result-key-${exp.id}" list="metric-suggestions-${exp.id}" placeholder="Metric key" style="width:150px" autocomplete="off">
+    <datalist id="metric-suggestions-${exp.id}"></datalist>
+    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:80px" onkeydown="if(event.key==='Enter')logMetric('${exp.id}')">
+    <input type="text" id="result-step-${exp.id}" placeholder="Step" style="width:55px;font-size:12px" title="Optional step number">
     <button onclick="logMetric('${exp.id}')">+ Log</button>
     <button onclick="openManageResultTypes()" style="background:transparent;color:var(--muted);border:none;font-size:16px;padding:0 4px;cursor:pointer;line-height:1" title="Manage metric types">&#9881;</button>
   </div>`;
@@ -3084,53 +3072,44 @@ async function loadResultTypes() {
 }
 
 async function populateResultTypeDropdown(expId) {
-  const sel = document.getElementById('result-key-' + expId);
-  if (!sel) return;
+  const dl = document.getElementById('metric-suggestions-' + expId);
+  if (!dl) return;
   const types = await loadResultTypes();
-  // Preserve existing options if already populated
-  if (sel.options.length > 1) return;
-  for (const t of types) {
-    const opt = document.createElement('option');
-    opt.value = t;
-    opt.textContent = t;
-    sel.appendChild(opt);
+  const defaultPrefixes = ['train', 'val', 'test'];
+
+  // Collect existing keys and prefixes from current experiment
+  const exp = allExperiments.find(e => e.id === expId);
+  const existingKeys = new Set(Object.keys(exp?.metrics || {}));
+  const existingPrefixes = new Set();
+  for (const k of existingKeys) {
+    const si = k.indexOf('/');
+    if (si > 0) existingPrefixes.add(k.slice(0, si));
   }
-  // Hook up custom prefix handler
-  const prefixEl = document.getElementById('result-prefix-' + expId);
-  if (prefixEl) {
-    prefixEl.onchange = () => {
-      if (prefixEl.value === '__custom__') {
-        const custom = prompt('Enter namespace prefix (e.g. train, val, test):');
-        if (custom && custom.trim()) {
-          const val = custom.trim().replace(/\/+$/, '') + '/';
-          // Add as option if not already present
-          let found = false;
-          for (const o of prefixEl.options) { if (o.value === val) { found = true; break; } }
-          if (!found) {
-            const opt = document.createElement('option');
-            opt.value = val;
-            opt.textContent = val;
-            prefixEl.insertBefore(opt, prefixEl.querySelector('option[value="__custom__"]'));
-          }
-          prefixEl.value = val;
-        } else {
-          prefixEl.value = '';
-        }
-      }
-    };
+  const prefixes = [...new Set([...defaultPrefixes, ...existingPrefixes])].sort();
+
+  // Build suggestions: existing keys first, then bare types, then prefixed types
+  const suggestions = new Set();
+  for (const k of existingKeys) suggestions.add(k);
+  for (const t of types) {
+    suggestions.add(t);
+    for (const p of prefixes) suggestions.add(p + '/' + t);
+  }
+
+  dl.innerHTML = '';
+  for (const s of suggestions) {
+    const opt = document.createElement('option');
+    opt.value = s;
+    dl.appendChild(opt);
   }
 }
 
 async function logMetric(id) {
-  const prefixEl = document.getElementById('result-prefix-' + id);
   const keyEl = document.getElementById('result-key-' + id);
   const valEl = document.getElementById('result-val-' + id);
   const stepEl = document.getElementById('result-step-' + id);
   if (!keyEl || !valEl) return;
-  const prefix = prefixEl ? prefixEl.value : '';
-  const baseKey = keyEl.value.trim();
-  if (!baseKey) { alert('Select a metric key'); return; }
-  const key = (prefix && prefix !== '__custom__') ? prefix + baseKey : baseKey;
+  const key = keyEl.value.trim();
+  if (!key) { alert('Enter a metric key'); return; }
   const value = valEl.value.trim();
   if (!value || isNaN(parseFloat(value))) { alert('Value must be a number'); return; }
   const step = stepEl ? stepEl.value.trim() : '';

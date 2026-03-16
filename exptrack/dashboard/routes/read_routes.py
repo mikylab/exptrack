@@ -98,11 +98,18 @@ def api_get_timezone() -> dict:
 
 
 def api_result_types() -> dict:
-    from ...config import load
+    from ...config import load, save
     conf = load()
     default_types = ["acc", "loss", "auroc", "f1", "prec", "rec",
                      "mse", "mae", "r2", "ppl", "bleu"]
+    # Auto-migrate old long names to abbreviations
+    _abbrev = {"accuracy": "acc", "precision": "prec", "recall": "rec", "perplexity": "ppl"}
     types = conf.get("result_types", default_types)
+    migrated = [_abbrev.get(t, t) for t in types]
+    if migrated != types:
+        conf["result_types"] = migrated
+        save(conf)
+        types = migrated
     return {"types": types}
 
 

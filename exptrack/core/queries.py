@@ -99,7 +99,7 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
     rows = conn.execute(query, params).fetchall()
     result = []
     for r in rows:
-        metrics = get_latest_metrics(conn, r["id"])
+        metrics = get_latest_metrics_with_source(conn, r["id"])
         sparklines = get_metrics_sparkline(conn, r["id"])
         ps = conn.execute(
             "SELECT key, value FROM params WHERE exp_id=?",
@@ -141,6 +141,18 @@ def get_latest_metrics(conn, exp_id: str) -> dict[str, float]:
         )
     """, (exp_id,)).fetchall()
     return {r["key"]: r["value"] for r in rows}
+
+
+def get_latest_metrics_with_source(conn, exp_id: str) -> dict[str, dict]:
+    """Get the last value and source of each metric key for an experiment."""
+    rows = conn.execute("""
+        SELECT key, value, COALESCE(source, 'auto') as source FROM metrics m WHERE exp_id=?
+        AND COALESCE(step, 0) = (
+            SELECT MAX(COALESCE(step, 0)) FROM metrics m2
+            WHERE m2.exp_id=m.exp_id AND m2.key=m.key
+        )
+    """, (exp_id,)).fetchall()
+    return {r["key"]: {"value": r["value"], "source": r["source"]} for r in rows}
 
 
 def get_metrics_sparkline(conn, exp_id: str, max_points: int = 10) -> dict[str, list[float]]:
