@@ -1771,11 +1771,17 @@ async function refreshDetail(id) {
               <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','csv')">CSV</button>
               <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','tsv')">TSV</button>
               <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','plain')">Plain Text</button>
-              <hr style="border:0;border-top:1px solid var(--border);margin:4px 0">
-              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json')">Copy JSON</button>
-              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','markdown')">Copy Markdown</button>
             </div>
           </span>
+          <span style="position:relative;display:inline-block">
+            <button class="action-btn" onclick="toggleDetailExport(this)">Copy ▼</button>
+            <div class="export-dropdown-menu" style="display:none">
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json')">JSON</button>
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','markdown')">Markdown</button>
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','plain')">Plain Text</button>
+            </div>
+          </span>
+          ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button>` : ''}
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name)}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
         </div>
