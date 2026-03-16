@@ -150,6 +150,74 @@ def cmd_upgrade(args):
 
 
 
+def cmd_compact(args):
+    """Strip git_diff from experiments to reclaim DB space, keeping all results."""
+    from datetime import timedelta
+    conn = get_db()
+    dry_run = getattr(args, "dry_run", False)
+
+    # Build query conditions
+    conditions = ["git_diff IS NOT NULL", "git_diff != ''"]
+    query_args = []
+
+    if args.ids:
+        # Compact specific experiments by ID prefix
+        clauses = []
+        for prefix in args.ids:
+            clauses.append("id LIKE ?")
+            query_args.append(prefix + "%")
+        conditions.append(f"({' OR '.join(clauses)})")
+    elif not args.all:
+        # Default: only compact 'done' experiments with a reachable git_commit
+        conditions.append("status = 'done'")
+        conditions.append("git_commit IS NOT NULL")
+        conditions.append("git_commit != ''")
+
+    if args.older_than:
+        age = args.older_than.rstrip("d")
+        try:
+            days = int(age)
+        except ValueError:
+            print(col(f"Invalid age: {args.older_than} (use e.g. 7d)", R), file=sys.stderr)
+            return
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        conditions.append("created_at < ?")
+        query_args.append(cutoff)
+
+    where = " AND ".join(conditions)
+    rows = conn.execute(
+        f"SELECT id, name, git_commit, LENGTH(git_diff) as diff_len FROM experiments WHERE {where}",
+        query_args,
+    ).fetchall()
+
+    if not rows:
+        print(dim("Nothing to compact."))
+        return
+
+    total_bytes = sum(r["diff_len"] for r in rows)
+
+    def fmt(b):
+        if b < 1024: return f"{b} B"
+        if b < 1024**2: return f"{b/1024:.1f} KB"
+        return f"{b/1024**2:.1f} MB"
+
+    if dry_run:
+        print(f"Would compact {len(rows)} experiment(s), freeing ~{fmt(total_bytes)}:")
+        for r in rows:
+            print(f"  {col(r['id'][:8], C)}  {r['name'][:50]}  ({fmt(r['diff_len'])})")
+        return
+
+    for r in rows:
+        commit = r["git_commit"] or "unknown"
+        summary = f"[compacted — {fmt(r['diff_len'])} stripped — see git commit {commit}]"
+        conn.execute("UPDATE experiments SET git_diff = ? WHERE id = ?", (summary, r["id"]))
+    conn.commit()
+
+    print(col(f"Compacted {len(rows)} experiment(s), freed ~{fmt(total_bytes)}.", G))
+    for r in rows:
+        print(f"  {col(r['id'][:8], C)}  {r['name'][:50]}")
+
+
 def cmd_storage(args):
     """Show data storage breakdown for the exptrack database and outputs."""
     conn = get_db()
@@ -219,8 +287,8 @@ def cmd_storage(args):
     print(f"  git_diff total:   {fmt(git_diff_total)}  "
           f"(avg {fmt(git_diff_avg)}/experiment, {len(git_diff_rows)} with diffs)")
     if git_diff_total > 1024 * 1024:
-        print(col("    Tip: Large git diffs dominate DB size. Set "
-                   "\"max_git_diff_kb\" in config.json to cap it.", Y))
+        print(col("    Tip: Run \"exptrack compact\" to strip old diffs "
+                   "(or set \"max_git_diff_kb\" in config.json to cap future ones).", Y))
     if timeline_size > 1024 * 1024:
         print(col("    Tip: Timeline data is growing large. Use "
                    "\"exptrack clean\" to remove failed runs.", Y))
