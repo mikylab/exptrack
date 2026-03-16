@@ -200,7 +200,7 @@ def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
     """Get experiment names, latest metrics, and results for multiple experiments."""
     results = []
     for eid in exp_ids:
-        exp = find_experiment(conn, eid)
+        exp = find_experiment(conn, eid, "id, name, status")
         if not exp:
             continue
         full_id = exp["id"]

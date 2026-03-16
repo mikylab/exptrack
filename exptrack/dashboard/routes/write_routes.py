@@ -434,6 +434,38 @@ def api_log_result(conn, exp_id: str, body: dict) -> dict:
     return {"ok": True, "key": key, "value": num_val}
 
 
+def api_log_metric(conn, exp_id: str, body: dict) -> dict:
+    """Log a metric value (accumulates, supports multiple points per key)."""
+    from ...core.queries import find_experiment
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    key = body.get("key", "").strip()
+    value = body.get("value", "").strip()
+    if not key or not value:
+        return {"error": "provide key and value"}
+    try:
+        num_val = float(value)
+    except ValueError:
+        return {"error": "value must be a number"}
+
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).isoformat()
+    # Auto-increment step: find max step for this key
+    row = conn.execute(
+        "SELECT MAX(COALESCE(step, -1)) as max_step FROM metrics WHERE exp_id=? AND key=?",
+        (exp["id"], key)
+    ).fetchone()
+    step = (row["max_step"] + 1) if row and row["max_step"] is not None else 0
+
+    conn.execute(
+        "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
+        (exp["id"], key, num_val, step, ts)
+    )
+    conn.commit()
+    return {"ok": True, "key": key, "value": num_val, "step": step}
+
+
 def api_delete_result(conn, exp_id: str, body: dict) -> dict:
     """Delete a manually logged result."""
     exp = find_experiment(conn, exp_id, "id")
