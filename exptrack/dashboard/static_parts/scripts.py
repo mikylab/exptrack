@@ -1508,7 +1508,7 @@ async function refreshDetail(id) {
   const resultRows = resultKeys.map(k => {
     const v = manualResults[k];
     const display = typeof v === 'string' ? v : JSON.stringify(v);
-    return `<tr><td style="color:var(--tl-metric, #d4820f)">${esc(k)}</td><td class="result-value" ondblclick="startResultEdit('${exp.id}','${esc(k)}',this)" title="Double-click to edit">${esc(display)}</td><td style="width:70px"><button class="art-del" onclick="editResultPrompt('${exp.id}','${esc(k)}','${esc(display)}')" title="Edit value">edit</button><button class="art-del" onclick="deleteResult('${exp.id}','${esc(k)}')" title="Delete result">&times;</button></td></tr>`;
+    return `<tr><td style="color:var(--tl-metric, #d4820f)">${esc(k)}</td><td class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(k)}',this)" title="Double-click to edit"><div class="artifact-row">${esc(display)}<div class="artifact-actions"><button class="art-del" onclick="deleteResult('${exp.id}','${esc(k)}')">del</button></div></div></td></tr>`;
   }).join('');
 
   const artRows = exp.artifacts.map(a => {
@@ -1531,7 +1531,7 @@ async function refreshDetail(id) {
     <select id="result-key-${exp.id}" style="width:180px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
       <option value="">Select result type...</option>
     </select>
-    <input type="number" step="any" id="result-val-${exp.id}" placeholder="Value" style="width:100px">
+    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px">
     <button onclick="logResult('${exp.id}')">+ Log Result</button>
     <button onclick="openManageResultTypes()" style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);font-size:11px;padding:3px 8px" title="Manage result types">Manage</button>
   </div>`;
@@ -1694,7 +1694,7 @@ async function refreshDetail(id) {
           <div>
             <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Results (${resultKeys.length})</h2>
             <div class="section-body">
-            ${resultRows ? '<table class="params-table"><tr><th>Key</th><th>Value</th><th></th></tr>'+resultRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No results logged yet.</p>'}
+            ${resultRows ? '<table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+resultRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No results logged yet.</p>'}
             ${logResultForm}
             </div>
             ${metricRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Metrics (' + exp.metrics.length + ')</h2><div class="section-body"><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table><div id="charts-container"></div></div>' : '<div id="charts-container"></div>'}
@@ -2749,36 +2749,30 @@ async function deleteResult(id, key) {
 
 function startResultEdit(id, key, td) {
   if (td.querySelector('input')) return;
-  const current = td.textContent.trim();
+  const row = td.querySelector('.artifact-row');
+  const valText = row ? row.childNodes[0].textContent.trim() : td.textContent.trim();
+  const savedHtml = td.innerHTML;
   const input = document.createElement('input');
-  input.type = 'number';
-  input.step = 'any';
-  input.value = current;
-  input.style.cssText = 'width:80px;font-size:13px;padding:2px 4px;font-family:inherit';
-  td.textContent = '';
+  input.type = 'text';
+  input.value = valText;
+  input.style.cssText = 'width:100%;font-size:13px;padding:2px 4px;font-family:inherit;box-sizing:border-box';
+  td.innerHTML = '';
   td.appendChild(input);
   input.focus();
   input.select();
+  const restore = () => { td.innerHTML = savedHtml; };
   const save = async () => {
     const val = input.value.trim();
-    if (!val || isNaN(parseFloat(val))) { td.textContent = current; return; }
-    if (val === current) { td.textContent = current; return; }
+    if (!val || isNaN(parseFloat(val))) { alert('Value must be a number'); restore(); return; }
+    if (val === valText) { restore(); return; }
     const d = await postApi('/api/experiment/' + id + '/edit-result', {key, value: val});
     if (d.ok) refreshDetail(id);
-    else { td.textContent = current; alert(d.error || 'Failed'); }
+    else { restore(); alert(d.error || 'Failed'); }
   };
   input.onblur = save;
-  input.onkeydown = (e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { td.textContent = current; } };
+  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } if (e.key === 'Escape') restore(); };
 }
 
-async function editResultPrompt(id, key, currentVal) {
-  const newVal = prompt('Edit value for "' + key + '":', currentVal);
-  if (newVal === null) return;
-  if (!newVal.trim() || isNaN(parseFloat(newVal))) { alert('Value must be a number'); return; }
-  const d = await postApi('/api/experiment/' + id + '/edit-result', {key, value: newVal.trim()});
-  if (d.ok) refreshDetail(id);
-  else alert(d.error || 'Failed to edit result');
-}
 
 function openManageResultTypes() {
   const overlay = document.createElement('div');
