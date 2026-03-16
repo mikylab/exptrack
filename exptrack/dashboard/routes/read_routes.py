@@ -97,8 +97,93 @@ def api_get_timezone() -> dict:
     return {"timezone": conf.get("timezone", "")}
 
 
+def api_result_types() -> dict:
+    from ...config import load
+    conf = load()
+    default_types = ["accuracy", "loss", "auroc", "f1", "precision", "recall",
+                     "mse", "mae", "r2", "perplexity", "bleu"]
+    types = conf.get("result_types", default_types)
+    return {"types": types}
+
+
 def api_studies(conn) -> dict:
     return {"studies": get_studies(conn)}
+
+
+def api_list_logs(conn, exp_id: str) -> dict:
+    """List log/text/data files from user-configured paths for this experiment."""
+    import json
+    import os
+    from ...core.queries import find_experiment
+    from ...config import project_root
+
+    exp = find_experiment(conn, exp_id, "id, output_dir, log_paths")
+    if not exp:
+        return {"error": "not found"}
+
+    root = str(project_root())
+
+    # Load saved log paths from dedicated column
+    paths = json.loads(exp["log_paths"] or "[]")
+
+    # Build suggested paths from output_dir
+    output_dir = exp["output_dir"] or ""
+    suggested = []
+    if output_dir and os.path.isdir(os.path.join(root, output_dir)):
+        suggested.append(output_dir)
+        try:
+            for entry in os.scandir(os.path.join(root, output_dir)):
+                if entry.is_dir():
+                    suggested.append(os.path.join(output_dir, entry.name))
+        except OSError:
+            pass
+
+    # Scan log/text/data files from saved paths
+    log_exts = {'.log', '.txt', '.out', '.err', '.csv', '.json', '.jsonl', '.tsv'}
+    files = []
+    for scan_path in paths:
+        abs_dir = os.path.normpath(os.path.join(root, scan_path))
+        if not abs_dir.startswith(os.path.normpath(root)):
+            continue  # security: stay within project
+        if not os.path.isdir(abs_dir):
+            # Could be a single file
+            if os.path.isfile(abs_dir):
+                ext = os.path.splitext(abs_dir)[1].lower()
+                if ext in log_exts:
+                    rel = os.path.relpath(abs_dir, root)
+                    try:
+                        stat = os.stat(abs_dir)
+                    except OSError:
+                        continue
+                    files.append({
+                        "name": os.path.basename(abs_dir),
+                        "path": rel,
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime,
+                        "dir": ".",
+                        "ext": ext[1:],
+                    })
+            continue
+        for dirpath, _, filenames in os.walk(abs_dir):
+            for fn in sorted(filenames):
+                ext = os.path.splitext(fn)[1].lower()
+                if ext in log_exts:
+                    full = os.path.join(dirpath, fn)
+                    rel = os.path.relpath(full, root)
+                    try:
+                        stat = os.stat(full)
+                    except OSError:
+                        continue
+                    files.append({
+                        "name": fn,
+                        "path": rel,
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime,
+                        "dir": os.path.relpath(dirpath, abs_dir) or ".",
+                        "ext": ext[1:],
+                    })
+    files.sort(key=lambda x: x["modified"], reverse=True)
+    return {"files": files, "paths": paths, "suggested_paths": suggested}
 
 
 def api_list_images(conn, exp_id: str) -> dict:

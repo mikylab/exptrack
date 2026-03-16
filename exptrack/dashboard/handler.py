@@ -55,10 +55,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_all_tags(conn))
         elif path == "/api/config/timezone":
             self._json(read_routes.api_get_timezone())
+        elif path == "/api/result-types":
+            self._json(read_routes.api_result_types())
         elif path == "/api/studies":
             self._json(read_routes.api_studies(conn))
         elif path == "/api/all-studies":
             self._json(write_routes.api_all_studies(conn))
+        elif path.startswith("/api/logs/"):
+            exp_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
+            self._json(read_routes.api_list_logs(conn, exp_id))
         elif path.startswith("/api/images/"):
             exp_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
             self._json(read_routes.api_list_images(conn, exp_id))
@@ -104,6 +109,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "delete-study":    lambda: write_routes.api_delete_exp_study(conn, exp_id, body),
                 "stage":           lambda: write_routes.api_set_stage(conn, exp_id, body),
                 "image-path":      lambda: write_routes.api_image_path(conn, exp_id, body),
+                "log-path":        lambda: write_routes.api_log_path(conn, exp_id, body),
+                "log-result":      lambda: write_routes.api_log_result(conn, exp_id, body),
+                "delete-result":   lambda: write_routes.api_delete_result(conn, exp_id, body),
+                "edit-result":     lambda: write_routes.api_edit_result(conn, exp_id, body),
             }
             handler = dispatch.get(action)
             if handler:
@@ -122,6 +131,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/studies/delete":       lambda: write_routes.api_delete_study(conn, body),
             "/api/all-studies":          lambda: write_routes.api_all_studies(conn),
             "/api/bulk-add-to-study":    lambda: write_routes.api_bulk_add_to_study(conn, body),
+            "/api/result-types":         lambda: write_routes.api_manage_result_types(body),
         }
         handler = global_dispatch.get(path)
         if handler:
@@ -161,16 +171,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not os.path.isfile(abs_path):
             self.send_error(404, "File not found")
             return
-        # Only serve image types
+        # Serve image and text file types
         ext = os.path.splitext(abs_path)[1].lower()
         mime_types = {
             '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
             '.gif': 'image/gif', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
             '.tiff': 'image/tiff', '.webp': 'image/webp',
+            '.log': 'text/plain', '.txt': 'text/plain', '.out': 'text/plain',
+            '.err': 'text/plain', '.csv': 'text/csv', '.json': 'application/json',
+            '.jsonl': 'application/json',
         }
         content_type = mime_types.get(ext)
         if not content_type:
-            self.send_error(403, "Only image files can be served")
+            self.send_error(403, "File type not allowed")
             return
         with open(abs_path, 'rb') as f:
             data = f.read()

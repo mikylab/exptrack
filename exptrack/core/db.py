@@ -143,6 +143,8 @@ def _ensure_schema(conn):
             conn.execute("ALTER TABLE experiments ADD COLUMN stage_name TEXT")
         if "image_paths" not in cols:
             conn.execute("ALTER TABLE experiments ADD COLUMN image_paths TEXT")
+        if "log_paths" not in cols:
+            conn.execute("ALTER TABLE experiments ADD COLUMN log_paths TEXT")
         # Drop old 'groups' column if it exists (renamed to 'studies')
         if "groups" in cols:
             try:

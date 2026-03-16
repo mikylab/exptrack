@@ -30,6 +30,10 @@ DEFAULTS: dict = {
     "param_redact_patterns": [
         "api.key", "password", "token", "secret", "credential",
     ],
+    "result_types": [
+        "accuracy", "loss", "auroc", "f1", "precision", "recall",
+        "mse", "mae", "r2", "perplexity", "bleu",
+    ],
     "plugins": {
         "enabled": [],
     },

@@ -1448,6 +1448,8 @@ function artifactTypeBadge(path) {
   if (['png','jpg','jpeg','svg','gif','bmp','tiff'].includes(ext)) return '<span class="artifact-type-badge img">image</span>';
   if (['pt','pth','h5','hdf5','onnx','pkl','joblib','safetensors'].includes(ext)) return '<span class="artifact-type-badge model">model</span>';
   if (['csv','json','jsonl','parquet','tsv','npy','npz'].includes(ext)) return '<span class="artifact-type-badge data">data</span>';
+  if (['log','txt','out','err'].includes(ext)) return '<span class="artifact-type-badge log">log</span>';
+  if (!ext || path.indexOf('.') === -1) return '<span class="artifact-type-badge dir">dir</span>';
   return '<span class="artifact-type-badge">file</span>';
 }
 
@@ -1476,13 +1478,16 @@ async function refreshDetail(id) {
   const regularParams = {};
   const codeChanges = {};
   const varChanges = {};
+  const manualResults = {};
   let cellsRan = null;
   for (const [k, v] of Object.entries(exp.params)) {
     if (k === '_code_changes' || k.startsWith('_code_change/')) {
       codeChanges[k] = v;
     } else if (k.startsWith('_var/')) {
       varChanges[k.slice(5)] = v;
-    } else if (k === '_script_hash' || k === '_cells_ran') {
+    } else if (k.startsWith('_result:')) {
+      manualResults[k.slice(8)] = v;
+    } else if (k === '_script_hash' || k === '_cells_ran' || k === '_result_source') {
       if (k === '_cells_ran') cellsRan = v;
     } else if (k === '_tags') {
       // skip, shown elsewhere
@@ -1499,14 +1504,36 @@ async function refreshDetail(id) {
     `<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td></tr>`
   ).join('');
 
-  const artRows = exp.artifacts.map(a =>
-    `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td><td><div class="artifact-actions"><button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`
-  ).join('');
+  const resultKeys = Object.keys(manualResults);
+  const resultRows = resultKeys.map(k => {
+    const v = manualResults[k];
+    const display = typeof v === 'string' ? v : JSON.stringify(v);
+    return `<tr><td style="color:var(--tl-metric, #d4820f)">${esc(k)}</td><td class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(k)}',this)" title="Double-click to edit"><div style="display:flex;align-items:center;justify-content:space-between">${esc(display)}<span class="result-del-x" onclick="event.stopPropagation();deleteResult('${exp.id}','${esc(k)}')" title="Delete result">&times;</span></div></td></tr>`;
+  }).join('');
+
+  const artRows = exp.artifacts.map(a => {
+    const ext = (a.path || '').split('.').pop().toLowerCase();
+    const isLog = ['log', 'txt', 'out', 'err'].includes(ext);
+    const isData = ['csv', 'json', 'jsonl'].includes(ext);
+    const viewBtn = (isLog || isData)
+      ? `<button onclick="viewLogFile('${esc(a.path)}','${esc(a.label)}')" title="View contents">view</button>`
+      : '';
+    return `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`;
+  }).join('');
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
     <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:210px">
     <input type="text" id="art-path-${exp.id}" placeholder="Path (e.g. outputs/model.pt)" style="width:280px">
     <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
+  </div>`;
+
+  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center" id="log-result-form-${exp.id}">
+    <select id="result-key-${exp.id}" style="width:180px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
+      <option value="">Select result type...</option>
+    </select>
+    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px" onkeydown="if(event.key==='Enter')logResult('${exp.id}')">
+    <button onclick="logResult('${exp.id}')">+ Log Result</button>
+    <button onclick="openManageResultTypes()" style="background:transparent;color:var(--muted);border:none;font-size:16px;padding:0 4px;cursor:pointer;line-height:1" title="Manage result types">&#9881;</button>
   </div>`;
 
   // Code changes
@@ -1641,6 +1668,7 @@ async function refreshDetail(id) {
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
         <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
         <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
+        <button class="tab" onclick="switchDetailTab('logs','${exp.id}')">Logs</button>
         <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
       </div>
 
@@ -1662,8 +1690,13 @@ async function refreshDetail(id) {
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
             ${varHtml}
           </div>
-          <!-- Right column: metrics + charts + artifacts -->
+          <!-- Right column: results + metrics + charts + artifacts -->
           <div>
+            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Results (${resultKeys.length})</h2>
+            <div class="section-body">
+            ${resultRows ? '<table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+resultRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No results logged yet.</p>'}
+            ${logResultForm}
+            </div>
             ${metricRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Metrics (' + exp.metrics.length + ')</h2><div class="section-body"><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table><div id="charts-container"></div></div>' : '<div id="charts-container"></div>'}
             <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
             <div class="section-body">
@@ -1681,6 +1714,7 @@ async function refreshDetail(id) {
 
       <div id="detail-tab-timeline" style="display:none"></div>
       <div id="detail-tab-images" style="display:none"></div>
+      <div id="detail-tab-logs" style="display:none"></div>
       <div id="detail-tab-compare-within" style="display:none"></div>
     </div>
   `;
@@ -1738,6 +1772,9 @@ async function refreshDetail(id) {
       }
     });
   }
+
+  // Populate result type dropdown
+  populateResultTypeDropdown(exp.id);
 }
 """
 
@@ -2066,6 +2103,48 @@ async function editArtifact(id, oldLabel, oldPath) {
   else alert(d.error || 'Failed');
 }
 
+async function viewLogFile(path, label) {
+  try {
+    const resp = await fetch('/api/file/' + encodeURIComponent(path).replace(/%2F/g, '/'));
+    if (!resp.ok) { alert('Could not load file: ' + resp.statusText); return; }
+    const text = await resp.text();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'img-modal-overlay';
+    overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
+
+    const content = document.createElement('div');
+    content.className = 'img-modal-content';
+    content.style.cssText = 'max-width:800px;width:90vw';
+
+    const lines = text.split('\n');
+    const maxLines = 500;
+    const truncated = lines.length > maxLines;
+    const displayLines = truncated ? lines.slice(-maxLines) : lines;
+    const lineNums = displayLines.map((_, i) => (truncated ? lines.length - maxLines + i + 1 : i + 1));
+
+    let logHtml = '<div class="img-modal-header">';
+    logHtml += '<span class="img-modal-name">' + esc(label) + '</span>';
+    logHtml += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + lines.length + ' lines</span>';
+    logHtml += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
+    logHtml += '</div>';
+    logHtml += '<div class="source-view" style="max-height:70vh;font-size:12px;line-height:1.5">';
+    if (truncated) logHtml += '<div style="color:var(--muted);margin-bottom:8px">Showing last ' + maxLines + ' of ' + lines.length + ' lines</div>';
+    for (let i = 0; i < displayLines.length; i++) {
+      logHtml += '<div><span class="line-num">' + lineNums[i] + '</span>' + esc(displayLines[i]) + '</div>';
+    }
+    logHtml += '</div>';
+    content.innerHTML = logHtml;
+    overlay.appendChild(content);
+    document.body.appendChild(overlay);
+
+    const handler = (ev) => { if (ev.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
+    document.addEventListener('keydown', handler);
+  } catch(e) {
+    alert('Error loading file: ' + e.message);
+  }
+}
+
 """
 
 # Timeline visualization and within-experiment comparison
@@ -2079,15 +2158,16 @@ function switchDetailTab(tab, expId) {
   currentDetailTab = tab;
   currentDetailExpId = expId;
   document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
-    const tabs = ['overview','timeline','images','compare-within'];
+    const tabs = ['overview','timeline','images','logs','compare-within'];
     t.classList.toggle('active', tabs[i] === tab);
   });
-  ['overview','timeline','images','compare-within'].forEach(t => {
+  ['overview','timeline','images','logs','compare-within'].forEach(t => {
     const el = document.getElementById('detail-tab-'+t);
     if (el) el.style.display = t === tab ? '' : 'none';
   });
   if (tab === 'timeline') loadTimeline(expId);
   if (tab === 'images') loadImages(expId);
+  if (tab === 'logs') loadLogs(expId);
   if (tab === 'compare-within') loadCompareWithin(expId);
 }
 
@@ -2463,36 +2543,380 @@ function openImageModal(src, name) {
   document.addEventListener('keydown', handler);
 }
 
+// ── Logs tab ─────────────────────────────────────────────────────────────────
+
+let logSort = 'date';
+let logSortDir = 'desc';
+let logFilter = '';
+
+async function loadLogs(expId) {
+  const container = document.getElementById('detail-tab-logs');
+  if (!container) return;
+  container.innerHTML = '<p style="color:var(--muted)">Loading...</p>';
+
+  const data = await api('/api/logs/' + expId);
+  if (data.error && data.error !== 'not found') {
+    container.innerHTML = '<p style="color:var(--muted)">Error: ' + esc(data.error) + '</p>';
+    return;
+  }
+
+  const paths = data.paths || [];
+  const suggestedPaths = data.suggested_paths || [];
+  let files = data.files || [];
+
+  let html = '<div class="img-paths-section">';
+  html += '<h3 style="font-size:14px;margin-bottom:8px">Log Paths</h3>';
+  html += '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">Add folders to scan for log and data files. Paths are relative to project root.</p>';
+
+  // Show saved paths
+  if (paths.length) {
+    for (let i = 0; i < paths.length; i++) {
+      const p = paths[i];
+      html += '<div class="img-path-row">';
+      html += '<span class="img-path-val" ondblclick="startEditLogPath(\'' + expId + '\',' + i + ',this)">' + esc(p) + '</span>';
+      html += '<button class="img-path-del" onclick="deleteLogPath(\'' + expId + '\',' + i + ')" title="Remove path">&times;</button>';
+      html += '</div>';
+    }
+  }
+
+  // Add path form
+  html += '<div class="img-path-add">';
+  html += '<input type="text" id="log-path-input" placeholder="e.g. outputs/logs or logs/tensorboard" style="flex:1">';
+  html += '<button onclick="addLogPath(\'' + expId + '\')">Add Path</button>';
+  html += '</div>';
+
+  // Suggested paths
+  if (suggestedPaths.length && paths.length === 0) {
+    html += '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Suggestions: ';
+    html += suggestedPaths.map(s => '<a href="#" style="color:var(--blue)" onclick="event.preventDefault();document.getElementById(\'log-path-input\').value=\'' + esc(s) + '\';addLogPath(\'' + expId + '\')">' + esc(s) + '</a>').join(', ');
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Show files if we have any
+  if (files.length) {
+    const dirs = [...new Set(files.map(f => f.dir))].sort();
+
+    // Apply filter
+    let filtered = files;
+    if (logFilter) {
+      filtered = filtered.filter(f => f.dir === logFilter);
+    }
+
+    // Apply sort
+    if (logSort === 'name') {
+      filtered = [...filtered].sort((a, b) => logSortDir === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name));
+    } else {
+      filtered = [...filtered].sort((a, b) => logSortDir === 'asc' ? a.modified - b.modified : b.modified - a.modified);
+    }
+
+    html += '<div class="img-gallery-toolbar">';
+    html += '<span style="color:var(--muted);font-size:13px">' + files.length + ' file' + (files.length !== 1 ? 's' : '') + '</span>';
+
+    // Refresh
+    html += ' <button class="img-filter-select" onclick="loadLogs(\'' + expId + '\')" title="Refresh" style="cursor:pointer">&#x21bb; Refresh</button>';
+
+    // Directory filter
+    if (dirs.length > 1) {
+      html += ' <select class="img-filter-select" onchange="logFilter=this.value;loadLogs(\'' + expId + '\')">';
+      html += '<option value=""' + (logFilter === '' ? ' selected' : '') + '>All folders</option>';
+      for (const d of dirs) {
+        html += '<option value="' + esc(d) + '"' + (logFilter === d ? ' selected' : '') + '>' + esc(d) + '</option>';
+      }
+      html += '</select>';
+    }
+
+    // Sort
+    html += ' <select class="img-filter-select" onchange="logSort=this.value;loadLogs(\'' + expId + '\')">';
+    html += '<option value="date"' + (logSort === 'date' ? ' selected' : '') + '>Sort by date</option>';
+    html += '<option value="name"' + (logSort === 'name' ? ' selected' : '') + '>Sort by name</option>';
+    html += '</select>';
+
+    html += ' <button class="img-filter-select" onclick="logSortDir=logSortDir===\'asc\'?\'desc\':\'asc\';loadLogs(\'' + expId + '\')" title="Toggle sort direction" style="cursor:pointer">' + (logSortDir === 'asc' ? '\u25B2 Asc' : '\u25BC Desc') + '</button>';
+
+    html += '</div>';
+
+    // File table
+    html += '<table class="params-table" style="margin-top:8px">';
+    html += '<tr><th>File</th><th>Size</th><th>Modified</th><th style="width:60px"></th></tr>';
+    for (const f of filtered) {
+      const sizeKb = (f.size / 1024).toFixed(1);
+      const modDate = f.modified ? new Date(f.modified * 1000).toLocaleString() : '';
+      const ext = f.ext || '';
+      const logExts = ['log', 'txt', 'out', 'err'];
+      const badge = logExts.includes(ext) ? '<span class="artifact-type-badge log">log</span>' : '<span class="artifact-type-badge data">data</span>';
+      html += '<tr>';
+      html += '<td><div class="artifact-row">' + badge + ' ' + esc(f.name);
+      if (f.dir !== '.') html += ' <span style="color:var(--muted);font-size:11px">(' + esc(f.dir) + ')</span>';
+      html += '</div></td>';
+      html += '<td style="font-size:12px;color:var(--muted)">' + sizeKb + ' KB</td>';
+      html += '<td style="font-size:12px;color:var(--muted)">' + modDate + '</td>';
+      html += '<td><button class="view-source-btn" onclick="viewLogFile(\'' + esc(f.path) + '\',\'' + esc(f.name) + '\')">view</button></td>';
+      html += '</tr>';
+    }
+    html += '</table>';
+  } else if (paths.length) {
+    html += '<p style="color:var(--muted);margin-top:12px">No log files found in the specified path(s).</p>';
+    html += ' <button class="img-filter-select" onclick="loadLogs(\'' + expId + '\')" title="Refresh" style="cursor:pointer;margin-top:8px">&#x21bb; Refresh</button>';
+  }
+
+  container.innerHTML = html;
+}
+
+async function addLogPath(expId) {
+  const input = document.getElementById('log-path-input');
+  const path = input ? input.value.trim() : '';
+  if (!path) return;
+  await postApi('/api/experiment/' + expId + '/log-path', {action: 'add', path});
+  loadLogs(expId);
+}
+
+async function deleteLogPath(expId, index) {
+  await postApi('/api/experiment/' + expId + '/log-path', {action: 'delete', index});
+  loadLogs(expId);
+}
+
+function startEditLogPath(expId, index, el) {
+  const currentVal = el.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'name-edit-input';
+  input.value = currentVal; input.style.cssText = 'width:200px;font-size:12px;padding:2px 4px';
+  el.innerHTML = ''; el.appendChild(input); input.focus(); input.select();
+  let saved = false;
+  async function doSave() {
+    if (saved) return; saved = true;
+    const newVal = input.value.trim();
+    if (newVal && newVal !== currentVal) {
+      await postApi('/api/experiment/' + expId + '/log-path', {action: 'edit', index, path: newVal});
+    }
+    loadLogs(expId);
+  }
+  input.addEventListener('blur', doSave);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { saved = true; loadLogs(expId); }
+  });
+}
+
+// ── Result types management ──────────────────────────────────────────────────
+
+let _resultTypes = null; // cached result types
+
+async function loadResultTypes() {
+  if (_resultTypes !== null) return _resultTypes;
+  try {
+    const d = await api('/api/result-types');
+    _resultTypes = d.types || [];
+  } catch(e) {
+    _resultTypes = ['accuracy', 'loss', 'auroc', 'f1', 'precision', 'recall', 'mse', 'mae', 'r2'];
+  }
+  return _resultTypes;
+}
+
+async function populateResultTypeDropdown(expId) {
+  const sel = document.getElementById('result-key-' + expId);
+  if (!sel) return;
+  const types = await loadResultTypes();
+  // Preserve existing options if already populated
+  if (sel.options.length > 1) return;
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t;
+    sel.appendChild(opt);
+  }
+}
+
+async function logResult(id) {
+  const keyEl = document.getElementById('result-key-' + id);
+  const valEl = document.getElementById('result-val-' + id);
+  if (!keyEl || !valEl) return;
+  const key = keyEl.value.trim();
+  const value = valEl.value.trim();
+  if (!key) { alert('Select a result type'); return; }
+  if (!value || isNaN(parseFloat(value))) { alert('Value must be a number'); return; }
+  const d = await postApi('/api/experiment/' + id + '/log-result', {key, value});
+  if (d.ok) { keyEl.value = ''; valEl.value = ''; refreshDetail(id); }
+  else alert(d.error || 'Failed to log result');
+}
+
+async function deleteResult(id, key) {
+  if (!confirm('Delete result "' + key + '"?')) return;
+  const d = await postApi('/api/experiment/' + id + '/delete-result', {key});
+  if (d.ok) refreshDetail(id);
+  else alert(d.error || 'Failed to delete result');
+}
+
+function startResultEdit(id, key, td) {
+  if (td.querySelector('input')) return;
+  const row = td.querySelector('.artifact-row');
+  const valText = row ? row.childNodes[0].textContent.trim() : td.textContent.trim();
+  const savedHtml = td.innerHTML;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = valText;
+  input.style.cssText = 'width:100%;font-size:13px;padding:2px 4px;font-family:inherit;box-sizing:border-box';
+  td.innerHTML = '';
+  td.appendChild(input);
+  input.focus();
+  input.select();
+  const restore = () => { td.innerHTML = savedHtml; };
+  const save = async () => {
+    const val = input.value.trim();
+    if (!val || isNaN(parseFloat(val))) { alert('Value must be a number'); restore(); return; }
+    if (val === valText) { restore(); return; }
+    const d = await postApi('/api/experiment/' + id + '/edit-result', {key, value: val});
+    if (d.ok) refreshDetail(id);
+    else { restore(); alert(d.error || 'Failed'); }
+  };
+  input.onblur = save;
+  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } if (e.key === 'Escape') restore(); };
+}
+
+
+function openManageResultTypes() {
+  const overlay = document.createElement('div');
+  overlay.className = 'img-modal-overlay';
+  overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
+
+  const content = document.createElement('div');
+  content.className = 'img-modal-content';
+  content.style.cssText = 'max-width:500px;width:90vw';
+
+  async function render() {
+    const types = await loadResultTypes();
+    let html = '<div class="img-modal-header">';
+    html += '<span class="img-modal-name">Manage Result Types</span>';
+    html += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
+    html += '</div>';
+    html += '<div style="padding:16px">';
+    html += '<p style="font-size:12px;color:var(--muted);margin-bottom:12px">These result types are shared across all experiments. They appear in the "Log Result" dropdown.</p>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">';
+    for (let i = 0; i < types.length; i++) {
+      html += '<div class="result-type-chip">';
+      html += '<span>' + esc(types[i]) + '</span>';
+      html += '<button onclick="removeResultType(' + i + ')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px" title="Remove">&times;</button>';
+      html += '</div>';
+    }
+    html += '</div>';
+    html += '<div class="artifact-add-form">';
+    html += '<input type="text" id="new-result-type" placeholder="New result type name" style="width:200px">';
+    html += '<button onclick="addResultType()">+ Add</button>';
+    html += '</div>';
+    html += '</div>';
+    content.innerHTML = html;
+  }
+
+  overlay.appendChild(content);
+  document.body.appendChild(overlay);
+  render();
+
+  window._rtOverlayRender = render;
+
+  const handler = (ev) => { if (ev.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
+  document.addEventListener('keydown', handler);
+}
+
+async function addResultType() {
+  const input = document.getElementById('new-result-type');
+  if (!input) return;
+  const name = input.value.trim().toLowerCase();
+  if (!name) return;
+  const d = await postApi('/api/result-types', {action: 'add', name});
+  if (d.ok) {
+    _resultTypes = d.types;
+    if (window._rtOverlayRender) window._rtOverlayRender();
+  } else {
+    alert(d.error || 'Failed');
+  }
+}
+
+async function removeResultType(index) {
+  const d = await postApi('/api/result-types', {action: 'remove', index});
+  if (d.ok) {
+    _resultTypes = d.types;
+    if (window._rtOverlayRender) window._rtOverlayRender();
+  }
+}
+
 // ── Within-experiment comparison ─────────────────────────────────────────────
 
 let withinSeq1 = null, withinSeq2 = null;
+let _withinEvents = []; // cache timeline events
 
 async function loadCompareWithin(expId) {
   const events = await api('/api/timeline/' + expId);
+  _withinEvents = events;
   const container = document.getElementById('detail-tab-compare-within');
 
-  const cellEvents = events.filter(e => e.event_type === 'cell_exec' || e.event_type === 'artifact');
+  // Group events into meaningful checkpoints: cell_exec, metric, artifact
+  const checkpoints = events.filter(e =>
+    e.event_type === 'cell_exec' || e.event_type === 'artifact' || e.event_type === 'metric'
+  );
 
-  let html = '<p style="margin-bottom:12px">Select two timeline points to compare variable state. <span class="help-icon" title="Click two events to see how variables changed between them. Useful for tracking how a variable (e.g. learning rate, model weights) evolved during the experiment.">?</span></p>';
-  html += '<div class="tl-compare-bar">';
-  html += '<span>Point A: <strong id="cw-seq1">' + (withinSeq1 !== null ? 'seq='+withinSeq1 : 'click to select') + '</strong></span>';
-  html += '<span>Point B: <strong id="cw-seq2">' + (withinSeq2 !== null ? 'seq='+withinSeq2 : 'click to select') + '</strong></span>';
-  html += '<button onclick="doWithinCompare(\'' + expId + '\')">Compare</button>';
-  html += '<button onclick="withinSeq1=null;withinSeq2=null;loadCompareWithin(\'' + expId + '\')" style="background:var(--muted)">Clear</button>';
+  // Helper to describe an event
+  function describeEvent(ev) {
+    if (ev.event_type === 'cell_exec') {
+      const info = ev.value || {};
+      return (info.source_preview || ev.key || 'cell').split('\n')[0].slice(0, 50);
+    }
+    if (ev.event_type === 'metric') return ev.key + ' = ' + (typeof ev.value === 'object' ? JSON.stringify(ev.value) : ev.value);
+    if (ev.event_type === 'artifact') return ev.key || 'artifact';
+    return ev.key || ev.event_type;
+  }
+
+  function eventIcon(type) {
+    if (type === 'cell_exec') return '<span class="tl-type-label tl-type-cell_exec">CELL</span>';
+    if (type === 'metric') return '<span class="tl-type-label tl-type-metric">METRIC</span>';
+    if (type === 'artifact') return '<span class="tl-type-label tl-type-artifact">ARTIFACT</span>';
+    return '<span class="tl-type-label">' + type.toUpperCase() + '</span>';
+  }
+
+  let html = '<div class="cw-header">';
+  html += '<h3>Snapshot Comparison</h3>';
+  html += '<p class="cw-subtitle">Pick two points in the timeline to see what changed between them: variables, metrics, and artifacts.</p>';
   html += '</div>';
 
-  html += '<div class="timeline" style="max-height:400px;overflow-y:auto">';
-  for (const ev of cellEvents) {
-    const info = ev.value || {};
-    const preview = (info.source_preview || ev.key || '').split('\n')[0].slice(0, 60);
-    const selCls = (withinSeq1 === ev.seq || withinSeq2 === ev.seq) ? ' tl-seq-select selected' : ' tl-seq-select';
-    html += '<div class="tl-event tl-' + ev.event_type + selCls + '" onclick="selectWithinSeq(' + ev.seq + ',\'' + expId + '\')" style="cursor:pointer">';
-    html += '<div class="tl-seq">' + ev.seq + '</div>';
+  // Selection bar
+  html += '<div class="tl-compare-bar">';
+  const a1Label = withinSeq1 !== null ? describeEvent(checkpoints.find(e => e.seq === withinSeq1) || {event_type:'',value:null,key:'#'+withinSeq1}) : 'click below';
+  const a2Label = withinSeq2 !== null ? describeEvent(checkpoints.find(e => e.seq === withinSeq2) || {event_type:'',value:null,key:'#'+withinSeq2}) : 'click below';
+  html += '<div class="cw-point cw-point-a' + (withinSeq1 !== null ? ' active' : '') + '">';
+  html += '<span class="cw-point-label">A</span>';
+  html += '<span class="cw-point-desc">' + esc(withinSeq1 !== null ? '#' + withinSeq1 + ': ' + a1Label : 'Select start point') + '</span>';
+  html += '</div>';
+  html += '<span class="cw-arrow">&#8594;</span>';
+  html += '<div class="cw-point cw-point-b' + (withinSeq2 !== null ? ' active' : '') + '">';
+  html += '<span class="cw-point-label">B</span>';
+  html += '<span class="cw-point-desc">' + esc(withinSeq2 !== null ? '#' + withinSeq2 + ': ' + a2Label : 'Select end point') + '</span>';
+  html += '</div>';
+  html += '<div class="cw-actions">';
+  html += '<button onclick="doWithinCompare(\'' + expId + '\')"' + (withinSeq1 !== null && withinSeq2 !== null ? '' : ' disabled') + '>Compare</button>';
+  html += '<button onclick="withinSeq1=null;withinSeq2=null;loadCompareWithin(\'' + expId + '\')" class="cw-clear">Clear</button>';
+  html += '</div>';
+  html += '</div>';
+
+  // Visual timeline with markers
+  html += '<div class="cw-timeline" style="max-height:400px;overflow-y:auto">';
+  for (const ev of checkpoints) {
+    const isA = withinSeq1 === ev.seq;
+    const isB = withinSeq2 === ev.seq;
+    const selCls = (isA || isB) ? ' tl-seq-select selected' : ' tl-seq-select';
+    const markerCls = isA ? ' cw-marker-a' : (isB ? ' cw-marker-b' : '');
+    html += '<div class="tl-event tl-' + ev.event_type + selCls + markerCls + '" onclick="selectWithinSeq(' + ev.seq + ',\'' + expId + '\')" style="cursor:pointer">';
+    html += '<div class="tl-seq">';
+    if (isA) html += '<span class="cw-badge cw-badge-a">A</span>';
+    else if (isB) html += '<span class="cw-badge cw-badge-b">B</span>';
+    else html += ev.seq;
+    html += '</div>';
     html += '<div class="tl-body">';
-    html += '<strong>' + esc(ev.key||'') + '</strong>';
-    html += ' <span style="color:var(--muted);margin-left:8px">' + fmtDt(ev.ts) + '</span>';
-    if (preview) html += '<div class="tl-code-preview">' + esc(preview) + '</div>';
+    html += eventIcon(ev.event_type);
+    html += '<strong>' + esc(describeEvent(ev)) + '</strong>';
+    html += ' <span style="color:var(--muted);margin-left:8px;font-size:11px">' + fmtDt(ev.ts) + '</span>';
     html += '</div></div>';
+  }
+  if (!checkpoints.length) {
+    html += '<p style="color:var(--muted);padding:20px">No timeline events recorded for this experiment. Timeline comparison works best with notebook runs.</p>';
   }
   html += '</div>';
   html += '<div id="within-compare-result"></div>';
@@ -2511,27 +2935,100 @@ function selectWithinSeq(seq, expId) {
 
 async function doWithinCompare(expId) {
   if (withinSeq1 === null || withinSeq2 === null) return;
-  const [vars1, vars2] = await Promise.all([
-    api('/api/vars-at/' + expId + '?seq=' + withinSeq1),
-    api('/api/vars-at/' + expId + '?seq=' + withinSeq2),
+  const lo = Math.min(withinSeq1, withinSeq2);
+  const hi = Math.max(withinSeq1, withinSeq2);
+
+  const [vars1, vars2, metricsData] = await Promise.all([
+    api('/api/vars-at/' + expId + '?seq=' + lo),
+    api('/api/vars-at/' + expId + '?seq=' + hi),
+    api('/api/metrics/' + expId),
   ]);
 
-  const allKeys = [...new Set([...Object.keys(vars1), ...Object.keys(vars2)])].sort();
   let html = '<div class="within-compare">';
-  html += '<h3>Variable state: seq=' + withinSeq1 + ' vs seq=' + withinSeq2 + '</h3>';
-  html += '<table class="params-table">';
-  html += '<tr><th>Variable</th><th>@seq=' + withinSeq1 + '</th><th>@seq=' + withinSeq2 + '</th></tr>';
 
-  for (const k of allKeys) {
-    const v1 = vars1[k] !== undefined ? String(vars1[k]).slice(0, 50) : '--';
-    const v2 = vars2[k] !== undefined ? String(vars2[k]).slice(0, 50) : '--';
-    const differs = String(vars1[k]) !== String(vars2[k]);
-    const cls = differs ? ' class="differs"' : '';
-    html += '<tr><td class="var-name">' + esc(k) + '</td><td' + cls + '>' + esc(v1) + '</td><td' + cls + '>' + esc(v2) + '</td></tr>';
+  // Summary header
+  const evA = _withinEvents.find(e => e.seq === lo);
+  const evB = _withinEvents.find(e => e.seq === hi);
+  html += '<div class="cw-result-header">';
+  html += '<div class="cw-result-point"><span class="cw-badge cw-badge-a">A</span> #' + lo + (evA ? ' &mdash; ' + esc((evA.key||evA.event_type).slice(0,40)) : '') + '</div>';
+  html += '<span class="cw-arrow">&#8594;</span>';
+  html += '<div class="cw-result-point"><span class="cw-badge cw-badge-b">B</span> #' + hi + (evB ? ' &mdash; ' + esc((evB.key||evB.event_type).slice(0,40)) : '') + '</div>';
+  html += '</div>';
+
+  // Filter controls
+  html += '<div class="cw-filters">';
+  html += '<label><input type="checkbox" id="cw-only-changed" checked onchange="filterWithinResults()"> Show only changes</label>';
+  html += '</div>';
+
+  // Variables section
+  const allVarKeys = [...new Set([...Object.keys(vars1), ...Object.keys(vars2)])].sort();
+  const changedVars = allVarKeys.filter(k => String(vars1[k]) !== String(vars2[k]));
+  html += '<h4 class="cw-section-title">Variables <span class="cw-change-count">' + changedVars.length + ' changed / ' + allVarKeys.length + ' total</span></h4>';
+  if (allVarKeys.length) {
+    html += '<table class="params-table cw-table">';
+    html += '<tr><th>Variable</th><th>Point A (#' + lo + ')</th><th>Point B (#' + hi + ')</th><th>Delta</th></tr>';
+    for (const k of allVarKeys) {
+      const v1 = vars1[k] !== undefined ? String(vars1[k]).slice(0, 60) : '--';
+      const v2 = vars2[k] !== undefined ? String(vars2[k]).slice(0, 60) : '--';
+      const differs = String(vars1[k]) !== String(vars2[k]);
+      const cls = differs ? ' class="differs cw-changed"' : ' class="cw-unchanged"';
+      let delta = '';
+      if (differs) {
+        const n1 = parseFloat(vars1[k]), n2 = parseFloat(vars2[k]);
+        if (!isNaN(n1) && !isNaN(n2)) {
+          const d = n2 - n1;
+          delta = '<span class="cw-delta ' + (d > 0 ? 'cw-delta-up' : 'cw-delta-down') + '">' + (d > 0 ? '+' : '') + (Number.isInteger(d) ? d : d.toFixed(4)) + '</span>';
+        } else {
+          delta = '<span class="cw-delta cw-delta-changed">changed</span>';
+        }
+      }
+      html += '<tr' + cls + '><td class="var-name">' + esc(k) + '</td><td>' + esc(v1) + '</td><td>' + esc(v2) + '</td><td>' + delta + '</td></tr>';
+    }
+    html += '</table>';
+  } else {
+    html += '<p style="color:var(--muted);font-size:13px">No variable snapshots between these points.</p>';
   }
-  html += '</table></div>';
 
+  // Metrics section — show metrics logged between the two seq points
+  const metricEvents = _withinEvents.filter(e => e.event_type === 'metric' && e.seq >= lo && e.seq <= hi);
+  if (metricEvents.length || Object.keys(metricsData).length) {
+    html += '<h4 class="cw-section-title" style="margin-top:16px">Metrics between A and B <span class="cw-change-count">' + metricEvents.length + ' logged</span></h4>';
+    if (metricEvents.length) {
+      html += '<table class="params-table cw-table">';
+      html += '<tr><th>Metric</th><th>Value</th><th>Step</th><th>When</th></tr>';
+      for (const me of metricEvents) {
+        const val = typeof me.value === 'object' ? JSON.stringify(me.value) : String(me.value);
+        html += '<tr class="cw-changed"><td>' + esc(me.key||'') + '</td><td>' + esc(val) + '</td><td>#' + me.seq + '</td><td>' + fmtDt(me.ts) + '</td></tr>';
+      }
+      html += '</table>';
+    } else {
+      html += '<p style="color:var(--muted);font-size:13px">No metrics logged between these timeline points.</p>';
+    }
+  }
+
+  // Artifacts section — show artifacts logged between the two seq points
+  const artifactEvents = _withinEvents.filter(e => e.event_type === 'artifact' && e.seq >= lo && e.seq <= hi);
+  if (artifactEvents.length) {
+    html += '<h4 class="cw-section-title" style="margin-top:16px">Artifacts between A and B <span class="cw-change-count">' + artifactEvents.length + '</span></h4>';
+    html += '<table class="params-table cw-table">';
+    html += '<tr><th>Artifact</th><th>Step</th><th>When</th></tr>';
+    for (const ae of artifactEvents) {
+      html += '<tr class="cw-changed"><td>' + esc(ae.key||'') + '</td><td>#' + ae.seq + '</td><td>' + fmtDt(ae.ts) + '</td></tr>';
+    }
+    html += '</table>';
+  }
+
+  html += '</div>';
   document.getElementById('within-compare-result').innerHTML = html;
+}
+
+function filterWithinResults() {
+  const onlyChanged = document.getElementById('cw-only-changed');
+  if (!onlyChanged) return;
+  const show = onlyChanged.checked;
+  document.querySelectorAll('.cw-unchanged').forEach(el => {
+    el.style.display = show ? 'none' : '';
+  });
 }
 """
 
@@ -2727,6 +3224,7 @@ loadTimezoneConfig();
 renderTableHeader();
 loadAllTags();
 loadAllStudies();
+loadResultTypes();
 loadStats();
 loadExperiments().then(() => {
   if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }

@@ -323,3 +323,177 @@ def cmd_log_artifact(args):
             (exp_row["id"], label, args.path, ts)
         )
     print(f"[exptrack] Artifact: {label} -> {args.path}", file=sys.stderr)
+
+
+def cmd_log_output(args):
+    """Capture piped stdout as a log: some_command | exptrack log-output $EXP_ID --label training"""
+    conn = get_db()
+    exp_row = conn.execute(
+        "SELECT id, name, output_dir FROM experiments WHERE id LIKE ?",
+        (args.id + "%",)
+    ).fetchone()
+    if not exp_row:
+        print(f"[exptrack] log-output: not found: {args.id}", file=sys.stderr); sys.exit(1)
+
+    # Determine output path
+    out_dir = exp_row["output_dir"]
+    if not out_dir:
+        from .. import config as _cfg
+        out_dir = str(_cfg.project_root() / '.exptrack' / 'outputs')
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    label = args.label or "output"
+    log_path = Path(out_dir) / f"{label}.log"
+
+    # Read from stdin and write to log file, echoing to stderr
+    try:
+        with open(log_path, "w") as f:
+            for line in sys.stdin:
+                f.write(line)
+                if not args.quiet:
+                    sys.stderr.write(line)
+    except KeyboardInterrupt:
+        pass
+
+    # Register as artifact
+    ts = datetime.now(timezone.utc).isoformat()
+    resolved = str(log_path.resolve())
+    with conn:
+        existing = conn.execute(
+            "SELECT 1 FROM artifacts WHERE exp_id=? AND path=?",
+            (exp_row["id"], resolved)
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
+                (exp_row["id"], f"[log] {label}", resolved, ts)
+            )
+    print(f"[exptrack] Output captured: {log_path}", file=sys.stderr)
+
+
+def cmd_log_result(args):
+    """Manually log a result (key=value) to an experiment.
+
+    Unlike log-metric which is for time-series data, log-result is for
+    final outcomes like accuracy, F1 score, etc. Results are stored as
+    metrics with source=manual to distinguish them.
+
+    Usage:
+        exptrack log-result $EXP_ID accuracy 0.95
+        exptrack log-result $EXP_ID --file results.json
+        echo '{"accuracy": 0.95}' | exptrack log-result $EXP_ID --file -
+    """
+    conn = get_db()
+    exp_row = conn.execute(
+        "SELECT id FROM experiments WHERE id LIKE ?", (args.id + "%",)
+    ).fetchone()
+    if not exp_row:
+        print(f"[exptrack] log-result: not found: {args.id}", file=sys.stderr); sys.exit(1)
+
+    exp_id = exp_row["id"]
+    ts = datetime.now(timezone.utc).isoformat()
+    source = getattr(args, 'source', 'manual')
+
+    results = {}  # key -> float
+    if args.file:
+        # Read from file or stdin
+        if args.file == '-':
+            raw = json.loads(sys.stdin.read())
+        else:
+            fpath = Path(args.file)
+            if not fpath.exists():
+                print(f"[exptrack] log-result: file not found: {fpath}", file=sys.stderr)
+                sys.exit(1)
+            raw = json.loads(fpath.read_text())
+        flat = _flatten_dict(raw)
+        for k, v in flat.items():
+            if isinstance(v, bool):
+                continue
+            try:
+                results[k] = float(v)
+            except (ValueError, TypeError):
+                print(f"[exptrack] log-result: skipping non-numeric value: {k}={v}", file=sys.stderr)
+    else:
+        if args.key is None or args.value is None:
+            print("[exptrack] log-result: provide KEY VALUE or --file FILE", file=sys.stderr)
+            sys.exit(1)
+        try:
+            results[args.key] = float(args.value)
+        except ValueError:
+            print(f"[exptrack] log-result: value must be a number, got: {args.value}", file=sys.stderr)
+            sys.exit(1)
+
+    if not results:
+        return
+
+    with conn:
+        for k, v in results.items():
+            conn.execute(
+                "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+                (exp_id, f"_result:{k}", json.dumps(v))
+            )
+    conn.commit()
+    for k, v in results.items():
+        print(f"[exptrack] result: {k}={v} (source: {source})", file=sys.stderr)
+
+
+def cmd_link_dir(args):
+    """Link a log/tensorboard/output directory to an experiment.
+
+    Usage:
+        exptrack link-dir $EXP_ID ./logs/run_42 --label tensorboard
+        exptrack link-dir $EXP_ID ./checkpoints --label checkpoints
+    """
+    conn = get_db()
+    exp_row = conn.execute(
+        "SELECT id FROM experiments WHERE id LIKE ?", (args.id + "%",)
+    ).fetchone()
+    if not exp_row:
+        print(f"[exptrack] link-dir: not found: {args.id}", file=sys.stderr); sys.exit(1)
+
+    dir_path = Path(args.path).resolve()
+    if not dir_path.exists():
+        print(f"[exptrack] link-dir: path not found: {dir_path}", file=sys.stderr)
+        sys.exit(1)
+
+    label = args.label or dir_path.name
+    ts = datetime.now(timezone.utc).isoformat()
+
+    # Register the directory itself as an artifact
+    with conn:
+        existing = conn.execute(
+            "SELECT 1 FROM artifacts WHERE exp_id=? AND path=?",
+            (exp_row["id"], str(dir_path))
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
+                (exp_row["id"], f"[dir] {label}", str(dir_path), ts)
+            )
+
+    # Scan files in directory and register them too
+    if dir_path.is_dir():
+        file_count = 0
+        for p in dir_path.rglob('*'):
+            if not p.is_file():
+                continue
+            resolved = str(p.resolve())
+            existing = conn.execute(
+                "SELECT 1 FROM artifacts WHERE exp_id=? AND path=?",
+                (exp_row["id"], resolved)
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
+                    (exp_row["id"], p.name, resolved, ts)
+                )
+                file_count += 1
+        if file_count:
+            conn.commit()
+            print(f"[exptrack] Linked directory: {dir_path} ({file_count} files)", file=sys.stderr)
+        else:
+            conn.commit()
+            print(f"[exptrack] Linked directory: {dir_path} (empty)", file=sys.stderr)
+    else:
+        conn.commit()
+        print(f"[exptrack] Linked file: {dir_path}", file=sys.stderr)

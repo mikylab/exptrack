@@ -380,6 +380,136 @@ def api_set_stage(conn, exp_id: str, body: dict) -> dict:
     return {"ok": True, "stage": stage, "stage_name": stage_name}
 
 
+def api_manage_result_types(body: dict) -> dict:
+    """Add/remove result types from project config."""
+    from ...config import load, save, reload
+    conf = load()
+    default_types = ["accuracy", "loss", "auroc", "f1", "precision", "recall",
+                     "mse", "mae", "r2", "perplexity", "bleu"]
+    types = list(conf.get("result_types", default_types))
+
+    action = body.get("action", "")
+    if action == "add":
+        name = body.get("name", "").strip().lower()
+        if not name:
+            return {"error": "empty name"}
+        if name not in types:
+            types.append(name)
+    elif action == "remove":
+        index = body.get("index", -1)
+        if 0 <= index < len(types):
+            types.pop(index)
+    else:
+        return {"error": "invalid action"}
+
+    conf["result_types"] = types
+    save(conf)
+    reload()
+    return {"ok": True, "types": types}
+
+
+def api_log_result(conn, exp_id: str, body: dict) -> dict:
+    """Log a manual result (numeric) to an experiment.
+
+    Results are stored only in params as _result:{key}, separate from
+    automated metrics which come from actual training runs.
+    """
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    key = body.get("key", "").strip()
+    value = body.get("value", "").strip()
+    if not key or not value:
+        return {"error": "provide key and value"}
+    try:
+        num_val = float(value)
+    except ValueError:
+        return {"error": "value must be a number"}
+
+    conn.execute(
+        "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+        (exp["id"], f"_result:{key}", json.dumps(num_val))
+    )
+    conn.commit()
+    return {"ok": True, "key": key, "value": num_val}
+
+
+def api_delete_result(conn, exp_id: str, body: dict) -> dict:
+    """Delete a manually logged result."""
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    key = body.get("key", "").strip()
+    if not key:
+        return {"error": "provide key"}
+
+    conn.execute(
+        "DELETE FROM params WHERE exp_id=? AND key=?",
+        (exp["id"], f"_result:{key}")
+    )
+    conn.commit()
+    return {"ok": True}
+
+
+def api_edit_result(conn, exp_id: str, body: dict) -> dict:
+    """Edit a manually logged result value."""
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    key = body.get("key", "").strip()
+    value = body.get("value", "").strip()
+    if not key or not value:
+        return {"error": "provide key and value"}
+    try:
+        num_val = float(value)
+    except ValueError:
+        return {"error": "value must be a number"}
+
+    conn.execute(
+        "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+        (exp["id"], f"_result:{key}", json.dumps(num_val))
+    )
+    conn.commit()
+    return {"ok": True, "key": key, "value": num_val}
+
+
+def api_log_path(conn, exp_id: str, body: dict) -> dict:
+    """Manage log paths for an experiment (add/edit/delete).
+
+    Stored in experiments.log_paths as a JSON array of strings.
+    """
+    exp = find_experiment(conn, exp_id, "id, log_paths")
+    if not exp:
+        return {"error": "not found"}
+    action = body.get("action", "")
+    paths = json.loads(exp["log_paths"] or "[]")
+
+    if action == "add":
+        path = body.get("path", "").strip()
+        if not path:
+            return {"error": "empty path"}
+        if path not in paths:
+            paths.append(path)
+    elif action == "delete":
+        index = body.get("index", -1)
+        if 0 <= index < len(paths):
+            paths.pop(index)
+    elif action == "edit":
+        index = body.get("index", -1)
+        path = body.get("path", "").strip()
+        if 0 <= index < len(paths) and path:
+            paths[index] = path
+    else:
+        return {"error": "invalid action"}
+
+    conn.execute(
+        "UPDATE experiments SET log_paths=?, updated_at=? WHERE id=?",
+        (json.dumps(paths), datetime.now(timezone.utc).isoformat(), exp["id"])
+    )
+    conn.commit()
+    return {"ok": True, "paths": paths}
+
+
 def api_image_path(conn, exp_id: str, body: dict) -> dict:
     """Manage image paths for an experiment (add/edit/delete).
 

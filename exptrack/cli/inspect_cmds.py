@@ -339,22 +339,23 @@ def cmd_compare(args):
 
 
 def _compare_within(conn, exp_id_prefix, seq1, seq2):
-    """Compare variable state at two timeline points within the same experiment."""
-    from ..core.queries import find_experiment, get_vars_at_seq
+    """Compare variable state, metrics, and artifacts at two timeline points."""
+    from ..core.queries import find_experiment, get_vars_at_seq, get_timeline_events
     exp = find_experiment(conn, exp_id_prefix, "id, name")
     if not exp:
         print(col(f"Not found: {exp_id_prefix}", R)); return
 
     eid = exp["id"]
-    v1 = get_vars_at_seq(conn, eid, seq=seq1)
-    v2 = get_vars_at_seq(conn, eid, seq=seq2)
+    lo, hi = min(seq1, seq2), max(seq1, seq2)
+    v1 = get_vars_at_seq(conn, eid, seq=lo)
+    v2 = get_vars_at_seq(conn, eid, seq=hi)
 
     print()
     print(bold(f"  Within-experiment comparison: {exp['name']}"))
-    print(f"  {'':26} {bold(col(f'@seq={seq1}', C)):<36} {bold(col(f'@seq={seq2}', M))}")
+    print(f"  {'':26} {bold(col(f'Point A (#' + str(lo) + ')', C)):<36} {bold(col(f'Point B (#' + str(hi) + ')', M))}")
     print(dim("  " + "-" * 82))
 
-    for s, label in [(seq1, C), (seq2, M)]:
+    for s, label in [(lo, C), (hi, M)]:
         row = conn.execute(
             "SELECT event_type, key, value FROM timeline WHERE exp_id=? AND seq=?",
             (eid, s)).fetchone()
@@ -367,23 +368,52 @@ def _compare_within(conn, exp_id_prefix, seq1, seq2):
                 preview = info.get("source_preview", row["key"] or "")[:50]
             else:
                 preview = str(info)[:50]
-            print(f"  {col(f'@seq={s}', label)}: {row['event_type']} - {preview}")
+            print(f"  {col(f'#{s}', label)}: {row['event_type']} - {preview}")
     print()
 
+    # Variables comparison
     all_keys = sorted(set(v1) | set(v2))
+    changed_count = sum(1 for k in all_keys if v1.get(k) != v2.get(k))
     if all_keys:
-        print(bold(col("  Variables", M)))
+        print(bold(col(f"  Variables", M)) + dim(f"  ({changed_count} changed / {len(all_keys)} total)"))
         for k in all_keys:
             sv1 = str(v1.get(k, dim("--")))[:30]
             sv2 = str(v2.get(k, dim("--")))[:30]
-            marker = col("  < changed", Y) if v1.get(k) != v2.get(k) else ""
             if v1.get(k) != v2.get(k):
-                print(f"  {col(k, Y):<34} {sv1:<30} {sv2:<30}{marker}")
+                # Show delta for numeric values
+                delta = ""
+                try:
+                    n1, n2 = float(v1[k]), float(v2[k])
+                    d = n2 - n1
+                    delta = col(f"  {'+'if d>0 else ''}{d:.4g}", G if d < 0 else R)
+                except (ValueError, TypeError, KeyError):
+                    delta = col("  < changed", Y)
+                print(f"  {col(k, Y):<34} {sv1:<30} {sv2:<30}{delta}")
             else:
                 print(dim(f"  {k:<26} {sv1:<30} {sv2:<30}"))
+        print()
     else:
         print(dim("  No variable state recorded at these points."))
-    print()
+        print()
+
+    # Metrics between the two points
+    events = get_timeline_events(conn, eid)
+    metric_events = [e for e in events if e["event_type"] == "metric" and lo <= e["seq"] <= hi]
+    if metric_events:
+        print(bold(col(f"  Metrics between #{lo} and #{hi}", G)) + dim(f"  ({len(metric_events)} logged)"))
+        for me in metric_events:
+            val = me["value"]
+            val_str = f"{val:.4g}" if isinstance(val, (int, float)) else str(val)[:30]
+            print(f"  {me['key']:<26} {val_str:<30} " + dim(f"@#{me['seq']}"))
+        print()
+
+    # Artifacts between the two points
+    artifact_events = [e for e in events if e["event_type"] == "artifact" and lo <= e["seq"] <= hi]
+    if artifact_events:
+        print(bold(col(f"  Artifacts between #{lo} and #{hi}", C)) + dim(f"  ({len(artifact_events)})"))
+        for ae in artifact_events:
+            print(f"  {ae['key']:<26} " + dim(f"@#{ae['seq']}"))
+        print()
 
 
 def cmd_history(args):
