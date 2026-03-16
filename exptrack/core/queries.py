@@ -106,8 +106,6 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
             (r["id"],)
         ).fetchall()
         all_params = {p["key"]: json.loads(p["value"]) for p in ps}
-        # Get manual results from metrics table (source='manual')
-        results = _get_manual_results(conn, r["id"])
         result.append({
             "id": r["id"],
             "name": r["name"],
@@ -123,7 +121,6 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
             "stage": r["stage"],
             "stage_name": r["stage_name"],
             "metrics": metrics,
-            "results": results,
             "sparklines": sparklines,
             "params": all_params,
         })
@@ -132,17 +129,6 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
-def _get_manual_results(conn, exp_id: str) -> dict[str, float]:
-    """Get manual results (source='manual') from the metrics table."""
-    rows = conn.execute(
-        "SELECT key, value FROM metrics WHERE exp_id=? AND source='manual'",
-        (exp_id,)
-    ).fetchall()
-    # Return latest value per key
-    results: dict[str, float] = {}
-    for r in rows:
-        results[r["key"]] = r["value"]
-    return results
 
 
 def get_latest_metrics(conn, exp_id: str) -> dict[str, float]:
@@ -213,7 +199,7 @@ def get_all_latest_metrics(conn, limit: int = 50) -> dict[str, dict[str, float]]
 
 
 def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
-    """Get experiment names, latest metrics, and results for multiple experiments."""
+    """Get experiment names, latest metrics for multiple experiments."""
     results = []
     for eid in exp_ids:
         exp = find_experiment(conn, eid, "id, name, status")
@@ -221,13 +207,11 @@ def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
             continue
         full_id = exp["id"]
         metrics = get_latest_metrics(conn, full_id)
-        manual_results = _get_manual_results(conn, full_id)
         results.append({
             "id": full_id,
             "name": exp["name"],
             "status": exp["status"],
             "metrics": metrics,
-            "results": manual_results,
         })
     return results
 

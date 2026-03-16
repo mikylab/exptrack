@@ -1114,13 +1114,6 @@ function renderExpRow(e) {
       for (const [k, v] of Object.entries(e.metrics || {}).slice(0, 3)) {
         parts.push('<span style="color:var(--blue)" title="metric">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))) + miniSpark((e.sparklines||{})[k]));
       }
-      // Manual results still shown separately if not already in metrics
-      const metricKeys = new Set(Object.keys(e.metrics || {}));
-      for (const [k, v] of Object.entries(e.results || {}).slice(0, 3 - parts.length)) {
-        if (!metricKeys.has(k)) {
-          parts.push('<span style="color:var(--tl-metric)" title="manual">' + esc(k) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v).slice(0,20))));
-        }
-      }
       return '<td class="truncate-cell" style="font-size:13px">' + (parts.join(', ') || '<span style="color:var(--muted)">--</span>') + '</td>';
     })(),
     changes: (function() {
@@ -1565,7 +1558,7 @@ async function refreshDetail(id) {
   }
   const groupKeys = Object.keys(metricGroups).sort((a, b) => a === '' ? 1 : b === '' ? -1 : a.localeCompare(b));
   let metricRows = '';
-  const thead = '<tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th><th>Source</th></tr>';
+  const thead = '<tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Count</th><th>Source</th></tr>';
   if (groupKeys.length <= 1) {
     // No grouping needed — single flat table
     metricRows = exp.metrics.map(m => { const row = buildMetricRow(m); return row.replace(esc(m.key.includes('/') ? m.key.split('/').slice(1).join('/') : m.key), esc(m.key)); }).join('');
@@ -1763,11 +1756,11 @@ async function refreshDetail(id) {
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
             ${varHtml}
           </div>
-          <!-- Right column: unified metrics & results + charts + artifacts -->
+          <!-- Right column: metrics + charts + artifacts -->
           <div>
-            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Metrics & Results (${exp.metrics.length})</h2>
+            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Metrics (${exp.metrics.length})</h2>
             <div class="section-body">
-            ${metricRows || '<p style="color:var(--muted);font-size:13px">No metrics or results yet.</p>'}
+            ${metricRows || '<p style="color:var(--muted);font-size:13px">No metrics yet.</p>'}
             ${logResultForm}
             <div id="charts-container"></div>
             </div>
@@ -2030,7 +2023,7 @@ async function doCompare() {
   const src2 = Object.fromEntries(e2.metrics.map(m => [m.key, m.source || 'auto']));
 
   if (allUnifiedKeys.length) {
-    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Metrics & Results</summary><table class="metrics-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th><th>Delta</th><th>Source</th></tr>';
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Metrics</summary><table class="metrics-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th><th>Delta</th><th>Source</th></tr>';
     for (const k of allUnifiedKeys) {
       const v1 = m1[k], v2 = m2[k];
       const sv1 = v1 !== undefined ? (typeof v1 === 'number' ? v1.toFixed(4) : String(v1)) : '--';
@@ -2186,11 +2179,10 @@ async function doMultiCompare(ids) {
     return;
   }
   const exps = data.experiments;
-  // Collect all unique metric+result keys
+  // Collect all unique metric keys
   const allKeys = new Set();
   for (const e of exps) {
     for (const k of Object.keys(e.metrics || {})) allKeys.add(k);
-    for (const k of Object.keys(e.results || {})) allKeys.add(k);
   }
   const keys = [...allKeys].sort();
 
@@ -2205,7 +2197,7 @@ async function doMultiCompare(ids) {
   for (const k of keys) {
     html += '<tr><td>' + esc(k) + '</td>';
     for (const e of exps) {
-      const v = e.metrics[k] ?? e.results[k];
+      const v = e.metrics[k];
       html += '<td>' + (v !== undefined ? (typeof v === 'number' ? v.toFixed(4) : esc(String(v))) : '--') + '</td>';
     }
     html += '</tr>';
@@ -2229,7 +2221,7 @@ async function doMultiCompare(ids) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) continue;
     const labels = exps.map(e => e.name.length > 15 ? e.name.slice(0,12) + '...' : e.name);
-    const values = exps.map(e => e.metrics[k] ?? e.results[k] ?? null);
+    const values = exps.map(e => e.metrics[k] ?? null);
     const colors = exps.map((_, i) => MULTI_COLORS[i % MULTI_COLORS.length]);
     multiCharts[k] = new Chart(canvas, {
       type: 'bar',
