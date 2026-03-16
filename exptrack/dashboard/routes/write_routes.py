@@ -381,31 +381,50 @@ def api_set_stage(conn, exp_id: str, body: dict) -> dict:
 
 
 def api_manage_result_types(body: dict) -> dict:
-    """Add/remove result types from project config."""
+    """Add/remove result types or namespace prefixes from project config."""
     from ...config import load, save, reload
     conf = load()
     default_types = ["accuracy", "loss", "auroc", "f1", "precision", "recall",
                      "mse", "mae", "r2", "perplexity", "bleu"]
+    default_prefixes = ["train", "val", "test"]
     types = list(conf.get("result_types", default_types))
+    prefixes = list(conf.get("metric_prefixes", default_prefixes))
 
+    target = body.get("target", "type")  # "type" or "prefix"
     action = body.get("action", "")
-    if action == "add":
-        name = body.get("name", "").strip().lower()
-        if not name:
-            return {"error": "empty name"}
-        if name not in types:
-            types.append(name)
-    elif action == "remove":
-        index = body.get("index", -1)
-        if 0 <= index < len(types):
-            types.pop(index)
-    else:
-        return {"error": "invalid action"}
 
-    conf["result_types"] = types
+    if target == "prefix":
+        if action == "add":
+            name = body.get("name", "").strip().lower().rstrip("/")
+            if not name:
+                return {"error": "empty name"}
+            if name not in prefixes:
+                prefixes.append(name)
+        elif action == "remove":
+            index = body.get("index", -1)
+            if 0 <= index < len(prefixes):
+                prefixes.pop(index)
+        else:
+            return {"error": "invalid action"}
+        conf["metric_prefixes"] = prefixes
+    else:
+        if action == "add":
+            name = body.get("name", "").strip().lower()
+            if not name:
+                return {"error": "empty name"}
+            if name not in types:
+                types.append(name)
+        elif action == "remove":
+            index = body.get("index", -1)
+            if 0 <= index < len(types):
+                types.pop(index)
+        else:
+            return {"error": "invalid action"}
+        conf["result_types"] = types
+
     save(conf)
     reload()
-    return {"ok": True, "types": types}
+    return {"ok": True, "types": types, "prefixes": prefixes}
 
 
 def api_log_result(conn, exp_id: str, body: dict) -> dict:

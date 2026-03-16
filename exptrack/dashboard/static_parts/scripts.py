@@ -25,6 +25,18 @@ let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
 let allKnownStudies = []; // {name, count}[]
 let highlightMode = localStorage.getItem('exptrack-highlight') === 'true';
+
+// Display abbreviations for common metric names (config stores full names)
+const METRIC_ABBREV = {
+  accuracy: 'acc', precision: 'prec', recall: 'rec', perplexity: 'ppl',
+};
+function abbrevMetric(key) {
+  // Abbreviate the base name (after last /), keep prefix
+  const si = key.lastIndexOf('/');
+  const prefix = si > 0 ? key.slice(0, si + 1) : '';
+  const base = si > 0 ? key.slice(si + 1) : key;
+  return prefix + (METRIC_ABBREV[base] || base);
+}
 let highlightColors = {}; // study -> color mapping
 
 // Column configuration: id, label, default visibility, sortable, min-width
@@ -1114,7 +1126,7 @@ function renderExpRow(e) {
         const v = typeof m === 'object' ? m.value : m;
         const src = typeof m === 'object' ? m.source : 'auto';
         const color = src === 'manual' ? 'var(--tl-metric)' : src === 'pipeline' ? 'var(--green)' : 'var(--blue)';
-        parts.push('<span style="color:' + color + '" title="' + src + '">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))) + miniSpark((e.sparklines||{})[k]));
+        parts.push('<span style="color:' + color + '" title="' + esc(k) + ' (' + src + ')">' + esc(abbrevMetric(k).split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))) + miniSpark((e.sparklines||{})[k]));
       }
       return '<td class="truncate-cell" style="font-size:13px">' + (parts.join(', ') || '<span style="color:var(--muted)">--</span>') + '</td>';
     })(),
@@ -1538,14 +1550,14 @@ async function refreshDetail(id) {
   ).join('');
 
   // Build unified metrics rows grouped by prefix (train/*, test/*, val/*, etc.)
-  function buildMetricRow(m) {
+  function buildMetricRow(m, showFullKey) {
     const src = m.source || 'auto';
     const isManual = src === 'manual';
     const keyColor = isManual ? 'var(--tl-metric)' : 'var(--green)';
     const delBtn = `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`;
     const editAttr = isManual ? ` class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(m.key)}',this)" title="Double-click to edit"` : '';
-    const shortKey = m.key.includes('/') ? m.key.split('/').slice(1).join('/') : m.key;
-    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="Double-click to rename">${esc(shortKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${isManual ? '--' : (m.min?.toFixed(4) ?? '--')}</td><td>${isManual ? '--' : (m.max?.toFixed(4) ?? '--')}</td><td>${m.n}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
+    const displayKey = showFullKey ? abbrevMetric(m.key) : abbrevMetric(m.key.includes('/') ? m.key.split('/').slice(1).join('/') : m.key);
+    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="${esc(m.key)} — double-click to rename">${esc(displayKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${isManual ? '--' : (m.min?.toFixed(4) ?? '--')}</td><td>${isManual ? '--' : (m.max?.toFixed(4) ?? '--')}</td><td>${m.n}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
   }
   // Group metrics by prefix
   const metricGroups = {};
@@ -1558,8 +1570,8 @@ async function refreshDetail(id) {
   let metricRows = '';
   const thead = '<tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Count</th><th>Source</th></tr>';
   if (groupKeys.length <= 1) {
-    // No grouping needed — single flat table
-    metricRows = exp.metrics.map(m => { const row = buildMetricRow(m); return row.replace(esc(m.key.includes('/') ? m.key.split('/').slice(1).join('/') : m.key), esc(m.key)); }).join('');
+    // No grouping needed — single flat table, show abbreviated full key
+    metricRows = exp.metrics.map(m => buildMetricRow(m, true)).join('');
     if (metricRows) metricRows = '<table class="metrics-table">' + thead + metricRows + '</table>';
   } else {
     // Grouped tables with prefix headers
@@ -3059,35 +3071,47 @@ function startEditLogPath(expId, index, el) {
 // ── Result types management ──────────────────────────────────────────────────
 
 let _resultTypes = null; // cached result types
+let _metricPrefixes = null; // cached namespace prefixes
 
 async function loadResultTypes() {
   if (_resultTypes !== null) return _resultTypes;
   try {
     const d = await api('/api/result-types');
     _resultTypes = d.types || [];
+    _metricPrefixes = d.prefixes || ['train', 'val', 'test'];
   } catch(e) {
     _resultTypes = ['accuracy', 'loss', 'auroc', 'f1', 'precision', 'recall', 'mse', 'mae', 'r2'];
+    _metricPrefixes = ['train', 'val', 'test'];
   }
   return _resultTypes;
+}
+
+async function loadMetricPrefixes() {
+  if (_metricPrefixes !== null) return _metricPrefixes;
+  await loadResultTypes();
+  return _metricPrefixes;
 }
 
 async function populateResultTypeDropdown(expId) {
   const dl = document.getElementById('metric-suggestions-' + expId);
   if (!dl) return;
   const types = await loadResultTypes();
-  const defaultPrefixes = ['train', 'val', 'test'];
+  const savedPrefixes = await loadMetricPrefixes();
 
-  // Collect existing keys and prefixes from current experiment
+  // Also pick up any prefixes already used in this experiment
   const exp = allExperiments.find(e => e.id === expId);
-  const existingKeys = new Set(Object.keys(exp?.metrics || {}));
+  const existingKeys = new Set();
+  if (exp?.metrics) {
+    for (const k of Object.keys(exp.metrics)) existingKeys.add(k);
+  }
   const existingPrefixes = new Set();
   for (const k of existingKeys) {
     const si = k.indexOf('/');
     if (si > 0) existingPrefixes.add(k.slice(0, si));
   }
-  const prefixes = [...new Set([...defaultPrefixes, ...existingPrefixes])].sort();
+  const prefixes = [...new Set([...savedPrefixes, ...existingPrefixes])].sort();
 
-  // Build suggestions: existing keys first, then bare types, then prefixed types
+  // Build suggestions: existing keys, bare types, prefixed types
   const suggestions = new Set();
   for (const k of existingKeys) suggestions.add(k);
   for (const t of types) {
@@ -3118,12 +3142,21 @@ async function logMetric(id) {
   const d = await postApi('/api/experiment/' + id + '/log-metric', payload);
   if (d.ok) {
     valEl.value = ''; if (stepEl) stepEl.value = '';
-    // Auto-save new base type (strip namespace prefix) for future suggestions
-    const baseType = key.includes('/') ? key.split('/').slice(1).join('/') : key;
+    // Auto-save new base type and prefix for future suggestions
+    const hasSlash = key.includes('/');
+    const baseType = hasSlash ? key.split('/').slice(1).join('/') : key;
     const types = await loadResultTypes();
     if (!types.includes(baseType)) {
       await postApi('/api/result-types', {action: 'add', name: baseType});
-      _resultTypes = null; // invalidate cache
+      _resultTypes = null;
+    }
+    if (hasSlash) {
+      const prefix = key.split('/')[0];
+      const prefixes = await loadMetricPrefixes();
+      if (!prefixes.includes(prefix)) {
+        await postApi('/api/result-types', {action: 'add', name: prefix, target: 'prefix'});
+        _metricPrefixes = null;
+      }
     }
     refreshDetail(id);
     owlSay('Logged ' + key + ' = ' + d.value + ' (step ' + d.step + ')');
@@ -3222,24 +3255,37 @@ function openManageResultTypes() {
 
   async function render() {
     const types = await loadResultTypes();
+    const prefixes = await loadMetricPrefixes();
     let html = '<div class="img-modal-header">';
-    html += '<span class="img-modal-name">Manage Metric Types</span>';
+    html += '<span class="img-modal-name">Manage Metrics</span>';
     html += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
     html += '</div>';
     html += '<div style="padding:16px">';
-    html += '<p style="font-size:12px;color:var(--muted);margin-bottom:12px">These metric types are shared across all experiments. They appear in the metric key dropdown.</p>';
-    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">';
-    for (let i = 0; i < types.length; i++) {
-      html += '<div class="result-type-chip">';
-      html += '<span>' + esc(types[i]) + '</span>';
-      html += '<button onclick="removeResultType(' + i + ')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px" title="Remove">&times;</button>';
-      html += '</div>';
+
+    // Namespace prefixes
+    html += '<div style="margin-bottom:16px">';
+    html += '<div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Namespace Prefixes</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">';
+    for (let i = 0; i < prefixes.length; i++) {
+      html += '<div class="result-type-chip"><span>' + esc(prefixes[i]) + '/</span>';
+      html += '<button onclick="removeMetricItem(\'prefix\',' + i + ')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px" title="Remove">&times;</button></div>';
     }
     html += '</div>';
-    html += '<div class="artifact-add-form">';
-    html += '<input type="text" id="new-result-type" placeholder="New metric type (e.g. top5_acc)" style="width:200px">';
-    html += '<button onclick="addResultType()">+ Add</button>';
+    html += '<div class="artifact-add-form"><input type="text" id="new-metric-prefix" placeholder="New prefix (e.g. eval)" style="width:160px" onkeydown="if(event.key===\'Enter\')addMetricItem(\'prefix\')">';
+    html += '<button onclick="addMetricItem(\'prefix\')">+ Add</button></div></div>';
+
+    // Metric types
+    html += '<div style="margin-bottom:8px">';
+    html += '<div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Metric Types</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">';
+    for (let i = 0; i < types.length; i++) {
+      html += '<div class="result-type-chip"><span>' + esc(types[i]) + '</span>';
+      html += '<button onclick="removeMetricItem(\'type\',' + i + ')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px" title="Remove">&times;</button></div>';
+    }
     html += '</div>';
+    html += '<div class="artifact-add-form"><input type="text" id="new-result-type" placeholder="New metric type (e.g. top5_acc)" style="width:160px" onkeydown="if(event.key===\'Enter\')addMetricItem(\'type\')">';
+    html += '<button onclick="addMetricItem(\'type\')">+ Add</button></div></div>';
+
     html += '</div>';
     content.innerHTML = html;
   }
@@ -3254,24 +3300,26 @@ function openManageResultTypes() {
   document.addEventListener('keydown', handler);
 }
 
-async function addResultType() {
-  const input = document.getElementById('new-result-type');
+async function addMetricItem(target) {
+  const inputId = target === 'prefix' ? 'new-metric-prefix' : 'new-result-type';
+  const input = document.getElementById(inputId);
   if (!input) return;
   const name = input.value.trim().toLowerCase();
   if (!name) return;
-  const d = await postApi('/api/result-types', {action: 'add', name});
+  const d = await postApi('/api/result-types', {action: 'add', name, target});
   if (d.ok) {
-    _resultTypes = d.types;
+    _resultTypes = d.types; _metricPrefixes = d.prefixes;
+    input.value = '';
     if (window._rtOverlayRender) window._rtOverlayRender();
   } else {
     alert(d.error || 'Failed');
   }
 }
 
-async function removeResultType(index) {
-  const d = await postApi('/api/result-types', {action: 'remove', index});
+async function removeMetricItem(target, index) {
+  const d = await postApi('/api/result-types', {action: 'remove', index, target});
   if (d.ok) {
-    _resultTypes = d.types;
+    _resultTypes = d.types; _metricPrefixes = d.prefixes;
     if (window._rtOverlayRender) window._rtOverlayRender();
   }
 }
