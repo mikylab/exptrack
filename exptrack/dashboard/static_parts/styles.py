@@ -573,7 +573,7 @@ CSS_COMPONENTS = """
   .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 5px 8px; border-radius: 4px; background: var(--card-bg); width: 100%; max-width: 300px; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   .tags-cell .tag { font-size: 13px; padding: 3px 8px; }
-  .pin-btn { cursor: pointer; font-size: 14px; background: none; border: none; color: var(--muted); padding: 0 2px; }
+  .pin-btn { cursor: pointer; font-size: 14px; background: none; border: none; color: var(--muted); padding: 0; width: 100%; text-align: center; }
   .pin-btn:hover { color: var(--yellow); }
   .pin-btn.pinned { color: var(--yellow); }
   .pinned-row { background: rgba(184,134,11,0.05); }

@@ -500,7 +500,12 @@ def api_edit_result(conn, exp_id: str, body: dict) -> dict:
 
 
 def api_delete_metric(conn, exp_id: str, body: dict) -> dict:
-    """Delete all data points for a metric key from the metrics table."""
+    """Delete metric data points. Supports deleting last step, a specific step, or all.
+
+    body.mode: "last" (default) | "step" | "all"
+    body.key: metric key (required)
+    body.step: step number (required when mode="step")
+    """
     from ...core.queries import find_experiment
     exp = find_experiment(conn, exp_id, "id")
     if not exp:
@@ -509,12 +514,36 @@ def api_delete_metric(conn, exp_id: str, body: dict) -> dict:
     if not key:
         return {"error": "provide key"}
 
-    conn.execute(
-        "DELETE FROM metrics WHERE exp_id=? AND key=?",
-        (exp["id"], key)
-    )
+    mode = body.get("mode", "last")
+
+    if mode == "all":
+        conn.execute(
+            "DELETE FROM metrics WHERE exp_id=? AND key=?",
+            (exp["id"], key)
+        )
+    elif mode == "step":
+        step = body.get("step")
+        if step is None:
+            return {"error": "provide step number"}
+        conn.execute(
+            "DELETE FROM metrics WHERE exp_id=? AND key=? AND step=?",
+            (exp["id"], key, int(step))
+        )
+    else:
+        # Delete just the last (highest step) entry
+        conn.execute("""
+            DELETE FROM metrics WHERE id = (
+                SELECT id FROM metrics WHERE exp_id=? AND key=?
+                ORDER BY COALESCE(step, 0) DESC, id DESC LIMIT 1
+            )
+        """, (exp["id"], key))
+
     conn.commit()
-    return {"ok": True}
+    remaining = conn.execute(
+        "SELECT COUNT(*) as n FROM metrics WHERE exp_id=? AND key=?",
+        (exp["id"], key)
+    ).fetchone()["n"]
+    return {"ok": True, "remaining": remaining}
 
 
 def api_log_path(conn, exp_id: str, body: dict) -> dict:

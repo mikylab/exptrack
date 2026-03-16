@@ -29,7 +29,7 @@ let highlightColors = {}; // study -> color mapping
 
 // Column configuration: id, label, default visibility, sortable, min-width
 const ALL_COLUMNS = [
-  {id: 'pin', label: '', sortable: false, defaultOn: true, width: 28},
+  {id: 'pin', label: '', sortable: false, defaultOn: true, width: 32},
   {id: 'cb', label: '', sortable: false, defaultOn: true, width: 36},
   {id: 'id', label: 'ID', sortable: true, defaultOn: true, width: 60},
   {id: 'name', label: 'Name', sortable: true, defaultOn: true, width: 180},
@@ -1543,7 +1543,10 @@ async function refreshDetail(id) {
   // Build unified metrics & results rows
   const unifiedRows = [];
   for (const m of exp.metrics) {
-    unifiedRows.push(`<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td><td><span class="source-badge auto">auto</span> <span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all points for this metric">&times;</span></td></tr>`);
+    const mActions = m.n > 1
+      ? `<span class="result-del-x" onclick="event.stopPropagation();deleteMetricLast('${exp.id}','${esc(m.key)}')" title="Undo last step">&#8630;</span> <span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`
+      : `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete">&times;</span>`;
+    unifiedRows.push(`<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td><td><span class="source-badge auto">auto</span> ${mActions}</td></tr>`);
   }
   const resultKeys = Object.keys(manualResults);
   for (const k of resultKeys) {
@@ -2990,9 +2993,15 @@ async function deleteResult(id, key) {
   else alert(d.error || 'Failed to delete result');
 }
 
+async function deleteMetricLast(id, key) {
+  const d = await postApi('/api/experiment/' + id + '/delete-metric', {key, mode: 'last'});
+  if (d.ok) { refreshDetail(id); loadExperiments(); }
+  else alert(d.error || 'Failed to delete metric point');
+}
+
 async function deleteMetric(id, key) {
-  if (!confirm('Delete all data points for metric "' + key + '"? This cannot be undone.')) return;
-  const d = await postApi('/api/experiment/' + id + '/delete-metric', {key});
+  if (!confirm('Delete all data points for metric "' + key + '"?')) return;
+  const d = await postApi('/api/experiment/' + id + '/delete-metric', {key, mode: 'all'});
   if (d.ok) { refreshDetail(id); loadExperiments(); }
   else alert(d.error || 'Failed to delete metric');
 }
