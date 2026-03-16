@@ -432,10 +432,6 @@ def cmd_log_result(args):
                 "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
                 (exp_id, f"_result:{k}", json.dumps(v))
             )
-        conn.executemany(
-            "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-            [(exp_id, k, v, None, ts) for k, v in results.items()]
-        )
     conn.commit()
     for k, v in results.items():
         print(f"[exptrack] result: {k}={v} (source: {source})", file=sys.stderr)

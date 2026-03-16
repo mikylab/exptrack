@@ -409,7 +409,11 @@ def api_manage_result_types(body: dict) -> dict:
 
 
 def api_log_result(conn, exp_id: str, body: dict) -> dict:
-    """Log a manual result (numeric) to an experiment."""
+    """Log a manual result (numeric) to an experiment.
+
+    Results are stored only in params as _result:{key}, separate from
+    automated metrics which come from actual training runs.
+    """
     exp = find_experiment(conn, exp_id, "id")
     if not exp:
         return {"error": "not found"}
@@ -421,17 +425,10 @@ def api_log_result(conn, exp_id: str, body: dict) -> dict:
         num_val = float(value)
     except ValueError:
         return {"error": "value must be a number"}
-    ts = datetime.now(timezone.utc).isoformat()
 
-    # Store in params as _result:{key} for the Results section
     conn.execute(
         "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
         (exp["id"], f"_result:{key}", json.dumps(num_val))
-    )
-    # Also store in metrics for charting
-    conn.execute(
-        "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-        (exp["id"], key, num_val, None, ts)
     )
     conn.commit()
     return {"ok": True, "key": key, "value": num_val}
@@ -446,18 +443,34 @@ def api_delete_result(conn, exp_id: str, body: dict) -> dict:
     if not key:
         return {"error": "provide key"}
 
-    # Remove from params
     conn.execute(
         "DELETE FROM params WHERE exp_id=? AND key=?",
         (exp["id"], f"_result:{key}")
     )
-    # Remove from metrics (only the manually logged one — step IS NULL)
-    conn.execute(
-        "DELETE FROM metrics WHERE exp_id=? AND key=? AND step IS NULL",
-        (exp["id"], key)
-    )
     conn.commit()
     return {"ok": True}
+
+
+def api_edit_result(conn, exp_id: str, body: dict) -> dict:
+    """Edit a manually logged result value."""
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    key = body.get("key", "").strip()
+    value = body.get("value", "").strip()
+    if not key or not value:
+        return {"error": "provide key and value"}
+    try:
+        num_val = float(value)
+    except ValueError:
+        return {"error": "value must be a number"}
+
+    conn.execute(
+        "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+        (exp["id"], f"_result:{key}", json.dumps(num_val))
+    )
+    conn.commit()
+    return {"ok": True, "key": key, "value": num_val}
 
 
 def api_log_path(conn, exp_id: str, body: dict) -> dict:

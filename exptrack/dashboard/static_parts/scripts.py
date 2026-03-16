@@ -1508,7 +1508,7 @@ async function refreshDetail(id) {
   const resultRows = resultKeys.map(k => {
     const v = manualResults[k];
     const display = typeof v === 'string' ? v : JSON.stringify(v);
-    return `<tr><td style="color:var(--tl-metric, #d4820f)">${esc(k)}</td><td>${esc(display)}</td><td style="width:40px"><button class="art-del" onclick="deleteResult('${exp.id}','${esc(k)}')" title="Delete result">&times;</button></td></tr>`;
+    return `<tr><td style="color:var(--tl-metric, #d4820f)">${esc(k)}</td><td class="result-value" ondblclick="startResultEdit('${exp.id}','${esc(k)}',this)" title="Double-click to edit">${esc(display)}</td><td style="width:70px"><button class="art-del" onclick="editResultPrompt('${exp.id}','${esc(k)}','${esc(display)}')" title="Edit value">edit</button><button class="art-del" onclick="deleteResult('${exp.id}','${esc(k)}')" title="Delete result">&times;</button></td></tr>`;
   }).join('');
 
   const artRows = exp.artifacts.map(a => {
@@ -2745,6 +2745,39 @@ async function deleteResult(id, key) {
   const d = await postApi('/api/experiment/' + id + '/delete-result', {key});
   if (d.ok) refreshDetail(id);
   else alert(d.error || 'Failed to delete result');
+}
+
+function startResultEdit(id, key, td) {
+  if (td.querySelector('input')) return;
+  const current = td.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.step = 'any';
+  input.value = current;
+  input.style.cssText = 'width:80px;font-size:13px;padding:2px 4px;font-family:inherit';
+  td.textContent = '';
+  td.appendChild(input);
+  input.focus();
+  input.select();
+  const save = async () => {
+    const val = input.value.trim();
+    if (!val || isNaN(parseFloat(val))) { td.textContent = current; return; }
+    if (val === current) { td.textContent = current; return; }
+    const d = await postApi('/api/experiment/' + id + '/edit-result', {key, value: val});
+    if (d.ok) refreshDetail(id);
+    else { td.textContent = current; alert(d.error || 'Failed'); }
+  };
+  input.onblur = save;
+  input.onkeydown = (e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { td.textContent = current; } };
+}
+
+async function editResultPrompt(id, key, currentVal) {
+  const newVal = prompt('Edit value for "' + key + '":', currentVal);
+  if (newVal === null) return;
+  if (!newVal.trim() || isNaN(parseFloat(newVal))) { alert('Value must be a number'); return; }
+  const d = await postApi('/api/experiment/' + id + '/edit-result', {key, value: newVal.trim()});
+  if (d.ok) refreshDetail(id);
+  else alert(d.error || 'Failed to edit result');
 }
 
 function openManageResultTypes() {
