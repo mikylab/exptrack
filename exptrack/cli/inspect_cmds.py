@@ -305,6 +305,10 @@ def cmd_diff(args):
     if not diff:
         print(dim("No uncommitted diff was captured for this run.")); return
     print(bold(f"\n  Diff: {exp['name']}  [{exp['git_branch']}@{exp['git_commit']}]\n"))
+    if diff.startswith("[compacted"):
+        print(col(f"  {diff}", Y))
+        print(dim(f"  To recover: git diff {exp['git_commit']}~1 {exp['git_commit']}"))
+        print(); return
     for line in diff.splitlines():
         if   line.startswith("+") and not line.startswith("+++"): print(col(line, G))
         elif line.startswith("-") and not line.startswith("---"): print(col(line, R))

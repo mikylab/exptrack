@@ -1677,13 +1677,22 @@ async function refreshDetail(id) {
 
   // Diff
   let diffHtml = '';
+  let diffCompacted = false;
   if (diffData.diff) {
-    diffHtml = diffData.diff.split('\n').map(line => {
-      if (line.startsWith('+') && !line.startsWith('+++')) return '<span class="diff-add">' + esc(line) + '</span>';
-      if (line.startsWith('-') && !line.startsWith('---')) return '<span class="diff-del">' + esc(line) + '</span>';
-      if (line.startsWith('@@')) return '<span class="diff-hunk">' + esc(line) + '</span>';
-      return esc(line);
-    }).join('\n');
+    if (diffData.diff.startsWith('[compacted')) {
+      diffCompacted = true;
+      diffHtml = '<div style="padding:16px;color:var(--yellow,#e8a735);font-style:italic">'
+        + esc(diffData.diff)
+        + (diffData.commit ? '<br><span style="color:var(--muted);font-size:12px">To recover: git diff ' + esc(diffData.commit) + '~1 ' + esc(diffData.commit) + '</span>' : '')
+        + '</div>';
+    } else {
+      diffHtml = diffData.diff.split('\n').map(line => {
+        if (line.startsWith('+') && !line.startsWith('+++')) return '<span class="diff-add">' + esc(line) + '</span>';
+        if (line.startsWith('-') && !line.startsWith('---')) return '<span class="diff-del">' + esc(line) + '</span>';
+        if (line.startsWith('@@')) return '<span class="diff-hunk">' + esc(line) + '</span>';
+        return esc(line);
+      }).join('\n');
+    }
   }
 
   const expTags = exp.tags || [];
@@ -1783,7 +1792,7 @@ async function refreshDetail(id) {
         <!-- Full-width sections below the grid -->
         <div style="margin-top:20px">
           ${codeHtml}
-          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Git Diff ('+exp.diff_lines+' lines)</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
+          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Git Diff (compacted)' : 'Git Diff ('+exp.diff_lines+' lines)')+'</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
         </div>
       </div>
 

@@ -254,6 +254,9 @@ def main():
                            help="Compact all experiments regardless of status")
     p_compact.add_argument("--dry-run", action="store_true", dest="dry_run",
                            help="Show what would be compacted without changing anything")
+    p_compact.add_argument("--export", metavar="DIR",
+                           help="Save diffs as markdown files to DIR before stripping "
+                                "(useful for lab notebooks)")
 
     p_watch = sub.add_parser("watch", help="Watch a running experiment for live metric updates")
     p_watch.add_argument("id", help="Experiment ID (prefix match)")

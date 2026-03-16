@@ -150,72 +150,135 @@ def cmd_upgrade(args):
 
 
 
-def cmd_compact(args):
-    """Strip git_diff from experiments to reclaim DB space, keeping all results."""
-    from datetime import timedelta
-    conn = get_db()
-    dry_run = getattr(args, "dry_run", False)
+COMPACT_PREFIX = "[compacted"
 
-    # Build query conditions
-    conditions = ["git_diff IS NOT NULL", "git_diff != ''"]
+
+def _compact_query(args):
+    """Build the WHERE clause and params for compact operations."""
+    from datetime import timedelta
+    conditions = [
+        "git_diff IS NOT NULL", "git_diff != ''",
+        "git_diff NOT LIKE '[compacted%'",
+    ]
     query_args = []
 
     if args.ids:
-        # Compact specific experiments by ID prefix
         clauses = []
         for prefix in args.ids:
             clauses.append("id LIKE ?")
             query_args.append(prefix + "%")
         conditions.append(f"({' OR '.join(clauses)})")
-    elif not args.all:
-        # Default: only compact 'done' experiments with a reachable git_commit
+    elif not getattr(args, "all", False):
         conditions.append("status = 'done'")
         conditions.append("git_commit IS NOT NULL")
         conditions.append("git_commit != ''")
 
-    if args.older_than:
-        age = args.older_than.rstrip("d")
+    older_than = getattr(args, "older_than", None)
+    if older_than:
+        age = older_than.rstrip("d")
         try:
             days = int(age)
         except ValueError:
-            print(col(f"Invalid age: {args.older_than} (use e.g. 7d)", R), file=sys.stderr)
-            return
+            return None, None, f"Invalid age: {older_than} (use e.g. 7d)"
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         conditions.append("created_at < ?")
         query_args.append(cutoff)
 
-    where = " AND ".join(conditions)
+    return " AND ".join(conditions), query_args, None
+
+
+def _fmt_bytes(b):
+    if b < 1024: return f"{b} B"
+    if b < 1024**2: return f"{b/1024:.1f} KB"
+    return f"{b/1024**2:.1f} MB"
+
+
+def _diff_file_summary(diff_text):
+    """Extract a short file-list summary from a git diff for the compact marker."""
+    files = []
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            if len(parts) >= 4:
+                files.append(parts[3].lstrip("b/"))
+    return files
+
+
+def cmd_compact(args):
+    """Strip git_diff from experiments to reclaim DB space, keeping all results."""
+    conn = get_db()
+    dry_run = getattr(args, "dry_run", False)
+    export_dir = getattr(args, "export", None)
+
+    where, query_args, err = _compact_query(args)
+    if err:
+        print(col(err, R), file=sys.stderr); return
+
     rows = conn.execute(
-        f"SELECT id, name, git_commit, LENGTH(git_diff) as diff_len FROM experiments WHERE {where}",
+        f"SELECT id, name, git_commit, git_branch, git_diff, "
+        f"LENGTH(git_diff) as diff_len FROM experiments WHERE {where}",
         query_args,
     ).fetchall()
 
     if not rows:
-        print(dim("Nothing to compact."))
-        return
+        print(dim("Nothing to compact.")); return
 
     total_bytes = sum(r["diff_len"] for r in rows)
 
-    def fmt(b):
-        if b < 1024: return f"{b} B"
-        if b < 1024**2: return f"{b/1024:.1f} KB"
-        return f"{b/1024**2:.1f} MB"
-
     if dry_run:
-        print(f"Would compact {len(rows)} experiment(s), freeing ~{fmt(total_bytes)}:")
+        print(f"Would compact {len(rows)} experiment(s), freeing ~{_fmt_bytes(total_bytes)}:")
         for r in rows:
-            print(f"  {col(r['id'][:8], C)}  {r['name'][:50]}  ({fmt(r['diff_len'])})")
+            print(f"  {col(r['id'][:8], C)}  {r['name'][:50]}  ({_fmt_bytes(r['diff_len'])})")
         return
+
+    # Export diffs before stripping
+    if export_dir:
+        out_path = Path(export_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        for r in rows:
+            _export_one_diff(r, out_path)
+        print(col(f"Exported {len(rows)} diff(s) to {out_path}/", G))
 
     for r in rows:
         commit = r["git_commit"] or "unknown"
-        summary = f"[compacted — {fmt(r['diff_len'])} stripped — see git commit {commit}]"
+        files = _diff_file_summary(r["git_diff"])
+        file_info = f"{len(files)} file(s): {', '.join(files[:5])}" if files else "no files"
+        if len(files) > 5:
+            file_info += f" +{len(files) - 5} more"
+        summary = (f"[compacted — {_fmt_bytes(r['diff_len'])} stripped — "
+                   f"{file_info} — see git commit {commit}]")
         conn.execute("UPDATE experiments SET git_diff = ? WHERE id = ?", (summary, r["id"]))
     conn.commit()
 
-    print(col(f"Compacted {len(rows)} experiment(s), freed ~{fmt(total_bytes)}.", G))
+    print(col(f"Compacted {len(rows)} experiment(s), freed ~{_fmt_bytes(total_bytes)}.", G))
     for r in rows:
         print(f"  {col(r['id'][:8], C)}  {r['name'][:50]}")
+
+
+def _export_one_diff(row, out_path):
+    """Write a single experiment's diff as a markdown file for lab notebooks."""
+    exp_id = row["id"]
+    name = row["name"] or exp_id[:8]
+    branch = row["git_branch"] or ""
+    commit = row["git_commit"] or ""
+    diff = row["git_diff"] or ""
+
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)[:60]
+    filename = f"{safe_name}__{exp_id[:8]}.md"
+
+    lines = [
+        f"# Diff: {name}",
+        f"",
+        f"- **Experiment ID:** `{exp_id}`",
+        f"- **Branch:** `{branch}`",
+        f"- **Commit:** `{commit}`",
+        f"",
+        f"```diff",
+        diff,
+        f"```",
+        f"",
+    ]
+    (out_path / filename).write_text("\n".join(lines), encoding="utf-8")
 
 
 def cmd_storage(args):
