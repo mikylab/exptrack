@@ -394,7 +394,7 @@ def cmd_log_result(args):
     ts = datetime.now(timezone.utc).isoformat()
     source = getattr(args, 'source', 'manual')
 
-    results = {}  # key -> value (string)
+    results = {}  # key -> float
     if args.file:
         # Read from file or stdin
         if args.file == '-':
@@ -407,34 +407,35 @@ def cmd_log_result(args):
             raw = json.loads(fpath.read_text())
         flat = _flatten_dict(raw)
         for k, v in flat.items():
-            results[k] = str(v)
+            if isinstance(v, bool):
+                continue
+            try:
+                results[k] = float(v)
+            except (ValueError, TypeError):
+                print(f"[exptrack] log-result: skipping non-numeric value: {k}={v}", file=sys.stderr)
     else:
         if args.key is None or args.value is None:
             print("[exptrack] log-result: provide KEY VALUE or --file FILE", file=sys.stderr)
             sys.exit(1)
-        results[args.key] = args.value
+        try:
+            results[args.key] = float(args.value)
+        except ValueError:
+            print(f"[exptrack] log-result: value must be a number, got: {args.value}", file=sys.stderr)
+            sys.exit(1)
 
     if not results:
         return
 
-    metric_rows = []
     with conn:
         for k, v in results.items():
-            # Always store in params as _result:{key}
             conn.execute(
                 "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
                 (exp_id, f"_result:{k}", json.dumps(v))
             )
-            # Also store numeric values in metrics for charting
-            try:
-                metric_rows.append((exp_id, k, float(v), None, ts))
-            except (ValueError, TypeError):
-                pass
-        if metric_rows:
-            conn.executemany(
-                "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-                metric_rows
-            )
+        conn.executemany(
+            "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
+            [(exp_id, k, v, None, ts) for k, v in results.items()]
+        )
     conn.commit()
     for k, v in results.items():
         print(f"[exptrack] result: {k}={v} (source: {source})", file=sys.stderr)

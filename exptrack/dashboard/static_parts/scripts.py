@@ -1531,7 +1531,7 @@ async function refreshDetail(id) {
     <select id="result-key-${exp.id}" style="width:180px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
       <option value="">Select result type...</option>
     </select>
-    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px">
+    <input type="number" step="any" id="result-val-${exp.id}" placeholder="Value" style="width:100px">
     <button onclick="logResult('${exp.id}')">+ Log Result</button>
     <button onclick="openManageResultTypes()" style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);font-size:11px;padding:3px 8px" title="Manage result types">Manage</button>
   </div>`;
@@ -2733,7 +2733,8 @@ async function logResult(id) {
   if (!keyEl || !valEl) return;
   const key = keyEl.value.trim();
   const value = valEl.value.trim();
-  if (!key || !value) { alert('Select a result type and enter a value'); return; }
+  if (!key) { alert('Select a result type'); return; }
+  if (!value || isNaN(parseFloat(value))) { alert('Value must be a number'); return; }
   const d = await postApi('/api/experiment/' + id + '/log-result', {key, value});
   if (d.ok) { keyEl.value = ''; valEl.value = ''; refreshDetail(id); }
   else alert(d.error || 'Failed to log result');
