@@ -608,7 +608,7 @@ function renderExpList() {
     const active = currentDetailId === e.id ? ' active' : '';
     const statusCls = 'status-' + e.status;
     const metrics = Object.entries(e.metrics || {}).slice(0, 2)
-      .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v)).join('  ');
+      .map(([k,m]) => { const v = typeof m === 'object' && m !== null ? m.value : m; return k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v); }).join('  ');
     const isSelected = selectedIds.has(e.id);
     const cbHtml = '<label style="display:inline-flex;align-items:center;cursor:pointer;padding:2px" onclick="event.stopPropagation()"><input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
       ' onclick="toggleSelection(\'' + e.id + '\')" title="Select"></label>';
@@ -655,6 +655,7 @@ function renderSidebarActionsBar() {
   html += '<button class="export-btn" onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
+  html += '<button onclick="bulkCompact()">Compact</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '</div>';
   bar.innerHTML = html;
@@ -821,6 +822,7 @@ function renderTableActionsBar() {
   html += '<button onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
+  html += '<button onclick="bulkCompact()">Compact</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   bar.innerHTML = html;
 }
@@ -1068,8 +1070,32 @@ async function loadStats() {
         <div class="stat"><div class="num">${s.unique_branches}</div><div class="label">Branches</div><div class="stat-hint">Unique git branches used</div></div>
       </div>
     `;
+    // Show diff storage alert when total exceeds 512KB
+    if (s.diff_total_bytes > 512 * 1024) {
+      const kb = (s.diff_total_bytes / 1024).toFixed(0);
+      const maxKb = s.max_diff_kb || 256;
+      statsEl.innerHTML += '<div style="margin:8px 0;padding:8px 12px;background:rgba(232,167,53,0.12);border:1px solid rgba(232,167,53,0.3);border-radius:6px;font-size:13px;color:var(--yellow,#e8a735)">'
+        + '<strong>Git diff storage:</strong> ' + kb + ' KB across ' + s.diff_count + ' experiment(s). '
+        + 'Max per-run limit: ' + maxKb + ' KB (config: max_git_diff_kb). '
+        + '<button style="margin-left:8px;font-size:12px;cursor:pointer;padding:2px 8px;border-radius:3px;border:1px solid rgba(232,167,53,0.4);background:transparent;color:inherit" '
+        + 'onclick="bulkCompactAll()">Compact All Done</button>'
+        + '</div>';
+    }
   }
   renderStatusChips();
+}
+
+async function bulkCompactAll() {
+  const doneIds = allExperiments.filter(e => e.status === 'done').map(e => e.id);
+  if (!doneIds.length) { owlSay('No done experiments to compact'); return; }
+  if (!confirm('Compact diffs for all ' + doneIds.length + ' done experiments?')) return;
+  const d = await postApi('/api/bulk-compact', {ids: doneIds});
+  if (d.ok) {
+    owlSay('Compacted ' + d.compacted + ' diff(s)');
+    loadStats();
+    loadExperiments();
+    if (currentDetailId) refreshDetail(currentDetailId);
+  } else alert(d.error || 'Failed');
 }
 
 async function loadExperiments() {
@@ -1677,13 +1703,22 @@ async function refreshDetail(id) {
 
   // Diff
   let diffHtml = '';
+  let diffCompacted = false;
   if (diffData.diff) {
-    diffHtml = diffData.diff.split('\n').map(line => {
-      if (line.startsWith('+') && !line.startsWith('+++')) return '<span class="diff-add">' + esc(line) + '</span>';
-      if (line.startsWith('-') && !line.startsWith('---')) return '<span class="diff-del">' + esc(line) + '</span>';
-      if (line.startsWith('@@')) return '<span class="diff-hunk">' + esc(line) + '</span>';
-      return esc(line);
-    }).join('\n');
+    if (diffData.diff.startsWith('[compacted')) {
+      diffCompacted = true;
+      diffHtml = '<div style="padding:16px;color:var(--yellow,#e8a735);font-style:italic">'
+        + esc(diffData.diff)
+        + (diffData.commit ? '<br><span style="color:var(--muted);font-size:12px">To recover: git diff ' + esc(diffData.commit) + '~1 ' + esc(diffData.commit) + '</span>' : '')
+        + '</div>';
+    } else {
+      diffHtml = diffData.diff.split('\n').map(line => {
+        if (line.startsWith('+') && !line.startsWith('+++')) return '<span class="diff-add">' + esc(line) + '</span>';
+        if (line.startsWith('-') && !line.startsWith('---')) return '<span class="diff-del">' + esc(line) + '</span>';
+        if (line.startsWith('@@')) return '<span class="diff-hunk">' + esc(line) + '</span>';
+        return esc(line);
+      }).join('\n');
+    }
   }
 
   const expTags = exp.tags || [];
@@ -1728,14 +1763,28 @@ async function refreshDetail(id) {
         <h2 id="detail-name" class="editable-hint" ondblclick="startInlineRename('${exp.id}',this)" title="Double-click to rename">${esc(exp.name)}</h2>
         <div class="detail-actions">
           ${exp.status === 'running' ? `<button class="action-btn primary" onclick="finishExp('${exp.id}')">Finish Run</button>` : ''}
+          <span style="position:relative;display:inline-block">
+            <button class="action-btn primary" onclick="toggleDetailExport(this)">Export ▼</button>
+            <div class="export-dropdown-menu" style="display:none">
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','json')">JSON</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','markdown')">Markdown</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','csv')">CSV</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','tsv')">TSV</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','plain')">Plain Text</button>
+            </div>
+          </span>
+          <span style="position:relative;display:inline-block">
+            <button class="action-btn" onclick="toggleDetailExport(this)">Copy ▼</button>
+            <div class="export-dropdown-menu" style="display:none">
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json')">JSON</button>
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','markdown')">Markdown</button>
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','plain')">Plain Text</button>
+            </div>
+          </span>
+          ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button>` : ''}
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name)}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
         </div>
-      </div>
-
-      <div class="detail-export-bar">
-        <button class="action-btn primary" onclick="exportExp('${exp.id}')">Export</button>
-        <div id="export-container"></div>
       </div>
 
       <div class="tabs" id="detail-tabs">
@@ -1760,6 +1809,7 @@ async function refreshDetail(id) {
               <span class="label">Studies</span><span class="tag-list" id="detail-studies">${studiesDetailHtml}</span>
               <span class="label">Stage</span><span id="detail-stage" class="editable-hint" ondblclick="startDetailStageEdit('${exp.id}',this)" title="Double-click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
               <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" ondblclick="startDetailNoteEdit('${exp.id}',this)" title="Double-click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">double-click to add notes</span>'}</span>
+              <span class="label">Uncommitted</span><span>${diffData.diff ? (diffCompacted ? '<span style="color:var(--yellow)">' + esc(diffData.diff.split(' — ')[1] || 'compacted') + '</span>' : '<span style="color:var(--green)">' + exp.diff_lines + ' lines</span> <button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:6px" onclick="exportDiff(\'' + exp.id + '\')">Export</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="compactDiff(\'' + exp.id + '\')">Compact</button>') : '<span style="color:var(--muted)">none (all changes were committed)</span>'}</span>
             </div>
             ${exp.command ? '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span><button class="copy-btn" data-cmd="' + esc(exp.command).replace(/"/g,'&quot;') + '" onclick="navigator.clipboard.writeText(this.dataset.cmd).then(()=>owlSay(\'Copied!\'))">Copy</button></div><code class="reproduce-cmd">' + esc(exp.command) + '</code></div>' : ''}
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
@@ -1783,7 +1833,7 @@ async function refreshDetail(id) {
         <!-- Full-width sections below the grid -->
         <div style="margin-top:20px">
           ${codeHtml}
-          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Git Diff ('+exp.diff_lines+' lines)</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
+          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Uncommitted Changes (compacted)' : 'Uncommitted Changes ('+exp.diff_lines+' lines)')+'</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
         </div>
       </div>
 
@@ -1896,58 +1946,57 @@ async function exportExp(id) {
     '</div><pre id="export-content" style="display:none"></pre></div>';
 }
 
-async function doExport(id, fmt) {
-  // Highlight active format button
-  document.querySelectorAll('.export-actions .action-btn').forEach(b => b.classList.remove('active-fmt'));
-  const btn = document.getElementById('export-btn-' + fmt);
-  if (btn) btn.classList.add('active-fmt');
+function toggleDetailExport(btn) {
+  const menu = btn.nextElementSibling;
+  menu.style.display = menu.style.display === 'none' ? 'flex' : 'none';
+}
+function closeDetailExport(btn) {
+  btn.closest('.export-dropdown-menu').style.display = 'none';
+}
 
-  let text;
+async function _fetchExportText(id, fmt) {
   const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt'};
+  let text;
   if (fmt === 'csv' || fmt === 'tsv') {
     const data = await postApi('/api/bulk-export', {ids: [id], format: fmt});
     text = data.content || JSON.stringify(data, null, 2);
   } else {
     const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt));
-    if (fmt === 'markdown') {
-      text = data.markdown || JSON.stringify(data, null, 2);
-    } else if (fmt === 'plain') {
-      text = _formatExpPlainText(data.data || data);
-    } else {
-      text = JSON.stringify(data, null, 2);
-    }
+    if (fmt === 'markdown') text = data.markdown || JSON.stringify(data, null, 2);
+    else if (fmt === 'plain') text = _formatExpPlainText(data.data || data);
+    else text = JSON.stringify(data, null, 2);
   }
-  const pre = document.getElementById('export-content');
-  pre.style.display = '';
-  pre.textContent = text;
-
-  // Find experiment name for filename
   const exp = allExperiments.find(e => e.id.startsWith(id));
   const name = exp ? exp.name.replace(/[^a-zA-Z0-9_-]/g, '_') : id.slice(0,8);
-  _exportCache = {text, filename: name + (ext[fmt] || '.txt'), mime: fmt === 'json' ? 'application/json' : 'text/plain'};
+  return {text, filename: name + (ext[fmt] || '.txt'), mime: fmt === 'json' ? 'application/json' : 'text/plain'};
 }
 
-function downloadExport() {
-  if (!_exportCache.text) { owlSay('Select a format first.'); return; }
-  const blob = new Blob([_exportCache.text], {type: _exportCache.mime});
-  const url = URL.createObjectURL(blob);
+function _downloadBlob(text, filename, mime) {
+  const blob = new Blob([text], {type: mime || 'text/plain'});
   const a = document.createElement('a');
-  a.href = url;
-  a.download = _exportCache.filename;
-  document.body.appendChild(a);
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
   a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  owlSay('Downloaded ' + _exportCache.filename);
+  URL.revokeObjectURL(a.href);
 }
 
-function copyExport() {
-  const pre = document.getElementById('export-content');
-  if (!pre || !pre.textContent || pre.style.display === 'none') { owlSay('Select a format first.'); return; }
-  navigator.clipboard.writeText(pre.textContent).then(() => {
-    owlSay('Copied to clipboard!');
-  });
+async function downloadExportFmt(id, fmt) {
+  owlSpeak('export');
+  const d = await _fetchExportText(id, fmt);
+  _downloadBlob(d.text, d.filename, d.mime);
+  owlSay('Downloaded ' + d.filename);
 }
+
+async function copyExportFmt(id, fmt) {
+  owlSpeak('export');
+  const d = await _fetchExportText(id, fmt);
+  navigator.clipboard.writeText(d.text).then(() => owlSay('Copied ' + fmt.toUpperCase() + ' to clipboard!'));
+}
+
+// Legacy compat — used by bulk export sidebar
+async function doExport(id, fmt) { await downloadExportFmt(id, fmt); }
+function downloadExport() {}
+function copyExport() {}
 
 // ── Compare ────────────────────────────────────────────────────────────────────
 
@@ -2303,6 +2352,42 @@ async function finishExp(id) {
     refreshDetail(id);
     loadStats();
     loadExperiments();
+  } else alert(d.error || 'Failed');
+}
+
+// ── Diff compact / export ────────────────────────────────────────────────────
+
+async function compactDiff(id) {
+  if (!confirm('Strip the git diff from this experiment? The diff data will be replaced with a compact summary. This cannot be undone.')) return;
+  const d = await postApi('/api/bulk-compact', {ids: [id]});
+  if (d.ok) {
+    owlSay('Compacted diff (' + d.compacted + ' experiment)');
+    refreshDetail(id);
+    loadExperiments();
+  } else alert(d.error || 'Failed');
+}
+
+async function exportDiff(id) {
+  const d = await postApi('/api/experiment/' + id + '/export-diff');
+  if (d.error) { alert(d.error); return; }
+  const blob = new Blob([d.markdown], {type: 'text/markdown'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = d.filename || 'diff.md';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  owlSay('Exported diff as markdown');
+}
+
+async function bulkCompact() {
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+  if (!confirm('Compact diffs for ' + ids.length + ' experiment(s)? This strips git diff data and cannot be undone.')) return;
+  const d = await postApi('/api/bulk-compact', {ids});
+  if (d.ok) {
+    owlSay('Compacted ' + d.compacted + ' diff(s)');
+    loadExperiments();
+    if (currentDetailId) refreshDetail(currentDetailId);
   } else alert(d.error || 'Failed');
 }
 

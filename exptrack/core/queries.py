@@ -275,6 +275,18 @@ def get_stats(conn) -> dict[str, Any]:
         "WHERE git_branch IS NOT NULL AND git_branch != ''"
     ).fetchone()["n"]
 
+    # Git diff storage stats
+    diff_rows = conn.execute(
+        "SELECT LENGTH(git_diff) as sz FROM experiments "
+        "WHERE git_diff IS NOT NULL AND git_diff != '' AND git_diff NOT LIKE '[compacted%'"
+    ).fetchall()
+    diff_total_bytes = sum(r["sz"] for r in diff_rows)
+    diff_count = len(diff_rows)
+
+    from .. import config as cfg
+    conf = cfg.load()
+    max_diff_kb = conf.get("max_git_diff_kb", 256)
+
     return {
         "total": total,
         "done": done,
@@ -287,6 +299,9 @@ def get_stats(conn) -> dict[str, Any]:
         "unique_tags": len(all_tags),
         "total_artifacts": total_artifacts,
         "unique_branches": unique_branches,
+        "diff_total_bytes": diff_total_bytes,
+        "diff_count": diff_count,
+        "max_diff_kb": max_diff_kb,
     }
 
 

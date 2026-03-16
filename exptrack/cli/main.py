@@ -12,6 +12,7 @@ exptrack tag <id> <tag>       add tag
 exptrack note <id> <text>     add note
 exptrack rm <id>              delete experiment
 exptrack clean                remove all failed runs
+exptrack compact              strip git diffs to reclaim space (keeps results)
 exptrack stale --hours N      mark killed runs as failed
 exptrack upgrade              run schema migrations
 exptrack ui                   launch web dashboard
@@ -20,7 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_storage
+from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_storage, cmd_compact
 from .inspect_cmds import (cmd_ls, cmd_show, cmd_timeline, cmd_diff,
                            cmd_compare, cmd_history, cmd_export, cmd_verify,
                            cmd_watch)
@@ -242,6 +243,21 @@ def main():
 
     sub.add_parser("storage", help="Show data storage breakdown and tips")
 
+    p_compact = sub.add_parser("compact",
+        help="Strip git diffs from experiments to reclaim DB space (keeps all results)")
+    p_compact.add_argument("ids", nargs="*", default=[],
+                           help="Experiment ID(s) to compact (prefix match). "
+                                "Default: all done experiments with a git commit")
+    p_compact.add_argument("--older-than", dest="older_than", default=None,
+                           help="Only compact experiments older than N days (e.g. 7d)")
+    p_compact.add_argument("--all", action="store_true",
+                           help="Compact all experiments regardless of status")
+    p_compact.add_argument("--dry-run", action="store_true", dest="dry_run",
+                           help="Show what would be compacted without changing anything")
+    p_compact.add_argument("--export", metavar="DIR",
+                           help="Save diffs as markdown files to DIR before stripping "
+                                "(useful for lab notebooks)")
+
     p_watch = sub.add_parser("watch", help="Watch a running experiment for live metric updates")
     p_watch.add_argument("id", help="Experiment ID (prefix match)")
     p_watch.add_argument("--interval", type=int, default=5,
@@ -276,6 +292,7 @@ def main():
         "stale":        cmd_stale,
         "upgrade":      cmd_upgrade,
         "storage":      cmd_storage,
+        "compact":      cmd_compact,
         "finish":       cmd_finish,
         "ls":           cmd_ls,
         "show":         cmd_show,

@@ -507,7 +507,8 @@ CSS_COMPONENTS = """
   .export-panel pre { white-space: pre-wrap; font-size: 12px; max-height: 400px; overflow-y: auto; background: var(--code-bg); padding: 12px; border-radius: 4px; border: 1px solid var(--border); }
   .export-panel .export-actions { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .export-panel .export-actions .action-btn.active-fmt { background: var(--blue); color: #fff; border-color: var(--blue); }
-  .export-dropdown-menu { position: absolute; bottom: 100%; left: 0; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px; z-index: 100; min-width: 110px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  .export-dropdown-menu { position: absolute; bottom: 100%; left: 0; background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px; z-index: 100; min-width: 130px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); flex-direction: column; }
+  .detail-actions .export-dropdown-menu { bottom: auto; top: 100%; right: 0; left: auto; }
   .export-dropdown-menu button { display: block; width: 100%; text-align: left; margin: 2px 0; }
   .tooltip { position: relative; display: inline-block; }
   .tooltip .tooltip-text {
