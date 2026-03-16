@@ -38,17 +38,18 @@ const ALL_COLUMNS = [
   {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 120},
   {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 120},
   {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 200},
-  {id: 'metrics', label: 'Key Metrics', sortable: false, defaultOn: true, width: 160},
-  {id: 'results', label: 'Results', sortable: false, defaultOn: true, width: 160},
+  {id: 'metrics', label: 'Metrics', sortable: false, defaultOn: true, width: 220},
   {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 100},
   {id: 'started', label: 'Started', sortable: true, defaultOn: true, width: 140},
 ];
 let visibleCols = (function() {
   const saved = JSON.parse(localStorage.getItem('exptrack-cols') || 'null');
+  const validIds = new Set(ALL_COLUMNS.map(c => c.id));
   if (!saved) return ALL_COLUMNS.filter(c => c.defaultOn).map(c => c.id);
-  // Merge in new default columns the user hasn't seen yet
-  const newDefaults = ALL_COLUMNS.filter(c => c.defaultOn && !saved.includes(c.id)).map(c => c.id);
-  return newDefaults.length ? [...saved, ...newDefaults] : saved;
+  // Remove stale column ids, merge in new defaults
+  const cleaned = saved.filter(id => validIds.has(id));
+  const newDefaults = ALL_COLUMNS.filter(c => c.defaultOn && !cleaned.includes(c.id)).map(c => c.id);
+  return newDefaults.length ? [...cleaned, ...newDefaults] : cleaned;
 })();
 let colWidths = JSON.parse(localStorage.getItem('exptrack-col-widths') || '{}');
 
@@ -1108,17 +1109,16 @@ function renderExpRow(e) {
     stage: '<td class="wrap-cell stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? '<span style="font-weight:600">' + esc(String(e.stage)) + '</span>' + (e.stage_name ? ' <span style="color:var(--muted)">\u00b7</span> <span style="color:var(--muted)">' + esc(e.stage_name) + '</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     notes: '<td class="truncate-cell notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     metrics: (function() {
-      const html = Object.entries(e.metrics || {}).slice(0, 3)
-        .map(([k,v]) => '<span style="color:var(--blue)">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))) + miniSpark((e.sparklines||{})[k]))
-        .join(', ');
-      return '<td class="truncate-cell" style="font-size:13px">' + (html || '<span style="color:var(--muted)">--</span>') + '</td>';
-    })(),
-    results: (function() {
-      const resultEntries = Object.entries(e.results || {}).slice(0, 3);
-      const html = resultEntries
-        .map(([k, v]) => '<span style="color:var(--tl-metric)">' + esc(k) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v).slice(0,20))))
-        .join(', ');
-      return '<td class="truncate-cell" style="font-size:13px">' + (html || '<span style="color:var(--muted)">--</span>') + '</td>';
+      const parts = [];
+      // Auto metrics (from metrics table)
+      for (const [k, v] of Object.entries(e.metrics || {}).slice(0, 3)) {
+        parts.push('<span style="color:var(--blue)" title="auto">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))) + miniSpark((e.sparklines||{})[k]));
+      }
+      // Manual results (from _result:* params)
+      for (const [k, v] of Object.entries(e.results || {}).slice(0, 3 - parts.length)) {
+        parts.push('<span style="color:var(--tl-metric)" title="manual">' + esc(k) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v).slice(0,20))));
+      }
+      return '<td class="truncate-cell" style="font-size:13px">' + (parts.join(', ') || '<span style="color:var(--muted)">--</span>') + '</td>';
     })(),
     changes: (function() {
       const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
@@ -1453,6 +1453,7 @@ async function compareSelected() {
     document.getElementById('compare-multi-tab').classList.add('active');
     document.getElementById('compare-pair-content').style.display = 'none';
     document.getElementById('compare-multi-content').style.display = '';
+    await populateMultiCompareSelector();
     doMultiCompare(ids);
   }
 }
@@ -1908,6 +1909,28 @@ function switchCompareTab(tab) {
   document.getElementById('compare-pair-content').style.display = tab === 'pair' ? '' : 'none';
   document.getElementById('compare-multi-content').style.display = tab === 'multi' ? '' : 'none';
   if (tab === 'pair') populateCompareDropdowns();
+  if (tab === 'multi') populateMultiCompareSelector();
+}
+
+async function populateMultiCompareSelector() {
+  const exps = await api('/api/experiments?limit=100');
+  const sel = document.getElementById('cmp-multi-select');
+  sel.innerHTML = exps.map(e =>
+    '<option value="' + e.id + '"' + (selectedIds.has(e.id) ? ' selected' : '') + '>' +
+    e.id.slice(0,6) + ' | ' + esc(e.name.slice(0,35)) + ' | ' + e.status + ' | ' + fmtDt(e.created_at) + '</option>'
+  ).join('');
+}
+
+function doMultiCompareFromSelector() {
+  const sel = document.getElementById('cmp-multi-select');
+  const ids = [...sel.selectedOptions].map(o => o.value);
+  if (ids.length < 2) { owlSay('Select at least 2 experiments'); return; }
+  doMultiCompare(ids);
+}
+
+function selectAllMultiCompare() {
+  const sel = document.getElementById('cmp-multi-select');
+  for (const opt of sel.options) opt.selected = true;
 }
 
 async function doCompare() {

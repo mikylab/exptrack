@@ -171,7 +171,17 @@ HTML_BODY = r"""</style>
         <div id="compare-result"></div>
       </div>
       <div id="compare-multi-content" style="display:none">
-        <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Select 3+ experiments from the list, then click Compare to see bar charts across all selected.</p>
+        <div class="compare-input" style="flex-wrap:wrap;gap:8px">
+          <div class="compare-selector" style="flex:1;min-width:300px">
+            <label class="compare-label">experiments</label>
+            <select id="cmp-multi-select" multiple size="6" style="width:100%;font-size:12px"></select>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;justify-content:flex-end">
+            <button class="primary" onclick="doMultiCompareFromSelector()">Compare Selected</button>
+            <button onclick="selectAllMultiCompare()" style="font-size:12px">Select All</button>
+          </div>
+        </div>
+        <p style="color:var(--muted);font-size:12px;margin:4px 0 12px">Hold Ctrl/Cmd to select multiple experiments. Need at least 2.</p>
         <div id="multi-compare-result"></div>
       </div>
     </div>
