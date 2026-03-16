@@ -59,6 +59,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_result_types())
         elif path == "/api/studies":
             self._json(read_routes.api_studies(conn))
+        elif path == "/api/multi-compare":
+            self._json(read_routes.api_multi_compare(conn, qs))
         elif path == "/api/all-studies":
             self._json(write_routes.api_all_studies(conn))
         elif path.startswith("/api/logs/"):

@@ -151,19 +151,29 @@ HTML_BODY = r"""</style>
         <button class="back-link" onclick="showWelcome()">&larr; Back to experiments</button>
         <h3 style="margin:8px 0 4px">Compare Experiments</h3>
       </div>
-      <div class="compare-input">
-        <div class="compare-selector">
-          <label class="compare-label">base</label>
-          <select id="cmp-id1"><option value="">-- Select base experiment --</option></select>
-        </div>
-        <span class="vs-label">&larr;&rarr;</span>
-        <div class="compare-selector">
-          <label class="compare-label">compare</label>
-          <select id="cmp-id2"><option value="">-- Select compare experiment --</option></select>
-        </div>
-        <button class="primary" onclick="doCompare()">Compare</button>
+      <div class="tabs" style="margin-bottom:12px">
+        <button class="tab active" id="compare-pair-tab" onclick="switchCompareTab('pair')">Pair Compare</button>
+        <button class="tab" id="compare-multi-tab" onclick="switchCompareTab('multi')">Multi Compare</button>
       </div>
-      <div id="compare-result"></div>
+      <div id="compare-pair-content">
+        <div class="compare-input">
+          <div class="compare-selector">
+            <label class="compare-label">base</label>
+            <select id="cmp-id1"><option value="">-- Select base experiment --</option></select>
+          </div>
+          <span class="vs-label">&larr;&rarr;</span>
+          <div class="compare-selector">
+            <label class="compare-label">compare</label>
+            <select id="cmp-id2"><option value="">-- Select compare experiment --</option></select>
+          </div>
+          <button class="primary" onclick="doCompare()">Compare</button>
+        </div>
+        <div id="compare-result"></div>
+      </div>
+      <div id="compare-multi-content" style="display:none">
+        <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Select 3+ experiments from the list, then click Compare to see bar charts across all selected.</p>
+        <div id="multi-compare-result"></div>
+      </div>
     </div>
   </div>
 </div>

@@ -286,13 +286,15 @@ No external dependencies -- uses stdlib `http.server` and Chart.js from CDN.
 
 ### Features
 
-**Experiment list** -- filterable by status, searchable by name/tag/param. Metric previews shown inline.
+**Experiment list** -- filterable by status, searchable by name/tag/param. Metric previews with sparkline mini-charts shown inline. Dedicated Results column shows manually logged results alongside auto-captured metrics.
 
-**Experiment detail** -- summary card, params table, code changes, variables grouped by type, metrics with interactive Chart.js plots, artifacts with type badges, git diff viewer.
+**Experiment detail** -- summary card, params table, code changes, variables grouped by type, unified metrics & results view with source badges (`auto`/`manual`), interactive Chart.js plots, artifacts with type badges, git diff viewer. Includes a **Reproduce** box with the full command and a one-click copy button.
 
 **Timeline view** -- chronological event log showing cell executions, variable changes, and artifact creation. Click "view source" to see full cell code with diffs. Filter by event type (Code, Variables, Artifacts, Observational).
 
-**Compare view** -- side-by-side param, variable, and metric comparison between two experiments. Toggle "show only differences" to focus on what changed.
+**Compare view** -- two modes:
+- **Pair Compare** -- side-by-side param, variable, and metric comparison between two experiments with overlay line charts showing metric trends. Toggle "show only differences" to focus on what changed.
+- **Multi Compare** -- select 3+ experiments to see bar charts comparing metrics/results across all selected runs, plus a summary comparison table.
 
 **Inline editing** -- double-click any name, tag, or note field to edit directly. No modal prompts. Works in both the table view and detail view.
 

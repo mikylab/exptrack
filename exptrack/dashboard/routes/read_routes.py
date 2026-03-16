@@ -110,6 +110,18 @@ def api_studies(conn) -> dict:
     return {"studies": get_studies(conn)}
 
 
+def api_multi_compare(conn, qs: dict) -> dict:
+    """Compare multiple experiments: names, latest metrics, and results."""
+    from ...core.queries import get_multi_compare
+    ids_str = qs.get("ids", "")
+    if not ids_str:
+        return {"error": "provide ids parameter (comma-separated)"}
+    ids = [i.strip() for i in ids_str.split(",") if i.strip()]
+    if len(ids) < 2:
+        return {"error": "provide at least 2 experiment ids"}
+    return {"experiments": get_multi_compare(conn, ids)}
+
+
 def api_list_logs(conn, exp_id: str) -> dict:
     """List log/text/data files from user-configured paths for this experiment."""
     import json
