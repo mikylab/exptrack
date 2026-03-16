@@ -116,6 +116,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "log-metric":      lambda: write_routes.api_log_metric(conn, exp_id, body),
                 "delete-result":   lambda: write_routes.api_delete_result(conn, exp_id, body),
                 "delete-metric":   lambda: write_routes.api_delete_metric(conn, exp_id, body),
+                "rename-metric":   lambda: write_routes.api_rename_metric(conn, exp_id, body),
                 "edit-result":     lambda: write_routes.api_edit_result(conn, exp_id, body),
             }
             handler = dispatch.get(action)

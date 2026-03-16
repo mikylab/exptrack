@@ -1540,14 +1540,10 @@ async function refreshDetail(id) {
     const src = m.source || 'auto';
     const isManual = src === 'manual';
     const keyColor = isManual ? 'var(--tl-metric)' : 'var(--green)';
-    const mActions = isManual
-      ? `<span class="result-del-x" onclick="event.stopPropagation();deleteResult('${exp.id}','${esc(m.key)}')" title="Delete result">&times;</span>`
-      : m.n > 1
-        ? `<span class="result-del-x" onclick="event.stopPropagation();deleteMetricLast('${exp.id}','${esc(m.key)}')" title="Undo last step">&#8630;</span> <span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`
-        : `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete">&times;</span>`;
+    const delBtn = `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`;
     const editAttr = isManual ? ` class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(m.key)}',this)" title="Double-click to edit"` : '';
     const shortKey = m.key.includes('/') ? m.key.split('/').slice(1).join('/') : m.key;
-    return `<tr><td style="color:${keyColor}">${esc(shortKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${isManual ? '--' : (m.min?.toFixed(4) ?? '--')}</td><td>${isManual ? '--' : (m.max?.toFixed(4) ?? '--')}</td><td>${m.n}</td><td><span class="source-badge ${src}">${src}</span> ${mActions}</td></tr>`;
+    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="Double-click to rename">${esc(shortKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${isManual ? '--' : (m.min?.toFixed(4) ?? '--')}</td><td>${isManual ? '--' : (m.max?.toFixed(4) ?? '--')}</td><td>${m.n}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
   }
   // Group metrics by prefix
   const metricGroups = {};
@@ -1805,17 +1801,18 @@ async function refreshDetail(id) {
     studyInputArea.appendChild(sWrapper);
   }
 
-  // Render metric charts
+  // Render metric charts (click a point to delete it)
   Object.values(charts).forEach(c => c.destroy());
   charts = {};
   const container = document.getElementById('charts-container');
   for (const [key, points] of Object.entries(metricsData)) {
-    if (points.length < 2) continue;
+    if (points.length < 1) continue;
     const div = document.createElement('div');
     div.className = 'chart-container';
     const canvas = document.createElement('canvas');
     div.appendChild(canvas);
     container.appendChild(div);
+    const chartPoints = points.map((p,i) => ({ x: p.step !== null ? p.step : i, y: p.value, _step: p.step }));
     charts[key] = new Chart(canvas, {
       type: 'line',
       data: {
@@ -1825,15 +1822,33 @@ async function refreshDetail(id) {
           data: points.map(p => p.value),
           borderColor: '#2c5aa0',
           backgroundColor: 'rgba(44,90,160,0.1)',
-          fill: true, tension: 0.3, pointRadius: 2,
+          fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 7,
+          pointHitRadius: 10,
         }]
       },
       options: {
         responsive: true,
-        plugins: { legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } } },
+        plugins: {
+          legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } },
+          tooltip: {
+            callbacks: {
+              afterLabel: () => 'Click to delete this point'
+            }
+          }
+        },
         scales: {
           x: { title: { display: true, text: 'Step', font: { family: "'IBM Plex Mono'" } } },
           y: { title: { display: true, text: key, font: { family: "'IBM Plex Mono'" } } }
+        },
+        onClick: (evt, elements) => {
+          if (!elements.length) return;
+          const idx = elements[0].index;
+          const pt = points[idx];
+          const step = pt.step;
+          const val = pt.value;
+          if (confirm('Delete point: ' + key + ' = ' + val + ' (step ' + (step ?? idx) + ')?')) {
+            deleteMetricPoint(currentDetailId, key, step ?? idx);
+          }
         }
       }
     });
@@ -3104,6 +3119,39 @@ async function deleteMetric(id, key) {
   const d = await postApi('/api/experiment/' + id + '/delete-metric', {key, mode: 'all'});
   if (d.ok) { refreshDetail(id); loadExperiments(); }
   else alert(d.error || 'Failed to delete metric');
+}
+
+async function deleteMetricPoint(id, key, step) {
+  const d = await postApi('/api/experiment/' + id + '/delete-metric', {key, mode: 'step', step});
+  if (d.ok) { refreshDetail(id); loadExperiments(); owlSay('Deleted point (step ' + step + ')'); }
+  else alert(d.error || 'Failed to delete metric point');
+}
+
+function startMetricRename(id, key, td) {
+  if (td.querySelector('input')) return;
+  const savedHtml = td.innerHTML;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = key;
+  input.style.cssText = 'width:100%;padding:2px 4px;font:inherit;border:1px solid var(--blue);border-radius:3px;background:var(--card-bg);color:var(--fg)';
+  td.innerHTML = '';
+  td.appendChild(input);
+  input.focus();
+  input.select();
+  const finish = async (save) => {
+    input.onblur = null;
+    if (save) {
+      const newKey = input.value.trim();
+      if (newKey && newKey !== key) {
+        const d = await postApi('/api/experiment/' + id + '/rename-metric', {old_key: key, new_key: newKey});
+        if (d.ok) { refreshDetail(id); loadExperiments(); owlSay('Renamed: ' + newKey); return; }
+        else alert(d.error || 'Failed to rename');
+      }
+    }
+    td.innerHTML = savedHtml;
+  };
+  input.onkeydown = e => { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); };
+  input.onblur = () => finish(false);
 }
 
 function startResultEdit(id, key, td) {

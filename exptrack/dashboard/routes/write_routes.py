@@ -564,6 +564,33 @@ def api_delete_metric(conn, exp_id: str, body: dict) -> dict:
     return {"ok": True, "remaining": remaining}
 
 
+def api_rename_metric(conn, exp_id: str, body: dict) -> dict:
+    """Rename a metric key (e.g. 'loss' -> 'train/loss')."""
+    from ...core.queries import find_experiment
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    old_key = body.get("old_key", "").strip()
+    new_key = body.get("new_key", "").strip()
+    if not old_key or not new_key:
+        return {"error": "provide old_key and new_key"}
+    if old_key == new_key:
+        return {"ok": True}
+    # Check old key exists
+    count = conn.execute(
+        "SELECT COUNT(*) as n FROM metrics WHERE exp_id=? AND key=?",
+        (exp["id"], old_key)
+    ).fetchone()["n"]
+    if not count:
+        return {"error": f"metric '{old_key}' not found"}
+    conn.execute(
+        "UPDATE metrics SET key=? WHERE exp_id=? AND key=?",
+        (new_key, exp["id"], old_key)
+    )
+    conn.commit()
+    return {"ok": True, "old_key": old_key, "new_key": new_key}
+
+
 def api_log_path(conn, exp_id: str, body: dict) -> dict:
     """Manage log paths for an experiment (add/edit/delete).
 
