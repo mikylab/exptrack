@@ -3159,6 +3159,7 @@ async function logMetric(id) {
       }
     }
     refreshDetail(id);
+    loadExperiments();
     owlSay('Logged ' + key + ' = ' + d.value + ' (step ' + d.step + ')');
   }
   else alert(d.error || 'Failed to log metric');
@@ -3167,7 +3168,7 @@ async function logMetric(id) {
 async function deleteResult(id, key) {
   if (!confirm('Delete result "' + key + '"?')) return;
   const d = await postApi('/api/experiment/' + id + '/delete-result', {key});
-  if (d.ok) refreshDetail(id);
+  if (d.ok) { refreshDetail(id); loadExperiments(); }
   else alert(d.error || 'Failed to delete result');
 }
 
@@ -3236,7 +3237,7 @@ function startResultEdit(id, key, td) {
     if (!val || isNaN(parseFloat(val))) { alert('Value must be a number'); restore(); return; }
     if (val === valText) { restore(); return; }
     const d = await postApi('/api/experiment/' + id + '/edit-result', {key, value: val});
-    if (d.ok) refreshDetail(id);
+    if (d.ok) { refreshDetail(id); loadExperiments(); }
     else { restore(); alert(d.error || 'Failed'); }
   };
   input.onblur = save;
@@ -3311,6 +3312,7 @@ async function addMetricItem(target) {
     _resultTypes = d.types; _metricPrefixes = d.prefixes;
     input.value = '';
     if (window._rtOverlayRender) window._rtOverlayRender();
+    if (currentDetailId) populateResultTypeDropdown(currentDetailId);
   } else {
     alert(d.error || 'Failed');
   }
@@ -3321,6 +3323,7 @@ async function removeMetricItem(target, index) {
   if (d.ok) {
     _resultTypes = d.types; _metricPrefixes = d.prefixes;
     if (window._rtOverlayRender) window._rtOverlayRender();
+    if (currentDetailId) populateResultTypeDropdown(currentDetailId);
   }
 }
 
