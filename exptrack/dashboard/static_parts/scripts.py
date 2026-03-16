@@ -1520,6 +1520,15 @@ async function refreshDetail(id) {
     <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
   </div>`;
 
+  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px" id="log-result-form-${exp.id}">
+    <select id="result-key-${exp.id}" style="width:180px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
+      <option value="">Select result type...</option>
+    </select>
+    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px">
+    <button onclick="logResult('${exp.id}')">+ Log Result</button>
+    <button onclick="openManageResultTypes()" style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);font-size:11px;padding:3px 8px" title="Manage result types">Manage</button>
+  </div>`;
+
   // Code changes
   let codeHtml = '';
   if (Object.keys(codeChanges).length) {
@@ -1652,6 +1661,7 @@ async function refreshDetail(id) {
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
         <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
         <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
+        <button class="tab" onclick="switchDetailTab('logs','${exp.id}')">Logs</button>
         <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
       </div>
 
@@ -1675,7 +1685,7 @@ async function refreshDetail(id) {
           </div>
           <!-- Right column: metrics + charts + artifacts -->
           <div>
-            ${metricRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Metrics (' + exp.metrics.length + ')</h2><div class="section-body"><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table><div class="artifact-add-form" style="margin-top:8px"><input type="text" id="result-key-${exp.id}" placeholder="Result name (e.g. accuracy)" style="width:180px"><input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px"><button onclick="logResult(\'${exp.id}\')">+ Log Result</button></div><div id="charts-container"></div></div>' : '<div class="artifact-add-form" style="margin-bottom:12px"><input type="text" id="result-key-${exp.id}" placeholder="Result name (e.g. accuracy)" style="width:180px"><input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px"><button onclick="logResult(\'${exp.id}\')">+ Log Result</button></div><div id="charts-container"></div>'}
+            ${metricRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Metrics (' + exp.metrics.length + ')</h2><div class="section-body"><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table>'+logResultForm+'<div id="charts-container"></div></div>' : logResultForm+'<div id="charts-container"></div>'}
             <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
             <div class="section-body">
             ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
@@ -1692,6 +1702,7 @@ async function refreshDetail(id) {
 
       <div id="detail-tab-timeline" style="display:none"></div>
       <div id="detail-tab-images" style="display:none"></div>
+      <div id="detail-tab-logs" style="display:none"></div>
       <div id="detail-tab-compare-within" style="display:none"></div>
     </div>
   `;
@@ -1749,6 +1760,9 @@ async function refreshDetail(id) {
       }
     });
   }
+
+  // Populate result type dropdown
+  populateResultTypeDropdown(exp.id);
 }
 """
 
@@ -2060,18 +2074,6 @@ function startDetailNoteEdit(id, el) {
 }
 
 
-async function logResult(id) {
-  const keyEl = document.getElementById('result-key-' + id);
-  const valEl = document.getElementById('result-val-' + id);
-  if (!keyEl || !valEl) return;
-  const key = keyEl.value.trim();
-  const value = valEl.value.trim();
-  if (!key || !value) return;
-  const d = await postApi('/api/experiment/' + id + '/log-result', {key, value});
-  if (d.ok) { keyEl.value = ''; valEl.value = ''; refreshDetail(id); }
-  else alert(d.error || 'Failed to log result');
-}
-
 async function deleteArtifact(id, label, path) {
   if (!confirm('Delete artifact "' + label + '"?')) return;
   const d = await postApi('/api/experiment/' + id + '/delete-artifact', {label, path});
@@ -2144,15 +2146,16 @@ function switchDetailTab(tab, expId) {
   currentDetailTab = tab;
   currentDetailExpId = expId;
   document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
-    const tabs = ['overview','timeline','images','compare-within'];
+    const tabs = ['overview','timeline','images','logs','compare-within'];
     t.classList.toggle('active', tabs[i] === tab);
   });
-  ['overview','timeline','images','compare-within'].forEach(t => {
+  ['overview','timeline','images','logs','compare-within'].forEach(t => {
     const el = document.getElementById('detail-tab-'+t);
     if (el) el.style.display = t === tab ? '' : 'none';
   });
   if (tab === 'timeline') loadTimeline(expId);
   if (tab === 'images') loadImages(expId);
+  if (tab === 'logs') loadLogs(expId);
   if (tab === 'compare-within') loadCompareWithin(expId);
 }
 
@@ -2526,6 +2529,178 @@ function openImageModal(src, name) {
 
   const handler = (ev) => { if (ev.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
   document.addEventListener('keydown', handler);
+}
+
+// ── Logs tab ─────────────────────────────────────────────────────────────────
+
+async function loadLogs(expId) {
+  const container = document.getElementById('detail-tab-logs');
+  if (!container) return;
+
+  const exp = await api('/api/experiment/' + expId);
+  if (exp.error) { container.innerHTML = '<p style="color:var(--muted)">Could not load experiment.</p>'; return; }
+
+  // Filter artifacts that are log/text files or directories
+  const logExts = ['log', 'txt', 'out', 'err'];
+  const dataExts = ['csv', 'json', 'jsonl'];
+  const allViewable = exp.artifacts.filter(a => {
+    const ext = (a.path || '').split('.').pop().toLowerCase();
+    return logExts.includes(ext) || dataExts.includes(ext);
+  });
+
+  // Also check output_dir for stdout.log / stderr.log
+  let html = '<div style="margin-bottom:16px">';
+  html += '<h3 style="font-size:15px;margin-bottom:8px">Output Logs & Data Files</h3>';
+  html += '<p style="font-size:12px;color:var(--muted);margin-bottom:12px">Log files captured during this run. Click "view" to inspect contents.</p>';
+
+  if (exp.output_dir) {
+    html += '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">';
+    html += 'Output directory: <code style="background:var(--code-bg);padding:2px 6px;border-radius:3px">' + esc(exp.output_dir) + '</code>';
+    html += '</div>';
+  }
+
+  if (allViewable.length) {
+    html += '<table class="params-table">';
+    html += '<tr><th>File</th><th>Path</th><th style="width:60px"></th></tr>';
+    for (const a of allViewable) {
+      const ext = (a.path || '').split('.').pop().toLowerCase();
+      const badge = logExts.includes(ext) ? '<span class="artifact-type-badge log">log</span>' : '<span class="artifact-type-badge data">data</span>';
+      html += '<tr>';
+      html += '<td><div class="artifact-row">' + badge + ' ' + esc(a.label) + '</div></td>';
+      html += '<td style="font-size:12px;color:var(--muted)">' + esc(a.path) + '</td>';
+      html += '<td><button class="view-source-btn" onclick="viewLogFile(\'' + esc(a.path) + '\',\'' + esc(a.label) + '\')">view</button></td>';
+      html += '</tr>';
+    }
+    html += '</table>';
+  } else {
+    html += '<div style="padding:30px;text-align:center;color:var(--muted)">';
+    html += '<p style="font-size:14px;margin-bottom:8px">No log files found</p>';
+    html += '<p style="font-size:12px">Log files (.log, .txt, .out, .err) and data files (.csv, .json) from this experiment will appear here.</p>';
+    html += '<p style="font-size:12px;margin-top:8px">Tip: Use <code>exptrack run</code> to auto-capture stdout/stderr, or <code>exptrack log-output</code> / <code>exptrack link-dir</code> to link files.</p>';
+    html += '</div>';
+  }
+
+  // Directory artifacts
+  const dirArtifacts = exp.artifacts.filter(a => a.label.startsWith('[dir]'));
+  if (dirArtifacts.length) {
+    html += '<h3 style="font-size:14px;margin-top:20px;margin-bottom:8px">Linked Directories</h3>';
+    html += '<table class="params-table">';
+    html += '<tr><th>Label</th><th>Path</th></tr>';
+    for (const a of dirArtifacts) {
+      html += '<tr><td><span class="artifact-type-badge dir">dir</span> ' + esc(a.label.replace('[dir] ','')) + '</td>';
+      html += '<td style="font-size:12px;color:var(--muted)">' + esc(a.path) + '</td></tr>';
+    }
+    html += '</table>';
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ── Result types management ──────────────────────────────────────────────────
+
+let _resultTypes = null; // cached result types
+
+async function loadResultTypes() {
+  if (_resultTypes !== null) return _resultTypes;
+  try {
+    const d = await api('/api/result-types');
+    _resultTypes = d.types || [];
+  } catch(e) {
+    _resultTypes = ['accuracy', 'loss', 'auroc', 'f1', 'precision', 'recall', 'mse', 'mae', 'r2'];
+  }
+  return _resultTypes;
+}
+
+async function populateResultTypeDropdown(expId) {
+  const sel = document.getElementById('result-key-' + expId);
+  if (!sel) return;
+  const types = await loadResultTypes();
+  // Preserve existing options if already populated
+  if (sel.options.length > 1) return;
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t;
+    sel.appendChild(opt);
+  }
+}
+
+async function logResult(id) {
+  const keyEl = document.getElementById('result-key-' + id);
+  const valEl = document.getElementById('result-val-' + id);
+  if (!keyEl || !valEl) return;
+  const key = keyEl.value.trim();
+  const value = valEl.value.trim();
+  if (!key || !value) { alert('Select a result type and enter a value'); return; }
+  const d = await postApi('/api/experiment/' + id + '/log-result', {key, value});
+  if (d.ok) { keyEl.value = ''; valEl.value = ''; refreshDetail(id); }
+  else alert(d.error || 'Failed to log result');
+}
+
+function openManageResultTypes() {
+  const overlay = document.createElement('div');
+  overlay.className = 'img-modal-overlay';
+  overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
+
+  const content = document.createElement('div');
+  content.className = 'img-modal-content';
+  content.style.cssText = 'max-width:500px;width:90vw';
+
+  async function render() {
+    const types = await loadResultTypes();
+    let html = '<div class="img-modal-header">';
+    html += '<span class="img-modal-name">Manage Result Types</span>';
+    html += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
+    html += '</div>';
+    html += '<div style="padding:16px">';
+    html += '<p style="font-size:12px;color:var(--muted);margin-bottom:12px">These result types are shared across all experiments. They appear in the "Log Result" dropdown.</p>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">';
+    for (let i = 0; i < types.length; i++) {
+      html += '<div class="result-type-chip">';
+      html += '<span>' + esc(types[i]) + '</span>';
+      html += '<button onclick="removeResultType(' + i + ')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px" title="Remove">&times;</button>';
+      html += '</div>';
+    }
+    html += '</div>';
+    html += '<div class="artifact-add-form">';
+    html += '<input type="text" id="new-result-type" placeholder="New result type name" style="width:200px">';
+    html += '<button onclick="addResultType()">+ Add</button>';
+    html += '</div>';
+    html += '</div>';
+    content.innerHTML = html;
+  }
+
+  overlay.appendChild(content);
+  document.body.appendChild(overlay);
+  render();
+
+  window._rtOverlayRender = render;
+
+  const handler = (ev) => { if (ev.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
+  document.addEventListener('keydown', handler);
+}
+
+async function addResultType() {
+  const input = document.getElementById('new-result-type');
+  if (!input) return;
+  const name = input.value.trim().toLowerCase();
+  if (!name) return;
+  const d = await postApi('/api/result-types', {action: 'add', name});
+  if (d.ok) {
+    _resultTypes = d.types;
+    if (window._rtOverlayRender) window._rtOverlayRender();
+  } else {
+    alert(d.error || 'Failed');
+  }
+}
+
+async function removeResultType(index) {
+  const d = await postApi('/api/result-types', {action: 'remove', index});
+  if (d.ok) {
+    _resultTypes = d.types;
+    if (window._rtOverlayRender) window._rtOverlayRender();
+  }
 }
 
 // ── Within-experiment comparison ─────────────────────────────────────────────

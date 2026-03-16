@@ -97,6 +97,15 @@ def api_get_timezone() -> dict:
     return {"timezone": conf.get("timezone", "")}
 
 
+def api_result_types() -> dict:
+    from ...config import load
+    conf = load()
+    default_types = ["accuracy", "loss", "auroc", "f1", "precision", "recall",
+                     "mse", "mae", "r2", "perplexity", "bleu"]
+    types = conf.get("result_types", default_types)
+    return {"types": types}
+
+
 def api_studies(conn) -> dict:
     return {"studies": get_studies(conn)}
 

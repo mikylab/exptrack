@@ -55,6 +55,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_all_tags(conn))
         elif path == "/api/config/timezone":
             self._json(read_routes.api_get_timezone())
+        elif path == "/api/result-types":
+            self._json(read_routes.api_result_types())
         elif path == "/api/studies":
             self._json(read_routes.api_studies(conn))
         elif path == "/api/all-studies":
@@ -123,6 +125,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/studies/delete":       lambda: write_routes.api_delete_study(conn, body),
             "/api/all-studies":          lambda: write_routes.api_all_studies(conn),
             "/api/bulk-add-to-study":    lambda: write_routes.api_bulk_add_to_study(conn, body),
+            "/api/result-types":         lambda: write_routes.api_manage_result_types(body),
         }
         handler = global_dispatch.get(path)
         if handler:

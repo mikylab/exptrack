@@ -380,6 +380,34 @@ def api_set_stage(conn, exp_id: str, body: dict) -> dict:
     return {"ok": True, "stage": stage, "stage_name": stage_name}
 
 
+def api_manage_result_types(body: dict) -> dict:
+    """Add/remove result types from project config."""
+    from ...config import load, save, reload
+    conf = load()
+    default_types = ["accuracy", "loss", "auroc", "f1", "precision", "recall",
+                     "mse", "mae", "r2", "perplexity", "bleu"]
+    types = list(conf.get("result_types", default_types))
+
+    action = body.get("action", "")
+    if action == "add":
+        name = body.get("name", "").strip().lower()
+        if not name:
+            return {"error": "empty name"}
+        if name not in types:
+            types.append(name)
+    elif action == "remove":
+        index = body.get("index", -1)
+        if 0 <= index < len(types):
+            types.pop(index)
+    else:
+        return {"error": "invalid action"}
+
+    conf["result_types"] = types
+    save(conf)
+    reload()
+    return {"ok": True, "types": types}
+
+
 def api_log_result(conn, exp_id: str, body: dict) -> dict:
     """Log a manual result (metric) to an experiment."""
     exp = find_experiment(conn, exp_id, "id")

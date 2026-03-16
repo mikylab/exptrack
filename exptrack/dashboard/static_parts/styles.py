@@ -326,6 +326,7 @@ CSS_TIMELINE = """
   .cw-delta-up { color: #059669; background: rgba(5,150,105,0.1); }
   .cw-delta-down { color: #dc2626; background: rgba(220,38,38,0.1); }
   .cw-delta-changed { color: #d97706; background: rgba(217,119,6,0.1); }
+  .result-type-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; background: var(--code-bg); border: 1px solid var(--border); font-size: 12px; }
   .source-view { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; font-size: 13px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; margin-top: 6px; }
   .source-view .line-num { color: var(--muted); display: inline-block; min-width: 30px; text-align: right; margin-right: 12px; user-select: none; }
   .view-source-btn { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; margin-left: 6px; color: var(--blue); }
