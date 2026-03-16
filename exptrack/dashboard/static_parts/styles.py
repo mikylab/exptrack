@@ -533,6 +533,10 @@ CSS_COMPONENTS = """
   .section-toggle.collapsed::before { transform: rotate(-90deg); }
   .section-body { transition: max-height 0.2s ease; }
   .section-toggle.collapsed + .section-body { display: none; }
+  .metric-group-header { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 4px; user-select: none; }
+  .metric-group-header::before { content: '\\25BC'; font-size: 9px; display: inline-block; width: 12px; text-align: center; transition: transform 0.15s; margin-right: 2px; }
+  .metric-group.collapsed .metric-group-header::before { transform: rotate(-90deg); }
+  .metric-group.collapsed .metrics-table { display: none; }
   .editable-cell { cursor: default; padding: 5px 8px; border-radius: 3px; position: relative; min-height: 32px; }
   .editable-cell:hover { background: rgba(44,90,160,0.08); }
   .edit-icon { display: none; font-size: 11px; color: var(--muted); margin-left: 4px; vertical-align: middle; }

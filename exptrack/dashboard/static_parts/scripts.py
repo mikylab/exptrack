@@ -1568,7 +1568,7 @@ async function refreshDetail(id) {
     for (const g of groupKeys) {
       const label = g || 'Other';
       const items = metricGroups[g];
-      metricRows += '<div class="metric-group"><h3 class="metric-group-header" onclick="this.parentElement.classList.toggle(\'collapsed\')" style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px;user-select:none">' + esc(label) + ' <span style="font-weight:normal;font-size:12px">(' + items.length + ')</span></h3>';
+      metricRows += '<div class="metric-group"><h3 class="metric-group-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">' + esc(label) + ' <span style="font-weight:normal;font-size:12px">(' + items.length + ')</span></h3>';
       metricRows += '<table class="metrics-table">' + thead;
       for (const m of items) metricRows += buildMetricRow(m);
       metricRows += '</table></div>';

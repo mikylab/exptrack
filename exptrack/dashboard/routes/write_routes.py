@@ -451,7 +451,7 @@ def api_log_metric(conn, exp_id: str, body: dict) -> dict:
         ).fetchone()
         step = (row["max_step"] + 1) if row and row["max_step"] is not None else 0
 
-    source = body.get("source", "auto")
+    source = body.get("source", "manual")
     conn.execute(
         "INSERT INTO metrics (exp_id, key, value, step, ts, source) VALUES (?,?,?,?,?,?)",
         (exp["id"], key, num_val, step, ts, source)
