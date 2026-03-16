@@ -1,4 +1,4 @@
-"""Tests for new features: filters, JSON output, batch ops, backup, no-color, watch."""
+"""Tests for new features: filters, JSON output, batch ops, no-color, watch."""
 import io
 import json
 import os
@@ -144,33 +144,6 @@ def test_no_color_env():
         )
         # Should not contain ANSI escape codes
         assert "\033[" not in result.stdout
-
-
-# ── B1: Backup ────────────────────────────────────────────────────────────────
-
-def test_backup_creates_file():
-    """backup command creates a valid database copy."""
-    with tempfile.TemporaryDirectory() as tmp:
-        _setup_project(tmp)
-        from exptrack.cli.admin_cmds import cmd_backup
-
-        exp = _make_experiment(); exp.finish()
-
-        backup_path = Path(tmp) / "test_backup.db"
-        args = SimpleNamespace(dest=str(backup_path))
-        _, stderr = _capture(cmd_backup, args)
-
-        assert backup_path.exists(), "Backup file should exist"
-        assert backup_path.stat().st_size > 0, "Backup file should not be empty"
-        assert "Backup saved" in stderr
-
-        # Verify the backup contains data
-        import sqlite3
-        conn = sqlite3.connect(str(backup_path))
-        conn.row_factory = sqlite3.Row
-        count = conn.execute("SELECT COUNT(*) as n FROM experiments").fetchone()["n"]
-        conn.close()
-        assert count == 1, f"Backup should contain 1 experiment, got {count}"
 
 
 # ── B3: Batch operations ─────────────────────────────────────────────────────

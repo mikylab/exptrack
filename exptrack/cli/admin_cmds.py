@@ -149,47 +149,6 @@ def cmd_upgrade(args):
         print(col("Reinstalled.", G))
 
 
-def cmd_backup(args):
-    """Create a safe backup of the experiment database."""
-    import shutil
-    conf = cfg.load()
-    root = cfg.project_root()
-    db_path = root / conf.get("db", ".exptrack/experiments.db")
-
-    if not db_path.exists():
-        print(col("No database found.", R), file=sys.stderr); return
-
-    # Determine backup path
-    dest = getattr(args, "dest", None)
-    if dest:
-        backup_path = Path(dest)
-    else:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = db_path.parent / f"experiments_backup_{ts}.db"
-
-    # Use SQLite's built-in backup API for a consistent snapshot
-    import sqlite3
-    src_conn = sqlite3.connect(str(db_path))
-    try:
-        dst_conn = sqlite3.connect(str(backup_path))
-        try:
-            src_conn.backup(dst_conn)
-            dst_conn.close()
-        except Exception as e:
-            dst_conn.close()
-            raise e
-    finally:
-        src_conn.close()
-
-    size = backup_path.stat().st_size
-    if size < 1024:
-        sz_str = f"{size} B"
-    elif size < 1024**2:
-        sz_str = f"{size/1024:.1f} KB"
-    else:
-        sz_str = f"{size/1024**2:.1f} MB"
-    print(col(f"Backup saved: {backup_path} ({sz_str})", G), file=sys.stderr)
-
 
 def cmd_storage(args):
     """Show data storage breakdown for the exptrack database and outputs."""

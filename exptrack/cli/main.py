@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_storage, cmd_backup
+from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_storage
 from .inspect_cmds import (cmd_ls, cmd_show, cmd_timeline, cmd_diff,
                            cmd_compare, cmd_history, cmd_export, cmd_verify,
                            cmd_watch)
@@ -242,10 +242,6 @@ def main():
 
     sub.add_parser("storage", help="Show data storage breakdown and tips")
 
-    p_backup = sub.add_parser("backup", help="Create a safe backup of the experiment database")
-    p_backup.add_argument("dest", nargs="?", default=None,
-                          help="Backup file path (default: auto-timestamped in .exptrack/)")
-
     p_watch = sub.add_parser("watch", help="Watch a running experiment for live metric updates")
     p_watch.add_argument("id", help="Experiment ID (prefix match)")
     p_watch.add_argument("--interval", type=int, default=5,
@@ -280,7 +276,6 @@ def main():
         "stale":        cmd_stale,
         "upgrade":      cmd_upgrade,
         "storage":      cmd_storage,
-        "backup":       cmd_backup,
         "finish":       cmd_finish,
         "ls":           cmd_ls,
         "show":         cmd_show,
