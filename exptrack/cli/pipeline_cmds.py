@@ -428,9 +428,16 @@ def cmd_log_result(args):
 
     with conn:
         for k, v in results.items():
+            # Remove any legacy _result:* param entry
             conn.execute(
-                "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-                (exp_id, f"_result:{k}", json.dumps(v))
+                "DELETE FROM params WHERE exp_id=? AND key=?",
+                (exp_id, f"_result:{k}")
+            )
+            # Store in metrics table with source tag
+            conn.execute(
+                "INSERT INTO metrics (exp_id, key, value, step, ts, source) "
+                "VALUES (?,?,?,NULL,?,?)",
+                (exp_id, k, v, ts, source)
             )
     conn.commit()
     for k, v in results.items():

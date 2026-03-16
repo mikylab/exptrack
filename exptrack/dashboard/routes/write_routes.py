@@ -381,38 +381,56 @@ def api_set_stage(conn, exp_id: str, body: dict) -> dict:
 
 
 def api_manage_result_types(body: dict) -> dict:
-    """Add/remove result types from project config."""
+    """Add/remove result types or namespace prefixes from project config."""
     from ...config import load, save, reload
     conf = load()
     default_types = ["accuracy", "loss", "auroc", "f1", "precision", "recall",
                      "mse", "mae", "r2", "perplexity", "bleu"]
+    default_prefixes = ["train", "val", "test"]
     types = list(conf.get("result_types", default_types))
+    prefixes = list(conf.get("metric_prefixes", default_prefixes))
 
+    target = body.get("target", "type")  # "type" or "prefix"
     action = body.get("action", "")
-    if action == "add":
-        name = body.get("name", "").strip().lower()
-        if not name:
-            return {"error": "empty name"}
-        if name not in types:
-            types.append(name)
-    elif action == "remove":
-        index = body.get("index", -1)
-        if 0 <= index < len(types):
-            types.pop(index)
-    else:
-        return {"error": "invalid action"}
 
-    conf["result_types"] = types
+    if target == "prefix":
+        if action == "add":
+            name = body.get("name", "").strip().lower().rstrip("/")
+            if not name:
+                return {"error": "empty name"}
+            if name not in prefixes:
+                prefixes.append(name)
+        elif action == "remove":
+            index = body.get("index", -1)
+            if 0 <= index < len(prefixes):
+                prefixes.pop(index)
+        else:
+            return {"error": "invalid action"}
+        conf["metric_prefixes"] = prefixes
+    else:
+        if action == "add":
+            name = body.get("name", "").strip().lower()
+            if not name:
+                return {"error": "empty name"}
+            if name not in types:
+                types.append(name)
+        elif action == "remove":
+            index = body.get("index", -1)
+            if 0 <= index < len(types):
+                types.pop(index)
+        else:
+            return {"error": "invalid action"}
+        conf["result_types"] = types
+
     save(conf)
     reload()
-    return {"ok": True, "types": types}
+    return {"ok": True, "types": types, "prefixes": prefixes}
 
 
 def api_log_result(conn, exp_id: str, body: dict) -> dict:
-    """Log a manual result. Now routes to the metrics table (same as log-metric).
-
-    Kept for backwards compatibility. New code should use log-metric directly.
-    """
+    """Log a manual result. Routes to metrics table with source='manual'."""
+    body = dict(body)
+    body.setdefault("source", "manual")
     return api_log_metric(conn, exp_id, body)
 
 
@@ -452,9 +470,10 @@ def api_log_metric(conn, exp_id: str, body: dict) -> dict:
         ).fetchone()
         step = (row["max_step"] + 1) if row and row["max_step"] is not None else 0
 
+    source = body.get("source", "manual")
     conn.execute(
-        "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-        (exp["id"], key, num_val, step, ts)
+        "INSERT INTO metrics (exp_id, key, value, step, ts, source) VALUES (?,?,?,?,?,?)",
+        (exp["id"], key, num_val, step, ts, source)
     )
     conn.commit()
     return {"ok": True, "key": key, "value": num_val, "step": step}
@@ -469,6 +488,12 @@ def api_delete_result(conn, exp_id: str, body: dict) -> dict:
     if not key:
         return {"error": "provide key"}
 
+    # Delete from metrics table (unified storage)
+    conn.execute(
+        "DELETE FROM metrics WHERE exp_id=? AND key=? AND source='manual'",
+        (exp["id"], key)
+    )
+    # Also clean up any legacy _result:* param entries
     conn.execute(
         "DELETE FROM params WHERE exp_id=? AND key=?",
         (exp["id"], f"_result:{key}")
@@ -491,9 +516,21 @@ def api_edit_result(conn, exp_id: str, body: dict) -> dict:
     except ValueError:
         return {"error": "value must be a number"}
 
+    ts = datetime.now(timezone.utc).isoformat()
+    # Delete old manual entry and insert new one
     conn.execute(
-        "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-        (exp["id"], f"_result:{key}", json.dumps(num_val))
+        "DELETE FROM metrics WHERE exp_id=? AND key=? AND source='manual'",
+        (exp["id"], key)
+    )
+    conn.execute(
+        "INSERT INTO metrics (exp_id, key, value, step, ts, source) "
+        "VALUES (?,?,?,0,?,?)",
+        (exp["id"], key, num_val, ts, "manual")
+    )
+    # Clean up any legacy _result:* param
+    conn.execute(
+        "DELETE FROM params WHERE exp_id=? AND key=?",
+        (exp["id"], f"_result:{key}")
     )
     conn.commit()
     return {"ok": True, "key": key, "value": num_val}
@@ -544,6 +581,33 @@ def api_delete_metric(conn, exp_id: str, body: dict) -> dict:
         (exp["id"], key)
     ).fetchone()["n"]
     return {"ok": True, "remaining": remaining}
+
+
+def api_rename_metric(conn, exp_id: str, body: dict) -> dict:
+    """Rename a metric key (e.g. 'loss' -> 'train/loss')."""
+    from ...core.queries import find_experiment
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    old_key = body.get("old_key", "").strip()
+    new_key = body.get("new_key", "").strip()
+    if not old_key or not new_key:
+        return {"error": "provide old_key and new_key"}
+    if old_key == new_key:
+        return {"ok": True}
+    # Check old key exists
+    count = conn.execute(
+        "SELECT COUNT(*) as n FROM metrics WHERE exp_id=? AND key=?",
+        (exp["id"], old_key)
+    ).fetchone()["n"]
+    if not count:
+        return {"error": f"metric '{old_key}' not found"}
+    conn.execute(
+        "UPDATE metrics SET key=? WHERE exp_id=? AND key=?",
+        (new_key, exp["id"], old_key)
+    )
+    conn.commit()
+    return {"ok": True, "old_key": old_key, "new_key": new_key}
 
 
 def api_log_path(conn, exp_id: str, body: dict) -> dict:

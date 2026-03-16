@@ -25,6 +25,18 @@ let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
 let allKnownStudies = []; // {name, count}[]
 let highlightMode = localStorage.getItem('exptrack-highlight') === 'true';
+
+// Display abbreviations for common metric names (config stores full names)
+const METRIC_ABBREV = {
+  accuracy: 'acc', precision: 'prec', recall: 'rec', perplexity: 'ppl',
+};
+function abbrevMetric(key) {
+  // Abbreviate the base name (after last /), keep prefix
+  const si = key.lastIndexOf('/');
+  const prefix = si > 0 ? key.slice(0, si + 1) : '';
+  const base = si > 0 ? key.slice(si + 1) : key;
+  return prefix + (METRIC_ABBREV[base] || base);
+}
 let highlightColors = {}; // study -> color mapping
 
 // Column configuration: id, label, default visibility, sortable, min-width
@@ -1110,13 +1122,11 @@ function renderExpRow(e) {
     notes: '<td class="truncate-cell notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     metrics: (function() {
       const parts = [];
-      // Auto metrics (from metrics table)
-      for (const [k, v] of Object.entries(e.metrics || {}).slice(0, 3)) {
-        parts.push('<span style="color:var(--blue)" title="auto">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))) + miniSpark((e.sparklines||{})[k]));
-      }
-      // Manual results (from _result:* params)
-      for (const [k, v] of Object.entries(e.results || {}).slice(0, 3 - parts.length)) {
-        parts.push('<span style="color:var(--tl-metric)" title="manual">' + esc(k) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v).slice(0,20))));
+      for (const [k, m] of Object.entries(e.metrics || {}).slice(0, 3)) {
+        const v = typeof m === 'object' ? m.value : m;
+        const src = typeof m === 'object' ? m.source : 'auto';
+        const color = src === 'manual' ? 'var(--tl-metric)' : src === 'pipeline' ? 'var(--green)' : 'var(--blue)';
+        parts.push('<span style="color:' + color + '" title="' + esc(k) + ' (' + src + ')">' + esc(abbrevMetric(k).split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))) + miniSpark((e.sparklines||{})[k]));
       }
       return '<td class="truncate-cell" style="font-size:13px">' + (parts.join(', ') || '<span style="color:var(--muted)">--</span>') + '</td>';
     })(),
@@ -1518,7 +1528,6 @@ async function refreshDetail(id) {
   const regularParams = {};
   const codeChanges = {};
   const varChanges = {};
-  const manualResults = {};
   let cellsRan = null;
   for (const [k, v] of Object.entries(exp.params)) {
     if (k === '_code_changes' || k.startsWith('_code_change/')) {
@@ -1526,7 +1535,7 @@ async function refreshDetail(id) {
     } else if (k.startsWith('_var/')) {
       varChanges[k.slice(5)] = v;
     } else if (k.startsWith('_result:')) {
-      manualResults[k.slice(8)] = v;
+      // Legacy _result:* params — skip (migrated to metrics table)
     } else if (k === '_script_hash' || k === '_cells_ran' || k === '_result_source') {
       if (k === '_cells_ran') cellsRan = v;
     } else if (k === '_tags') {
@@ -1540,21 +1549,41 @@ async function refreshDetail(id) {
     `<tr><td style="color:var(--blue)">${esc(k)}</td><td>${esc(JSON.stringify(v))}</td></tr>`
   ).join('');
 
-  // Build unified metrics & results rows
-  const unifiedRows = [];
+  // Build unified metrics rows grouped by prefix (train/*, test/*, val/*, etc.)
+  function buildMetricRow(m, showFullKey) {
+    const src = m.source || 'auto';
+    const isManual = src === 'manual';
+    const keyColor = isManual ? 'var(--tl-metric)' : 'var(--green)';
+    const delBtn = `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`;
+    const editAttr = isManual ? ` class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(m.key)}',this)" title="Double-click to edit"` : '';
+    const displayKey = showFullKey ? abbrevMetric(m.key) : abbrevMetric(m.key.includes('/') ? m.key.split('/').slice(1).join('/') : m.key);
+    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="${esc(m.key)} — double-click to rename">${esc(displayKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${isManual ? '--' : (m.min?.toFixed(4) ?? '--')}</td><td>${isManual ? '--' : (m.max?.toFixed(4) ?? '--')}</td><td>${m.n}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
+  }
+  // Group metrics by prefix
+  const metricGroups = {};
   for (const m of exp.metrics) {
-    const mActions = m.n > 1
-      ? `<span class="result-del-x" onclick="event.stopPropagation();deleteMetricLast('${exp.id}','${esc(m.key)}')" title="Undo last step">&#8630;</span> <span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`
-      : `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete">&times;</span>`;
-    unifiedRows.push(`<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td><td><span class="source-badge auto">auto</span> ${mActions}</td></tr>`);
+    const slashIdx = m.key.indexOf('/');
+    const group = slashIdx > 0 ? m.key.slice(0, slashIdx) : '';
+    (metricGroups[group] = metricGroups[group] || []).push(m);
   }
-  const resultKeys = Object.keys(manualResults);
-  for (const k of resultKeys) {
-    const v = manualResults[k];
-    const display = typeof v === 'number' ? v.toFixed(4) : (typeof v === 'string' ? v : JSON.stringify(v));
-    unifiedRows.push(`<tr><td style="color:var(--tl-metric)">${esc(k)}</td><td class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(k)}',this)" title="Double-click to edit">${esc(display)}</td><td>--</td><td>--</td><td>1</td><td><span class="source-badge manual">manual</span> <span class="result-del-x" onclick="event.stopPropagation();deleteResult('${exp.id}','${esc(k)}')" title="Delete result">&times;</span></td></tr>`);
+  const groupKeys = Object.keys(metricGroups).sort((a, b) => a === '' ? 1 : b === '' ? -1 : a.localeCompare(b));
+  let metricRows = '';
+  const thead = '<tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Count</th><th>Source</th></tr>';
+  if (groupKeys.length <= 1) {
+    // No grouping needed — single flat table, show abbreviated full key
+    metricRows = exp.metrics.map(m => buildMetricRow(m, true)).join('');
+    if (metricRows) metricRows = '<table class="metrics-table">' + thead + metricRows + '</table>';
+  } else {
+    // Grouped tables with prefix headers
+    for (const g of groupKeys) {
+      const label = g || 'Other';
+      const items = metricGroups[g];
+      metricRows += '<div class="metric-group"><h3 class="metric-group-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">' + esc(label) + ' <span style="font-weight:normal;font-size:12px">(' + items.length + ')</span></h3>';
+      metricRows += '<table class="metrics-table">' + thead;
+      for (const m of items) metricRows += buildMetricRow(m);
+      metricRows += '</table></div>';
+    }
   }
-  const metricRows = unifiedRows.join('');
 
   const artRows = exp.artifacts.map(a => {
     const ext = (a.path || '').split('.').pop().toLowerCase();
@@ -1572,12 +1601,11 @@ async function refreshDetail(id) {
     <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
   </div>`;
 
-  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center;flex-wrap:wrap;gap:4px" id="log-result-form-${exp.id}">
-    <select id="result-key-${exp.id}" style="width:160px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
-      <option value="">Metric key...</option>
-    </select>
-    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px" onkeydown="if(event.key==='Enter')logMetric('${exp.id}')">
-    <input type="text" id="result-step-${exp.id}" placeholder="Step (auto)" style="width:80px;font-size:12px" title="Optional step number. Leave blank to auto-increment.">
+  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center;gap:4px" id="log-result-form-${exp.id}">
+    <input type="text" id="result-key-${exp.id}" list="metric-suggestions-${exp.id}" placeholder="Metric key" style="width:150px" autocomplete="off">
+    <datalist id="metric-suggestions-${exp.id}"></datalist>
+    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:80px" onkeydown="if(event.key==='Enter')logMetric('${exp.id}')">
+    <input type="text" id="result-step-${exp.id}" placeholder="Step" style="width:55px;font-size:12px" title="Optional step number">
     <button onclick="logMetric('${exp.id}')">+ Log</button>
     <button onclick="openManageResultTypes()" style="background:transparent;color:var(--muted);border:none;font-size:16px;padding:0 4px;cursor:pointer;line-height:1" title="Manage metric types">&#9881;</button>
   </div>`;
@@ -1714,7 +1742,7 @@ async function refreshDetail(id) {
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
         <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
         <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
-        <button class="tab" onclick="switchDetailTab('logs','${exp.id}')">Logs</button>
+        <button class="tab" onclick="switchDetailTab('logs','${exp.id}')">Data Files</button>
         <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
       </div>
 
@@ -1737,11 +1765,11 @@ async function refreshDetail(id) {
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
             ${varHtml}
           </div>
-          <!-- Right column: unified metrics & results + charts + artifacts -->
+          <!-- Right column: metrics + charts + artifacts -->
           <div>
-            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Metrics & Results (${exp.metrics.length + resultKeys.length})</h2>
+            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Metrics (${exp.metrics.length})</h2>
             <div class="section-body">
-            ${metricRows ? '<table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th><th>Source</th></tr>'+metricRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No metrics or results yet.</p>'}
+            ${metricRows || '<p style="color:var(--muted);font-size:13px">No metrics yet.</p>'}
             ${logResultForm}
             <div id="charts-container"></div>
             </div>
@@ -1786,17 +1814,18 @@ async function refreshDetail(id) {
     studyInputArea.appendChild(sWrapper);
   }
 
-  // Render metric charts
+  // Render metric charts (click a point to delete it)
   Object.values(charts).forEach(c => c.destroy());
   charts = {};
   const container = document.getElementById('charts-container');
   for (const [key, points] of Object.entries(metricsData)) {
-    if (points.length < 2) continue;
+    if (points.length < 1) continue;
     const div = document.createElement('div');
     div.className = 'chart-container';
     const canvas = document.createElement('canvas');
     div.appendChild(canvas);
     container.appendChild(div);
+    const chartPoints = points.map((p,i) => ({ x: p.step !== null ? p.step : i, y: p.value, _step: p.step }));
     charts[key] = new Chart(canvas, {
       type: 'line',
       data: {
@@ -1806,15 +1835,33 @@ async function refreshDetail(id) {
           data: points.map(p => p.value),
           borderColor: '#2c5aa0',
           backgroundColor: 'rgba(44,90,160,0.1)',
-          fill: true, tension: 0.3, pointRadius: 2,
+          fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 7,
+          pointHitRadius: 10,
         }]
       },
       options: {
         responsive: true,
-        plugins: { legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } } },
+        plugins: {
+          legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } },
+          tooltip: {
+            callbacks: {
+              afterLabel: () => 'Click to delete this point'
+            }
+          }
+        },
         scales: {
           x: { title: { display: true, text: 'Step', font: { family: "'IBM Plex Mono'" } } },
           y: { title: { display: true, text: key, font: { family: "'IBM Plex Mono'" } } }
+        },
+        onClick: (evt, elements) => {
+          if (!elements.length) return;
+          const idx = elements[0].index;
+          const pt = points[idx];
+          const step = pt.step;
+          const val = pt.value;
+          if (confirm('Delete point: ' + key + ' = ' + val + ' (step ' + (step ?? idx) + ')?')) {
+            deleteMetricPoint(currentDetailId, key, step ?? idx);
+          }
         }
       }
     });
@@ -1950,9 +1997,7 @@ async function doCompare() {
   }
   const e1 = data.exp1, e2 = data.exp2;
   const isUserParam = k => !k.startsWith('_code_change') && k !== '_code_changes' && !k.startsWith('_var/') && k !== '_script_hash' && k !== '_cells_ran' && k !== '_tags' && !k.startsWith('_result:');
-  const isResult = k => k.startsWith('_result:');
   const allPKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isUserParam).sort();
-  const allResultKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isResult).sort();
   const [tlVars1, tlVars2] = await Promise.all([
     api('/api/vars-at/' + id1 + '?seq=999999'),
     api('/api/vars-at/' + id2 + '?seq=999999'),
@@ -1999,25 +2044,16 @@ async function doCompare() {
     html += '</table></details>';
   }
 
-  // Unified metrics & results comparison
+  // Unified metrics comparison (all sources now in metrics table)
   const allUnifiedKeys = [...allMKeys];
-  for (const k of allResultKeys) {
-    const rk = k.slice(8); // strip _result:
-    if (!allUnifiedKeys.includes(rk)) allUnifiedKeys.push(rk);
-  }
-  const r1 = {}, r2 = {};
-  for (const k of allResultKeys) {
-    const rk = k.slice(8);
-    if (e1.params[k] !== undefined) r1[rk] = typeof e1.params[k] === 'number' ? e1.params[k] : parseFloat(e1.params[k]);
-    if (e2.params[k] !== undefined) r2[rk] = typeof e2.params[k] === 'number' ? e2.params[k] : parseFloat(e2.params[k]);
-  }
+  // Build source maps from metrics data
+  const src1 = Object.fromEntries(e1.metrics.map(m => [m.key, m.source || 'auto']));
+  const src2 = Object.fromEntries(e2.metrics.map(m => [m.key, m.source || 'auto']));
 
   if (allUnifiedKeys.length) {
-    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Metrics & Results</summary><table class="metrics-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th><th>Delta</th><th>Source</th></tr>';
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Metrics</summary><table class="metrics-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th><th>Delta</th><th>Source</th></tr>';
     for (const k of allUnifiedKeys) {
-      const hasMetric = m1[k] !== undefined || m2[k] !== undefined;
-      const hasResult = r1[k] !== undefined || r2[k] !== undefined;
-      const v1 = m1[k] ?? r1[k], v2 = m2[k] ?? r2[k];
+      const v1 = m1[k], v2 = m2[k];
       const sv1 = v1 !== undefined ? (typeof v1 === 'number' ? v1.toFixed(4) : String(v1)) : '--';
       const sv2 = v2 !== undefined ? (typeof v2 === 'number' ? v2.toFixed(4) : String(v2)) : '--';
       let delta = '';
@@ -2027,7 +2063,8 @@ async function doCompare() {
         const arrow = d > 0 ? '&#x25B2;' : d < 0 ? '&#x25BC;' : '';
         delta = '<span style="color:' + (d>0?'var(--green,#3fb950)':'var(--red,#f85149)') + '">' + arrow + ' ' + (d>0?'+':'') + d.toFixed(4) + '</span>';
       }
-      const source = hasMetric && hasResult ? '<span class="source-badge auto">auto</span> <span class="source-badge manual">manual</span>' : hasMetric ? '<span class="source-badge auto">auto</span>' : '<span class="source-badge manual">manual</span>';
+      const ks1 = src1[k] || 'auto', ks2 = src2[k] || 'auto';
+      const source = ks1 === ks2 ? '<span class="source-badge ' + ks1 + '">' + ks1 + '</span>' : '<span class="source-badge ' + ks1 + '">' + ks1 + '</span> / <span class="source-badge ' + ks2 + '">' + ks2 + '</span>';
       html += '<tr><td>' + esc(k) + '</td><td>' + sv1 + '</td><td>' + sv2 + '</td><td>' + delta + '</td><td>' + source + '</td></tr>';
     }
     html += '</table></details>';
@@ -2170,11 +2207,10 @@ async function doMultiCompare(ids) {
     return;
   }
   const exps = data.experiments;
-  // Collect all unique metric+result keys
+  // Collect all unique metric keys
   const allKeys = new Set();
   for (const e of exps) {
     for (const k of Object.keys(e.metrics || {})) allKeys.add(k);
-    for (const k of Object.keys(e.results || {})) allKeys.add(k);
   }
   const keys = [...allKeys].sort();
 
@@ -2189,7 +2225,7 @@ async function doMultiCompare(ids) {
   for (const k of keys) {
     html += '<tr><td>' + esc(k) + '</td>';
     for (const e of exps) {
-      const v = e.metrics[k] ?? e.results[k];
+      const v = e.metrics[k];
       html += '<td>' + (v !== undefined ? (typeof v === 'number' ? v.toFixed(4) : esc(String(v))) : '--') + '</td>';
     }
     html += '</tr>';
@@ -2213,7 +2249,7 @@ async function doMultiCompare(ids) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) continue;
     const labels = exps.map(e => e.name.length > 15 ? e.name.slice(0,12) + '...' : e.name);
-    const values = exps.map(e => e.metrics[k] ?? e.results[k] ?? null);
+    const values = exps.map(e => e.metrics[k] ?? null);
     const colors = exps.map((_, i) => MULTI_COLORS[i % MULTI_COLORS.length]);
     multiCharts[k] = new Chart(canvas, {
       type: 'bar',
@@ -2345,6 +2381,27 @@ async function editArtifact(id, oldLabel, oldPath) {
   else alert(d.error || 'Failed');
 }
 
+function parseCSV(text, delimiter) {
+  const rows = [];
+  let current = '', inQuote = false, row = [], i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (inQuote) {
+      if (ch === '"' && text[i+1] === '"') { current += '"'; i += 2; }
+      else if (ch === '"') { inQuote = false; i++; }
+      else { current += ch; i++; }
+    } else {
+      if (ch === '"') { inQuote = true; i++; }
+      else if (ch === delimiter) { row.push(current); current = ''; i++; }
+      else if (ch === '\n' || (ch === '\r' && text[i+1] === '\n')) { row.push(current); current = ''; rows.push(row); row = []; i += (ch === '\r' ? 2 : 1); }
+      else if (ch === '\r') { row.push(current); current = ''; rows.push(row); row = []; i++; }
+      else { current += ch; i++; }
+    }
+  }
+  if (current || row.length) { row.push(current); rows.push(row); }
+  return rows.filter(r => r.length > 0 && !(r.length === 1 && r[0] === ''));
+}
+
 async function viewLogFile(path, label) {
   try {
     const resp = await fetch('/api/file/' + encodeURIComponent(path).replace(/%2F/g, '/'));
@@ -2357,25 +2414,95 @@ async function viewLogFile(path, label) {
 
     const content = document.createElement('div');
     content.className = 'img-modal-content';
-    content.style.cssText = 'max-width:800px;width:90vw';
+    content.style.cssText = 'max-width:900px;width:90vw';
 
-    const lines = text.split('\n');
-    const maxLines = 500;
-    const truncated = lines.length > maxLines;
-    const displayLines = truncated ? lines.slice(-maxLines) : lines;
-    const lineNums = displayLines.map((_, i) => (truncated ? lines.length - maxLines + i + 1 : i + 1));
+    const ext = (path || '').split('.').pop().toLowerCase();
+    const isCSV = ext === 'csv';
+    const isTSV = ext === 'tsv';
+    const isJSON = ext === 'json' || ext === 'jsonl';
 
     let logHtml = '<div class="img-modal-header">';
     logHtml += '<span class="img-modal-name">' + esc(label) + '</span>';
-    logHtml += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + lines.length + ' lines</span>';
-    logHtml += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
-    logHtml += '</div>';
-    logHtml += '<div class="source-view" style="max-height:70vh;font-size:12px;line-height:1.5">';
-    if (truncated) logHtml += '<div style="color:var(--muted);margin-bottom:8px">Showing last ' + maxLines + ' of ' + lines.length + ' lines</div>';
-    for (let i = 0; i < displayLines.length; i++) {
-      logHtml += '<div><span class="line-num">' + lineNums[i] + '</span>' + esc(displayLines[i]) + '</div>';
+
+    if (isCSV || isTSV) {
+      // CSV/TSV table rendering
+      const delimiter = isTSV ? '\t' : ',';
+      const rows = parseCSV(text, delimiter);
+      const maxRows = 200;
+      const truncated = rows.length > maxRows + 1;
+      logHtml += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + (rows.length - 1) + ' rows' + (truncated ? ' (showing first ' + maxRows + ')' : '') + '</span>';
+      logHtml += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
+      logHtml += '</div>';
+      logHtml += '<div style="max-height:70vh;overflow:auto">';
+      if (rows.length > 0) {
+        logHtml += '<table class="metrics-table" style="font-size:12px;white-space:nowrap">';
+        // Header row
+        logHtml += '<tr>';
+        for (const cell of rows[0]) {
+          logHtml += '<th style="position:sticky;top:0;background:var(--card-bg);z-index:1">' + esc(cell) + '</th>';
+        }
+        logHtml += '</tr>';
+        // Data rows
+        const displayRows = truncated ? rows.slice(1, maxRows + 1) : rows.slice(1);
+        for (const row of displayRows) {
+          logHtml += '<tr>';
+          for (const cell of row) {
+            const num = parseFloat(cell);
+            const isNum = !isNaN(num) && cell.trim() !== '';
+            logHtml += '<td' + (isNum ? ' style="text-align:right;font-variant-numeric:tabular-nums"' : '') + '>' + esc(cell) + '</td>';
+          }
+          logHtml += '</tr>';
+        }
+        logHtml += '</table>';
+      }
+      logHtml += '</div>';
+    } else if (isJSON) {
+      // JSON / JSONL rendering
+      logHtml += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
+      logHtml += '</div>';
+      let jsonRows = [];
+      if (ext === 'jsonl') {
+        jsonRows = text.trim().split('\n').filter(l => l.trim()).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      } else {
+        try {
+          const parsed = JSON.parse(text);
+          jsonRows = Array.isArray(parsed) ? parsed : [parsed];
+        } catch { jsonRows = []; }
+      }
+      if (jsonRows.length && typeof jsonRows[0] === 'object' && !Array.isArray(jsonRows[0])) {
+        const keys = [...new Set(jsonRows.flatMap(r => Object.keys(r)))];
+        const maxRows = 200;
+        const truncated = jsonRows.length > maxRows;
+        logHtml += '<div style="max-height:70vh;overflow:auto">';
+        logHtml += '<table class="metrics-table" style="font-size:12px;white-space:nowrap">';
+        logHtml += '<tr>' + keys.map(k => '<th style="position:sticky;top:0;background:var(--card-bg);z-index:1">' + esc(k) + '</th>').join('') + '</tr>';
+        const display = truncated ? jsonRows.slice(0, maxRows) : jsonRows;
+        for (const row of display) {
+          logHtml += '<tr>' + keys.map(k => { const v = row[k]; const s = v !== undefined ? String(v) : ''; const num = parseFloat(s); const isNum = !isNaN(num) && s.trim() !== '' && typeof v === 'number'; return '<td' + (isNum ? ' style="text-align:right;font-variant-numeric:tabular-nums"' : '') + '>' + esc(s.slice(0,100)) + '</td>'; }).join('') + '</tr>';
+        }
+        logHtml += '</table></div>';
+      } else {
+        // Fallback: pretty-print JSON
+        logHtml += '<div class="source-view" style="max-height:70vh;font-size:12px;line-height:1.5"><pre>' + esc(JSON.stringify(jsonRows.length === 1 ? jsonRows[0] : jsonRows, null, 2).slice(0, 50000)) + '</pre></div>';
+      }
+    } else {
+      // Plain text / log rendering (original behavior)
+      const lines = text.split('\n');
+      const maxLines = 500;
+      const truncated = lines.length > maxLines;
+      const displayLines = truncated ? lines.slice(-maxLines) : lines;
+      const lineNums = displayLines.map((_, i) => (truncated ? lines.length - maxLines + i + 1 : i + 1));
+      logHtml += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + lines.length + ' lines</span>';
+      logHtml += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
+      logHtml += '</div>';
+      logHtml += '<div class="source-view" style="max-height:70vh;font-size:12px;line-height:1.5">';
+      if (truncated) logHtml += '<div style="color:var(--muted);margin-bottom:8px">Showing last ' + maxLines + ' of ' + lines.length + ' lines</div>';
+      for (let i = 0; i < displayLines.length; i++) {
+        logHtml += '<div><span class="line-num">' + lineNums[i] + '</span>' + esc(displayLines[i]) + '</div>';
+      }
+      logHtml += '</div>';
     }
-    logHtml += '</div>';
+
     content.innerHTML = logHtml;
     overlay.appendChild(content);
     document.body.appendChild(overlay);
@@ -2807,8 +2934,8 @@ async function loadLogs(expId) {
   let files = data.files || [];
 
   let html = '<div class="img-paths-section">';
-  html += '<h3 style="font-size:14px;margin-bottom:8px">Log Paths</h3>';
-  html += '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">Add folders to scan for log and data files. Paths are relative to project root.</p>';
+  html += '<h3 style="font-size:14px;margin-bottom:8px">Scan Paths</h3>';
+  html += '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">Add folders to scan for logs, CSVs, JSON/JSONL, and TensorBoard event files. Paths are relative to project root.</p>';
 
   // Show saved paths
   if (paths.length) {
@@ -2886,7 +3013,8 @@ async function loadLogs(expId) {
       const modDate = f.modified ? new Date(f.modified * 1000).toLocaleString() : '';
       const ext = f.ext || '';
       const logExts = ['log', 'txt', 'out', 'err'];
-      const badge = logExts.includes(ext) ? '<span class="artifact-type-badge log">log</span>' : '<span class="artifact-type-badge data">data</span>';
+      const csvExts = ['csv', 'tsv'];
+      const badge = logExts.includes(ext) ? '<span class="artifact-type-badge log">log</span>' : csvExts.includes(ext) ? '<span class="artifact-type-badge data">csv</span>' : '<span class="artifact-type-badge data">data</span>';
       html += '<tr>';
       html += '<td><div class="artifact-row">' + badge + ' ' + esc(f.name);
       if (f.dir !== '.') html += ' <span style="color:var(--muted);font-size:11px">(' + esc(f.dir) + ')</span>';
@@ -2943,29 +3071,59 @@ function startEditLogPath(expId, index, el) {
 // ── Result types management ──────────────────────────────────────────────────
 
 let _resultTypes = null; // cached result types
+let _metricPrefixes = null; // cached namespace prefixes
 
 async function loadResultTypes() {
   if (_resultTypes !== null) return _resultTypes;
   try {
     const d = await api('/api/result-types');
     _resultTypes = d.types || [];
+    _metricPrefixes = d.prefixes || ['train', 'val', 'test'];
   } catch(e) {
     _resultTypes = ['accuracy', 'loss', 'auroc', 'f1', 'precision', 'recall', 'mse', 'mae', 'r2'];
+    _metricPrefixes = ['train', 'val', 'test'];
   }
   return _resultTypes;
 }
 
+async function loadMetricPrefixes() {
+  if (_metricPrefixes !== null) return _metricPrefixes;
+  await loadResultTypes();
+  return _metricPrefixes;
+}
+
 async function populateResultTypeDropdown(expId) {
-  const sel = document.getElementById('result-key-' + expId);
-  if (!sel) return;
+  const dl = document.getElementById('metric-suggestions-' + expId);
+  if (!dl) return;
   const types = await loadResultTypes();
-  // Preserve existing options if already populated
-  if (sel.options.length > 1) return;
+  const savedPrefixes = await loadMetricPrefixes();
+
+  // Also pick up any prefixes already used in this experiment
+  const exp = allExperiments.find(e => e.id === expId);
+  const existingKeys = new Set();
+  if (exp?.metrics) {
+    for (const k of Object.keys(exp.metrics)) existingKeys.add(k);
+  }
+  const existingPrefixes = new Set();
+  for (const k of existingKeys) {
+    const si = k.indexOf('/');
+    if (si > 0) existingPrefixes.add(k.slice(0, si));
+  }
+  const prefixes = [...new Set([...savedPrefixes, ...existingPrefixes])].sort();
+
+  // Build suggestions: existing keys, bare types, prefixed types
+  const suggestions = new Set();
+  for (const k of existingKeys) suggestions.add(k);
   for (const t of types) {
+    suggestions.add(t);
+    for (const p of prefixes) suggestions.add(p + '/' + t);
+  }
+
+  dl.innerHTML = '';
+  for (const s of suggestions) {
     const opt = document.createElement('option');
-    opt.value = t;
-    opt.textContent = t;
-    sel.appendChild(opt);
+    opt.value = s;
+    dl.appendChild(opt);
   }
 }
 
@@ -2975,21 +3133,42 @@ async function logMetric(id) {
   const stepEl = document.getElementById('result-step-' + id);
   if (!keyEl || !valEl) return;
   const key = keyEl.value.trim();
+  if (!key) { alert('Enter a metric key'); return; }
   const value = valEl.value.trim();
-  if (!key) { alert('Select a metric key'); return; }
   if (!value || isNaN(parseFloat(value))) { alert('Value must be a number'); return; }
   const step = stepEl ? stepEl.value.trim() : '';
   const payload = {key, value};
   if (step !== '') payload.step = step;
   const d = await postApi('/api/experiment/' + id + '/log-metric', payload);
-  if (d.ok) { valEl.value = ''; if (stepEl) stepEl.value = ''; refreshDetail(id); owlSay('Logged ' + key + ' = ' + d.value + ' (step ' + d.step + ')'); }
+  if (d.ok) {
+    valEl.value = ''; if (stepEl) stepEl.value = '';
+    // Auto-save new base type and prefix for future suggestions
+    const hasSlash = key.includes('/');
+    const baseType = hasSlash ? key.split('/').slice(1).join('/') : key;
+    const types = await loadResultTypes();
+    if (!types.includes(baseType)) {
+      await postApi('/api/result-types', {action: 'add', name: baseType});
+      _resultTypes = null;
+    }
+    if (hasSlash) {
+      const prefix = key.split('/')[0];
+      const prefixes = await loadMetricPrefixes();
+      if (!prefixes.includes(prefix)) {
+        await postApi('/api/result-types', {action: 'add', name: prefix, target: 'prefix'});
+        _metricPrefixes = null;
+      }
+    }
+    refreshDetail(id);
+    loadExperiments();
+    owlSay('Logged ' + key + ' = ' + d.value + ' (step ' + d.step + ')');
+  }
   else alert(d.error || 'Failed to log metric');
 }
 
 async function deleteResult(id, key) {
   if (!confirm('Delete result "' + key + '"?')) return;
   const d = await postApi('/api/experiment/' + id + '/delete-result', {key});
-  if (d.ok) refreshDetail(id);
+  if (d.ok) { refreshDetail(id); loadExperiments(); }
   else alert(d.error || 'Failed to delete result');
 }
 
@@ -3004,6 +3183,39 @@ async function deleteMetric(id, key) {
   const d = await postApi('/api/experiment/' + id + '/delete-metric', {key, mode: 'all'});
   if (d.ok) { refreshDetail(id); loadExperiments(); }
   else alert(d.error || 'Failed to delete metric');
+}
+
+async function deleteMetricPoint(id, key, step) {
+  const d = await postApi('/api/experiment/' + id + '/delete-metric', {key, mode: 'step', step});
+  if (d.ok) { refreshDetail(id); loadExperiments(); owlSay('Deleted point (step ' + step + ')'); }
+  else alert(d.error || 'Failed to delete metric point');
+}
+
+function startMetricRename(id, key, td) {
+  if (td.querySelector('input')) return;
+  const savedHtml = td.innerHTML;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = key;
+  input.style.cssText = 'width:100%;padding:2px 4px;font:inherit;border:1px solid var(--blue);border-radius:3px;background:var(--card-bg);color:var(--fg)';
+  td.innerHTML = '';
+  td.appendChild(input);
+  input.focus();
+  input.select();
+  const finish = async (save) => {
+    input.onblur = null;
+    if (save) {
+      const newKey = input.value.trim();
+      if (newKey && newKey !== key) {
+        const d = await postApi('/api/experiment/' + id + '/rename-metric', {old_key: key, new_key: newKey});
+        if (d.ok) { refreshDetail(id); loadExperiments(); owlSay('Renamed: ' + newKey); return; }
+        else alert(d.error || 'Failed to rename');
+      }
+    }
+    td.innerHTML = savedHtml;
+  };
+  input.onkeydown = e => { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); };
+  input.onblur = () => finish(false);
 }
 
 function startResultEdit(id, key, td) {
@@ -3025,7 +3237,7 @@ function startResultEdit(id, key, td) {
     if (!val || isNaN(parseFloat(val))) { alert('Value must be a number'); restore(); return; }
     if (val === valText) { restore(); return; }
     const d = await postApi('/api/experiment/' + id + '/edit-result', {key, value: val});
-    if (d.ok) refreshDetail(id);
+    if (d.ok) { refreshDetail(id); loadExperiments(); }
     else { restore(); alert(d.error || 'Failed'); }
   };
   input.onblur = save;
@@ -3044,24 +3256,37 @@ function openManageResultTypes() {
 
   async function render() {
     const types = await loadResultTypes();
+    const prefixes = await loadMetricPrefixes();
     let html = '<div class="img-modal-header">';
-    html += '<span class="img-modal-name">Manage Result Types</span>';
+    html += '<span class="img-modal-name">Manage Metrics</span>';
     html += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
     html += '</div>';
     html += '<div style="padding:16px">';
-    html += '<p style="font-size:12px;color:var(--muted);margin-bottom:12px">These result types are shared across all experiments. They appear in the "Log Result" dropdown.</p>';
-    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">';
-    for (let i = 0; i < types.length; i++) {
-      html += '<div class="result-type-chip">';
-      html += '<span>' + esc(types[i]) + '</span>';
-      html += '<button onclick="removeResultType(' + i + ')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px" title="Remove">&times;</button>';
-      html += '</div>';
+
+    // Namespace prefixes
+    html += '<div style="margin-bottom:16px">';
+    html += '<div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Namespace Prefixes</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">';
+    for (let i = 0; i < prefixes.length; i++) {
+      html += '<div class="result-type-chip"><span>' + esc(prefixes[i]) + '/</span>';
+      html += '<button onclick="removeMetricItem(\'prefix\',' + i + ')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px" title="Remove">&times;</button></div>';
     }
     html += '</div>';
-    html += '<div class="artifact-add-form">';
-    html += '<input type="text" id="new-result-type" placeholder="New result type name" style="width:200px">';
-    html += '<button onclick="addResultType()">+ Add</button>';
+    html += '<div class="artifact-add-form"><input type="text" id="new-metric-prefix" placeholder="New prefix (e.g. eval)" style="width:160px" onkeydown="if(event.key===\'Enter\')addMetricItem(\'prefix\')">';
+    html += '<button onclick="addMetricItem(\'prefix\')">+ Add</button></div></div>';
+
+    // Metric types
+    html += '<div style="margin-bottom:8px">';
+    html += '<div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Metric Types</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">';
+    for (let i = 0; i < types.length; i++) {
+      html += '<div class="result-type-chip"><span>' + esc(types[i]) + '</span>';
+      html += '<button onclick="removeMetricItem(\'type\',' + i + ')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px" title="Remove">&times;</button></div>';
+    }
     html += '</div>';
+    html += '<div class="artifact-add-form"><input type="text" id="new-result-type" placeholder="New metric type (e.g. top5_acc)" style="width:160px" onkeydown="if(event.key===\'Enter\')addMetricItem(\'type\')">';
+    html += '<button onclick="addMetricItem(\'type\')">+ Add</button></div></div>';
+
     html += '</div>';
     content.innerHTML = html;
   }
@@ -3076,25 +3301,29 @@ function openManageResultTypes() {
   document.addEventListener('keydown', handler);
 }
 
-async function addResultType() {
-  const input = document.getElementById('new-result-type');
+async function addMetricItem(target) {
+  const inputId = target === 'prefix' ? 'new-metric-prefix' : 'new-result-type';
+  const input = document.getElementById(inputId);
   if (!input) return;
   const name = input.value.trim().toLowerCase();
   if (!name) return;
-  const d = await postApi('/api/result-types', {action: 'add', name});
+  const d = await postApi('/api/result-types', {action: 'add', name, target});
   if (d.ok) {
-    _resultTypes = d.types;
+    _resultTypes = d.types; _metricPrefixes = d.prefixes;
+    input.value = '';
     if (window._rtOverlayRender) window._rtOverlayRender();
+    if (currentDetailId) populateResultTypeDropdown(currentDetailId);
   } else {
     alert(d.error || 'Failed');
   }
 }
 
-async function removeResultType(index) {
-  const d = await postApi('/api/result-types', {action: 'remove', index});
+async function removeMetricItem(target, index) {
+  const d = await postApi('/api/result-types', {action: 'remove', index, target});
   if (d.ok) {
-    _resultTypes = d.types;
+    _resultTypes = d.types; _metricPrefixes = d.prefixes;
     if (window._rtOverlayRender) window._rtOverlayRender();
+    if (currentDetailId) populateResultTypeDropdown(currentDetailId);
   }
 }
 

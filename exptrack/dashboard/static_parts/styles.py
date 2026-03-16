@@ -371,6 +371,7 @@ CSS_COMPARE = """
   .source-badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.3px; vertical-align: middle; }
   .source-badge.auto { background: rgba(44,90,160,0.15); color: var(--blue); }
   .source-badge.manual { background: rgba(212,130,15,0.15); color: var(--tl-metric); }
+  .source-badge.pipeline { background: rgba(63,185,80,0.15); color: var(--green); }
   .reproduce-box { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 8px 0 12px; }
   .reproduce-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
   .reproduce-cmd { font-size: 13px; word-break: break-all; white-space: pre-wrap; display: block; }
@@ -532,6 +533,10 @@ CSS_COMPONENTS = """
   .section-toggle.collapsed::before { transform: rotate(-90deg); }
   .section-body { transition: max-height 0.2s ease; }
   .section-toggle.collapsed + .section-body { display: none; }
+  .metric-group-header { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 4px; user-select: none; }
+  .metric-group-header::before { content: '\\25BC'; font-size: 9px; display: inline-block; width: 12px; text-align: center; transition: transform 0.15s; margin-right: 2px; }
+  .metric-group.collapsed .metric-group-header::before { transform: rotate(-90deg); }
+  .metric-group.collapsed .metrics-table { display: none; }
   .editable-cell { cursor: default; padding: 5px 8px; border-radius: 3px; position: relative; min-height: 32px; }
   .editable-cell:hover { background: rgba(44,90,160,0.08); }
   .edit-icon { display: none; font-size: 11px; color: var(--muted); margin-left: 4px; vertical-align: middle; }

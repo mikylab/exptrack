@@ -61,7 +61,8 @@ def _ensure_schema(conn):
             key     TEXT NOT NULL,
             value   REAL,
             step    INTEGER,
-            ts      TEXT
+            ts      TEXT,
+            source  TEXT DEFAULT 'auto'
         );
         CREATE TABLE IF NOT EXISTS artifacts (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,6 +127,30 @@ def _ensure_schema(conn):
         pass  # column may already exist
     except Exception as e:
         print(f"[exptrack] warning: artifact migration error: {e}", file=sys.stderr)
+
+    # Add source column to metrics and migrate _result:* params
+    try:
+        mcols = {row[1] for row in conn.execute("PRAGMA table_info(metrics)").fetchall()}
+        if "source" not in mcols:
+            conn.execute("ALTER TABLE metrics ADD COLUMN source TEXT DEFAULT 'auto'")
+            # Migrate existing _result:* params into metrics table
+            result_params = conn.execute(
+                "SELECT exp_id, key, value FROM params WHERE key LIKE '_result:%'"
+            ).fetchall()
+            if result_params:
+                from datetime import datetime, timezone
+                ts = datetime.now(timezone.utc).isoformat()
+                conn.executemany(
+                    "INSERT INTO metrics (exp_id, key, value, step, ts, source) "
+                    "VALUES (?,?,?,NULL,?,?)",
+                    [(r["exp_id"], r["key"][8:], float(json.loads(r["value"])),
+                      ts, "manual") for r in result_params]
+                )
+                conn.execute("DELETE FROM params WHERE key LIKE '_result:%'")
+    except sqlite3.OperationalError:
+        pass
+    except Exception as e:
+        print(f"[exptrack] warning: metrics source migration error: {e}", file=sys.stderr)
 
     # Add output_dir, studies, stage columns to experiments if missing
     try:

@@ -116,6 +116,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "log-metric":      lambda: write_routes.api_log_metric(conn, exp_id, body),
                 "delete-result":   lambda: write_routes.api_delete_result(conn, exp_id, body),
                 "delete-metric":   lambda: write_routes.api_delete_metric(conn, exp_id, body),
+                "rename-metric":   lambda: write_routes.api_rename_metric(conn, exp_id, body),
                 "edit-result":     lambda: write_routes.api_edit_result(conn, exp_id, body),
             }
             handler = dispatch.get(action)
@@ -182,8 +183,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             '.gif': 'image/gif', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
             '.tiff': 'image/tiff', '.webp': 'image/webp',
             '.log': 'text/plain', '.txt': 'text/plain', '.out': 'text/plain',
-            '.err': 'text/plain', '.csv': 'text/csv', '.json': 'application/json',
-            '.jsonl': 'application/json',
+            '.err': 'text/plain', '.csv': 'text/csv', '.tsv': 'text/tab-separated-values',
+            '.json': 'application/json', '.jsonl': 'application/json',
         }
         content_type = mime_types.get(ext)
         if not content_type:

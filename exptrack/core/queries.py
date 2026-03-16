@@ -40,7 +40,9 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         SELECT key,
                MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
-                AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v
+                AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v,
+               (SELECT COALESCE(source, 'auto') FROM metrics m3 WHERE m3.exp_id=metrics.exp_id
+                AND m3.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as source
         FROM metrics WHERE exp_id=? GROUP BY key ORDER BY key
     """, (full_id,)).fetchall()
     artifacts = conn.execute(
@@ -73,7 +75,8 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "params": {p["key"]: json.loads(p["value"]) for p in params},
         "metrics": [{
             "key": m["key"], "last": m["last_v"],
-            "min": m["min_v"], "max": m["max_v"], "n": m["n"]
+            "min": m["min_v"], "max": m["max_v"], "n": m["n"],
+            "source": m["source"] or "auto",
         } for m in metrics],
         "artifacts": [{"label": a["label"], "path": a["path"],
                        "timeline_seq": a["timeline_seq"]} for a in artifacts],
@@ -96,18 +99,13 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
     rows = conn.execute(query, params).fetchall()
     result = []
     for r in rows:
-        metrics = get_latest_metrics(conn, r["id"])
+        metrics = get_latest_metrics_with_source(conn, r["id"])
         sparklines = get_metrics_sparkline(conn, r["id"])
         ps = conn.execute(
             "SELECT key, value FROM params WHERE exp_id=?",
             (r["id"],)
         ).fetchall()
         all_params = {p["key"]: json.loads(p["value"]) for p in ps}
-        # Extract manual results from params (_result:* keys)
-        results = {}
-        for k, v in all_params.items():
-            if k.startswith("_result:"):
-                results[k[8:]] = v  # strip prefix
         result.append({
             "id": r["id"],
             "name": r["name"],
@@ -123,7 +121,6 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
             "stage": r["stage"],
             "stage_name": r["stage_name"],
             "metrics": metrics,
-            "results": results,
             "sparklines": sparklines,
             "params": all_params,
         })
@@ -132,13 +129,30 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
+
+
 def get_latest_metrics(conn, exp_id: str) -> dict[str, float]:
     """Get the last value of each metric key for an experiment."""
     rows = conn.execute("""
-        SELECT key, value FROM metrics WHERE exp_id=?
-        GROUP BY key HAVING MAX(COALESCE(step, 0))
+        SELECT key, value FROM metrics m WHERE exp_id=?
+        AND COALESCE(step, 0) = (
+            SELECT MAX(COALESCE(step, 0)) FROM metrics m2
+            WHERE m2.exp_id=m.exp_id AND m2.key=m.key
+        )
     """, (exp_id,)).fetchall()
     return {r["key"]: r["value"] for r in rows}
+
+
+def get_latest_metrics_with_source(conn, exp_id: str) -> dict[str, dict]:
+    """Get the last value and source of each metric key for an experiment."""
+    rows = conn.execute("""
+        SELECT key, value, COALESCE(source, 'auto') as source FROM metrics m WHERE exp_id=?
+        AND COALESCE(step, 0) = (
+            SELECT MAX(COALESCE(step, 0)) FROM metrics m2
+            WHERE m2.exp_id=m.exp_id AND m2.key=m.key
+        )
+    """, (exp_id,)).fetchall()
+    return {r["key"]: {"value": r["value"], "source": r["source"]} for r in rows}
 
 
 def get_metrics_sparkline(conn, exp_id: str, max_points: int = 10) -> dict[str, list[float]]:
@@ -173,12 +187,15 @@ def get_metrics_summary(conn, exp_id: str) -> list[dict]:
         SELECT key,
                MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
-                AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v
+                AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v,
+               (SELECT COALESCE(source, 'auto') FROM metrics m3 WHERE m3.exp_id=metrics.exp_id
+                AND m3.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as source
         FROM metrics WHERE exp_id=? GROUP BY key ORDER BY key
     """, (exp_id,)).fetchall()
     return [{
         "key": m["key"], "last": m["last_v"],
-        "min": m["min_v"], "max": m["max_v"], "n": m["n"]
+        "min": m["min_v"], "max": m["max_v"], "n": m["n"],
+        "source": m["source"] or "auto",
     } for m in rows]
 
 
@@ -197,7 +214,7 @@ def get_all_latest_metrics(conn, limit: int = 50) -> dict[str, dict[str, float]]
 
 
 def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
-    """Get experiment names, latest metrics, and results for multiple experiments."""
+    """Get experiment names, latest metrics for multiple experiments."""
     results = []
     for eid in exp_ids:
         exp = find_experiment(conn, eid, "id, name, status")
@@ -205,20 +222,11 @@ def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
             continue
         full_id = exp["id"]
         metrics = get_latest_metrics(conn, full_id)
-        ps = conn.execute(
-            "SELECT key, value FROM params WHERE exp_id=?",
-            (full_id,)
-        ).fetchall()
-        manual_results = {}
-        for p in ps:
-            if p["key"].startswith("_result:"):
-                manual_results[p["key"][8:]] = json.loads(p["value"])
         results.append({
             "id": full_id,
             "name": exp["name"],
             "status": exp["status"],
             "metrics": metrics,
-            "results": manual_results,
         })
     return results
 
