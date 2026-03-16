@@ -111,6 +111,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "image-path":      lambda: write_routes.api_image_path(conn, exp_id, body),
                 "log-path":        lambda: write_routes.api_log_path(conn, exp_id, body),
                 "log-result":      lambda: write_routes.api_log_result(conn, exp_id, body),
+                "delete-result":   lambda: write_routes.api_delete_result(conn, exp_id, body),
             }
             handler = dispatch.get(action)
             if handler:

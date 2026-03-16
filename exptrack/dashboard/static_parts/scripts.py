@@ -1478,13 +1478,16 @@ async function refreshDetail(id) {
   const regularParams = {};
   const codeChanges = {};
   const varChanges = {};
+  const manualResults = {};
   let cellsRan = null;
   for (const [k, v] of Object.entries(exp.params)) {
     if (k === '_code_changes' || k.startsWith('_code_change/')) {
       codeChanges[k] = v;
     } else if (k.startsWith('_var/')) {
       varChanges[k.slice(5)] = v;
-    } else if (k === '_script_hash' || k === '_cells_ran') {
+    } else if (k.startsWith('_result:')) {
+      manualResults[k.slice(8)] = v;
+    } else if (k === '_script_hash' || k === '_cells_ran' || k === '_result_source') {
       if (k === '_cells_ran') cellsRan = v;
     } else if (k === '_tags') {
       // skip, shown elsewhere
@@ -1497,12 +1500,15 @@ async function refreshDetail(id) {
     `<tr><td style="color:var(--blue)">${esc(k)}</td><td>${esc(JSON.stringify(v))}</td></tr>`
   ).join('');
 
-  const resultTypesList = _resultTypes || [];
-  const metricRows = exp.metrics.map(m => {
-    const isResult = resultTypesList.includes(m.key) || m.n === 1;
-    const badge = isResult ? '<span class="cw-delta cw-delta-changed" style="margin-left:4px;font-size:10px">RESULT</span>' : '';
-    const color = isResult ? 'var(--tl-metric, #d4820f)' : 'var(--green)';
-    return `<tr><td style="color:${color}">${esc(m.key)}${badge}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td></tr>`;
+  const metricRows = exp.metrics.map(m =>
+    `<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td></tr>`
+  ).join('');
+
+  const resultKeys = Object.keys(manualResults);
+  const resultRows = resultKeys.map(k => {
+    const v = manualResults[k];
+    const display = typeof v === 'string' ? v : JSON.stringify(v);
+    return `<tr><td style="color:var(--tl-metric, #d4820f)">${esc(k)}</td><td>${esc(display)}</td><td style="width:40px"><button class="art-del" onclick="deleteResult('${exp.id}','${esc(k)}')" title="Delete result">&times;</button></td></tr>`;
   }).join('');
 
   const artRows = exp.artifacts.map(a => {
@@ -1684,9 +1690,14 @@ async function refreshDetail(id) {
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
             ${varHtml}
           </div>
-          <!-- Right column: metrics + charts + artifacts -->
+          <!-- Right column: results + metrics + charts + artifacts -->
           <div>
-            ${metricRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Metrics (' + exp.metrics.length + ')</h2><div class="section-body"><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table>'+logResultForm+'<div id="charts-container"></div></div>' : logResultForm+'<div id="charts-container"></div>'}
+            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Results (${resultKeys.length})</h2>
+            <div class="section-body">
+            ${resultRows ? '<table class="params-table"><tr><th>Key</th><th>Value</th><th></th></tr>'+resultRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No results logged yet.</p>'}
+            ${logResultForm}
+            </div>
+            ${metricRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Metrics (' + exp.metrics.length + ')</h2><div class="section-body"><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table><div id="charts-container"></div></div>' : '<div id="charts-container"></div>'}
             <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
             <div class="section-body">
             ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
@@ -2726,6 +2737,13 @@ async function logResult(id) {
   const d = await postApi('/api/experiment/' + id + '/log-result', {key, value});
   if (d.ok) { keyEl.value = ''; valEl.value = ''; refreshDetail(id); }
   else alert(d.error || 'Failed to log result');
+}
+
+async function deleteResult(id, key) {
+  if (!confirm('Delete result "' + key + '"?')) return;
+  const d = await postApi('/api/experiment/' + id + '/delete-result', {key});
+  if (d.ok) refreshDetail(id);
+  else alert(d.error || 'Failed to delete result');
 }
 
 function openManageResultTypes() {

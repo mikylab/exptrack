@@ -409,7 +409,11 @@ def api_manage_result_types(body: dict) -> dict:
 
 
 def api_log_result(conn, exp_id: str, body: dict) -> dict:
-    """Log a manual result (metric) to an experiment."""
+    """Log a manual result to an experiment.
+
+    All results stored in params as _result:{key} for consistent display.
+    Numeric results also go to metrics for charting.
+    """
     exp = find_experiment(conn, exp_id, "id")
     if not exp:
         return {"error": "not found"}
@@ -418,6 +422,14 @@ def api_log_result(conn, exp_id: str, body: dict) -> dict:
     if not key or not value:
         return {"error": "provide key and value"}
     ts = datetime.now(timezone.utc).isoformat()
+
+    # Always store in params as _result:{key}
+    conn.execute(
+        "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+        (exp["id"], f"_result:{key}", json.dumps(value))
+    )
+
+    # Also store numeric values in metrics for charting
     try:
         num_val = float(value)
         conn.execute(
@@ -425,12 +437,33 @@ def api_log_result(conn, exp_id: str, body: dict) -> dict:
             (exp["id"], key, num_val, None, ts)
         )
     except ValueError:
-        conn.execute(
-            "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-            (exp["id"], key, json.dumps(value))
-        )
+        pass
+
     conn.commit()
     return {"ok": True, "key": key, "value": value}
+
+
+def api_delete_result(conn, exp_id: str, body: dict) -> dict:
+    """Delete a manually logged result."""
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    key = body.get("key", "").strip()
+    if not key:
+        return {"error": "provide key"}
+
+    # Remove from params
+    conn.execute(
+        "DELETE FROM params WHERE exp_id=? AND key=?",
+        (exp["id"], f"_result:{key}")
+    )
+    # Remove from metrics (only the manually logged one — step IS NULL)
+    conn.execute(
+        "DELETE FROM metrics WHERE exp_id=? AND key=? AND step IS NULL",
+        (exp["id"], key)
+    )
+    conn.commit()
+    return {"ok": True}
 
 
 def api_log_path(conn, exp_id: str, body: dict) -> dict:

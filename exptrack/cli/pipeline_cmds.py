@@ -394,7 +394,7 @@ def cmd_log_result(args):
     ts = datetime.now(timezone.utc).isoformat()
     source = getattr(args, 'source', 'manual')
 
-    rows = []
+    results = {}  # key -> value (string)
     if args.file:
         # Read from file or stdin
         if args.file == '-':
@@ -407,44 +407,37 @@ def cmd_log_result(args):
             raw = json.loads(fpath.read_text())
         flat = _flatten_dict(raw)
         for k, v in flat.items():
-            try:
-                rows.append((exp_id, k, float(v), None, ts))
-            except (ValueError, TypeError):
-                # Store non-numeric results as params
-                conn.execute(
-                    "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-                    (exp_id, k, json.dumps(v))
-                )
-                print(f"[exptrack] result (param): {k}={v}", file=sys.stderr)
+            results[k] = str(v)
     else:
         if args.key is None or args.value is None:
             print("[exptrack] log-result: provide KEY VALUE or --file FILE", file=sys.stderr)
             sys.exit(1)
-        try:
-            rows.append((exp_id, args.key, float(args.value), None, ts))
-        except ValueError:
-            # Non-numeric: store as param
+        results[args.key] = args.value
+
+    if not results:
+        return
+
+    metric_rows = []
+    with conn:
+        for k, v in results.items():
+            # Always store in params as _result:{key}
             conn.execute(
                 "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-                (exp_id, args.key, json.dumps(args.value))
+                (exp_id, f"_result:{k}", json.dumps(v))
             )
-            conn.commit()
-            print(f"[exptrack] result (param): {args.key}={args.value}", file=sys.stderr)
-            return
-
-    if rows:
-        with conn:
+            # Also store numeric values in metrics for charting
+            try:
+                metric_rows.append((exp_id, k, float(v), None, ts))
+            except (ValueError, TypeError):
+                pass
+        if metric_rows:
             conn.executemany(
-                "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)", rows
+                "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
+                metric_rows
             )
-        # Also tag the source
-        conn.execute(
-            "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-            (exp_id, "_result_source", json.dumps(source))
-        )
-        conn.commit()
-        for _, k, v, _, _ in rows:
-            print(f"[exptrack] result: {k}={v} (source: {source})", file=sys.stderr)
+    conn.commit()
+    for k, v in results.items():
+        print(f"[exptrack] result: {k}={v} (source: {source})", file=sys.stderr)
 
 
 def cmd_link_dir(args):
