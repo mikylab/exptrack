@@ -409,33 +409,19 @@ def api_manage_result_types(body: dict) -> dict:
 
 
 def api_log_result(conn, exp_id: str, body: dict) -> dict:
-    """Log a manual result (numeric) to an experiment.
+    """Log a manual result. Now routes to the metrics table (same as log-metric).
 
-    Results are stored only in params as _result:{key}, separate from
-    automated metrics which come from actual training runs.
+    Kept for backwards compatibility. New code should use log-metric directly.
     """
-    exp = find_experiment(conn, exp_id, "id")
-    if not exp:
-        return {"error": "not found"}
-    key = body.get("key", "").strip()
-    value = body.get("value", "").strip()
-    if not key or not value:
-        return {"error": "provide key and value"}
-    try:
-        num_val = float(value)
-    except ValueError:
-        return {"error": "value must be a number"}
-
-    conn.execute(
-        "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-        (exp["id"], f"_result:{key}", json.dumps(num_val))
-    )
-    conn.commit()
-    return {"ok": True, "key": key, "value": num_val}
+    return api_log_metric(conn, exp_id, body)
 
 
 def api_log_metric(conn, exp_id: str, body: dict) -> dict:
-    """Log a metric value (accumulates, supports multiple points per key)."""
+    """Log a metric value. All dashboard-logged values go to the metrics table.
+
+    Accepts optional step. If step is omitted or empty, auto-increments from
+    the highest existing step for that key.
+    """
     from ...core.queries import find_experiment
     exp = find_experiment(conn, exp_id, "id")
     if not exp:
@@ -451,12 +437,20 @@ def api_log_metric(conn, exp_id: str, body: dict) -> dict:
 
     from datetime import datetime, timezone
     ts = datetime.now(timezone.utc).isoformat()
-    # Auto-increment step: find max step for this key
-    row = conn.execute(
-        "SELECT MAX(COALESCE(step, -1)) as max_step FROM metrics WHERE exp_id=? AND key=?",
-        (exp["id"], key)
-    ).fetchone()
-    step = (row["max_step"] + 1) if row and row["max_step"] is not None else 0
+
+    # Use explicit step if provided, otherwise auto-increment
+    step_raw = body.get("step", "")
+    if step_raw is not None and str(step_raw).strip() != "":
+        try:
+            step = int(step_raw)
+        except (ValueError, TypeError):
+            return {"error": "step must be an integer"}
+    else:
+        row = conn.execute(
+            "SELECT MAX(COALESCE(step, -1)) as max_step FROM metrics WHERE exp_id=? AND key=?",
+            (exp["id"], key)
+        ).fetchone()
+        step = (row["max_step"] + 1) if row and row["max_step"] is not None else 0
 
     conn.execute(
         "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",

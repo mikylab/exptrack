@@ -1570,17 +1570,13 @@ async function refreshDetail(id) {
   </div>`;
 
   const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center;flex-wrap:wrap;gap:4px" id="log-result-form-${exp.id}">
-    <select id="result-mode-${exp.id}" style="width:110px;font-family:inherit;font-size:12px;padding:5px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)" title="Result: single snapshot (overwrites). Metric: tracked over time (accumulates, shows charts).">
-      <option value="result">Result</option>
-      <option value="metric">Metric</option>
-    </select>
     <select id="result-key-${exp.id}" style="width:160px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
-      <option value="">Select type...</option>
+      <option value="">Metric key...</option>
     </select>
-    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px" onkeydown="if(event.key==='Enter')logValue('${exp.id}')">
-    <button onclick="logValue('${exp.id}')">+ Log</button>
-    <button onclick="openManageResultTypes()" style="background:transparent;color:var(--muted);border:none;font-size:16px;padding:0 4px;cursor:pointer;line-height:1" title="Manage result types">&#9881;</button>
-    <span style="font-size:11px;color:var(--muted);width:100%">Result = snapshot (overwrites). Metric = tracked (accumulates, charts).</span>
+    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px" onkeydown="if(event.key==='Enter')logMetric('${exp.id}')">
+    <input type="text" id="result-step-${exp.id}" placeholder="Step (auto)" style="width:80px;font-size:12px" title="Optional step number. Leave blank to auto-increment.">
+    <button onclick="logMetric('${exp.id}')">+ Log</button>
+    <button onclick="openManageResultTypes()" style="background:transparent;color:var(--muted);border:none;font-size:16px;padding:0 4px;cursor:pointer;line-height:1" title="Manage metric types">&#9881;</button>
   </div>`;
 
   // Code changes
@@ -2970,36 +2966,20 @@ async function populateResultTypeDropdown(expId) {
   }
 }
 
-async function logValue(id) {
-  const modeEl = document.getElementById('result-mode-' + id);
-  const mode = modeEl ? modeEl.value : 'result';
-  if (mode === 'metric') return logMetric(id);
-  return logResult(id);
-}
-
-async function logResult(id) {
-  const keyEl = document.getElementById('result-key-' + id);
-  const valEl = document.getElementById('result-val-' + id);
-  if (!keyEl || !valEl) return;
-  const key = keyEl.value.trim();
-  const value = valEl.value.trim();
-  if (!key) { alert('Select a result type'); return; }
-  if (!value || isNaN(parseFloat(value))) { alert('Value must be a number'); return; }
-  const d = await postApi('/api/experiment/' + id + '/log-result', {key, value});
-  if (d.ok) { keyEl.value = ''; valEl.value = ''; refreshDetail(id); }
-  else alert(d.error || 'Failed to log result');
-}
-
 async function logMetric(id) {
   const keyEl = document.getElementById('result-key-' + id);
   const valEl = document.getElementById('result-val-' + id);
+  const stepEl = document.getElementById('result-step-' + id);
   if (!keyEl || !valEl) return;
   const key = keyEl.value.trim();
   const value = valEl.value.trim();
   if (!key) { alert('Select a metric key'); return; }
   if (!value || isNaN(parseFloat(value))) { alert('Value must be a number'); return; }
-  const d = await postApi('/api/experiment/' + id + '/log-metric', {key, value});
-  if (d.ok) { valEl.value = ''; refreshDetail(id); owlSay('Metric logged (step ' + d.step + ')'); }
+  const step = stepEl ? stepEl.value.trim() : '';
+  const payload = {key, value};
+  if (step !== '') payload.step = step;
+  const d = await postApi('/api/experiment/' + id + '/log-metric', payload);
+  if (d.ok) { valEl.value = ''; if (stepEl) stepEl.value = ''; refreshDetail(id); owlSay('Logged ' + key + ' = ' + d.value + ' (step ' + d.step + ')'); }
   else alert(d.error || 'Failed to log metric');
 }
 
