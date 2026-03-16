@@ -3066,7 +3066,7 @@ async function loadResultTypes() {
     const d = await api('/api/result-types');
     _resultTypes = d.types || [];
   } catch(e) {
-    _resultTypes = ['acc', 'loss', 'auroc', 'f1', 'prec', 'rec', 'mse', 'mae', 'r2'];
+    _resultTypes = ['accuracy', 'loss', 'auroc', 'f1', 'precision', 'recall', 'mse', 'mae', 'r2'];
   }
   return _resultTypes;
 }
@@ -3116,7 +3116,18 @@ async function logMetric(id) {
   const payload = {key, value};
   if (step !== '') payload.step = step;
   const d = await postApi('/api/experiment/' + id + '/log-metric', payload);
-  if (d.ok) { valEl.value = ''; if (stepEl) stepEl.value = ''; refreshDetail(id); owlSay('Logged ' + key + ' = ' + d.value + ' (step ' + d.step + ')'); }
+  if (d.ok) {
+    valEl.value = ''; if (stepEl) stepEl.value = '';
+    // Auto-save new base type (strip namespace prefix) for future suggestions
+    const baseType = key.includes('/') ? key.split('/').slice(1).join('/') : key;
+    const types = await loadResultTypes();
+    if (!types.includes(baseType)) {
+      await postApi('/api/result-types', {action: 'add', name: baseType});
+      _resultTypes = null; // invalidate cache
+    }
+    refreshDetail(id);
+    owlSay('Logged ' + key + ' = ' + d.value + ' (step ' + d.step + ')');
+  }
   else alert(d.error || 'Failed to log metric');
 }
 

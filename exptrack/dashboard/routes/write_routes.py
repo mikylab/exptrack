@@ -384,8 +384,8 @@ def api_manage_result_types(body: dict) -> dict:
     """Add/remove result types from project config."""
     from ...config import load, save, reload
     conf = load()
-    default_types = ["acc", "loss", "auroc", "f1", "prec", "rec",
-                     "mse", "mae", "r2", "ppl", "bleu"]
+    default_types = ["accuracy", "loss", "auroc", "f1", "precision", "recall",
+                     "mse", "mae", "r2", "perplexity", "bleu"]
     types = list(conf.get("result_types", default_types))
 
     action = body.get("action", "")
