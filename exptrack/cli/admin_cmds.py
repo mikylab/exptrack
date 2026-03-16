@@ -149,6 +149,7 @@ def cmd_upgrade(args):
         print(col("Reinstalled.", G))
 
 
+
 def cmd_storage(args):
     """Show data storage breakdown for the exptrack database and outputs."""
     conn = get_db()

@@ -85,10 +85,22 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
 
 # ── Experiment listing ────────────────────────────────────────────────────────
 
-def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
+def list_experiments(conn, limit: int = 50, status: str = "",
+                     tag: str = "", study: str = "") -> list[dict]:
     """List experiments with last metrics and params."""
-    where = "WHERE status=?" if status else ""
-    params = (status, limit) if status else (limit,)
+    clauses: list[str] = []
+    params: list = []
+    if status:
+        clauses.append("status=?")
+        params.append(status)
+    if tag:
+        clauses.append('tags LIKE ?')
+        params.append(f'%"{tag}"%')
+    if study:
+        clauses.append('studies LIKE ?')
+        params.append(f'%"{study}"%')
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
     query = f"""
         SELECT id, project, name, status, created_at, duration_s,
                git_branch, git_commit, tags, studies, notes, output_dir,

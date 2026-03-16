@@ -15,14 +15,30 @@ from .formatting import G, R, Y, col, dim
 def cmd_tag(args):
     from ..core.queries import find_experiment, update_experiment_tags
     conn = get_db()
-    exp = find_experiment(conn, args.id, "id, tags")
-    if not exp: print(col(f"Not found: {args.id}", R)); return
-    tags = json.loads(exp["tags"] or "[]")
-    if args.tag not in tags:
-        tags.append(args.tag)
-    update_experiment_tags(conn, exp["id"], tags)
+    # Support both old-style (id=str, tag=str) and new batch-style (id=[...])
+    if hasattr(args, "tag"):
+        # Old calling convention: tag <id> <tag>
+        exp_ids = [args.id] if isinstance(args.id, str) else args.id
+        tag_name = args.tag
+    else:
+        # New convention: last element of id list is the tag name
+        all_args = args.id  # list from nargs="+"
+        if len(all_args) < 2:
+            print(col("Usage: exptrack tag <id> [id2 ...] <tag>", R), file=sys.stderr); return
+        tag_name = all_args[-1]
+        exp_ids = all_args[:-1]
+    count = 0
+    for eid in exp_ids:
+        exp = find_experiment(conn, eid, "id, tags")
+        if not exp:
+            print(col(f"Not found: {eid}", R), file=sys.stderr); continue
+        tags = json.loads(exp["tags"] or "[]")
+        if tag_name not in tags:
+            tags.append(tag_name)
+        update_experiment_tags(conn, exp["id"], tags)
+        count += 1
     conn.commit()
-    print(col(f"Tagged #{args.tag}", G))
+    print(col(f"Tagged #{tag_name} on {count} experiment(s)", G), file=sys.stderr)
 
 
 def cmd_note(args):
@@ -30,23 +46,37 @@ def cmd_note(args):
     conn = get_db()
     result = append_note(conn, args.id, args.text)
     if result.get("error"):
-        print(col(f"Not found: {args.id}", R)); return
+        print(col(f"Not found: {args.id}", R), file=sys.stderr); return
     conn.commit()
-    print(col("Note saved.", G))
+    print(col("Note saved.", G), file=sys.stderr)
 
 
 def cmd_untag(args):
     from ..core.queries import find_experiment, update_experiment_tags
     conn = get_db()
-    exp = find_experiment(conn, args.id, "id, tags")
-    if not exp: print(col(f"Not found: {args.id}", R)); return
-    tags = json.loads(exp["tags"] or "[]")
-    if args.tag not in tags:
-        print(dim(f"Tag '{args.tag}' not found on this experiment.")); return
-    tags = [t for t in tags if t != args.tag]
-    update_experiment_tags(conn, exp["id"], tags)
+    # Support both old-style (id=str, tag=str) and new batch-style (id=[...])
+    if hasattr(args, "tag"):
+        exp_ids = [args.id] if isinstance(args.id, str) else args.id
+        tag_name = args.tag
+    else:
+        all_args = args.id  # list from nargs="+"
+        if len(all_args) < 2:
+            print(col("Usage: exptrack untag <id> [id2 ...] <tag>", R), file=sys.stderr); return
+        tag_name = all_args[-1]
+        exp_ids = all_args[:-1]
+    count = 0
+    for eid in exp_ids:
+        exp = find_experiment(conn, eid, "id, tags")
+        if not exp:
+            print(col(f"Not found: {eid}", R), file=sys.stderr); continue
+        tags = json.loads(exp["tags"] or "[]")
+        if tag_name not in tags:
+            print(dim(f"Tag '{tag_name}' not found on {eid}"), file=sys.stderr); continue
+        tags = [t for t in tags if t != tag_name]
+        update_experiment_tags(conn, exp["id"], tags)
+        count += 1
     conn.commit()
-    print(col(f"Removed #{args.tag}", G))
+    print(col(f"Removed #{tag_name} from {count} experiment(s)", G), file=sys.stderr)
 
 
 def cmd_delete_tag(args):
@@ -75,30 +105,47 @@ def cmd_edit_note(args):
     conn = get_db()
     result = replace_notes(conn, args.id, args.text)
     if result.get("error"):
-        print(col(f"Not found: {args.id}", R)); return
+        print(col(f"Not found: {args.id}", R), file=sys.stderr); return
     conn.commit()
-    print(col("Note updated.", G))
+    print(col("Note updated.", G), file=sys.stderr)
 
 
 def cmd_rm(args):
     conn = get_db()
-    # Check for ambiguous prefix matches — require exact or unique prefix
-    matches = conn.execute("SELECT id, name FROM experiments WHERE id LIKE ?",
-                           (args.id + "%",)).fetchall()
-    if not matches:
-        print(col(f"Not found: {args.id}", R)); return
-    if len(matches) > 1:
-        print(col(f"Ambiguous ID prefix '{args.id}' matches {len(matches)} experiments:", R))
-        for m in matches[:10]:
-            print(f"  {m['id'][:8]}  {m['name']}")
-        print(dim("Provide a longer ID prefix to uniquely identify the experiment."))
+    raw_ids = args.id
+    exp_ids = raw_ids if isinstance(raw_ids, list) else [raw_ids]
+    to_delete = []
+    for eid in exp_ids:
+        matches = conn.execute("SELECT id, name FROM experiments WHERE id LIKE ?",
+                               (eid + "%",)).fetchall()
+        if not matches:
+            print(col(f"Not found: {eid}", R), file=sys.stderr); continue
+        if len(matches) > 1:
+            print(col(f"Ambiguous ID prefix '{eid}' matches {len(matches)} experiments:", R),
+                  file=sys.stderr)
+            for m in matches[:10]:
+                print(f"  {m['id'][:8]}  {m['name']}", file=sys.stderr)
+            print(dim("Provide a longer ID prefix to uniquely identify the experiment."),
+                  file=sys.stderr)
+            continue
+        to_delete.append(matches[0])
+
+    if not to_delete:
         return
-    exp = matches[0]
-    confirm = input(f"Delete '{exp['name']}' ({exp['id'][:6]})? [y/N] ")
-    if confirm.lower() == "y":
-        delete_experiment(conn, exp["id"])
+
+    if len(to_delete) == 1:
+        prompt = f"Delete '{to_delete[0]['name']}' ({to_delete[0]['id'][:6]})? [y/N] "
+    else:
+        for exp in to_delete:
+            print(f"  {exp['id'][:6]}  {exp['name']}", file=sys.stderr)
+        prompt = f"Delete {len(to_delete)} experiment(s)? [y/N] "
+
+    if input(prompt).lower() == "y":
+        for exp in to_delete:
+            delete_experiment(conn, exp["id"])
         conn.commit()
-        print(col("Deleted (including output files).", G))
+        print(col(f"Deleted {len(to_delete)} experiment(s) (including output files).", G),
+              file=sys.stderr)
 
 
 def cmd_clean(args):

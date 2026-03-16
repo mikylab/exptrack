@@ -18,9 +18,29 @@ def get_db() -> sqlite3.Connection:
     conf = cfg.load()
     p = root / conf.get("db", ".exptrack/experiments.db")
     p.parent.mkdir(parents=True, exist_ok=True)
+
+    # Warn if WAL/SHM files are missing when DB exists (potential corruption)
+    if p.exists():
+        wal = Path(str(p) + "-wal")
+        shm = Path(str(p) + "-shm")
+        if wal.exists() and not shm.exists():
+            print("[exptrack] warning: WAL file exists without SHM file — "
+                  "database may be in an inconsistent state", file=sys.stderr)
+
     conn = sqlite3.connect(str(p))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+
+    # Quick integrity check on first open
+    try:
+        result = conn.execute("PRAGMA quick_check").fetchone()
+        if result and result[0] != "ok":
+            print(f"[exptrack] warning: database integrity check failed: {result[0]}",
+                  file=sys.stderr)
+    except Exception as e:
+        print(f"[exptrack] warning: could not check database integrity: {e}",
+              file=sys.stderr)
+
     _ensure_schema(conn)
     return conn
 
