@@ -409,10 +409,9 @@ def api_manage_result_types(body: dict) -> dict:
 
 
 def api_log_result(conn, exp_id: str, body: dict) -> dict:
-    """Log a manual result. Now routes to the metrics table (same as log-metric).
-
-    Kept for backwards compatibility. New code should use log-metric directly.
-    """
+    """Log a manual result. Routes to metrics table with source='manual'."""
+    body = dict(body)
+    body.setdefault("source", "manual")
     return api_log_metric(conn, exp_id, body)
 
 
@@ -452,9 +451,10 @@ def api_log_metric(conn, exp_id: str, body: dict) -> dict:
         ).fetchone()
         step = (row["max_step"] + 1) if row and row["max_step"] is not None else 0
 
+    source = body.get("source", "auto")
     conn.execute(
-        "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-        (exp["id"], key, num_val, step, ts)
+        "INSERT INTO metrics (exp_id, key, value, step, ts, source) VALUES (?,?,?,?,?,?)",
+        (exp["id"], key, num_val, step, ts, source)
     )
     conn.commit()
     return {"ok": True, "key": key, "value": num_val, "step": step}
@@ -469,6 +469,12 @@ def api_delete_result(conn, exp_id: str, body: dict) -> dict:
     if not key:
         return {"error": "provide key"}
 
+    # Delete from metrics table (unified storage)
+    conn.execute(
+        "DELETE FROM metrics WHERE exp_id=? AND key=? AND source='manual'",
+        (exp["id"], key)
+    )
+    # Also clean up any legacy _result:* param entries
     conn.execute(
         "DELETE FROM params WHERE exp_id=? AND key=?",
         (exp["id"], f"_result:{key}")
@@ -491,9 +497,21 @@ def api_edit_result(conn, exp_id: str, body: dict) -> dict:
     except ValueError:
         return {"error": "value must be a number"}
 
+    ts = datetime.now(timezone.utc).isoformat()
+    # Delete old manual entry and insert new one
     conn.execute(
-        "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-        (exp["id"], f"_result:{key}", json.dumps(num_val))
+        "DELETE FROM metrics WHERE exp_id=? AND key=? AND source='manual'",
+        (exp["id"], key)
+    )
+    conn.execute(
+        "INSERT INTO metrics (exp_id, key, value, step, ts, source) "
+        "VALUES (?,?,?,NULL,?,?)",
+        (exp["id"], key, num_val, ts, "manual")
+    )
+    # Clean up any legacy _result:* param
+    conn.execute(
+        "DELETE FROM params WHERE exp_id=? AND key=?",
+        (exp["id"], f"_result:{key}")
     )
     conn.commit()
     return {"ok": True, "key": key, "value": num_val}

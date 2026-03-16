@@ -182,8 +182,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             '.gif': 'image/gif', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
             '.tiff': 'image/tiff', '.webp': 'image/webp',
             '.log': 'text/plain', '.txt': 'text/plain', '.out': 'text/plain',
-            '.err': 'text/plain', '.csv': 'text/csv', '.json': 'application/json',
-            '.jsonl': 'application/json',
+            '.err': 'text/plain', '.csv': 'text/csv', '.tsv': 'text/tab-separated-values',
+            '.json': 'application/json', '.jsonl': 'application/json',
         }
         content_type = mime_types.get(ext)
         if not content_type:
