@@ -38,7 +38,7 @@ const ALL_COLUMNS = [
   {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 120},
   {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 120},
   {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 200},
-  {id: 'metrics', label: 'Metrics', sortable: false, defaultOn: true, width: 220},
+  {id: 'metrics', label: 'Metrics', sortable: false, defaultOn: true, width: 160},
   {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 100},
   {id: 'started', label: 'Started', sortable: true, defaultOn: true, width: 140},
 ];
@@ -1543,7 +1543,7 @@ async function refreshDetail(id) {
   // Build unified metrics & results rows
   const unifiedRows = [];
   for (const m of exp.metrics) {
-    unifiedRows.push(`<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td><td><span class="source-badge auto">auto</span></td></tr>`);
+    unifiedRows.push(`<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td><td><span class="source-badge auto">auto</span> <span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all points for this metric">&times;</span></td></tr>`);
   }
   const resultKeys = Object.keys(manualResults);
   for (const k of resultKeys) {
@@ -2988,6 +2988,13 @@ async function deleteResult(id, key) {
   const d = await postApi('/api/experiment/' + id + '/delete-result', {key});
   if (d.ok) refreshDetail(id);
   else alert(d.error || 'Failed to delete result');
+}
+
+async function deleteMetric(id, key) {
+  if (!confirm('Delete all data points for metric "' + key + '"? This cannot be undone.')) return;
+  const d = await postApi('/api/experiment/' + id + '/delete-metric', {key});
+  if (d.ok) { refreshDetail(id); loadExperiments(); }
+  else alert(d.error || 'Failed to delete metric');
 }
 
 function startResultEdit(id, key, td) {

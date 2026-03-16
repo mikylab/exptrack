@@ -499,6 +499,24 @@ def api_edit_result(conn, exp_id: str, body: dict) -> dict:
     return {"ok": True, "key": key, "value": num_val}
 
 
+def api_delete_metric(conn, exp_id: str, body: dict) -> dict:
+    """Delete all data points for a metric key from the metrics table."""
+    from ...core.queries import find_experiment
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    key = body.get("key", "").strip()
+    if not key:
+        return {"error": "provide key"}
+
+    conn.execute(
+        "DELETE FROM metrics WHERE exp_id=? AND key=?",
+        (exp["id"], key)
+    )
+    conn.commit()
+    return {"ok": True}
+
+
 def api_log_path(conn, exp_id: str, body: dict) -> dict:
     """Manage log paths for an experiment (add/edit/delete).
 
