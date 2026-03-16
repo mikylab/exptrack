@@ -303,8 +303,9 @@ def cmd_diff(args):
         print(col(f"Not found: {args.id}", R), file=sys.stderr); return
     diff = exp["git_diff"]
     if not diff:
-        print(dim("No uncommitted diff was captured for this run.")); return
-    print(bold(f"\n  Diff: {exp['name']}  [{exp['git_branch']}@{exp['git_commit']}]\n"))
+        print(dim("No uncommitted changes were captured for this run."))
+        print(dim(f"  (All changes were committed at {exp['git_commit'] or '???'})")); return
+    print(bold(f"\n  Uncommitted changes: {exp['name']}  [{exp['git_branch']}@{exp['git_commit']}]\n"))
     if diff.startswith("[compacted"):
         print(col(f"  {diff}", Y))
         print(dim(f"  To recover: git diff {exp['git_commit']}~1 {exp['git_commit']}"))

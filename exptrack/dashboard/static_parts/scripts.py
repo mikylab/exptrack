@@ -1764,20 +1764,22 @@ async function refreshDetail(id) {
         <div class="detail-actions">
           ${exp.status === 'running' ? `<button class="action-btn primary" onclick="finishExp('${exp.id}')">Finish Run</button>` : ''}
           <span style="position:relative;display:inline-block">
-            <button class="action-btn primary" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'flex':'none'">Export ▼</button>
-            <div class="export-dropdown-menu" style="display:none;position:absolute;right:0;top:100%;z-index:100;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;flex-direction:column;gap:2px;min-width:120px;box-shadow:0 4px 12px rgba(0,0,0,0.15)">
-              <button class="action-btn" onclick="this.parentElement.style.display='none';doExport('${exp.id}','json')">JSON</button>
-              <button class="action-btn" onclick="this.parentElement.style.display='none';doExport('${exp.id}','markdown')">Markdown</button>
-              <button class="action-btn" onclick="this.parentElement.style.display='none';doExport('${exp.id}','csv')">CSV</button>
-              <button class="action-btn" onclick="this.parentElement.style.display='none';doExport('${exp.id}','tsv')">TSV</button>
-              <button class="action-btn" onclick="this.parentElement.style.display='none';doExport('${exp.id}','plain')">Plain Text</button>
+            <button class="action-btn primary" onclick="toggleDetailExport(this)">Export ▼</button>
+            <div class="export-dropdown-menu" style="display:none">
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','json')">JSON</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','markdown')">Markdown</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','csv')">CSV</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','tsv')">TSV</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','plain')">Plain Text</button>
+              <hr style="border:0;border-top:1px solid var(--border);margin:4px 0">
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json')">Copy JSON</button>
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','markdown')">Copy Markdown</button>
             </div>
           </span>
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name)}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
         </div>
       </div>
-      <div id="export-container"></div>
 
       <div class="tabs" id="detail-tabs">
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
@@ -1801,6 +1803,7 @@ async function refreshDetail(id) {
               <span class="label">Studies</span><span class="tag-list" id="detail-studies">${studiesDetailHtml}</span>
               <span class="label">Stage</span><span id="detail-stage" class="editable-hint" ondblclick="startDetailStageEdit('${exp.id}',this)" title="Double-click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
               <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" ondblclick="startDetailNoteEdit('${exp.id}',this)" title="Double-click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">double-click to add notes</span>'}</span>
+              <span class="label">Uncommitted</span><span>${diffData.diff ? (diffCompacted ? '<span style="color:var(--yellow)">' + esc(diffData.diff.split(' — ')[1] || 'compacted') + '</span>' : '<span style="color:var(--green)">' + exp.diff_lines + ' lines</span> <button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:6px" onclick="exportDiff(\'' + exp.id + '\')">Export</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="compactDiff(\'' + exp.id + '\')">Compact</button>') : '<span style="color:var(--muted)">none (all changes were committed)</span>'}</span>
             </div>
             ${exp.command ? '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span><button class="copy-btn" data-cmd="' + esc(exp.command).replace(/"/g,'&quot;') + '" onclick="navigator.clipboard.writeText(this.dataset.cmd).then(()=>owlSay(\'Copied!\'))">Copy</button></div><code class="reproduce-cmd">' + esc(exp.command) + '</code></div>' : ''}
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
@@ -1824,7 +1827,7 @@ async function refreshDetail(id) {
         <!-- Full-width sections below the grid -->
         <div style="margin-top:20px">
           ${codeHtml}
-          ${diffHtml ? '<div style="display:flex;align-items:center;gap:8px"><h2 class="section-toggle" style="flex:1" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Git Diff (compacted)' : 'Git Diff ('+exp.diff_lines+' lines)')+'</h2>'+(diffCompacted ? '' : '<button class="action-btn" style="font-size:12px;padding:3px 10px" onclick="exportDiff(\''+exp.id+'\')">Export Diff</button><button class="action-btn" style="font-size:12px;padding:3px 10px" onclick="compactDiff(\''+exp.id+'\')">Compact</button>')+'</div><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
+          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Uncommitted Changes (compacted)' : 'Uncommitted Changes ('+exp.diff_lines+' lines)')+'</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
         </div>
       </div>
 
@@ -1937,64 +1940,57 @@ async function exportExp(id) {
     '</div><pre id="export-content" style="display:none"></pre></div>';
 }
 
-async function doExport(id, fmt) {
-  owlSpeak('export');
-  // Ensure export panel exists
-  const container = document.getElementById('export-container');
-  if (container && !container.querySelector('.export-panel')) {
-    container.innerHTML = '<div class="export-panel">' +
-      '<div class="export-actions">' +
-      '<button class="action-btn" onclick="downloadExport()">Download File</button>' +
-      '<button class="action-btn" onclick="copyExport()">Copy to Clipboard</button>' +
-      '<button class="action-btn" onclick="this.closest(\'.export-panel\').remove()">Close</button>' +
-      '</div><pre id="export-content" style="display:none"></pre></div>';
-  }
+function toggleDetailExport(btn) {
+  const menu = btn.nextElementSibling;
+  menu.style.display = menu.style.display === 'none' ? 'flex' : 'none';
+}
+function closeDetailExport(btn) {
+  btn.closest('.export-dropdown-menu').style.display = 'none';
+}
 
-  let text;
+async function _fetchExportText(id, fmt) {
   const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt'};
+  let text;
   if (fmt === 'csv' || fmt === 'tsv') {
     const data = await postApi('/api/bulk-export', {ids: [id], format: fmt});
     text = data.content || JSON.stringify(data, null, 2);
   } else {
     const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt));
-    if (fmt === 'markdown') {
-      text = data.markdown || JSON.stringify(data, null, 2);
-    } else if (fmt === 'plain') {
-      text = _formatExpPlainText(data.data || data);
-    } else {
-      text = JSON.stringify(data, null, 2);
-    }
+    if (fmt === 'markdown') text = data.markdown || JSON.stringify(data, null, 2);
+    else if (fmt === 'plain') text = _formatExpPlainText(data.data || data);
+    else text = JSON.stringify(data, null, 2);
   }
-  const pre = document.getElementById('export-content');
-  if (pre) { pre.style.display = ''; pre.textContent = text; }
-
-  // Find experiment name for filename
   const exp = allExperiments.find(e => e.id.startsWith(id));
   const name = exp ? exp.name.replace(/[^a-zA-Z0-9_-]/g, '_') : id.slice(0,8);
-  _exportCache = {text, filename: name + (ext[fmt] || '.txt'), mime: fmt === 'json' ? 'application/json' : 'text/plain'};
+  return {text, filename: name + (ext[fmt] || '.txt'), mime: fmt === 'json' ? 'application/json' : 'text/plain'};
 }
 
-function downloadExport() {
-  if (!_exportCache.text) { owlSay('Select a format first.'); return; }
-  const blob = new Blob([_exportCache.text], {type: _exportCache.mime});
-  const url = URL.createObjectURL(blob);
+function _downloadBlob(text, filename, mime) {
+  const blob = new Blob([text], {type: mime || 'text/plain'});
   const a = document.createElement('a');
-  a.href = url;
-  a.download = _exportCache.filename;
-  document.body.appendChild(a);
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
   a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  owlSay('Downloaded ' + _exportCache.filename);
+  URL.revokeObjectURL(a.href);
 }
 
-function copyExport() {
-  const pre = document.getElementById('export-content');
-  if (!pre || !pre.textContent || pre.style.display === 'none') { owlSay('Select a format first.'); return; }
-  navigator.clipboard.writeText(pre.textContent).then(() => {
-    owlSay('Copied to clipboard!');
-  });
+async function downloadExportFmt(id, fmt) {
+  owlSpeak('export');
+  const d = await _fetchExportText(id, fmt);
+  _downloadBlob(d.text, d.filename, d.mime);
+  owlSay('Downloaded ' + d.filename);
 }
+
+async function copyExportFmt(id, fmt) {
+  owlSpeak('export');
+  const d = await _fetchExportText(id, fmt);
+  navigator.clipboard.writeText(d.text).then(() => owlSay('Copied ' + fmt.toUpperCase() + ' to clipboard!'));
+}
+
+// Legacy compat — used by bulk export sidebar
+async function doExport(id, fmt) { await downloadExportFmt(id, fmt); }
+function downloadExport() {}
+function copyExport() {}
 
 // ── Compare ────────────────────────────────────────────────────────────────────
 
