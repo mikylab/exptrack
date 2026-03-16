@@ -61,6 +61,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_studies(conn))
         elif path == "/api/all-studies":
             self._json(write_routes.api_all_studies(conn))
+        elif path.startswith("/api/logs/"):
+            exp_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
+            self._json(read_routes.api_list_logs(conn, exp_id))
         elif path.startswith("/api/images/"):
             exp_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
             self._json(read_routes.api_list_images(conn, exp_id))
@@ -106,6 +109,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "delete-study":    lambda: write_routes.api_delete_exp_study(conn, exp_id, body),
                 "stage":           lambda: write_routes.api_set_stage(conn, exp_id, body),
                 "image-path":      lambda: write_routes.api_image_path(conn, exp_id, body),
+                "log-path":        lambda: write_routes.api_log_path(conn, exp_id, body),
                 "log-result":      lambda: write_routes.api_log_result(conn, exp_id, body),
             }
             handler = dispatch.get(action)

@@ -422,15 +422,52 @@ def api_log_result(conn, exp_id: str, body: dict) -> dict:
         num_val = float(value)
         conn.execute(
             "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-            (exp["id"], f"result/{key}", num_val, None, ts)
+            (exp["id"], key, num_val, None, ts)
         )
     except ValueError:
         conn.execute(
             "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-            (exp["id"], f"result/{key}", json.dumps(value))
+            (exp["id"], key, json.dumps(value))
         )
     conn.commit()
-    return {"ok": True, "key": f"result/{key}", "value": value}
+    return {"ok": True, "key": key, "value": value}
+
+
+def api_log_path(conn, exp_id: str, body: dict) -> dict:
+    """Manage log paths for an experiment (add/edit/delete).
+
+    Stored in experiments.log_paths as a JSON array of strings.
+    """
+    exp = find_experiment(conn, exp_id, "id, log_paths")
+    if not exp:
+        return {"error": "not found"}
+    action = body.get("action", "")
+    paths = json.loads(exp["log_paths"] or "[]")
+
+    if action == "add":
+        path = body.get("path", "").strip()
+        if not path:
+            return {"error": "empty path"}
+        if path not in paths:
+            paths.append(path)
+    elif action == "delete":
+        index = body.get("index", -1)
+        if 0 <= index < len(paths):
+            paths.pop(index)
+    elif action == "edit":
+        index = body.get("index", -1)
+        path = body.get("path", "").strip()
+        if 0 <= index < len(paths) and path:
+            paths[index] = path
+    else:
+        return {"error": "invalid action"}
+
+    conn.execute(
+        "UPDATE experiments SET log_paths=?, updated_at=? WHERE id=?",
+        (json.dumps(paths), datetime.now(timezone.utc).isoformat(), exp["id"])
+    )
+    conn.commit()
+    return {"ok": True, "paths": paths}
 
 
 def api_image_path(conn, exp_id: str, body: dict) -> dict:

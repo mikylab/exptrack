@@ -408,28 +408,28 @@ def cmd_log_result(args):
         flat = _flatten_dict(raw)
         for k, v in flat.items():
             try:
-                rows.append((exp_id, f"result/{k}", float(v), None, ts))
+                rows.append((exp_id, k, float(v), None, ts))
             except (ValueError, TypeError):
                 # Store non-numeric results as params
                 conn.execute(
                     "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-                    (exp_id, f"result/{k}", json.dumps(v))
+                    (exp_id, k, json.dumps(v))
                 )
-                print(f"[exptrack] result (param): result/{k}={v}", file=sys.stderr)
+                print(f"[exptrack] result (param): {k}={v}", file=sys.stderr)
     else:
         if args.key is None or args.value is None:
             print("[exptrack] log-result: provide KEY VALUE or --file FILE", file=sys.stderr)
             sys.exit(1)
         try:
-            rows.append((exp_id, f"result/{args.key}", float(args.value), None, ts))
+            rows.append((exp_id, args.key, float(args.value), None, ts))
         except ValueError:
             # Non-numeric: store as param
             conn.execute(
                 "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-                (exp_id, f"result/{args.key}", json.dumps(args.value))
+                (exp_id, args.key, json.dumps(args.value))
             )
             conn.commit()
-            print(f"[exptrack] result (param): result/{args.key}={args.value}", file=sys.stderr)
+            print(f"[exptrack] result (param): {args.key}={args.value}", file=sys.stderr)
             return
 
     if rows:
@@ -440,7 +440,7 @@ def cmd_log_result(args):
         # Also tag the source
         conn.execute(
             "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-            (exp_id, f"_result_source", json.dumps(source))
+            (exp_id, "_result_source", json.dumps(source))
         )
         conn.commit()
         for _, k, v, _, _ in rows:

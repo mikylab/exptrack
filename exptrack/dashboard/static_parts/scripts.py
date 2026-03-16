@@ -1497,8 +1497,9 @@ async function refreshDetail(id) {
     `<tr><td style="color:var(--blue)">${esc(k)}</td><td>${esc(JSON.stringify(v))}</td></tr>`
   ).join('');
 
+  const resultTypesList = _resultTypes || [];
   const metricRows = exp.metrics.map(m => {
-    const isResult = m.key.startsWith('result/');
+    const isResult = resultTypesList.includes(m.key) || m.n === 1;
     const badge = isResult ? '<span class="cw-delta cw-delta-changed" style="margin-left:4px;font-size:10px">RESULT</span>' : '';
     const color = isResult ? 'var(--tl-metric, #d4820f)' : 'var(--green)';
     return `<tr><td style="color:${color}">${esc(m.key)}${badge}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td></tr>`;
@@ -2533,68 +2534,157 @@ function openImageModal(src, name) {
 
 // ── Logs tab ─────────────────────────────────────────────────────────────────
 
+let logSort = 'date';
+let logSortDir = 'desc';
+let logFilter = '';
+
 async function loadLogs(expId) {
   const container = document.getElementById('detail-tab-logs');
   if (!container) return;
+  container.innerHTML = '<p style="color:var(--muted)">Loading...</p>';
 
-  const exp = await api('/api/experiment/' + expId);
-  if (exp.error) { container.innerHTML = '<p style="color:var(--muted)">Could not load experiment.</p>'; return; }
-
-  // Filter artifacts that are log/text files or directories
-  const logExts = ['log', 'txt', 'out', 'err'];
-  const dataExts = ['csv', 'json', 'jsonl'];
-  const allViewable = exp.artifacts.filter(a => {
-    const ext = (a.path || '').split('.').pop().toLowerCase();
-    return logExts.includes(ext) || dataExts.includes(ext);
-  });
-
-  // Also check output_dir for stdout.log / stderr.log
-  let html = '<div style="margin-bottom:16px">';
-  html += '<h3 style="font-size:15px;margin-bottom:8px">Output Logs & Data Files</h3>';
-  html += '<p style="font-size:12px;color:var(--muted);margin-bottom:12px">Log files captured during this run. Click "view" to inspect contents.</p>';
-
-  if (exp.output_dir) {
-    html += '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">';
-    html += 'Output directory: <code style="background:var(--code-bg);padding:2px 6px;border-radius:3px">' + esc(exp.output_dir) + '</code>';
-    html += '</div>';
+  const data = await api('/api/logs/' + expId);
+  if (data.error && data.error !== 'not found') {
+    container.innerHTML = '<p style="color:var(--muted)">Error: ' + esc(data.error) + '</p>';
+    return;
   }
 
-  if (allViewable.length) {
-    html += '<table class="params-table">';
-    html += '<tr><th>File</th><th>Path</th><th style="width:60px"></th></tr>';
-    for (const a of allViewable) {
-      const ext = (a.path || '').split('.').pop().toLowerCase();
+  const paths = data.paths || [];
+  const suggestedPaths = data.suggested_paths || [];
+  let files = data.files || [];
+
+  let html = '<div class="img-paths-section">';
+  html += '<h3 style="font-size:14px;margin-bottom:8px">Log Paths</h3>';
+  html += '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">Add folders to scan for log and data files. Paths are relative to project root.</p>';
+
+  // Show saved paths
+  if (paths.length) {
+    for (let i = 0; i < paths.length; i++) {
+      const p = paths[i];
+      html += '<div class="img-path-row">';
+      html += '<span class="img-path-val" ondblclick="startEditLogPath(\'' + expId + '\',' + i + ',this)">' + esc(p) + '</span>';
+      html += '<button class="img-path-del" onclick="deleteLogPath(\'' + expId + '\',' + i + ')" title="Remove path">&times;</button>';
+      html += '</div>';
+    }
+  }
+
+  // Add path form
+  html += '<div class="img-path-add">';
+  html += '<input type="text" id="log-path-input" placeholder="e.g. outputs/logs or logs/tensorboard" style="flex:1">';
+  html += '<button onclick="addLogPath(\'' + expId + '\')">Add Path</button>';
+  html += '</div>';
+
+  // Suggested paths
+  if (suggestedPaths.length && paths.length === 0) {
+    html += '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Suggestions: ';
+    html += suggestedPaths.map(s => '<a href="#" style="color:var(--blue)" onclick="event.preventDefault();document.getElementById(\'log-path-input\').value=\'' + esc(s) + '\';addLogPath(\'' + expId + '\')">' + esc(s) + '</a>').join(', ');
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Show files if we have any
+  if (files.length) {
+    const dirs = [...new Set(files.map(f => f.dir))].sort();
+
+    // Apply filter
+    let filtered = files;
+    if (logFilter) {
+      filtered = filtered.filter(f => f.dir === logFilter);
+    }
+
+    // Apply sort
+    if (logSort === 'name') {
+      filtered = [...filtered].sort((a, b) => logSortDir === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name));
+    } else {
+      filtered = [...filtered].sort((a, b) => logSortDir === 'asc' ? a.modified - b.modified : b.modified - a.modified);
+    }
+
+    html += '<div class="img-gallery-toolbar">';
+    html += '<span style="color:var(--muted);font-size:13px">' + files.length + ' file' + (files.length !== 1 ? 's' : '') + '</span>';
+
+    // Refresh
+    html += ' <button class="img-filter-select" onclick="loadLogs(\'' + expId + '\')" title="Refresh" style="cursor:pointer">&#x21bb; Refresh</button>';
+
+    // Directory filter
+    if (dirs.length > 1) {
+      html += ' <select class="img-filter-select" onchange="logFilter=this.value;loadLogs(\'' + expId + '\')">';
+      html += '<option value=""' + (logFilter === '' ? ' selected' : '') + '>All folders</option>';
+      for (const d of dirs) {
+        html += '<option value="' + esc(d) + '"' + (logFilter === d ? ' selected' : '') + '>' + esc(d) + '</option>';
+      }
+      html += '</select>';
+    }
+
+    // Sort
+    html += ' <select class="img-filter-select" onchange="logSort=this.value;loadLogs(\'' + expId + '\')">';
+    html += '<option value="date"' + (logSort === 'date' ? ' selected' : '') + '>Sort by date</option>';
+    html += '<option value="name"' + (logSort === 'name' ? ' selected' : '') + '>Sort by name</option>';
+    html += '</select>';
+
+    html += ' <button class="img-filter-select" onclick="logSortDir=logSortDir===\'asc\'?\'desc\':\'asc\';loadLogs(\'' + expId + '\')" title="Toggle sort direction" style="cursor:pointer">' + (logSortDir === 'asc' ? '\u25B2 Asc' : '\u25BC Desc') + '</button>';
+
+    html += '</div>';
+
+    // File table
+    html += '<table class="params-table" style="margin-top:8px">';
+    html += '<tr><th>File</th><th>Size</th><th>Modified</th><th style="width:60px"></th></tr>';
+    for (const f of filtered) {
+      const sizeKb = (f.size / 1024).toFixed(1);
+      const modDate = f.modified ? new Date(f.modified * 1000).toLocaleString() : '';
+      const ext = f.ext || '';
+      const logExts = ['log', 'txt', 'out', 'err'];
       const badge = logExts.includes(ext) ? '<span class="artifact-type-badge log">log</span>' : '<span class="artifact-type-badge data">data</span>';
       html += '<tr>';
-      html += '<td><div class="artifact-row">' + badge + ' ' + esc(a.label) + '</div></td>';
-      html += '<td style="font-size:12px;color:var(--muted)">' + esc(a.path) + '</td>';
-      html += '<td><button class="view-source-btn" onclick="viewLogFile(\'' + esc(a.path) + '\',\'' + esc(a.label) + '\')">view</button></td>';
+      html += '<td><div class="artifact-row">' + badge + ' ' + esc(f.name);
+      if (f.dir !== '.') html += ' <span style="color:var(--muted);font-size:11px">(' + esc(f.dir) + ')</span>';
+      html += '</div></td>';
+      html += '<td style="font-size:12px;color:var(--muted)">' + sizeKb + ' KB</td>';
+      html += '<td style="font-size:12px;color:var(--muted)">' + modDate + '</td>';
+      html += '<td><button class="view-source-btn" onclick="viewLogFile(\'' + esc(f.path) + '\',\'' + esc(f.name) + '\')">view</button></td>';
       html += '</tr>';
     }
     html += '</table>';
-  } else {
-    html += '<div style="padding:30px;text-align:center;color:var(--muted)">';
-    html += '<p style="font-size:14px;margin-bottom:8px">No log files found</p>';
-    html += '<p style="font-size:12px">Log files (.log, .txt, .out, .err) and data files (.csv, .json) from this experiment will appear here.</p>';
-    html += '<p style="font-size:12px;margin-top:8px">Tip: Use <code>exptrack run</code> to auto-capture stdout/stderr, or <code>exptrack log-output</code> / <code>exptrack link-dir</code> to link files.</p>';
-    html += '</div>';
+  } else if (paths.length) {
+    html += '<p style="color:var(--muted);margin-top:12px">No log files found in the specified path(s).</p>';
+    html += ' <button class="img-filter-select" onclick="loadLogs(\'' + expId + '\')" title="Refresh" style="cursor:pointer;margin-top:8px">&#x21bb; Refresh</button>';
   }
 
-  // Directory artifacts
-  const dirArtifacts = exp.artifacts.filter(a => a.label.startsWith('[dir]'));
-  if (dirArtifacts.length) {
-    html += '<h3 style="font-size:14px;margin-top:20px;margin-bottom:8px">Linked Directories</h3>';
-    html += '<table class="params-table">';
-    html += '<tr><th>Label</th><th>Path</th></tr>';
-    for (const a of dirArtifacts) {
-      html += '<tr><td><span class="artifact-type-badge dir">dir</span> ' + esc(a.label.replace('[dir] ','')) + '</td>';
-      html += '<td style="font-size:12px;color:var(--muted)">' + esc(a.path) + '</td></tr>';
-    }
-    html += '</table>';
-  }
-
-  html += '</div>';
   container.innerHTML = html;
+}
+
+async function addLogPath(expId) {
+  const input = document.getElementById('log-path-input');
+  const path = input ? input.value.trim() : '';
+  if (!path) return;
+  await postApi('/api/experiment/' + expId + '/log-path', {action: 'add', path});
+  loadLogs(expId);
+}
+
+async function deleteLogPath(expId, index) {
+  await postApi('/api/experiment/' + expId + '/log-path', {action: 'delete', index});
+  loadLogs(expId);
+}
+
+function startEditLogPath(expId, index, el) {
+  const currentVal = el.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'name-edit-input';
+  input.value = currentVal; input.style.cssText = 'width:200px;font-size:12px;padding:2px 4px';
+  el.innerHTML = ''; el.appendChild(input); input.focus(); input.select();
+  let saved = false;
+  async function doSave() {
+    if (saved) return; saved = true;
+    const newVal = input.value.trim();
+    if (newVal && newVal !== currentVal) {
+      await postApi('/api/experiment/' + expId + '/log-path', {action: 'edit', index, path: newVal});
+    }
+    loadLogs(expId);
+  }
+  input.addEventListener('blur', doSave);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { saved = true; loadLogs(expId); }
+  });
 }
 
 // ── Result types management ──────────────────────────────────────────────────
@@ -3088,6 +3178,7 @@ loadTimezoneConfig();
 renderTableHeader();
 loadAllTags();
 loadAllStudies();
+loadResultTypes();
 loadStats();
 loadExperiments().then(() => {
   if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
