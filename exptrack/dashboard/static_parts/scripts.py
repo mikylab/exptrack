@@ -608,7 +608,7 @@ function renderExpList() {
     const active = currentDetailId === e.id ? ' active' : '';
     const statusCls = 'status-' + e.status;
     const metrics = Object.entries(e.metrics || {}).slice(0, 2)
-      .map(([k,v]) => k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v)).join('  ');
+      .map(([k,m]) => { const v = typeof m === 'object' && m !== null ? m.value : m; return k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v); }).join('  ');
     const isSelected = selectedIds.has(e.id);
     const cbHtml = '<label style="display:inline-flex;align-items:center;cursor:pointer;padding:2px" onclick="event.stopPropagation()"><input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
       ' onclick="toggleSelection(\'' + e.id + '\')" title="Select"></label>';
@@ -655,6 +655,7 @@ function renderSidebarActionsBar() {
   html += '<button class="export-btn" onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
+  html += '<button onclick="bulkCompact()">Compact</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '</div>';
   bar.innerHTML = html;
@@ -821,6 +822,7 @@ function renderTableActionsBar() {
   html += '<button onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
+  html += '<button onclick="bulkCompact()">Compact</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   bar.innerHTML = html;
 }
@@ -1068,8 +1070,32 @@ async function loadStats() {
         <div class="stat"><div class="num">${s.unique_branches}</div><div class="label">Branches</div><div class="stat-hint">Unique git branches used</div></div>
       </div>
     `;
+    // Show diff storage alert when total exceeds 512KB
+    if (s.diff_total_bytes > 512 * 1024) {
+      const kb = (s.diff_total_bytes / 1024).toFixed(0);
+      const maxKb = s.max_diff_kb || 256;
+      statsEl.innerHTML += '<div style="margin:8px 0;padding:8px 12px;background:rgba(232,167,53,0.12);border:1px solid rgba(232,167,53,0.3);border-radius:6px;font-size:13px;color:var(--yellow,#e8a735)">'
+        + '<strong>Git diff storage:</strong> ' + kb + ' KB across ' + s.diff_count + ' experiment(s). '
+        + 'Max per-run limit: ' + maxKb + ' KB (config: max_git_diff_kb). '
+        + '<button style="margin-left:8px;font-size:12px;cursor:pointer;padding:2px 8px;border-radius:3px;border:1px solid rgba(232,167,53,0.4);background:transparent;color:inherit" '
+        + 'onclick="bulkCompactAll()">Compact All Done</button>'
+        + '</div>';
+    }
   }
   renderStatusChips();
+}
+
+async function bulkCompactAll() {
+  const doneIds = allExperiments.filter(e => e.status === 'done').map(e => e.id);
+  if (!doneIds.length) { owlSay('No done experiments to compact'); return; }
+  if (!confirm('Compact diffs for all ' + doneIds.length + ' done experiments?')) return;
+  const d = await postApi('/api/bulk-compact', {ids: doneIds});
+  if (d.ok) {
+    owlSay('Compacted ' + d.compacted + ' diff(s)');
+    loadStats();
+    loadExperiments();
+    if (currentDetailId) refreshDetail(currentDetailId);
+  } else alert(d.error || 'Failed');
 }
 
 async function loadExperiments() {
@@ -1744,6 +1770,7 @@ async function refreshDetail(id) {
 
       <div class="detail-export-bar">
         <button class="action-btn primary" onclick="exportExp('${exp.id}')">Export</button>
+        ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button><button class="action-btn" onclick="compactDiff('${exp.id}')">Compact Diff</button>` : ''}
         <div id="export-container"></div>
       </div>
 
@@ -2312,6 +2339,42 @@ async function finishExp(id) {
     refreshDetail(id);
     loadStats();
     loadExperiments();
+  } else alert(d.error || 'Failed');
+}
+
+// ── Diff compact / export ────────────────────────────────────────────────────
+
+async function compactDiff(id) {
+  if (!confirm('Strip the git diff from this experiment? The diff data will be replaced with a compact summary. This cannot be undone.')) return;
+  const d = await postApi('/api/bulk-compact', {ids: [id]});
+  if (d.ok) {
+    owlSay('Compacted diff (' + d.compacted + ' experiment)');
+    refreshDetail(id);
+    loadExperiments();
+  } else alert(d.error || 'Failed');
+}
+
+async function exportDiff(id) {
+  const d = await postApi('/api/experiment/' + id + '/export-diff');
+  if (d.error) { alert(d.error); return; }
+  const blob = new Blob([d.markdown], {type: 'text/markdown'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = d.filename || 'diff.md';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  owlSay('Exported diff as markdown');
+}
+
+async function bulkCompact() {
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+  if (!confirm('Compact diffs for ' + ids.length + ' experiment(s)? This strips git diff data and cannot be undone.')) return;
+  const d = await postApi('/api/bulk-compact', {ids});
+  if (d.ok) {
+    owlSay('Compacted ' + d.compacted + ' diff(s)');
+    loadExperiments();
+    if (currentDetailId) refreshDetail(currentDetailId);
   } else alert(d.error || 'Failed');
 }
 

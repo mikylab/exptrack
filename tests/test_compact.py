@@ -278,6 +278,89 @@ def test_cli_diff_shows_compacted_message():
         print("  [PASS] test_cli_diff_shows_compacted_message")
 
 
+def test_api_compact():
+    """The dashboard API compact endpoint should work like the CLI."""
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        conn = _setup_project()
+        diff_text = "diff --git a/foo.py b/foo.py\n+hello\n-world"
+        _insert_experiment(conn, "api001", name="api_test", git_diff=diff_text)
+
+        from exptrack.dashboard.routes.write_routes import api_compact
+        result = api_compact(conn, {"ids": ["api001"]})
+        assert result["ok"] is True
+        assert result["compacted"] == 1
+        assert result["freed"] > 0
+
+        row = conn.execute("SELECT git_diff FROM experiments WHERE id='api001'").fetchone()
+        assert row["git_diff"].startswith("[compacted")
+        print("  [PASS] test_api_compact")
+
+
+def test_api_compact_skips_already_compacted():
+    """API compact should skip already-compacted experiments."""
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        conn = _setup_project()
+        _insert_experiment(conn, "api002", git_diff="[compacted — already done]")
+
+        from exptrack.dashboard.routes.write_routes import api_compact
+        result = api_compact(conn, {"ids": ["api002"]})
+        assert result["ok"] is True
+        assert result["compacted"] == 0
+        print("  [PASS] test_api_compact_skips_already_compacted")
+
+
+def test_api_export_diff():
+    """The export-diff endpoint should return markdown with the diff."""
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        conn = _setup_project()
+        diff_text = "diff --git a/model.py b/model.py\n+new_code"
+        _insert_experiment(conn, "api003", name="export_test", git_diff=diff_text,
+                           git_branch="main", git_commit="abc1234")
+
+        from exptrack.dashboard.routes.write_routes import api_export_diff
+        result = api_export_diff(conn, "api003")
+        assert result["ok"] is True
+        assert "```diff" in result["markdown"]
+        assert "+new_code" in result["markdown"]
+        assert "export_test" in result["markdown"]
+        assert result["filename"].endswith(".md")
+        print("  [PASS] test_api_export_diff")
+
+
+def test_api_export_diff_compacted():
+    """Export-diff should error for already-compacted experiments."""
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        conn = _setup_project()
+        _insert_experiment(conn, "api004", git_diff="[compacted — stripped]")
+
+        from exptrack.dashboard.routes.write_routes import api_export_diff
+        result = api_export_diff(conn, "api004")
+        assert "error" in result
+        assert result.get("compacted") is True
+        print("  [PASS] test_api_export_diff_compacted")
+
+
+def test_stats_include_diff_info():
+    """Stats should include diff storage info and config limit."""
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        conn = _setup_project()
+        _insert_experiment(conn, "stat001", git_diff="x" * 1000)
+        _insert_experiment(conn, "stat002", git_diff="[compacted — should not count]")
+
+        from exptrack.core.queries import get_stats
+        stats = get_stats(conn)
+        assert "diff_total_bytes" in stats
+        assert stats["diff_total_bytes"] == 1000  # only the non-compacted one
+        assert stats["diff_count"] == 1
+        assert "max_diff_kb" in stats
+        print("  [PASS] test_stats_include_diff_info")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

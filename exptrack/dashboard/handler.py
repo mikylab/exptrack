@@ -118,6 +118,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "delete-metric":   lambda: write_routes.api_delete_metric(conn, exp_id, body),
                 "rename-metric":   lambda: write_routes.api_rename_metric(conn, exp_id, body),
                 "edit-result":     lambda: write_routes.api_edit_result(conn, exp_id, body),
+                "export-diff":     lambda: write_routes.api_export_diff(conn, exp_id),
             }
             handler = dispatch.get(action)
             if handler:
@@ -128,6 +129,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         global_dispatch = {
             "/api/delete-tag-global":    lambda: write_routes.api_delete_tag_global(conn, body),
             "/api/bulk-delete":          lambda: write_routes.api_bulk_delete(conn, body),
+            "/api/bulk-compact":         lambda: write_routes.api_compact(conn, body),
             "/api/bulk-export":          lambda: write_routes.api_bulk_export(conn, body),
             "/api/config/timezone":      lambda: write_routes.api_set_timezone(body),
             "/api/studies/create":       lambda: write_routes.api_create_study(conn, body),

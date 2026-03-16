@@ -190,6 +190,59 @@ def api_edit_artifact(conn, exp_id: str, body: dict) -> dict:
     return {"ok": True}
 
 
+def api_compact(conn, body: dict) -> dict:
+    """Strip git_diff from selected experiments, keeping a summary marker."""
+    ids = body.get("ids", [])
+    if not ids:
+        return {"error": "no ids provided"}
+
+    compacted = 0
+    freed = 0
+    for eid in ids:
+        row = conn.execute(
+            "SELECT id, git_diff, git_commit FROM experiments WHERE id LIKE ?",
+            (eid + "%",)
+        ).fetchone()
+        if not row or not row["git_diff"] or row["git_diff"].startswith("[compacted"):
+            continue
+        diff_len = len(row["git_diff"])
+        commit = row["git_commit"] or "unknown"
+        # Extract changed file names
+        files = [line.split()[-1].lstrip("b/")
+                 for line in row["git_diff"].splitlines()
+                 if line.startswith("diff --git ") and len(line.split()) >= 4]
+        file_info = f"{len(files)} file(s): {', '.join(files[:5])}" if files else "no files"
+        if len(files) > 5:
+            file_info += f" +{len(files) - 5} more"
+        def _fmt(b):
+            if b < 1024: return f"{b} B"
+            if b < 1024**2: return f"{b/1024:.1f} KB"
+            return f"{b/1024**2:.1f} MB"
+        summary = f"[compacted — {_fmt(diff_len)} stripped — {file_info} — see git commit {commit}]"
+        conn.execute("UPDATE experiments SET git_diff = ? WHERE id = ?", (summary, row["id"]))
+        compacted += 1
+        freed += diff_len
+    conn.commit()
+    return {"ok": True, "compacted": compacted, "freed": freed}
+
+
+def api_export_diff(conn, exp_id: str) -> dict:
+    """Return the git diff for an experiment as downloadable markdown."""
+    exp = find_experiment(conn, exp_id, "id, name, git_branch, git_commit, git_diff")
+    if not exp:
+        return {"error": "not found"}
+    diff = exp["git_diff"] or ""
+    if diff.startswith("[compacted"):
+        return {"error": "diff already compacted", "compacted": True}
+    name = exp["name"] or exp["id"][:8]
+    md = (f"# Diff: {name}\n\n"
+          f"- **Experiment ID:** `{exp['id']}`\n"
+          f"- **Branch:** `{exp['git_branch'] or ''}`\n"
+          f"- **Commit:** `{exp['git_commit'] or ''}`\n\n"
+          f"```diff\n{diff}\n```\n")
+    return {"ok": True, "markdown": md, "filename": f"{name}__{exp['id'][:8]}.md"}
+
+
 def api_bulk_delete(conn, body: dict) -> dict:
     ids = body.get("ids", [])
     if not ids:
