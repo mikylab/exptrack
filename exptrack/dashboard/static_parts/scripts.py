@@ -1587,9 +1587,22 @@ async function refreshDetail(id) {
     <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
   </div>`;
 
+  // Collect existing namespace prefixes from this experiment's metrics
+  const existingPrefixes = new Set();
+  for (const m of exp.metrics) {
+    const si = m.key.indexOf('/');
+    if (si > 0) existingPrefixes.add(m.key.slice(0, si));
+  }
+  const prefixOpts = [...existingPrefixes].sort().map(p => '<option value="' + esc(p) + '/">' + esc(p) + '/</option>').join('');
+
   const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center;flex-wrap:wrap;gap:4px" id="log-result-form-${exp.id}">
-    <select id="result-key-${exp.id}" style="width:160px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
-      <option value="">Metric key...</option>
+    <select id="result-prefix-${exp.id}" style="width:100px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)" title="Namespace prefix (optional)">
+      <option value="">(none)</option>
+      ${prefixOpts}
+      <option value="__custom__">custom...</option>
+    </select>
+    <select id="result-key-${exp.id}" style="width:130px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
+      <option value="">Metric...</option>
     </select>
     <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px" onkeydown="if(event.key==='Enter')logMetric('${exp.id}')">
     <input type="text" id="result-step-${exp.id}" placeholder="Step (auto)" style="width:80px;font-size:12px" title="Optional step number. Leave blank to auto-increment.">
@@ -3065,7 +3078,7 @@ async function loadResultTypes() {
     const d = await api('/api/result-types');
     _resultTypes = d.types || [];
   } catch(e) {
-    _resultTypes = ['accuracy', 'loss', 'auroc', 'f1', 'precision', 'recall', 'mse', 'mae', 'r2'];
+    _resultTypes = ['acc', 'loss', 'auroc', 'f1', 'prec', 'rec', 'mse', 'mae', 'r2'];
   }
   return _resultTypes;
 }
@@ -3082,16 +3095,43 @@ async function populateResultTypeDropdown(expId) {
     opt.textContent = t;
     sel.appendChild(opt);
   }
+  // Hook up custom prefix handler
+  const prefixEl = document.getElementById('result-prefix-' + expId);
+  if (prefixEl) {
+    prefixEl.onchange = () => {
+      if (prefixEl.value === '__custom__') {
+        const custom = prompt('Enter namespace prefix (e.g. train, val, test):');
+        if (custom && custom.trim()) {
+          const val = custom.trim().replace(/\/+$/, '') + '/';
+          // Add as option if not already present
+          let found = false;
+          for (const o of prefixEl.options) { if (o.value === val) { found = true; break; } }
+          if (!found) {
+            const opt = document.createElement('option');
+            opt.value = val;
+            opt.textContent = val;
+            prefixEl.insertBefore(opt, prefixEl.querySelector('option[value="__custom__"]'));
+          }
+          prefixEl.value = val;
+        } else {
+          prefixEl.value = '';
+        }
+      }
+    };
+  }
 }
 
 async function logMetric(id) {
+  const prefixEl = document.getElementById('result-prefix-' + id);
   const keyEl = document.getElementById('result-key-' + id);
   const valEl = document.getElementById('result-val-' + id);
   const stepEl = document.getElementById('result-step-' + id);
   if (!keyEl || !valEl) return;
-  const key = keyEl.value.trim();
+  const prefix = prefixEl ? prefixEl.value : '';
+  const baseKey = keyEl.value.trim();
+  if (!baseKey) { alert('Select a metric key'); return; }
+  const key = (prefix && prefix !== '__custom__') ? prefix + baseKey : baseKey;
   const value = valEl.value.trim();
-  if (!key) { alert('Select a metric key'); return; }
   if (!value || isNaN(parseFloat(value))) { alert('Value must be a number'); return; }
   const step = stepEl ? stepEl.value.trim() : '';
   const payload = {key, value};
@@ -3193,11 +3233,11 @@ function openManageResultTypes() {
   async function render() {
     const types = await loadResultTypes();
     let html = '<div class="img-modal-header">';
-    html += '<span class="img-modal-name">Manage Result Types</span>';
+    html += '<span class="img-modal-name">Manage Metric Types</span>';
     html += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
     html += '</div>';
     html += '<div style="padding:16px">';
-    html += '<p style="font-size:12px;color:var(--muted);margin-bottom:12px">These result types are shared across all experiments. They appear in the "Log Result" dropdown.</p>';
+    html += '<p style="font-size:12px;color:var(--muted);margin-bottom:12px">These metric types are shared across all experiments. They appear in the metric key dropdown.</p>';
     html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">';
     for (let i = 0; i < types.length; i++) {
       html += '<div class="result-type-chip">';
@@ -3207,7 +3247,7 @@ function openManageResultTypes() {
     }
     html += '</div>';
     html += '<div class="artifact-add-form">';
-    html += '<input type="text" id="new-result-type" placeholder="New result type name" style="width:200px">';
+    html += '<input type="text" id="new-result-type" placeholder="New metric type (e.g. top5_acc)" style="width:200px">';
     html += '<button onclick="addResultType()">+ Add</button>';
     html += '</div>';
     html += '</div>';

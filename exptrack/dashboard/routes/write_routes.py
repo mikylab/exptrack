@@ -384,8 +384,8 @@ def api_manage_result_types(body: dict) -> dict:
     """Add/remove result types from project config."""
     from ...config import load, save, reload
     conf = load()
-    default_types = ["accuracy", "loss", "auroc", "f1", "precision", "recall",
-                     "mse", "mae", "r2", "perplexity", "bleu"]
+    default_types = ["acc", "loss", "auroc", "f1", "prec", "rec",
+                     "mse", "mae", "r2", "ppl", "bleu"]
     types = list(conf.get("result_types", default_types))
 
     action = body.get("action", "")
@@ -505,7 +505,7 @@ def api_edit_result(conn, exp_id: str, body: dict) -> dict:
     )
     conn.execute(
         "INSERT INTO metrics (exp_id, key, value, step, ts, source) "
-        "VALUES (?,?,?,NULL,?,?)",
+        "VALUES (?,?,?,0,?,?)",
         (exp["id"], key, num_val, ts, "manual")
     )
     # Clean up any legacy _result:* param

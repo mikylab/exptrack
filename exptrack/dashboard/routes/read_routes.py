@@ -100,8 +100,8 @@ def api_get_timezone() -> dict:
 def api_result_types() -> dict:
     from ...config import load
     conf = load()
-    default_types = ["accuracy", "loss", "auroc", "f1", "precision", "recall",
-                     "mse", "mae", "r2", "perplexity", "bleu"]
+    default_types = ["acc", "loss", "auroc", "f1", "prec", "rec",
+                     "mse", "mae", "r2", "ppl", "bleu"]
     types = conf.get("result_types", default_types)
     return {"types": types}
 

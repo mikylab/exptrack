@@ -134,8 +134,11 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
 def get_latest_metrics(conn, exp_id: str) -> dict[str, float]:
     """Get the last value of each metric key for an experiment."""
     rows = conn.execute("""
-        SELECT key, value FROM metrics WHERE exp_id=?
-        GROUP BY key HAVING MAX(COALESCE(step, 0))
+        SELECT key, value FROM metrics m WHERE exp_id=?
+        AND COALESCE(step, 0) = (
+            SELECT MAX(COALESCE(step, 0)) FROM metrics m2
+            WHERE m2.exp_id=m.exp_id AND m2.key=m.key
+        )
     """, (exp_id,)).fetchall()
     return {r["key"]: r["value"] for r in rows}
 
