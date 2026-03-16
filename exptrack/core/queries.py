@@ -97,10 +97,17 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
     result = []
     for r in rows:
         metrics = get_latest_metrics(conn, r["id"])
+        sparklines = get_metrics_sparkline(conn, r["id"])
         ps = conn.execute(
             "SELECT key, value FROM params WHERE exp_id=?",
             (r["id"],)
         ).fetchall()
+        all_params = {p["key"]: json.loads(p["value"]) for p in ps}
+        # Extract manual results from params (_result:* keys)
+        results = {}
+        for k, v in all_params.items():
+            if k.startswith("_result:"):
+                results[k[8:]] = v  # strip prefix
         result.append({
             "id": r["id"],
             "name": r["name"],
@@ -116,7 +123,9 @@ def list_experiments(conn, limit: int = 50, status: str = "") -> list[dict]:
             "stage": r["stage"],
             "stage_name": r["stage_name"],
             "metrics": metrics,
-            "params": {p["key"]: json.loads(p["value"]) for p in ps},
+            "results": results,
+            "sparklines": sparklines,
+            "params": all_params,
         })
     return result
 
@@ -130,6 +139,18 @@ def get_latest_metrics(conn, exp_id: str) -> dict[str, float]:
         GROUP BY key HAVING MAX(COALESCE(step, 0))
     """, (exp_id,)).fetchall()
     return {r["key"]: r["value"] for r in rows}
+
+
+def get_metrics_sparkline(conn, exp_id: str, max_points: int = 10) -> dict[str, list[float]]:
+    """Get last N values per metric key for sparkline rendering."""
+    rows = conn.execute("""
+        SELECT key, value FROM metrics WHERE exp_id=?
+        ORDER BY key, COALESCE(step, 0)
+    """, (exp_id,)).fetchall()
+    by_key: dict[str, list] = {}
+    for r in rows:
+        by_key.setdefault(r["key"], []).append(r["value"])
+    return {k: v[-max_points:] for k, v in by_key.items()}
 
 
 def get_metrics_series(conn, exp_id: str) -> dict[str, list[dict]]:
@@ -173,6 +194,33 @@ def get_all_latest_metrics(conn, limit: int = 50) -> dict[str, dict[str, float]]
     for r in rows:
         by_exp.setdefault(r["exp_id"], {})[r["key"]] = r["value"]
     return by_exp
+
+
+def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
+    """Get experiment names, latest metrics, and results for multiple experiments."""
+    results = []
+    for eid in exp_ids:
+        exp = find_experiment(conn, eid, "id, name, status")
+        if not exp:
+            continue
+        full_id = exp["id"]
+        metrics = get_latest_metrics(conn, full_id)
+        ps = conn.execute(
+            "SELECT key, value FROM params WHERE exp_id=?",
+            (full_id,)
+        ).fetchall()
+        manual_results = {}
+        for p in ps:
+            if p["key"].startswith("_result:"):
+                manual_results[p["key"][8:]] = json.loads(p["value"])
+        results.append({
+            "id": full_id,
+            "name": exp["name"],
+            "status": exp["status"],
+            "metrics": metrics,
+            "results": manual_results,
+        })
+    return results
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

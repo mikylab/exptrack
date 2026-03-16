@@ -151,19 +151,39 @@ HTML_BODY = r"""</style>
         <button class="back-link" onclick="showWelcome()">&larr; Back to experiments</button>
         <h3 style="margin:8px 0 4px">Compare Experiments</h3>
       </div>
-      <div class="compare-input">
-        <div class="compare-selector">
-          <label class="compare-label">base</label>
-          <select id="cmp-id1"><option value="">-- Select base experiment --</option></select>
-        </div>
-        <span class="vs-label">&larr;&rarr;</span>
-        <div class="compare-selector">
-          <label class="compare-label">compare</label>
-          <select id="cmp-id2"><option value="">-- Select compare experiment --</option></select>
-        </div>
-        <button class="primary" onclick="doCompare()">Compare</button>
+      <div class="tabs" style="margin-bottom:12px">
+        <button class="tab active" id="compare-pair-tab" onclick="switchCompareTab('pair')">Pair Compare</button>
+        <button class="tab" id="compare-multi-tab" onclick="switchCompareTab('multi')">Multi Compare</button>
       </div>
-      <div id="compare-result"></div>
+      <div id="compare-pair-content">
+        <div class="compare-input">
+          <div class="compare-selector">
+            <label class="compare-label">base</label>
+            <select id="cmp-id1"><option value="">-- Select base experiment --</option></select>
+          </div>
+          <span class="vs-label">&larr;&rarr;</span>
+          <div class="compare-selector">
+            <label class="compare-label">compare</label>
+            <select id="cmp-id2"><option value="">-- Select compare experiment --</option></select>
+          </div>
+          <button class="primary" onclick="doCompare()">Compare</button>
+        </div>
+        <div id="compare-result"></div>
+      </div>
+      <div id="compare-multi-content" style="display:none">
+        <div class="compare-input" style="flex-wrap:wrap;gap:8px">
+          <div class="compare-selector" style="flex:1;min-width:300px">
+            <label class="compare-label">experiments</label>
+            <select id="cmp-multi-select" multiple size="6" style="width:100%;font-size:12px"></select>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;justify-content:flex-end">
+            <button class="primary" onclick="doMultiCompareFromSelector()">Compare Selected</button>
+            <button onclick="selectAllMultiCompare()" style="font-size:12px">Select All</button>
+          </div>
+        </div>
+        <p style="color:var(--muted);font-size:12px;margin:4px 0 12px">Hold Ctrl/Cmd to select multiple experiments. Need at least 2.</p>
+        <div id="multi-compare-result"></div>
+      </div>
     </div>
   </div>
 </div>

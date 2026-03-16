@@ -29,7 +29,7 @@ let highlightColors = {}; // study -> color mapping
 
 // Column configuration: id, label, default visibility, sortable, min-width
 const ALL_COLUMNS = [
-  {id: 'pin', label: '', sortable: false, defaultOn: true, width: 28},
+  {id: 'pin', label: '', sortable: false, defaultOn: true, width: 32},
   {id: 'cb', label: '', sortable: false, defaultOn: true, width: 36},
   {id: 'id', label: 'ID', sortable: true, defaultOn: true, width: 60},
   {id: 'name', label: 'Name', sortable: true, defaultOn: true, width: 180},
@@ -38,11 +38,19 @@ const ALL_COLUMNS = [
   {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 120},
   {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 120},
   {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 200},
-  {id: 'metrics', label: 'Key Metrics', sortable: false, defaultOn: true, width: 160},
+  {id: 'metrics', label: 'Metrics', sortable: false, defaultOn: true, width: 160},
   {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 100},
   {id: 'started', label: 'Started', sortable: true, defaultOn: true, width: 140},
 ];
-let visibleCols = JSON.parse(localStorage.getItem('exptrack-cols') || 'null') || ALL_COLUMNS.filter(c => c.defaultOn).map(c => c.id);
+let visibleCols = (function() {
+  const saved = JSON.parse(localStorage.getItem('exptrack-cols') || 'null');
+  const validIds = new Set(ALL_COLUMNS.map(c => c.id));
+  if (!saved) return ALL_COLUMNS.filter(c => c.defaultOn).map(c => c.id);
+  // Remove stale column ids, merge in new defaults
+  const cleaned = saved.filter(id => validIds.has(id));
+  const newDefaults = ALL_COLUMNS.filter(c => c.defaultOn && !cleaned.includes(c.id)).map(c => c.id);
+  return newDefaults.length ? [...cleaned, ...newDefaults] : cleaned;
+})();
 let colWidths = JSON.parse(localStorage.getItem('exptrack-col-widths') || '{}');
 
 function saveColPrefs() {
@@ -627,10 +635,10 @@ function renderSidebarActionsBar() {
   let html = '<div class="sidebar-actions-bar">';
   html += '<button class="export-btn" onclick="deselectAll()" style="font-weight:500">&times; Deselect All</button>';
   html += '<div class="action-count">' + n + ' selected</div>';
-  if (n === 2) {
-    html += '<button class="primary" onclick="compareSelected()">Compare (2)</button>';
+  if (n >= 2) {
+    html += '<button class="primary" onclick="compareSelected()">Compare (' + n + ')</button>';
   } else if (n === 1) {
-    html += '<button class="primary" style="opacity:0.5" disabled title="Select 2 to compare">Compare (need 2)</button>';
+    html += '<button class="primary" style="opacity:0.5" disabled title="Select 2+ to compare">Compare (need 2+)</button>';
   }
   html += '<button class="export-btn" onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
@@ -795,8 +803,8 @@ function renderTableActionsBar() {
   bar.style.display = 'flex';
   let html = '<button class="deselect-btn" onclick="deselectAll()" title="Deselect all">&times; Deselect All</button>';
   html += '<span class="sel-count">' + n + ' selected</span>';
-  if (n === 2) {
-    html += '<button class="primary" onclick="compareSelected()">Compare</button>';
+  if (n >= 2) {
+    html += '<button class="primary" onclick="compareSelected()">Compare (' + n + ')</button>';
   }
   html += '<button onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
@@ -1069,6 +1077,17 @@ function cancelRowClick() {
   if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
 }
 
+function miniSpark(values) {
+  if (!values || values.length < 2) return '';
+  const w = 40, h = 14;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = max - min || 1;
+  const points = values.map((v, i) =>
+    (i * w / (values.length - 1)).toFixed(1) + ',' + (h - (v - min) / range * h).toFixed(1)
+  ).join(' ');
+  return '<svg width="'+w+'" height="'+h+'" style="vertical-align:middle;margin-left:4px"><polyline points="'+points+'" fill="none" stroke="var(--blue)" stroke-width="1.2"/></svg>';
+}
+
 function renderExpRow(e) {
   const isSelected = selectedIds.has(e.id);
   const isPinned = pinnedIds.has(e.id);
@@ -1090,10 +1109,16 @@ function renderExpRow(e) {
     stage: '<td class="wrap-cell stage-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStage(\'' + e.id + '\',this)">' + (e.stage != null ? '<span style="font-weight:600">' + esc(String(e.stage)) + '</span>' + (e.stage_name ? ' <span style="color:var(--muted)">\u00b7</span> <span style="color:var(--muted)">' + esc(e.stage_name) + '</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     notes: '<td class="truncate-cell notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '" onclick="event.stopPropagation();cancelRowClick();startInlineNote(\'' + e.id + '\',this)">' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     metrics: (function() {
-      const html = Object.entries(e.metrics || {}).slice(0, 3)
-        .map(([k,v]) => '<span style="color:var(--blue)">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))))
-        .join(', ');
-      return '<td class="truncate-cell" style="font-size:13px">' + (html || '<span style="color:var(--muted)">--</span>') + '</td>';
+      const parts = [];
+      // Auto metrics (from metrics table)
+      for (const [k, v] of Object.entries(e.metrics || {}).slice(0, 3)) {
+        parts.push('<span style="color:var(--blue)" title="auto">' + esc(k.split('/').pop()) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v))) + miniSpark((e.sparklines||{})[k]));
+      }
+      // Manual results (from _result:* params)
+      for (const [k, v] of Object.entries(e.results || {}).slice(0, 3 - parts.length)) {
+        parts.push('<span style="color:var(--tl-metric)" title="manual">' + esc(k) + '</span>=' + (typeof v === 'number' ? v.toFixed(3) : esc(String(v).slice(0,20))));
+      }
+      return '<td class="truncate-cell" style="font-size:13px">' + (parts.join(', ') || '<span style="color:var(--muted)">--</span>') + '</td>';
     })(),
     changes: (function() {
       const codeParams = Object.keys(e.params || {}).filter(k => k.startsWith('_code_change/') || k === '_code_changes');
@@ -1408,14 +1433,29 @@ function startInlineNote(id, el) {
 JS_DETAIL = r"""
 
 async function compareSelected() {
-  if (selectedIds.size !== 2) return;
+  if (selectedIds.size < 2) return;
   owlSpeak('compare');
   showCompareView();
-  await populateCompareDropdowns();
   const ids = [...selectedIds];
-  document.getElementById('cmp-id1').value = ids[0];
-  document.getElementById('cmp-id2').value = ids[1];
-  doCompare();
+  if (ids.length === 2) {
+    // Pair compare
+    document.getElementById('compare-pair-tab').classList.add('active');
+    document.getElementById('compare-multi-tab').classList.remove('active');
+    document.getElementById('compare-pair-content').style.display = '';
+    document.getElementById('compare-multi-content').style.display = 'none';
+    await populateCompareDropdowns();
+    document.getElementById('cmp-id1').value = ids[0];
+    document.getElementById('cmp-id2').value = ids[1];
+    doCompare();
+  } else {
+    // Multi compare
+    document.getElementById('compare-pair-tab').classList.remove('active');
+    document.getElementById('compare-multi-tab').classList.add('active');
+    document.getElementById('compare-pair-content').style.display = 'none';
+    document.getElementById('compare-multi-content').style.display = '';
+    await populateMultiCompareSelector();
+    doMultiCompare(ids);
+  }
 }
 
 function filterExps(status) {
@@ -1500,16 +1540,21 @@ async function refreshDetail(id) {
     `<tr><td style="color:var(--blue)">${esc(k)}</td><td>${esc(JSON.stringify(v))}</td></tr>`
   ).join('');
 
-  const metricRows = exp.metrics.map(m =>
-    `<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td></tr>`
-  ).join('');
-
+  // Build unified metrics & results rows
+  const unifiedRows = [];
+  for (const m of exp.metrics) {
+    const mActions = m.n > 1
+      ? `<span class="result-del-x" onclick="event.stopPropagation();deleteMetricLast('${exp.id}','${esc(m.key)}')" title="Undo last step">&#8630;</span> <span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`
+      : `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete">&times;</span>`;
+    unifiedRows.push(`<tr><td style="color:var(--green)">${esc(m.key)}</td><td>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td>${m.n}</td><td><span class="source-badge auto">auto</span> ${mActions}</td></tr>`);
+  }
   const resultKeys = Object.keys(manualResults);
-  const resultRows = resultKeys.map(k => {
+  for (const k of resultKeys) {
     const v = manualResults[k];
-    const display = typeof v === 'string' ? v : JSON.stringify(v);
-    return `<tr><td style="color:var(--tl-metric, #d4820f)">${esc(k)}</td><td class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(k)}',this)" title="Double-click to edit"><div style="display:flex;align-items:center;justify-content:space-between">${esc(display)}<span class="result-del-x" onclick="event.stopPropagation();deleteResult('${exp.id}','${esc(k)}')" title="Delete result">&times;</span></div></td></tr>`;
-  }).join('');
+    const display = typeof v === 'number' ? v.toFixed(4) : (typeof v === 'string' ? v : JSON.stringify(v));
+    unifiedRows.push(`<tr><td style="color:var(--tl-metric)">${esc(k)}</td><td class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(k)}',this)" title="Double-click to edit">${esc(display)}</td><td>--</td><td>--</td><td>1</td><td><span class="source-badge manual">manual</span> <span class="result-del-x" onclick="event.stopPropagation();deleteResult('${exp.id}','${esc(k)}')" title="Delete result">&times;</span></td></tr>`);
+  }
+  const metricRows = unifiedRows.join('');
 
   const artRows = exp.artifacts.map(a => {
     const ext = (a.path || '').split('.').pop().toLowerCase();
@@ -1527,13 +1572,14 @@ async function refreshDetail(id) {
     <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
   </div>`;
 
-  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center" id="log-result-form-${exp.id}">
-    <select id="result-key-${exp.id}" style="width:180px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
-      <option value="">Select result type...</option>
+  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center;flex-wrap:wrap;gap:4px" id="log-result-form-${exp.id}">
+    <select id="result-key-${exp.id}" style="width:160px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
+      <option value="">Metric key...</option>
     </select>
-    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px" onkeydown="if(event.key==='Enter')logResult('${exp.id}')">
-    <button onclick="logResult('${exp.id}')">+ Log Result</button>
-    <button onclick="openManageResultTypes()" style="background:transparent;color:var(--muted);border:none;font-size:16px;padding:0 4px;cursor:pointer;line-height:1" title="Manage result types">&#9881;</button>
+    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px" onkeydown="if(event.key==='Enter')logMetric('${exp.id}')">
+    <input type="text" id="result-step-${exp.id}" placeholder="Step (auto)" style="width:80px;font-size:12px" title="Optional step number. Leave blank to auto-increment.">
+    <button onclick="logMetric('${exp.id}')">+ Log</button>
+    <button onclick="openManageResultTypes()" style="background:transparent;color:var(--muted);border:none;font-size:16px;padding:0 4px;cursor:pointer;line-height:1" title="Manage metric types">&#9881;</button>
   </div>`;
 
   // Code changes
@@ -1687,17 +1733,18 @@ async function refreshDetail(id) {
               <span class="label">Stage</span><span id="detail-stage" class="editable-hint" ondblclick="startDetailStageEdit('${exp.id}',this)" title="Double-click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
               <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" ondblclick="startDetailNoteEdit('${exp.id}',this)" title="Double-click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">double-click to add notes</span>'}</span>
             </div>
+            ${exp.command ? '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span><button class="copy-btn" data-cmd="' + esc(exp.command).replace(/"/g,'&quot;') + '" onclick="navigator.clipboard.writeText(this.dataset.cmd).then(()=>owlSay(\'Copied!\'))">Copy</button></div><code class="reproduce-cmd">' + esc(exp.command) + '</code></div>' : ''}
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
             ${varHtml}
           </div>
-          <!-- Right column: results + metrics + charts + artifacts -->
+          <!-- Right column: unified metrics & results + charts + artifacts -->
           <div>
-            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Results (${resultKeys.length})</h2>
+            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Metrics & Results (${exp.metrics.length + resultKeys.length})</h2>
             <div class="section-body">
-            ${resultRows ? '<table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+resultRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No results logged yet.</p>'}
+            ${metricRows ? '<table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th><th>Source</th></tr>'+metricRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No metrics or results yet.</p>'}
             ${logResultForm}
+            <div id="charts-container"></div>
             </div>
-            ${metricRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Metrics (' + exp.metrics.length + ')</h2><div class="section-body"><table class="metrics-table"><tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th></tr>'+metricRows+'</table><div id="charts-container"></div></div>' : '<div id="charts-container"></div>'}
             <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
             <div class="section-body">
             ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
@@ -1858,8 +1905,41 @@ function copyExport() {
 // ── Compare ────────────────────────────────────────────────────────────────────
 
 let onlyDiffers = false;
+let compareCharts = {};
+
+function switchCompareTab(tab) {
+  document.getElementById('compare-pair-tab').classList.toggle('active', tab === 'pair');
+  document.getElementById('compare-multi-tab').classList.toggle('active', tab === 'multi');
+  document.getElementById('compare-pair-content').style.display = tab === 'pair' ? '' : 'none';
+  document.getElementById('compare-multi-content').style.display = tab === 'multi' ? '' : 'none';
+  if (tab === 'pair') populateCompareDropdowns();
+  if (tab === 'multi') populateMultiCompareSelector();
+}
+
+async function populateMultiCompareSelector() {
+  const exps = await api('/api/experiments?limit=100');
+  const sel = document.getElementById('cmp-multi-select');
+  sel.innerHTML = exps.map(e =>
+    '<option value="' + e.id + '"' + (selectedIds.has(e.id) ? ' selected' : '') + '>' +
+    e.id.slice(0,6) + ' | ' + esc(e.name.slice(0,35)) + ' | ' + e.status + ' | ' + fmtDt(e.created_at) + '</option>'
+  ).join('');
+}
+
+function doMultiCompareFromSelector() {
+  const sel = document.getElementById('cmp-multi-select');
+  const ids = [...sel.selectedOptions].map(o => o.value);
+  if (ids.length < 2) { owlSay('Select at least 2 experiments'); return; }
+  doMultiCompare(ids);
+}
+
+function selectAllMultiCompare() {
+  const sel = document.getElementById('cmp-multi-select');
+  for (const opt of sel.options) opt.selected = true;
+}
 
 async function doCompare() {
+  Object.values(compareCharts).forEach(c => c.destroy());
+  compareCharts = {};
   const id1 = document.getElementById('cmp-id1').value.trim();
   const id2 = document.getElementById('cmp-id2').value.trim();
   if (!id1 || !id2) return;
@@ -1869,8 +1949,10 @@ async function doCompare() {
     return;
   }
   const e1 = data.exp1, e2 = data.exp2;
-  const isUserParam = k => !k.startsWith('_code_change') && k !== '_code_changes' && !k.startsWith('_var/') && k !== '_script_hash' && k !== '_cells_ran' && k !== '_tags';
+  const isUserParam = k => !k.startsWith('_code_change') && k !== '_code_changes' && !k.startsWith('_var/') && k !== '_script_hash' && k !== '_cells_ran' && k !== '_tags' && !k.startsWith('_result:');
+  const isResult = k => k.startsWith('_result:');
   const allPKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isUserParam).sort();
+  const allResultKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isResult).sort();
   const [tlVars1, tlVars2] = await Promise.all([
     api('/api/vars-at/' + id1 + '?seq=999999'),
     api('/api/vars-at/' + id2 + '?seq=999999'),
@@ -1917,23 +1999,54 @@ async function doCompare() {
     html += '</table></details>';
   }
 
-  if (allMKeys.length) {
-    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Metrics (last)</summary><table class="metrics-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th><th>Delta</th></tr>';
-    for (const k of allMKeys) {
-      const v1 = m1[k], v2 = m2[k];
-      const sv1 = v1 !== undefined ? v1.toFixed(4) : '--';
-      const sv2 = v2 !== undefined ? v2.toFixed(4) : '--';
+  // Unified metrics & results comparison
+  const allUnifiedKeys = [...allMKeys];
+  for (const k of allResultKeys) {
+    const rk = k.slice(8); // strip _result:
+    if (!allUnifiedKeys.includes(rk)) allUnifiedKeys.push(rk);
+  }
+  const r1 = {}, r2 = {};
+  for (const k of allResultKeys) {
+    const rk = k.slice(8);
+    if (e1.params[k] !== undefined) r1[rk] = typeof e1.params[k] === 'number' ? e1.params[k] : parseFloat(e1.params[k]);
+    if (e2.params[k] !== undefined) r2[rk] = typeof e2.params[k] === 'number' ? e2.params[k] : parseFloat(e2.params[k]);
+  }
+
+  if (allUnifiedKeys.length) {
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Metrics & Results</summary><table class="metrics-table"><tr><th>Key</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th><th>Delta</th><th>Source</th></tr>';
+    for (const k of allUnifiedKeys) {
+      const hasMetric = m1[k] !== undefined || m2[k] !== undefined;
+      const hasResult = r1[k] !== undefined || r2[k] !== undefined;
+      const v1 = m1[k] ?? r1[k], v2 = m2[k] ?? r2[k];
+      const sv1 = v1 !== undefined ? (typeof v1 === 'number' ? v1.toFixed(4) : String(v1)) : '--';
+      const sv2 = v2 !== undefined ? (typeof v2 === 'number' ? v2.toFixed(4) : String(v2)) : '--';
       let delta = '';
-      if (v1 !== undefined && v2 !== undefined) {
+      if (v1 !== undefined && v2 !== undefined && typeof v1 === 'number' && typeof v2 === 'number') {
         const d = v2 - v1;
         if (onlyDiffers && Math.abs(d) < 0.0001) continue;
         const arrow = d > 0 ? '&#x25B2;' : d < 0 ? '&#x25BC;' : '';
         delta = '<span style="color:' + (d>0?'var(--green,#3fb950)':'var(--red,#f85149)') + '">' + arrow + ' ' + (d>0?'+':'') + d.toFixed(4) + '</span>';
       }
-      html += '<tr><td>' + esc(k) + '</td><td>' + sv1 + '</td><td>' + sv2 + '</td><td>' + delta + '</td></tr>';
+      const source = hasMetric && hasResult ? '<span class="source-badge auto">auto</span> <span class="source-badge manual">manual</span>' : hasMetric ? '<span class="source-badge auto">auto</span>' : '<span class="source-badge manual">manual</span>';
+      html += '<tr><td>' + esc(k) + '</td><td>' + sv1 + '</td><td>' + sv2 + '</td><td>' + delta + '</td><td>' + source + '</td></tr>';
     }
     html += '</table></details>';
   }
+
+  // Overlay metric charts
+  const [metricsSeries1, metricsSeries2] = await Promise.all([
+    api('/api/metrics/' + id1),
+    api('/api/metrics/' + id2),
+  ]);
+  const sharedMKeys = allMKeys.filter(k => metricsSeries1[k] && metricsSeries2[k] && (metricsSeries1[k].length > 1 || metricsSeries2[k].length > 1));
+  if (sharedMKeys.length) {
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Metric Charts</summary><div class="compare-charts-grid">';
+    for (const k of sharedMKeys) {
+      html += '<div class="chart-container"><canvas id="cmp-chart-' + k.replace(/[^a-zA-Z0-9]/g,'_') + '"></canvas></div>';
+    }
+    html += '</div></details>';
+  }
+
   // ── Image comparison section ──
   crossCmpA = null; crossCmpB = null;
   const [imgData1, imgData2] = await Promise.all([
@@ -1995,6 +2108,135 @@ async function doCompare() {
   }
 
   document.getElementById('compare-result').innerHTML = html;
+
+  // Create overlay charts for shared metrics
+  for (const k of sharedMKeys) {
+    const canvasId = 'cmp-chart-' + k.replace(/[^a-zA-Z0-9]/g,'_');
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) continue;
+    const pts1 = metricsSeries1[k] || [];
+    const pts2 = metricsSeries2[k] || [];
+    const maxLen = Math.max(pts1.length, pts2.length);
+    const labels = Array.from({length: maxLen}, (_, i) => {
+      const p = pts1[i] || pts2[i];
+      return p && p.step !== null ? p.step : i;
+    });
+    compareCharts[k] = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: n1,
+          data: pts1.map(p => p.value),
+          borderColor: '#2c5aa0',
+          backgroundColor: 'rgba(44,90,160,0.1)',
+          fill: false, tension: 0.3, pointRadius: 2,
+        }, {
+          label: n2,
+          data: pts2.map(p => p.value),
+          borderColor: '#2d7d46',
+          backgroundColor: 'rgba(45,125,70,0.1)',
+          fill: false, tension: 0.3, pointRadius: 2,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } } },
+        scales: {
+          x: { title: { display: true, text: 'Step', font: { family: "'IBM Plex Mono'" } } },
+          y: { title: { display: true, text: k, font: { family: "'IBM Plex Mono'" } } }
+        }
+      }
+    });
+  }
+}
+
+// ── Multi Compare ───────────────────────────────────────────────────────────
+
+const MULTI_COLORS = ['#2c5aa0','#2d7d46','#c0392b','#7c3aed','#d4820f','#1abc9c','#e74c3c','#3498db','#9b59b6','#f39c12'];
+let multiCharts = {};
+
+async function doMultiCompare(ids) {
+  Object.values(multiCharts).forEach(c => c.destroy());
+  multiCharts = {};
+  if (!ids || ids.length < 2) {
+    ids = [...selectedIds];
+  }
+  if (ids.length < 2) return;
+
+  const data = await api('/api/multi-compare?ids=' + ids.join(','));
+  if (data.error || !data.experiments || !data.experiments.length) {
+    document.getElementById('multi-compare-result').innerHTML = '<p>Could not load experiments.</p>';
+    return;
+  }
+  const exps = data.experiments;
+  // Collect all unique metric+result keys
+  const allKeys = new Set();
+  for (const e of exps) {
+    for (const k of Object.keys(e.metrics || {})) allKeys.add(k);
+    for (const k of Object.keys(e.results || {})) allKeys.add(k);
+  }
+  const keys = [...allKeys].sort();
+
+  // Summary table
+  let html = '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Comparison Table</summary>';
+  html += '<div style="overflow-x:auto"><table class="metrics-table"><tr><th>Key</th>';
+  for (const e of exps) {
+    const name = e.name.length > 20 ? e.name.slice(0,17) + '...' : e.name;
+    html += '<th>' + esc(name) + '</th>';
+  }
+  html += '</tr>';
+  for (const k of keys) {
+    html += '<tr><td>' + esc(k) + '</td>';
+    for (const e of exps) {
+      const v = e.metrics[k] ?? e.results[k];
+      html += '<td>' + (v !== undefined ? (typeof v === 'number' ? v.toFixed(4) : esc(String(v))) : '--') + '</td>';
+    }
+    html += '</tr>';
+  }
+  html += '</table></div></details>';
+
+  // Bar charts
+  if (keys.length) {
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Bar Charts</summary><div class="compare-charts-grid">';
+    for (const k of keys) {
+      html += '<div class="chart-container"><canvas id="multi-chart-' + k.replace(/[^a-zA-Z0-9]/g,'_') + '"></canvas></div>';
+    }
+    html += '</div></details>';
+  }
+
+  document.getElementById('multi-compare-result').innerHTML = html;
+
+  // Create bar charts
+  for (const k of keys) {
+    const canvasId = 'multi-chart-' + k.replace(/[^a-zA-Z0-9]/g,'_');
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) continue;
+    const labels = exps.map(e => e.name.length > 15 ? e.name.slice(0,12) + '...' : e.name);
+    const values = exps.map(e => e.metrics[k] ?? e.results[k] ?? null);
+    const colors = exps.map((_, i) => MULTI_COLORS[i % MULTI_COLORS.length]);
+    multiCharts[k] = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: k,
+          data: values,
+          backgroundColor: colors.map(c => c + '33'),
+          borderColor: colors,
+          borderWidth: 1.5,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { font: { family: "'IBM Plex Mono'", size: 11 } } },
+          y: { title: { display: true, text: k, font: { family: "'IBM Plex Mono'" } } }
+        }
+      }
+    });
+  }
 }
 """
 
@@ -2727,17 +2969,21 @@ async function populateResultTypeDropdown(expId) {
   }
 }
 
-async function logResult(id) {
+async function logMetric(id) {
   const keyEl = document.getElementById('result-key-' + id);
   const valEl = document.getElementById('result-val-' + id);
+  const stepEl = document.getElementById('result-step-' + id);
   if (!keyEl || !valEl) return;
   const key = keyEl.value.trim();
   const value = valEl.value.trim();
-  if (!key) { alert('Select a result type'); return; }
+  if (!key) { alert('Select a metric key'); return; }
   if (!value || isNaN(parseFloat(value))) { alert('Value must be a number'); return; }
-  const d = await postApi('/api/experiment/' + id + '/log-result', {key, value});
-  if (d.ok) { keyEl.value = ''; valEl.value = ''; refreshDetail(id); }
-  else alert(d.error || 'Failed to log result');
+  const step = stepEl ? stepEl.value.trim() : '';
+  const payload = {key, value};
+  if (step !== '') payload.step = step;
+  const d = await postApi('/api/experiment/' + id + '/log-metric', payload);
+  if (d.ok) { valEl.value = ''; if (stepEl) stepEl.value = ''; refreshDetail(id); owlSay('Logged ' + key + ' = ' + d.value + ' (step ' + d.step + ')'); }
+  else alert(d.error || 'Failed to log metric');
 }
 
 async function deleteResult(id, key) {
@@ -2745,6 +2991,19 @@ async function deleteResult(id, key) {
   const d = await postApi('/api/experiment/' + id + '/delete-result', {key});
   if (d.ok) refreshDetail(id);
   else alert(d.error || 'Failed to delete result');
+}
+
+async function deleteMetricLast(id, key) {
+  const d = await postApi('/api/experiment/' + id + '/delete-metric', {key, mode: 'last'});
+  if (d.ok) { refreshDetail(id); loadExperiments(); }
+  else alert(d.error || 'Failed to delete metric point');
+}
+
+async function deleteMetric(id, key) {
+  if (!confirm('Delete all data points for metric "' + key + '"?')) return;
+  const d = await postApi('/api/experiment/' + id + '/delete-metric', {key, mode: 'all'});
+  if (d.ok) { refreshDetail(id); loadExperiments(); }
+  else alert(d.error || 'Failed to delete metric');
 }
 
 function startResultEdit(id, key, td) {
