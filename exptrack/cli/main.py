@@ -28,7 +28,8 @@ from .mutate_cmds import (cmd_tag, cmd_untag, cmd_delete_tag, cmd_note,
                           cmd_study, cmd_unstudy, cmd_studies, cmd_delete_study,
                           cmd_stage)
 from .pipeline_cmds import (cmd_run_start, cmd_run_finish, cmd_run_fail,
-                            cmd_log_metric, cmd_log_artifact)
+                            cmd_log_metric, cmd_log_artifact,
+                            cmd_log_output, cmd_link_dir, cmd_log_result)
 
 
 def main():
@@ -98,6 +99,30 @@ def main():
     p_la.add_argument("--label", default="")
     p_la.add_argument("--stdin", action="store_true",
                        help="Read content from stdin and save as artifact")
+
+    p_lo = sub.add_parser("log-output",
+        help="Capture piped stdout as a log file: cmd | exptrack log-output $EXP_ID")
+    p_lo.add_argument("id", help="EXP_ID")
+    p_lo.add_argument("--label", default="output",
+                       help="Label for the log file (default: output)")
+    p_lo.add_argument("--quiet", "-q", action="store_true",
+                       help="Don't echo captured output to stderr")
+
+    p_ld = sub.add_parser("link-dir",
+        help="Link a log/tensorboard/checkpoint directory to an experiment")
+    p_ld.add_argument("id", help="EXP_ID")
+    p_ld.add_argument("path", help="Directory path to link")
+    p_ld.add_argument("--label", default="",
+                       help="Label for the linked directory")
+
+    p_lr = sub.add_parser("log-result",
+        help="Manually log a result (key=value pair) to an experiment")
+    p_lr.add_argument("id", help="EXP_ID")
+    p_lr.add_argument("key", nargs="?", help="Result name (e.g. accuracy)")
+    p_lr.add_argument("value", nargs="?", help="Result value")
+    p_lr.add_argument("--file", help="JSON file with results")
+    p_lr.add_argument("--source", default="manual",
+                       help="Source label (default: manual)")
 
     p_stale = sub.add_parser("stale", help="Mark killed/timed-out runs as failed")
     p_stale.add_argument("--hours", type=float, default=24,
@@ -224,6 +249,9 @@ def main():
         "run-fail":     cmd_run_fail,
         "log-metric":   cmd_log_metric,
         "log-artifact": cmd_log_artifact,
+        "log-output":   cmd_log_output,
+        "link-dir":     cmd_link_dir,
+        "log-result":   cmd_log_result,
         "stale":        cmd_stale,
         "upgrade":      cmd_upgrade,
         "storage":      cmd_storage,

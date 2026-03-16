@@ -104,6 +104,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "delete-study":    lambda: write_routes.api_delete_exp_study(conn, exp_id, body),
                 "stage":           lambda: write_routes.api_set_stage(conn, exp_id, body),
                 "image-path":      lambda: write_routes.api_image_path(conn, exp_id, body),
+                "log-result":      lambda: write_routes.api_log_result(conn, exp_id, body),
             }
             handler = dispatch.get(action)
             if handler:
@@ -161,16 +162,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not os.path.isfile(abs_path):
             self.send_error(404, "File not found")
             return
-        # Only serve image types
+        # Serve image and text file types
         ext = os.path.splitext(abs_path)[1].lower()
         mime_types = {
             '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
             '.gif': 'image/gif', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
             '.tiff': 'image/tiff', '.webp': 'image/webp',
+            '.log': 'text/plain', '.txt': 'text/plain', '.out': 'text/plain',
+            '.err': 'text/plain', '.csv': 'text/csv', '.json': 'application/json',
+            '.jsonl': 'application/json',
         }
         content_type = mime_types.get(ext)
         if not content_type:
-            self.send_error(403, "Only image files can be served")
+            self.send_error(403, "File type not allowed")
             return
         with open(abs_path, 'rb') as f:
             data = f.read()

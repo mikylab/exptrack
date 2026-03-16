@@ -380,6 +380,31 @@ def api_set_stage(conn, exp_id: str, body: dict) -> dict:
     return {"ok": True, "stage": stage, "stage_name": stage_name}
 
 
+def api_log_result(conn, exp_id: str, body: dict) -> dict:
+    """Log a manual result (metric) to an experiment."""
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    key = body.get("key", "").strip()
+    value = body.get("value", "").strip()
+    if not key or not value:
+        return {"error": "provide key and value"}
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        num_val = float(value)
+        conn.execute(
+            "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
+            (exp["id"], f"result/{key}", num_val, None, ts)
+        )
+    except ValueError:
+        conn.execute(
+            "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+            (exp["id"], f"result/{key}", json.dumps(value))
+        )
+    conn.commit()
+    return {"ok": True, "key": f"result/{key}", "value": value}
+
+
 def api_image_path(conn, exp_id: str, body: dict) -> dict:
     """Manage image paths for an experiment (add/edit/delete).
 

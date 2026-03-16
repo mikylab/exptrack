@@ -10,13 +10,47 @@ script itself. Works by:
   3. Falling back to raw sys.argv parsing if argparse isn't used
   4. Catching exceptions to mark the run as failed
   5. Calling finish() when the script exits cleanly
+  6. Capturing stdout/stderr to log files in the output directory
 
 The script sees sys.argv exactly as if it were called directly.
 """
+import io
 import os
 import sys
 import runpy
 from pathlib import Path
+
+
+class _TeeWriter:
+    """Write to both the original stream and a log file."""
+    def __init__(self, original, log_file):
+        self._original = original
+        self._log = log_file
+
+    def write(self, data):
+        self._original.write(data)
+        try:
+            self._log.write(data)
+            self._log.flush()
+        except Exception:
+            pass
+        return len(data) if isinstance(data, str) else None
+
+    def flush(self):
+        self._original.flush()
+        try:
+            self._log.flush()
+        except Exception:
+            pass
+
+    def fileno(self):
+        return self._original.fileno()
+
+    def isatty(self):
+        return self._original.isatty()
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
@@ -69,6 +103,26 @@ def main():
     # Record start time for auto-detecting new output files
     start_ts = exp._start
 
+    # Set up stdout/stderr capture to log files
+    capture_output = conf.get("auto_capture", {}).get("stdout", True)
+    log_files = []
+    if capture_output:
+        try:
+            out_dir = getattr(exp, '_output_dir', None)
+            if not out_dir:
+                out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name
+                out_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                out_dir = Path(out_dir)
+                out_dir.mkdir(parents=True, exist_ok=True)
+            stdout_log = open(out_dir / "stdout.log", "w")
+            stderr_log = open(out_dir / "stderr.log", "w")
+            log_files = [stdout_log, stderr_log]
+            sys.stdout = _TeeWriter(sys.stdout, stdout_log)
+            sys.stderr = _TeeWriter(sys.stderr, stderr_log)
+        except Exception as e:
+            print(f"[exptrack] warning: could not set up output capture: {e}", file=sys.stderr)
+
     # Run the script in its own namespace
     try:
         runpy.run_path(
@@ -76,9 +130,11 @@ def main():
             run_name="__main__",
             init_globals={"__exptrack__": exp},  # script can access via globals()
         )
+        _restore_streams(log_files)
         _auto_detect_outputs(exp, start_ts)
         exp.finish()
     except SystemExit as e:
+        _restore_streams(log_files)
         # Normal exit — treat code 0 as success
         if e.code == 0 or e.code is None:
             _auto_detect_outputs(exp, start_ts)
@@ -87,10 +143,24 @@ def main():
             exp.fail(f"SystemExit({e.code})")
         sys.exit(e.code or 0)
     except Exception as e:
+        _restore_streams(log_files)
         import traceback
         traceback.print_exc()
         exp.fail(str(e))
         sys.exit(1)
+
+
+def _restore_streams(log_files):
+    """Restore original stdout/stderr and close log files."""
+    if isinstance(sys.stdout, _TeeWriter):
+        sys.stdout = sys.stdout._original
+    if isinstance(sys.stderr, _TeeWriter):
+        sys.stderr = sys.stderr._original
+    for f in log_files:
+        try:
+            f.close()
+        except Exception:
+            pass
 
 
 _AUTO_DETECT_EXTS = {
