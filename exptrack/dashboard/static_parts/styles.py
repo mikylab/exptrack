@@ -409,6 +409,9 @@ CSS_COMPONENTS = """
   .tag-removable .tag-delete { cursor: pointer; color: var(--muted); font-size: 16px; margin-left: 4px; line-height: 1; opacity: 0.6; }
   .tag-removable:hover .tag-delete { opacity: 1; color: var(--red, #e55); }
   .tag-removable .tag-delete:hover { opacity: 1; color: var(--red, #e55); }
+  .result-del-x { cursor: pointer; color: var(--muted); font-size: 16px; line-height: 1; opacity: 0; padding: 0 4px; }
+  tr:hover .result-del-x { opacity: 0.6; }
+  .result-del-x:hover { opacity: 1 !important; color: var(--red, #e55); }
   .tag-removable .tag-edit { cursor: pointer; color: var(--muted); font-size: 12px; }
   .tag-removable .tag-edit:hover { color: var(--blue); }
   .manage-tags-link {

@@ -1508,7 +1508,7 @@ async function refreshDetail(id) {
   const resultRows = resultKeys.map(k => {
     const v = manualResults[k];
     const display = typeof v === 'string' ? v : JSON.stringify(v);
-    return `<tr><td style="color:var(--tl-metric, #d4820f)">${esc(k)}</td><td class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(k)}',this)" title="Double-click to edit"><div class="artifact-row">${esc(display)}<div class="artifact-actions"><button class="art-del" onclick="deleteResult('${exp.id}','${esc(k)}')">del</button></div></div></td></tr>`;
+    return `<tr><td style="color:var(--tl-metric, #d4820f)">${esc(k)}</td><td class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(k)}',this)" title="Double-click to edit"><div style="display:flex;align-items:center;justify-content:space-between">${esc(display)}<span class="result-del-x" onclick="event.stopPropagation();deleteResult('${exp.id}','${esc(k)}')" title="Delete result">&times;</span></div></td></tr>`;
   }).join('');
 
   const artRows = exp.artifacts.map(a => {
@@ -1527,13 +1527,13 @@ async function refreshDetail(id) {
     <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
   </div>`;
 
-  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px" id="log-result-form-${exp.id}">
+  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center" id="log-result-form-${exp.id}">
     <select id="result-key-${exp.id}" style="width:180px;font-family:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg)">
       <option value="">Select result type...</option>
     </select>
-    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px">
+    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:100px" onkeydown="if(event.key==='Enter')logResult('${exp.id}')">
     <button onclick="logResult('${exp.id}')">+ Log Result</button>
-    <button onclick="openManageResultTypes()" style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);font-size:11px;padding:3px 8px" title="Manage result types">Manage</button>
+    <button onclick="openManageResultTypes()" style="background:transparent;color:var(--muted);border:none;font-size:16px;padding:0 4px;cursor:pointer;line-height:1" title="Manage result types">&#9881;</button>
   </div>`;
 
   // Code changes
