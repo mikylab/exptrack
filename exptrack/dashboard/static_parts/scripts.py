@@ -1763,16 +1763,21 @@ async function refreshDetail(id) {
         <h2 id="detail-name" class="editable-hint" ondblclick="startInlineRename('${exp.id}',this)" title="Double-click to rename">${esc(exp.name)}</h2>
         <div class="detail-actions">
           ${exp.status === 'running' ? `<button class="action-btn primary" onclick="finishExp('${exp.id}')">Finish Run</button>` : ''}
+          <span style="position:relative;display:inline-block">
+            <button class="action-btn primary" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'flex':'none'">Export ▼</button>
+            <div class="export-dropdown-menu" style="display:none;position:absolute;right:0;top:100%;z-index:100;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;flex-direction:column;gap:2px;min-width:120px;box-shadow:0 4px 12px rgba(0,0,0,0.15)">
+              <button class="action-btn" onclick="this.parentElement.style.display='none';doExport('${exp.id}','json')">JSON</button>
+              <button class="action-btn" onclick="this.parentElement.style.display='none';doExport('${exp.id}','markdown')">Markdown</button>
+              <button class="action-btn" onclick="this.parentElement.style.display='none';doExport('${exp.id}','csv')">CSV</button>
+              <button class="action-btn" onclick="this.parentElement.style.display='none';doExport('${exp.id}','tsv')">TSV</button>
+              <button class="action-btn" onclick="this.parentElement.style.display='none';doExport('${exp.id}','plain')">Plain Text</button>
+            </div>
+          </span>
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name)}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
         </div>
       </div>
-
-      <div class="detail-export-bar">
-        <button class="action-btn primary" onclick="exportExp('${exp.id}')">Export</button>
-        ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button><button class="action-btn" onclick="compactDiff('${exp.id}')">Compact Diff</button>` : ''}
-        <div id="export-container"></div>
-      </div>
+      <div id="export-container"></div>
 
       <div class="tabs" id="detail-tabs">
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
@@ -1819,7 +1824,7 @@ async function refreshDetail(id) {
         <!-- Full-width sections below the grid -->
         <div style="margin-top:20px">
           ${codeHtml}
-          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Git Diff (compacted)' : 'Git Diff ('+exp.diff_lines+' lines)')+'</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
+          ${diffHtml ? '<div style="display:flex;align-items:center;gap:8px"><h2 class="section-toggle" style="flex:1" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Git Diff (compacted)' : 'Git Diff ('+exp.diff_lines+' lines)')+'</h2>'+(diffCompacted ? '' : '<button class="action-btn" style="font-size:12px;padding:3px 10px" onclick="exportDiff(\''+exp.id+'\')">Export Diff</button><button class="action-btn" style="font-size:12px;padding:3px 10px" onclick="compactDiff(\''+exp.id+'\')">Compact</button>')+'</div><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
         </div>
       </div>
 
@@ -1933,10 +1938,17 @@ async function exportExp(id) {
 }
 
 async function doExport(id, fmt) {
-  // Highlight active format button
-  document.querySelectorAll('.export-actions .action-btn').forEach(b => b.classList.remove('active-fmt'));
-  const btn = document.getElementById('export-btn-' + fmt);
-  if (btn) btn.classList.add('active-fmt');
+  owlSpeak('export');
+  // Ensure export panel exists
+  const container = document.getElementById('export-container');
+  if (container && !container.querySelector('.export-panel')) {
+    container.innerHTML = '<div class="export-panel">' +
+      '<div class="export-actions">' +
+      '<button class="action-btn" onclick="downloadExport()">Download File</button>' +
+      '<button class="action-btn" onclick="copyExport()">Copy to Clipboard</button>' +
+      '<button class="action-btn" onclick="this.closest(\'.export-panel\').remove()">Close</button>' +
+      '</div><pre id="export-content" style="display:none"></pre></div>';
+  }
 
   let text;
   const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt'};
@@ -1954,8 +1966,7 @@ async function doExport(id, fmt) {
     }
   }
   const pre = document.getElementById('export-content');
-  pre.style.display = '';
-  pre.textContent = text;
+  if (pre) { pre.style.display = ''; pre.textContent = text; }
 
   // Find experiment name for filename
   const exp = allExperiments.find(e => e.id.startsWith(id));
