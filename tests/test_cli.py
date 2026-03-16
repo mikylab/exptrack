@@ -16,13 +16,16 @@ def _reset_config():
 
 
 def _capture_stdout(func, *args):
-    """Capture stdout from a function call, return the output string."""
-    old = sys.stdout
+    """Capture stdout from a function call, return the output string.
+    Also suppresses stderr to avoid noise in test output."""
+    old_out, old_err = sys.stdout, sys.stderr
     sys.stdout = buf = io.StringIO()
+    sys.stderr = io.StringIO()
     try:
         func(*args)
     finally:
-        sys.stdout = old
+        sys.stdout = old_out
+        sys.stderr = old_err
     return buf.getvalue()
 
 
@@ -43,7 +46,7 @@ def test_cmd_ls_runs():
         from exptrack.cli.inspect_cmds import cmd_ls
 
         # With no experiments
-        args = SimpleNamespace(n=20)
+        args = SimpleNamespace(n=20, tag=None, status=None, study=None, json_output=False)
         output = _capture_stdout(cmd_ls, args)
         assert "No experiments" in output or output.strip() == "", \
             "Expected empty list message"
@@ -70,7 +73,7 @@ def test_cmd_show_displays():
         exp.log_metric("loss", 0.5, step=1)
         exp.finish()
 
-        args = SimpleNamespace(id=exp.id[:6], timeline=False)
+        args = SimpleNamespace(id=exp.id[:6], timeline=False, json_output=False)
         output = _capture_stdout(cmd_show, args)
         assert exp.name in output, "Experiment name should appear in show output"
 
@@ -90,7 +93,7 @@ def test_cmd_tag_adds():
         exp = _make_experiment()
         exp.finish()
 
-        args = SimpleNamespace(id=exp.id[:6], tag="best")
+        args = SimpleNamespace(id=[exp.id[:6], "best"])
         _capture_stdout(cmd_tag, args)
 
         with get_db() as conn:
@@ -115,7 +118,7 @@ def test_cmd_untag_removes():
         exp = _make_experiment(tags=["keep", "remove"])
         exp.finish()
 
-        args = SimpleNamespace(id=exp.id[:6], tag="remove")
+        args = SimpleNamespace(id=[exp.id[:6], "remove"])
         _capture_stdout(cmd_untag, args)
 
         with get_db() as conn:
@@ -216,9 +219,18 @@ def test_cmd_show_not_found():
         from exptrack.core import get_db
         get_db()
 
-        args = SimpleNamespace(id="nonexistent", timeline=False)
-        output = _capture_stdout(cmd_show, args)
-        assert "Not found" in output, "Should report not found"
+        args = SimpleNamespace(id="nonexistent", timeline=False, json_output=False)
+        # "Not found" now goes to stderr — use direct capture
+        old_out, old_err = sys.stdout, sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = err_buf = io.StringIO()
+        try:
+            cmd_show(args)
+        finally:
+            sys.stdout = old_out
+            sys.stderr = old_err
+        err_output = err_buf.getvalue()
+        assert "Not found" in err_output, "Should report not found on stderr"
 
         print("  [PASS] test_cmd_show_not_found")
 

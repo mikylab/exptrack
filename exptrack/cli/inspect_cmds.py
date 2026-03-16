@@ -16,10 +16,32 @@ from .formatting import G, R, Y, C, M, W, DIM, col, dim, bold, fmt_dt, fmt_dur, 
 def cmd_ls(args):
     from ..core.queries import list_experiments
     conn = get_db()
-    experiments = list_experiments(conn, limit=args.n)
+    tag_filter = getattr(args, "tag", None) or ""
+    status_filter = getattr(args, "status", None) or ""
+    study_filter = getattr(args, "study", None) or ""
+    experiments = list_experiments(conn, limit=args.n, status=status_filter,
+                                  tag=tag_filter, study=study_filter)
 
     if not experiments:
-        print(dim("No experiments yet. Run one with:  exptrack run script.py")); return
+        print(dim("No experiments found."), file=sys.stderr); return
+
+    # JSON output mode
+    if getattr(args, "json_output", False):
+        out = []
+        for exp in experiments:
+            # Flatten metrics dict values for JSON
+            metrics = {}
+            for k, v in exp.get("metrics", {}).items():
+                metrics[k] = v["value"] if isinstance(v, dict) else v
+            out.append({
+                "id": exp["id"], "name": exp["name"], "status": exp["status"],
+                "created_at": exp["created_at"], "duration_s": exp["duration_s"],
+                "git_branch": exp["git_branch"], "tags": exp.get("tags", []),
+                "studies": exp.get("studies", []), "metrics": metrics,
+                "params": exp.get("params", {}),
+            })
+        print(json.dumps(out, indent=2, default=str))
+        return
 
     # Build dynamic metric columns from returned data
     metric_keys: list[str] = []
@@ -40,7 +62,13 @@ def cmd_ls(args):
         si = STATUS_I.get(exp["status"], "?")
         tags = exp.get("tags", [])
         m = exp.get("metrics", {})
-        mvals = [f"{m[k]:.4g}" if k in m else dim("--") for k in shown_m]
+        mvals = []
+        for k in shown_m:
+            if k in m:
+                v = m[k]["value"] if isinstance(m[k], dict) else m[k]
+                mvals.append(f"{v:.4g}")
+            else:
+                mvals.append(dim("--"))
 
         vals = [
             col(exp["id"][:6], C),
@@ -63,7 +91,14 @@ def cmd_show(args):
     conn = get_db()
     exp = get_experiment_detail(conn, args.id)
     if not exp:
-        print(col(f"Not found: {args.id}", R)); return
+        print(col(f"Not found: {args.id}", R), file=sys.stderr); return
+
+    if getattr(args, "json_output", False):
+        # Strip large git_diff from JSON output, keep diff_lines count
+        out = dict(exp)
+        out.pop("git_diff", None)
+        print(json.dumps(out, indent=2, default=str))
+        return
 
     print()
     print(bold(col(f"  {STATUS_I.get(exp['status'],'')} {exp['name']}", W)))
@@ -265,7 +300,7 @@ def cmd_diff(args):
     exp = conn.execute("SELECT name, git_diff, git_commit, git_branch FROM experiments"
                        " WHERE id LIKE ?", (args.id + "%",)).fetchone()
     if not exp:
-        print(col(f"Not found: {args.id}", R)); return
+        print(col(f"Not found: {args.id}", R), file=sys.stderr); return
     diff = exp["git_diff"]
     if not diff:
         print(dim("No uncommitted diff was captured for this run.")); return
@@ -292,8 +327,8 @@ def cmd_compare(args):
 
     e1 = get_experiment_detail(conn, args.id1)
     e2 = get_experiment_detail(conn, args.id2)
-    if not e1: print(col(f"Not found: {args.id1}", R)); return
-    if not e2: print(col(f"Not found: {args.id2}", R)); return
+    if not e1: print(col(f"Not found: {args.id1}", R), file=sys.stderr); return
+    if not e2: print(col(f"Not found: {args.id2}", R), file=sys.stderr); return
 
     p1, p2 = e1["params"], e2["params"]
     m1 = get_latest_metrics(conn, e1["id"])
@@ -489,6 +524,66 @@ def _snap_exp_id(f: Path) -> str:
     except Exception as e:
         print(f"[exptrack] warning: could not read snapshot {f}: {e}", file=sys.stderr)
         return ""
+
+
+def cmd_watch(args):
+    """Watch a running experiment for live metric updates."""
+    import time
+    from ..core.queries import find_experiment, get_latest_metrics
+    conn = get_db()
+    exp = find_experiment(conn, args.id, "id, name, status")
+    if not exp:
+        print(col(f"Not found: {args.id}", R), file=sys.stderr); return
+
+    interval = getattr(args, "interval", 5)
+    exp_id = exp["id"]
+    prev_metrics: dict = {}
+    print(bold(f"  Watching: {exp['name']}") + dim(f"  (every {interval}s, Ctrl+C to stop)"),
+          file=sys.stderr)
+    print(file=sys.stderr)
+
+    try:
+        while True:
+            # Reconnect each loop to see latest data
+            conn = get_db()
+            row = conn.execute(
+                "SELECT status, duration_s FROM experiments WHERE id=?", (exp_id,)
+            ).fetchone()
+            if not row:
+                print(col("Experiment was deleted.", R), file=sys.stderr); break
+
+            status = row["status"]
+            metrics = get_latest_metrics(conn, exp_id)
+
+            # Show updates
+            new_keys = set(metrics) - set(prev_metrics)
+            changed_keys = {k for k in metrics if k in prev_metrics and metrics[k] != prev_metrics[k]}
+
+            if new_keys or changed_keys:
+                ts = __import__("datetime").datetime.now().strftime("%H:%M:%S")
+                for k in sorted(new_keys | changed_keys):
+                    v = metrics[k]
+                    if k in changed_keys:
+                        delta = v - prev_metrics[k]
+                        sign = "+" if delta >= 0 else ""
+                        delta_str = "  " + col(f"({sign}{delta:.4g})", G if delta < 0 else Y)
+                    else:
+                        delta_str = dim("  (new)")
+                    print(f"  {dim(ts)}  {col(k, M):<30} {v:.6g}{delta_str}")
+
+            prev_metrics = dict(metrics)
+
+            if status in ("done", "failed"):
+                sc = STATUS_C.get(status, W)
+                dur = row["duration_s"]
+                dur_str = fmt_dur(dur) if dur else "--"
+                print(file=sys.stderr)
+                print(col(f"  Experiment {status} ({dur_str})", sc), file=sys.stderr)
+                break
+
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print(dim("\n  Stopped watching."), file=sys.stderr)
 
 
 def cmd_export(args):

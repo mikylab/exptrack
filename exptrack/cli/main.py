@@ -20,9 +20,10 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_storage
+from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_storage, cmd_backup
 from .inspect_cmds import (cmd_ls, cmd_show, cmd_timeline, cmd_diff,
-                           cmd_compare, cmd_history, cmd_export, cmd_verify)
+                           cmd_compare, cmd_history, cmd_export, cmd_verify,
+                           cmd_watch)
 from .mutate_cmds import (cmd_tag, cmd_untag, cmd_delete_tag, cmd_note,
                           cmd_edit_note, cmd_rm, cmd_clean, cmd_finish,
                           cmd_study, cmd_unstudy, cmd_studies, cmd_delete_study,
@@ -50,6 +51,8 @@ def main():
         prog="exptrack",
         description="Experiment tracker -- scripts, notebooks, and SLURM pipelines",
     )
+    p.add_argument("--no-color", action="store_true",
+                    help="Disable colored output (also auto-detected for non-TTY)")
     sub = p.add_subparsers(dest="cmd")
 
     # ── Project setup ─────────────────────────────────────────────────────────
@@ -134,15 +137,24 @@ def main():
                       help="Also pip install -e . after migration")
 
     # ── Inspection ────────────────────────────────────────────────────────────
-    p_ls = sub.add_parser("ls")
-    p_ls.add_argument("-n", type=int, default=20)
+    p_ls = sub.add_parser("ls", help="List experiments (default: most recent 20)")
+    p_ls.add_argument("-n", type=int, default=20, help="Number of experiments to show")
+    p_ls.add_argument("--tag", help="Filter by tag")
+    p_ls.add_argument("--status", choices=["done", "failed", "running"],
+                       help="Filter by status")
+    p_ls.add_argument("--study", help="Filter by study")
+    p_ls.add_argument("--json", action="store_true", dest="json_output",
+                       help="Output as JSON (for scripting)")
 
-    p_show = sub.add_parser("show")
+    p_show = sub.add_parser("show", help="Show full experiment details")
     p_show.add_argument("id")
     p_show.add_argument("--timeline", "-t", action="store_true",
                         help="Show execution timeline")
+    p_show.add_argument("--json", action="store_true", dest="json_output",
+                        help="Output as JSON")
 
-    sub.add_parser("diff").add_argument("id")
+    p_diff = sub.add_parser("diff", help="Print captured git diff for an experiment")
+    p_diff.add_argument("id")
 
     p_cmp = sub.add_parser("compare",
         help="Compare two experiments, or compare within one experiment at two timeline points")
@@ -162,15 +174,18 @@ def main():
                                           "metric", "observational"],
                       help="Filter by event type")
 
-    p_hist = sub.add_parser("history")
+    p_hist = sub.add_parser("history", help="Show notebook cell snapshot history")
     p_hist.add_argument("notebook")
     p_hist.add_argument("id", nargs="?", default="")
 
-    p_tag = sub.add_parser("tag")
-    p_tag.add_argument("id"); p_tag.add_argument("tag")
+    p_tag = sub.add_parser("tag", help="Add a tag to one or more experiments")
+    p_tag.add_argument("id", nargs="+",
+                        help="Experiment ID(s) followed by the tag name (last argument is the tag)")
+    # The last element of 'id' list is the tag name — parsed in cmd_tag
 
-    p_untag = sub.add_parser("untag", help="Remove a tag from an experiment")
-    p_untag.add_argument("id"); p_untag.add_argument("tag")
+    p_untag = sub.add_parser("untag", help="Remove a tag from one or more experiments")
+    p_untag.add_argument("id", nargs="+",
+                          help="Experiment ID(s) followed by the tag name (last argument is the tag)")
 
     p_deltag = sub.add_parser("delete-tag",
         help="Remove a tag from ALL experiments globally")
@@ -209,8 +224,9 @@ def main():
     p_export.add_argument("--all", action="store_true", dest="export_all",
                           help="Export all experiments (batch export)")
 
-    sub.add_parser("rm").add_argument("id")
-    p_clean = sub.add_parser("clean")
+    p_rm = sub.add_parser("rm", help="Delete one or more experiments and their output files")
+    p_rm.add_argument("id", nargs="+", help="Experiment ID(s) to delete")
+    p_clean = sub.add_parser("clean", help="Remove failed or old experiments")
     p_clean.add_argument("--baselines", action="store_true",
                          help="Delete code baselines (next run re-records full code)")
     p_clean.add_argument("--older-than", dest="older_than", default=None,
@@ -220,11 +236,20 @@ def main():
     p_clean.add_argument("--dry-run", action="store_true", dest="dry_run",
                          help="List what would be deleted without deleting")
 
-    p_ui = sub.add_parser("ui")
+    p_ui = sub.add_parser("ui", help="Launch the web dashboard")
     p_ui.add_argument("--port", type=int, default=7331)
     p_ui.add_argument("--host", type=str, default="127.0.0.1")
 
     sub.add_parser("storage", help="Show data storage breakdown and tips")
+
+    p_backup = sub.add_parser("backup", help="Create a safe backup of the experiment database")
+    p_backup.add_argument("dest", nargs="?", default=None,
+                          help="Backup file path (default: auto-timestamped in .exptrack/)")
+
+    p_watch = sub.add_parser("watch", help="Watch a running experiment for live metric updates")
+    p_watch.add_argument("id", help="Experiment ID (prefix match)")
+    p_watch.add_argument("--interval", type=int, default=5,
+                          help="Refresh interval in seconds (default: 5)")
 
     p_verify = sub.add_parser("verify", help="Verify artifact file integrity")
     p_verify.add_argument("id", nargs="?", default=None,
@@ -255,6 +280,7 @@ def main():
         "stale":        cmd_stale,
         "upgrade":      cmd_upgrade,
         "storage":      cmd_storage,
+        "backup":       cmd_backup,
         "finish":       cmd_finish,
         "ls":           cmd_ls,
         "show":         cmd_show,
@@ -273,6 +299,7 @@ def main():
         "delete-study": cmd_delete_study,
         "stage":        cmd_stage,
         "export":       cmd_export,
+        "watch":        cmd_watch,
         "verify":       cmd_verify,
         "rm":           cmd_rm,
         "clean":        cmd_clean,
