@@ -39,6 +39,27 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
     return out
 
 
+def _detect_calling_script() -> str:
+    """Detect the shell script that called 'exptrack run-start'.
+
+    Reads the parent process cmdline from /proc to find the script path.
+    Falls back to empty string (Experiment will use sys.argv).
+    """
+    try:
+        ppid = os.getppid()
+        cmdline = Path(f"/proc/{ppid}/cmdline").read_text().split("\0")
+        # cmdline is e.g. ["bash", "pipeline_multistep.sh"] or
+        # ["/bin/bash", "./examples/pipeline_multistep.sh"]
+        for arg in cmdline[1:]:  # skip the shell binary itself
+            if arg and not arg.startswith("-"):
+                p = Path(arg)
+                if p.is_file():
+                    return str(p.resolve())
+    except Exception:
+        pass
+    return ""
+
+
 def cmd_run_start(args):
     """
     Start an experiment from a shell script. Prints shell-sourceable env vars
@@ -88,26 +109,32 @@ def cmd_run_start(args):
     notes = args.notes or ""
     name  = args.name or ""
 
-    # Resolve --script to a real file path if possible, otherwise keep as label
-    script_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
-    script_path = Path(script_hint)
-    if not script_path.is_file():
-        # Try common extensions
-        for ext in (".py", ".sh", ".r", ".R", ".jl"):
-            candidate = Path(script_hint + ext)
-            if candidate.is_file():
-                script_path = candidate
-                break
-    script_val = str(script_path.resolve()) if script_path.is_file() else script_hint
+    # Detect the calling script (the shell script that invoked run-start)
+    calling_script = _detect_calling_script()
+
+    # --script is a naming hint only; use it for name generation but store
+    # the actual calling script path in the DB
+    naming_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
 
     exp = Experiment(
-        name=name,
+        name=name or "",
         params=params,
         tags=tags,
         notes=notes,
-        script=script_val,
+        script=calling_script,
         _caller_depth=0,
     )
+    # Override name if not explicitly set — use the naming hint, not the
+    # calling script path
+    if not name:
+        from ..core.naming import make_run_name
+        exp.name = make_run_name(naming_hint, params)
+        # Update DB with the corrected name
+        from ..core import get_db as _gdb
+        _conn = _gdb()
+        _conn.execute("UPDATE experiments SET name=? WHERE id=?",
+                      (exp.name, exp.id))
+        _conn.commit()
 
     conf = cfg.load()
     out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name
