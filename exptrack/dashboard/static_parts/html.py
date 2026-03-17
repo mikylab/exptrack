@@ -91,6 +91,10 @@ HTML_BODY = r"""</style>
   <p><strong>Detail view:</strong> Shows full experiment info in the main area. Tabs: Overview, Timeline, Compare Within.</p>
   <p><strong>Compare:</strong> Select two experiments via checkboxes in the sidebar, then click Compare.</p>
   <p><strong>Export:</strong> Use the Export button on any experiment to get JSON, Markdown, or Plain Text.</p>
+
+  <h3>Tips</h3>
+  <p><strong>Owl mascot:</strong> Click the owl for a random tip. Its speech bubble disappears automatically after a few seconds, or click the bubble to dismiss it immediately.</p>
+  <p><strong>Inline editing:</strong> Double-click on experiment names, tags, notes, or stage fields to edit them in place. Press Enter to save or Escape to cancel.</p>
 </div>
 
 <div id="app-layout">
