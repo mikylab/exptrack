@@ -222,7 +222,7 @@ def cmd_run_finish(args):
         pass
     fake = _FakeExp()
     row = conn.execute("SELECT * FROM experiments WHERE id=?", (exp_id,)).fetchone()
-    for k in row:
+    for k in row.keys():
         setattr(fake, k, row[k])
     fake._params = {r["key"]: json.loads(r["value"]) for r in
                     conn.execute("SELECT key, value FROM params WHERE exp_id=?",

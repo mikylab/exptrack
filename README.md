@@ -54,6 +54,7 @@ Your script needs **zero modifications**. expTrack automatically captures argpar
 
 - [Why expTrack?](#why-exptrack)
 - [Quick Start](#quick-start)
+- [What Gets Captured](#what-gets-captured)
 - [Installation](#installation)
 - [Scripts](#scripts)
 - [Notebooks](#notebooks)
@@ -72,6 +73,24 @@ Your script needs **zero modifications**. expTrack automatically captures argpar
 - [Project Layout](#project-layout)
 - [Contributing](#contributing)
 - [License](#license)
+
+---
+
+## What Gets Captured
+
+expTrack works in four modes. Here's what each captures automatically vs. what you log yourself:
+
+| | `exptrack run` (scripts) | `%load_ext exptrack` (notebooks) | Shell / SLURM | Python API |
+|---|---|---|---|---|
+| **How you use it** | `exptrack run train.py --lr 0.01` | `%load_ext exptrack` in first cell | `eval $(exptrack run-start ...)` | `with Experiment() as exp:` |
+| **Parameters** | Auto from argparse / sys.argv | Auto from HP-like variables (`lr`, `batch_size`, etc.) | You pass them: `--lr 0.01` | You log them: `exp.log_param()` |
+| **Metrics** | You log them via `__exptrack__` global | You log them: `exp.metric()` | You log them: `exptrack log-metric` | You log them: `exp.log_metric()` |
+| **Git state** | Auto (branch, commit, diff) | Auto (branch, commit, diff) | Auto (branch, commit, diff) | Auto (branch, commit, diff) |
+| **Code changes** | Auto (script diff vs last commit) | Auto (cell diffs, variable changes) | Not captured | Not captured |
+| **Artifacts** | Auto (`plt.savefig` + new files) | Auto (`plt.savefig`) | You log them: `exptrack log-artifact` | You log them: `exp.log_artifact()` |
+| **Status** | Auto (done/failed on exit) | You call `exp.done()` or `%exp_done` | You call `run-finish` or `run-fail` | Auto with context manager, or `exp.finish()` |
+
+**Key takeaway:** Parameters, git state, and artifacts are mostly automatic. **Metrics always need explicit logging** -- exptrack can't guess which numbers matter to you.
 
 ---
 
