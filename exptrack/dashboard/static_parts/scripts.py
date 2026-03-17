@@ -15,7 +15,6 @@ let charts = {};
 let selectedIds = new Set();
 let pinnedIds = new Set(JSON.parse(localStorage.getItem('exptrack-pinned') || '[]'));
 let hiddenIds = new Set(JSON.parse(localStorage.getItem('exptrack-hidden') || '[]'));
-let showHiddenRows = false;
 let allExperiments = [];
 let currentDetailId = '';
 let sortCol = 'created_at';
@@ -43,7 +42,6 @@ let highlightColors = {}; // study -> color mapping
 
 // Column configuration: id, label, default visibility, sortable, min-width
 const ALL_COLUMNS = [
-  {id: 'hide', label: '', sortable: false, defaultOn: true, width: 28},
   {id: 'pin', label: '', sortable: false, defaultOn: true, width: 32},
   {id: 'cb', label: '', sortable: false, defaultOn: true, width: 36},
   {id: 'id', label: 'ID', sortable: true, defaultOn: true, width: 60},
@@ -85,7 +83,7 @@ function toggleColumnSettings() {
   for (const col of ALL_COLUMNS) {
     if (col.id === 'cb') continue; // checkbox always visible
     const checked = visibleCols.includes(col.id) ? 'checked' : '';
-    const label = col.label || (col.id === 'pin' ? 'Pin' : col.id === 'hide' ? 'Hide' : col.id);
+    const label = col.label || (col.id === 'pin' ? 'Pin' : col.id);
     html += '<label class="col-setting-item"><input type="checkbox" ' + checked + ' onchange="toggleColumn(\'' + col.id + '\',this.checked)"> ' + label + '</label>';
   }
   html += '</div>';
@@ -133,12 +131,12 @@ function renderTableHeader() {
     const resizer = '<span class="col-resizer" onmousedown="startColResize(event,\'' + colId + '\')"></span>';
     if (colId === 'cb') {
       html += '<th class="cb-col" style="width:' + w + 'px"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th>';
-    } else if (colId === 'pin' || colId === 'hide') {
+    } else if (colId === 'pin') {
       html += '<th style="width:' + w + 'px;position:relative">' + resizer + '</th>';
     } else if (col.sortable) {
-      html += '<th class="sortable" style="width:' + w + 'px;min-width:50px;position:relative" onclick="toggleSort(\'' + (colId === 'started' ? 'created_at' : colId) + '\')">' + col.label + '<span class="sort-arrow"></span>' + resizer + '</th>';
+      html += '<th class="sortable" style="width:' + w + 'px;position:relative" onclick="toggleSort(\'' + (colId === 'started' ? 'created_at' : colId) + '\')">' + col.label + '<span class="sort-arrow"></span>' + resizer + '</th>';
     } else {
-      html += '<th style="width:' + w + 'px;min-width:50px;position:relative">' + col.label + resizer + '</th>';
+      html += '<th style="width:' + w + 'px;position:relative">' + col.label + resizer + '</th>';
     }
   }
   html += '</tr>';
@@ -198,46 +196,68 @@ function togglePin(id) {
   renderExperiments();
 }
 
-function toggleHideRow(id) {
-  if (hiddenIds.has(id)) hiddenIds.delete(id);
-  else hiddenIds.add(id);
+function hideSelected() {
+  for (const id of selectedIds) hiddenIds.add(id);
+  selectedIds.clear();
   localStorage.setItem('exptrack-hidden', JSON.stringify([...hiddenIds]));
   renderExperiments();
   renderExpList();
-  renderHiddenBar();
+  renderHiddenPanel();
 }
 
-function toggleShowHidden() {
-  showHiddenRows = !showHiddenRows;
+function unhideRow(id) {
+  hiddenIds.delete(id);
+  localStorage.setItem('exptrack-hidden', JSON.stringify([...hiddenIds]));
   renderExperiments();
   renderExpList();
-  renderHiddenBar();
+  renderHiddenPanel();
 }
 
-function clearAllHidden() {
+function unhideAll() {
   hiddenIds.clear();
-  showHiddenRows = false;
   localStorage.setItem('exptrack-hidden', '[]');
   renderExperiments();
   renderExpList();
-  renderHiddenBar();
+  renderHiddenPanel();
 }
 
-function renderHiddenBar() {
-  let bar = document.getElementById('hidden-bar');
-  if (!bar) {
-    const groupBar = document.getElementById('group-bar');
-    if (!groupBar) return;
-    bar = document.createElement('div');
-    bar.id = 'hidden-bar';
-    bar.className = 'hidden-bar';
-    groupBar.parentNode.insertBefore(bar, groupBar.nextSibling);
+let hiddenPanelOpen = false;
+
+function toggleHiddenPanel() {
+  hiddenPanelOpen = !hiddenPanelOpen;
+  renderHiddenPanel();
+}
+
+function renderHiddenPanel() {
+  let panel = document.getElementById('hidden-panel');
+  if (!panel) {
+    const tableWrap = document.querySelector('.table-scroll-wrap');
+    if (!tableWrap) return;
+    panel = document.createElement('div');
+    panel.id = 'hidden-panel';
+    panel.className = 'hidden-panel';
+    tableWrap.parentNode.insertBefore(panel, tableWrap);
   }
-  if (hiddenIds.size === 0) { bar.style.display = 'none'; return; }
-  bar.style.display = 'flex';
-  bar.innerHTML = '<span>' + hiddenIds.size + ' row' + (hiddenIds.size > 1 ? 's' : '') + ' hidden</span>' +
-    '<button onclick="toggleShowHidden()">' + (showHiddenRows ? 'Hide them' : 'Show hidden') + '</button>' +
-    '<button onclick="clearAllHidden()">Clear all</button>';
+  if (hiddenIds.size === 0) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  const hiddenExps = allExperiments.filter(e => hiddenIds.has(e.id));
+  let html = '<div class="hidden-panel-header" onclick="toggleHiddenPanel()">';
+  html += '<span class="hidden-panel-toggle">' + (hiddenPanelOpen ? '\u25BC' : '\u25B6') + '</span> ';
+  html += hiddenIds.size + ' hidden row' + (hiddenIds.size > 1 ? 's' : '');
+  html += '<button class="hidden-panel-clear" onclick="event.stopPropagation();unhideAll()">Unhide all</button>';
+  html += '</div>';
+  if (hiddenPanelOpen) {
+    html += '<div class="hidden-panel-list">';
+    for (const e of hiddenExps) {
+      html += '<div class="hidden-panel-item">';
+      html += '<span class="hidden-panel-name" title="' + esc(e.id) + '">' + esc(e.name.slice(0, 40)) + '</span>';
+      html += '<span class="hidden-panel-status status-' + e.status + '">' + e.status + '</span>';
+      html += '<button class="hidden-panel-unhide" onclick="unhideRow(\'' + e.id + '\')" title="Unhide">Unhide</button>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  panel.innerHTML = html;
 }
 
 function renderFilterBar() {
@@ -599,6 +619,14 @@ function owlSay(msg, anim) {
   const el = document.getElementById('owl-speech');
   if (!el) return;
   el.textContent = msg;
+  // Position fixed below the owl
+  const container = document.getElementById('header-owl');
+  if (container) {
+    const rect = container.getBoundingClientRect();
+    el.style.top = (rect.bottom + 6) + 'px';
+    el.style.left = (rect.left + rect.width / 2) + 'px';
+    el.style.transform = 'translateX(-50%)';
+  }
   el.classList.add('visible');
   if (owlSpeechTimer) clearTimeout(owlSpeechTimer);
   owlSpeechTimer = setTimeout(() => el.classList.remove('visible'), 3500);
@@ -864,6 +892,7 @@ function renderTableActionsBar() {
   if (n >= 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare (' + n + ')</button>';
   }
+  html += '<button onclick="hideSelected()">Hide (' + n + ')</button>';
   html += '<button onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
@@ -1047,7 +1076,7 @@ function updateSortHeaders() {
 
 function getFilteredExperiments() {
   let exps = allExperiments;
-  if (hiddenIds.size > 0 && !showHiddenRows) {
+  if (hiddenIds.size > 0) {
     exps = exps.filter(e => !hiddenIds.has(e.id));
   }
   if (tagFilter) {
@@ -1166,7 +1195,7 @@ async function loadExperiments() {
   if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
   renderExperiments();
   renderExpList();
-  renderHiddenBar();
+  renderHiddenPanel();
 }
 
 function onRowClick(id) {
@@ -1199,9 +1228,7 @@ function renderExpRow(e) {
   const editIcon = '<span class="edit-icon" title="Click to edit">&#9998;</span>';
 
   // Pre-compute cell content for all possible columns
-  const isHidden = hiddenIds.has(e.id);
   const cells = {
-    hide: '<td onclick="event.stopPropagation()"><button class="hide-btn' + (isHidden?' hidden-row':'') + '" onclick="toggleHideRow(\'' + e.id + '\')" title="' + (isHidden?'Unhide row':'Hide row') + '">' + (isHidden?'\u25C9':'\u00d7') + '</button></td>',
     pin: '<td' + hlBorder + ' onclick="event.stopPropagation()"><button class="pin-btn' + (isPinned?' pinned':'') + '" onclick="togglePin(\'' + e.id + '\')" title="' + (isPinned?'Unpin':'Pin') + '">' + (isPinned?'\u2605':'\u2606') + '</button></td>',
     cb: '<td onclick="event.stopPropagation()"><label style="display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4px"><input type="checkbox" ' + (isSelected?'checked':'') + ' onclick="toggleSelection(\'' + e.id + '\')" title="Select" style="cursor:pointer"></label></td>',
     id: '<td class="truncate-cell">' + e.id.slice(0,6) + '</td>',
