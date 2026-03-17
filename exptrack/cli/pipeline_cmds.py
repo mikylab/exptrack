@@ -42,19 +42,27 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
 def _detect_calling_script() -> str:
     """Detect the shell script that called 'exptrack run-start'.
 
-    Reads the parent process cmdline from /proc to find the script path.
-    Falls back to empty string (Experiment will use sys.argv).
+    Walks up the process tree via /proc looking for a parent whose
+    cmdline includes a script file (e.g. bash myscript.sh).
+    Returns resolved absolute path, or empty string on failure.
     """
     try:
-        ppid = os.getppid()
-        cmdline = Path(f"/proc/{ppid}/cmdline").read_text().split("\0")
-        # cmdline is e.g. ["bash", "pipeline_multistep.sh"] or
-        # ["/bin/bash", "./examples/pipeline_multistep.sh"]
-        for arg in cmdline[1:]:  # skip the shell binary itself
-            if arg and not arg.startswith("-"):
+        pid = os.getpid()
+        # Walk up to 5 levels: parent, grandparent, etc.
+        for _ in range(5):
+            stat = Path(f"/proc/{pid}/stat").read_text().split()
+            ppid = int(stat[3])
+            if ppid <= 1:
+                break
+            cmdline = Path(f"/proc/{ppid}/cmdline").read_text().split("\0")
+            # Look for a script file arg (skip the binary itself and flags)
+            for arg in cmdline[1:]:
+                if not arg or arg.startswith("-"):
+                    continue
                 p = Path(arg)
                 if p.is_file():
                     return str(p.resolve())
+            pid = ppid
     except Exception:
         pass
     return ""
@@ -109,10 +117,15 @@ def cmd_run_start(args):
     notes = args.notes or ""
     name  = args.name or ""
 
-    # Detect the calling script (the shell script that invoked run-start).
-    # Fall back to --script value if /proc detection fails.
+    # --script is for naming only; the actual script stored in DB should be
+    # the shell script that called run-start (detected via /proc)
     naming_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
-    calling_script = _detect_calling_script() or naming_hint
+    calling_script = _detect_calling_script()
+    # Fallback: store "exptrack run-start" command rather than the --script
+    # label, which would be misleading (e.g. "analyze.py" is a naming hint,
+    # not the script being tracked)
+    if not calling_script:
+        calling_script = " ".join(sys.argv)
 
     exp = Experiment(
         name=name or "",
