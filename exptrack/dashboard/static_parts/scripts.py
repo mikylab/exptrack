@@ -1833,7 +1833,7 @@ async function refreshDetail(id) {
         <!-- Full-width sections below the grid -->
         <div style="margin-top:20px">
           ${codeHtml}
-          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Uncommitted Changes (compacted)' : 'Uncommitted Changes ('+exp.diff_lines+' lines)')+'</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
+          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Uncommitted Changes (compacted)' : 'Uncommitted Changes ('+exp.diff_lines+' lines)' + ' <span style="float:right;font-size:12px;font-weight:normal">' + '<button class="action-btn" style="padding:1px 8px" onclick="event.stopPropagation();exportDiff(\'' + exp.id + '\')">Export</button>' + '<button class="action-btn" style="padding:1px 8px;margin-left:4px" onclick="event.stopPropagation();compactDiff(\'' + exp.id + '\')">Compact</button>' + '</span>')+'</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
         </div>
       </div>
 
@@ -2360,10 +2360,12 @@ async function finishExp(id) {
 async function compactDiff(id) {
   if (!confirm('Strip the git diff from this experiment?\\n\\nThe diff will be replaced with a compact summary. This cannot be undone.\\n\\nTip: Click "Export" first to save the diff as a markdown file.')) return;
   const d = await postApi('/api/bulk-compact', {ids: [id]});
-  if (d.ok) {
-    owlSay('Compacted diff (' + d.compacted + ' experiment)');
-    refreshDetail(id);
-    loadExperiments();
+  if (d.ok && d.compacted > 0) {
+    owlSay('Compacted! Freed ~' + (d.freed > 1024 ? (d.freed/1024).toFixed(1) + ' KB' : d.freed + ' B'), 'owl-bounce');
+    await loadExperiments();
+    await refreshDetail(id);
+  } else if (d.ok) {
+    owlSay('Nothing to compact (already compacted or no diff)');
   } else alert(d.error || 'Failed');
 }
 
@@ -2384,10 +2386,12 @@ async function bulkCompact() {
   if (!ids.length) return;
   if (!confirm('Compact diffs for ' + ids.length + ' experiment(s)?\\n\\nThis strips git diff data and cannot be undone.\\nTip: Use "Export" on individual experiments to save diffs first.')) return;
   const d = await postApi('/api/bulk-compact', {ids});
-  if (d.ok) {
-    owlSay('Compacted ' + d.compacted + ' diff(s)');
-    loadExperiments();
-    if (currentDetailId) refreshDetail(currentDetailId);
+  if (d.ok && d.compacted > 0) {
+    owlSay('Compacted ' + d.compacted + ' diff(s), freed ~' + (d.freed > 1024 ? (d.freed/1024).toFixed(1) + ' KB' : d.freed + ' B'), 'owl-bounce');
+    await loadExperiments();
+    if (currentDetailId) await refreshDetail(currentDetailId);
+  } else if (d.ok) {
+    owlSay('Nothing to compact');
   } else alert(d.error || 'Failed');
 }
 

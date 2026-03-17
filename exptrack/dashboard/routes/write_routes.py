@@ -203,10 +203,11 @@ def api_compact(conn, body: dict) -> dict:
             "SELECT id, git_diff, git_commit FROM experiments WHERE id LIKE ?",
             (eid + "%",)
         ).fetchone()
-        if not row or not row["git_diff"] or row["git_diff"].startswith("[compacted"):
+        raw_diff = row["git_diff"]
+        if not row or not raw_diff or raw_diff.startswith("[compacted"):
             continue
         from ...core.db import resolve_git_diff
-        full_diff = resolve_git_diff(conn, row["git_diff"])
+        full_diff = resolve_git_diff(conn, raw_diff)
         diff_len = len(full_diff)
         commit = row["git_commit"] or "unknown"
         # Extract changed file names
