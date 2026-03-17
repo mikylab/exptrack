@@ -48,7 +48,9 @@ def cmd_run_start(args):
     """
     from ..core import Experiment
 
-    # Parse free-form --key value pairs from remaining args
+    # Parse free-form --key value pairs from remaining args,
+    # skipping keys that are handled by argparse as named flags
+    _reserved = {"name", "script", "tags", "study", "stage", "stage-name", "notes"}
     params = {}
     raw = args.params
     i = 0
@@ -58,12 +60,15 @@ def cmd_run_start(args):
             key = a[2:]
             if "=" in key:
                 k, v = key.split("=", 1)
-                params[k] = _coerce_str(v)
+                if k not in _reserved:
+                    params[k] = _coerce_str(v)
             elif i + 1 < len(raw) and not raw[i+1].startswith("--"):
-                params[key] = _coerce_str(raw[i+1])
+                if key not in _reserved:
+                    params[key] = _coerce_str(raw[i+1])
                 i += 1
             else:
-                params[key] = True
+                if key not in _reserved:
+                    params[key] = True
         i += 1
 
     # Add SLURM context if present

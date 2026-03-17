@@ -91,7 +91,12 @@ class Experiment:
                 script = frame.f_globals.get("__file__", "") or sys.argv[0]
             except Exception:
                 script = sys.argv[0]  # frame detection failed, fall back to argv
-        self.script = str(Path(script).resolve()) if script else ""
+        # Resolve to absolute path only if the script is a real file;
+        # otherwise keep as-is (e.g. --script label from run-start)
+        if script and Path(script).is_file():
+            self.script = str(Path(script).resolve())
+        else:
+            self.script = script
 
         # Build initial name (may be updated after argparse capture)
         self.name = name or make_run_name(script, self._params)
