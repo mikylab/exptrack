@@ -4108,78 +4108,53 @@ function startDetailCommandEdit(id) {
 
 function openNewExpModal() {
   const overlay = document.createElement('div');
-  overlay.className = 'img-modal-overlay';
-  overlay.style.zIndex = '10001';
+  overlay.className = 'new-exp-overlay';
   overlay.addEventListener('click', function(ev) { if (ev.target === overlay) overlay.remove(); });
+  document.addEventListener('keydown', function onEsc(ev) {
+    if (ev.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onEsc); }
+  });
 
-  const content = document.createElement('div');
-  content.className = 'img-modal-content';
-  content.style.cssText = 'background:var(--bg);border-radius:8px;padding:24px;max-width:560px;width:90vw;max-height:85vh;overflow-y:auto';
+  const kvRowHtml = function(placeholder) {
+    return '<div class="new-exp-kv">' +
+      '<input type="text" placeholder="key" class="kv-key">' +
+      '<input type="text" placeholder="' + (placeholder || 'value') + '" class="kv-val">' +
+      '<span class="new-exp-kv-del" onclick="removeNewExpKvRow(this)" title="Remove row">&times;</span>' +
+      '</div>';
+  };
 
-  content.innerHTML = `
-    <div class="img-modal-header" style="padding:0 0 12px 0;color:var(--fg)">
-      <span style="font-size:16px;font-weight:600">New Experiment</span>
-      <button class="img-modal-close" style="color:var(--fg)" onclick="this.closest('.img-modal-overlay').remove()">&times;</button>
-    </div>
-    <div class="new-exp-form">
-      <label>Name <span style="color:var(--red)">*</span></label>
-      <input type="text" id="new-exp-name" placeholder="e.g. baseline_resnet50" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+  overlay.innerHTML = '<div class="new-exp-dialog">' +
+    '<div class="new-exp-header"><h3 onclick="newExpOwlEgg(this)" style="cursor:default">New Experiment</h3>' +
+    '<button class="close-btn" onclick="this.closest(\'.new-exp-overlay\').remove()">&times;</button></div>' +
+    '<div class="new-exp-body">' +
+      '<div class="new-exp-field"><label>Name <span style="color:var(--red)">*</span></label>' +
+      '<input type="text" id="new-exp-name" placeholder="e.g. baseline_resnet50"></div>' +
+      '<div class="new-exp-row">' +
+        '<div class="new-exp-field"><label>Status</label>' +
+        '<select id="new-exp-status"><option value="done" selected>done</option><option value="failed">failed</option><option value="running">running</option></select></div>' +
+        '<div class="new-exp-field"><label>Date</label>' +
+        '<input type="datetime-local" id="new-exp-date"></div>' +
+      '</div>' +
+      '<div class="new-exp-field"><label>Script path</label>' +
+      '<input type="text" id="new-exp-script" placeholder="/path/to/train.py"></div>' +
+      '<div class="new-exp-field"><label>Command</label>' +
+      '<input type="text" id="new-exp-command" placeholder="python train.py --lr 0.01"></div>' +
+      '<div class="new-exp-field"><label>Tags</label>' +
+      '<input type="text" id="new-exp-tags" placeholder="comma-separated, e.g. baseline, v1"></div>' +
+      '<div class="new-exp-field"><label>Notes</label>' +
+      '<textarea id="new-exp-notes" rows="2" placeholder="Optional notes"></textarea></div>' +
+      '<div class="new-exp-field"><label>Params</label>' +
+      '<div id="new-exp-params">' + kvRowHtml('value') + '</div>' +
+      '<button class="new-exp-kv-add" onclick="addNewExpKvRow(\'new-exp-params\',\'value\')">+ Add param</button></div>' +
+      '<div class="new-exp-field"><label>Metrics</label>' +
+      '<div id="new-exp-metrics">' + kvRowHtml('value (number)') + '</div>' +
+      '<button class="new-exp-kv-add" onclick="addNewExpKvRow(\'new-exp-metrics\',\'value (number)\')">+ Add metric</button></div>' +
+    '</div>' +
+    '<div class="new-exp-footer">' +
+      '<button class="action-btn" onclick="this.closest(\'.new-exp-overlay\').remove()">Cancel</button>' +
+      '<button class="action-btn primary" onclick="submitNewExp()">Create Experiment</button>' +
+    '</div>' +
+  '</div>';
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
-        <div>
-          <label>Status</label>
-          <select id="new-exp-status" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
-            <option value="done" selected>done</option>
-            <option value="failed">failed</option>
-            <option value="running">running</option>
-          </select>
-        </div>
-        <div>
-          <label>Date</label>
-          <input type="datetime-local" id="new-exp-date" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
-        </div>
-      </div>
-
-      <label style="margin-top:8px">Script path</label>
-      <input type="text" id="new-exp-script" placeholder="/path/to/train.py (optional)" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
-
-      <label style="margin-top:8px">Command</label>
-      <input type="text" id="new-exp-command" placeholder="python train.py --lr 0.01 (optional)" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
-
-      <label style="margin-top:8px">Tags</label>
-      <input type="text" id="new-exp-tags" placeholder="comma-separated, e.g. baseline, v1" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
-
-      <label style="margin-top:8px">Notes</label>
-      <textarea id="new-exp-notes" rows="2" placeholder="optional notes" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px;resize:vertical"></textarea>
-
-      <label style="margin-top:8px">Params</label>
-      <div id="new-exp-params">
-        <div class="kv-row" style="display:flex;gap:4px;margin-bottom:4px">
-          <input type="text" placeholder="key" class="kv-key" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
-          <input type="text" placeholder="value" class="kv-val" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
-          <button onclick="this.parentElement.remove()" style="padding:2px 8px;cursor:pointer;font-size:12px">&times;</button>
-        </div>
-      </div>
-      <button onclick="addKvRow('new-exp-params')" style="font-size:12px;padding:2px 10px;cursor:pointer;margin-top:2px">+ Add param</button>
-
-      <label style="margin-top:8px">Metrics</label>
-      <div id="new-exp-metrics">
-        <div class="kv-row" style="display:flex;gap:4px;margin-bottom:4px">
-          <input type="text" placeholder="key" class="kv-key" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
-          <input type="text" placeholder="value (number)" class="kv-val" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
-          <button onclick="this.parentElement.remove()" style="padding:2px 8px;cursor:pointer;font-size:12px">&times;</button>
-        </div>
-      </div>
-      <button onclick="addKvRow('new-exp-metrics')" style="font-size:12px;padding:2px 10px;cursor:pointer;margin-top:2px">+ Add metric</button>
-
-      <div style="margin-top:16px;text-align:right">
-        <button onclick="this.closest('.img-modal-overlay').remove()" style="padding:6px 16px;cursor:pointer;margin-right:8px;font-size:13px">Cancel</button>
-        <button onclick="submitNewExp()" style="padding:6px 16px;cursor:pointer;font-size:13px;background:var(--accent);color:#fff;border:none;border-radius:4px;font-weight:600">Create</button>
-      </div>
-    </div>
-  `;
-
-  overlay.appendChild(content);
   document.body.appendChild(overlay);
 
   // Set default date to now in local time
@@ -4192,22 +4167,33 @@ function openNewExpModal() {
   document.getElementById('new-exp-name').focus();
 }
 
-function addKvRow(containerId) {
+function addNewExpKvRow(containerId, placeholder) {
   const container = document.getElementById(containerId);
   const row = document.createElement('div');
-  row.className = 'kv-row';
-  row.style.cssText = 'display:flex;gap:4px;margin-bottom:4px';
+  row.className = 'new-exp-kv';
   row.innerHTML =
-    '<input type="text" placeholder="key" class="kv-key" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">' +
-    '<input type="text" placeholder="value" class="kv-val" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">' +
-    '<button onclick="this.parentElement.remove()" style="padding:2px 8px;cursor:pointer;font-size:12px">&times;</button>';
+    '<input type="text" placeholder="key" class="kv-key">' +
+    '<input type="text" placeholder="' + (placeholder || 'value') + '" class="kv-val">' +
+    '<span class="new-exp-kv-del" onclick="removeNewExpKvRow(this)" title="Remove row">&times;</span>';
   container.appendChild(row);
   row.querySelector('.kv-key').focus();
 }
 
+function removeNewExpKvRow(btn) {
+  const row = btn.closest('.new-exp-kv');
+  const container = row.parentElement;
+  // Keep at least one row — just clear it instead of removing
+  if (container.querySelectorAll('.new-exp-kv').length <= 1) {
+    row.querySelector('.kv-key').value = '';
+    row.querySelector('.kv-val').value = '';
+    return;
+  }
+  row.remove();
+}
+
 function collectKv(containerId) {
   const obj = {};
-  const rows = document.querySelectorAll('#' + containerId + ' .kv-row');
+  const rows = document.querySelectorAll('#' + containerId + ' .new-exp-kv');
   rows.forEach(function(row) {
     const k = row.querySelector('.kv-key').value.trim();
     const v = row.querySelector('.kv-val').value.trim();
@@ -4240,15 +4226,30 @@ async function submitNewExp() {
 
   const res = await postApi('/api/experiments/create', body);
   if (res.ok) {
-    document.querySelector('.img-modal-overlay').remove();
+    document.querySelector('.new-exp-overlay').remove();
     owlSay('Experiment created!');
     await loadExperiments();
     renderExperiments();
     renderExpList();
-    // Select the new experiment
     if (res.id) showDetail(res.id);
   } else {
     owlSay(res.error || 'Failed to create experiment');
+  }
+}
+
+// Easter egg: click the "New Experiment" title 5 times
+let _newExpOwlClicks = 0;
+let _newExpOwlTimer = null;
+function newExpOwlEgg(el) {
+  _newExpOwlClicks++;
+  if (_newExpOwlTimer) clearTimeout(_newExpOwlTimer);
+  _newExpOwlTimer = setTimeout(() => { _newExpOwlClicks = 0; }, 1500);
+  if (_newExpOwlClicks >= 5) {
+    _newExpOwlClicks = 0;
+    owlSay('Hoo-ray! You found me! Good luck with your experiment!', 'owl-bounce');
+    // Spin the header owl
+    const mascot = document.querySelector('.owl-mascot');
+    if (mascot) { mascot.style.transition = 'transform 0.6s'; mascot.style.transform = 'rotate(360deg) scale(1.3)'; setTimeout(() => { mascot.style.transform = ''; }, 700); }
   }
 }
 """
