@@ -129,6 +129,18 @@ class Experiment:
 
         print(f"[exptrack] {self.name}  ({self.id[:6]})", file=sys.stderr)
 
+    @staticmethod
+    def _build_command() -> str:
+        """Build a clean command string from sys.argv.
+
+        Replaces the full path to the Python entry point (e.g.
+        /Users/.../venv/bin/exptrack) with just the binary name.
+        """
+        argv = list(sys.argv)
+        if argv:
+            argv[0] = Path(argv[0]).name
+        return " ".join(argv)
+
     # ── Snapshot dedup ─────────────────────────────────────────────────────
 
     def _compute_snapshot_hash(self) -> str:
@@ -167,7 +179,7 @@ class Experiment:
             """, (
                 self.id, self.project, self.name, self.status,
                 self.created_at, self.created_at,
-                self.script, " ".join(sys.argv),
+                self.script, self._build_command(),
                 self.git_branch, self.git_commit, diff_for_db,
                 self.hostname, self.python_ver,
                 self.notes, json.dumps(self.tags),

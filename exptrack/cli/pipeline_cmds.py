@@ -43,18 +43,19 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
 def _detect_calling_script() -> str:
     """Detect the shell script that invoked 'exptrack run-start'.
 
-    Walks up the process tree via /proc to find a parent whose cmdline
+    Walks up the process tree to find a parent whose command line
     includes a script file (e.g. bash myscript.sh).
+
+    Uses /proc on Linux, ps on macOS/BSD.
     Returns resolved absolute path, or empty string on failure.
     """
     try:
         pid = os.getpid()
         for _ in range(5):
-            stat = Path(f"/proc/{pid}/stat").read_text().split()
-            ppid = int(stat[3])
-            if ppid <= 1:
+            ppid, cmdline = _get_parent_cmdline(pid)
+            if ppid <= 1 or not cmdline:
                 break
-            cmdline = Path(f"/proc/{ppid}/cmdline").read_text().split("\0")
+            # Look for a script file in the command args (skip binary + flags)
             for arg in cmdline[1:]:
                 if not arg or arg.startswith("-"):
                     continue
@@ -65,6 +66,39 @@ def _detect_calling_script() -> str:
     except Exception:
         pass
     return ""
+
+
+def _get_parent_cmdline(pid: int) -> tuple[int, list[str]]:
+    """Get parent PID and its command line arguments.
+
+    Returns (ppid, [arg0, arg1, ...]) or (0, []) on failure.
+    """
+    # Linux: read from /proc
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.exists():
+        stat = proc_stat.read_text().split()
+        ppid = int(stat[3])
+        cmdline = Path(f"/proc/{ppid}/cmdline").read_text().split("\0")
+        return ppid, [a for a in cmdline if a]
+
+    # macOS/BSD: use ps command
+    import subprocess
+    # Get parent PID
+    result = subprocess.run(
+        ["ps", "-o", "ppid=", "-p", str(pid)],
+        capture_output=True, text=True, timeout=2,
+    )
+    if result.returncode != 0:
+        return 0, []
+    ppid = int(result.stdout.strip())
+    # Get parent's full command line
+    result = subprocess.run(
+        ["ps", "-o", "command=", "-p", str(ppid)],
+        capture_output=True, text=True, timeout=2,
+    )
+    if result.returncode != 0:
+        return ppid, []
+    return ppid, result.stdout.strip().split()
 
 
 def cmd_run_start(args):
@@ -120,6 +154,9 @@ def cmd_run_start(args):
     # The actual script field should be the calling shell script.
     naming_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
     calling_script = _detect_calling_script()
+    # Fallback: use the run-start command itself (cleaned up)
+    if not calling_script:
+        calling_script = "exptrack run-start " + " ".join(args.params)
 
     exp = Experiment(
         name=name or make_run_name(naming_hint, params),
