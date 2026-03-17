@@ -36,6 +36,12 @@ const owlContextPhrases = {
 };
 let owlSpeechTimer = null;
 
+function dismissOwl() {
+  const el = document.getElementById('owl-speech');
+  if (el) { el.style.display = 'none'; el.style.pointerEvents = 'none'; }
+  if (owlSpeechTimer) { clearTimeout(owlSpeechTimer); owlSpeechTimer = null; }
+}
+
 function owlSay(msg, anim) {
   const el = document.getElementById('owl-speech');
   if (!el) return;
@@ -49,8 +55,10 @@ function owlSay(msg, anim) {
     el.style.transform = 'translateX(-50%)';
   }
   el.style.display = 'block';
+  el.style.pointerEvents = 'auto';
+  el.style.cursor = 'pointer';
   if (owlSpeechTimer) clearTimeout(owlSpeechTimer);
-  owlSpeechTimer = setTimeout(() => { el.style.display = 'none'; }, 3500);
+  owlSpeechTimer = setTimeout(() => { dismissOwl(); }, 3500);
   // Trigger animation
   const mascot = document.querySelector('.owl-mascot');
   if (mascot && anim) {
