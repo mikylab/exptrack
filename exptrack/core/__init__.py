@@ -5,7 +5,7 @@ Re-exports everything so existing imports like
     from exptrack.core import Experiment, get_db
 continue to work.
 """
-from .db import get_db, delete_experiment, finish_experiment, rename_output_folder
+from .db import get_db, close_db, delete_experiment, finish_experiment, rename_output_folder
 from .git import git_info
 from .naming import make_run_name, output_path
 from .experiment import Experiment
@@ -13,6 +13,7 @@ from . import queries
 
 __all__ = [
     "get_db",
+    "close_db",
     "delete_experiment",
     "finish_experiment",
     "rename_output_folder",

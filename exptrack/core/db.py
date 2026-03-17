@@ -74,6 +74,24 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+def close_db():
+    """Close the cached database connection for the current thread.
+
+    Call this to release any lingering connections, e.g. from a notebook
+    cell: `from exptrack.core import close_db; close_db()`
+
+    The next get_db() call will open a fresh connection.
+    """
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _local.conn = None
+        _local.db_path = None
+
+
 def _ensure_schema(conn):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS experiments (

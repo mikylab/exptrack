@@ -117,6 +117,28 @@ def done():
     _active = None
 
 
+def reset():
+    """Force-close the database connection and detach hooks.
+
+    Use this in a notebook to clean up leaked connections from before
+    the caching fix. Safe to call anytime — next operation reopens fresh.
+
+        from exptrack.notebook import reset
+        reset()
+    """
+    global _active
+    if _active is not None:
+        try:
+            _active.finish()
+        except Exception:
+            pass
+        detach_notebook()
+        _active = None
+    from .core import close_db
+    close_db()
+    print("[exptrack] Connection closed and hooks detached.")
+
+
 def current() -> Experiment | None:
     return _active
 
