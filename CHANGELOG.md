@@ -7,14 +7,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Dashboard CSS and JS modularization: `static_parts/css/` (12 modules) and `static_parts/js/` (15 modules)
+- `exptrack compact` command to strip git diffs while keeping experiment results
+- Manual experiment creation modal in dashboard
+- Image comparison features: side-by-side, overlay, and swipe modes
+- Multi-compare bar charts and overlay line charts for 2+ experiments
+- Reproduce command box with one-click copy in experiment detail
+- Unified metrics storage: manual results and auto-captured metrics in one table
+- Metric namespace prefixes, abbreviations, and group collapse
+- Click-to-delete chart points and double-click metric rename
+- Studies (renamed from groups) and stage fields with inline editing
+- Customizable table columns with resize, show/hide, and reset defaults
+- Row hiding with toggle panel below experiment table
+- Database health reporting and WAL checkpoint command
+- Per-thread DB connection caching for concurrent notebook use
+- Storage limits for git diffs and notebook cells
+- Highlight mode for experiment rows by study
+- Sparkline mini-charts in experiment list metrics column
 - Global tag deletion and tag management panel in dashboard
 - Compare button for quick experiment comparison from list view
 - Output directory artifact scanning
 
+### Changed
+- Dashboard modularized: `static.py` is now a thin assembler, CSS in `static_parts/css/`, JS in `static_parts/js/`, routes in `routes/`
+- `styles.py` and `scripts.py` reduced to re-export shims (~20 lines each, down from 878 and 4354)
+- Metrics and results unified into single metrics table with source badges (auto/manual/pipeline)
+- Export and Copy separated into distinct dropdowns in detail view
+
 ### Fixed
+- Database locked errors when rerunning notebooks on same kernel
+- BrokenPipeError from browser closing dashboard connections early
+- Owl speech bubble dismissal and positioning
+- Table overflow and horizontal scroll with default column widths
+- Multi-compare KeyError and selector issues
+- Compact buttons feedback (alert-based confirmation)
 - Tag deletion UX: visible detail view x buttons now work correctly
 - Variable display losing assignment expression on notebook rerun
 - License field format in pyproject.toml for setuptools compatibility
+- JS syntax errors from inline onclick handlers (replaced with event wiring)
 
 ## [2.0.0] - 2026-03-12
 

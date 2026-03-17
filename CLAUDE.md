@@ -74,8 +74,49 @@ exptrack/
     github_sync.py            Sync run metadata to GitHub repo as JSONL
   dashboard/
     app.py                    Web UI entry point (stdlib http.server, default port 7331)
-    handler.py                HTTP request handler, 30+ API endpoints
-    static.py                 Embedded HTML/CSS/JS (Chart.js from CDN)
+    handler.py                HTTP request handler, dispatches to route modules
+    static.py                 Assembler: imports CSS/HTML/JS parts into DASHBOARD_HTML
+    static_parts/
+      __init__.py             Package docstring
+      styles.py               Re-exports CSS from css/ subpackage
+      scripts.py              Re-exports JS from js/ subpackage
+      html.py                 HTML structure (HEAD, BODY, FOOTER)
+      css/
+        __init__.py           CSS assembly: get_all_css() + all section re-exports
+        reset.py              CSS variables, theme definitions, base reset
+        layout.py             Header, sidebar, main content layout
+        cards.py              Experiment cards, stats cards, status indicators
+        table.py              Experiment table, toolbar, actions, filters
+        detail.py             Detail panel, info grid, params/metrics tables
+        code.py               Diff views, code changes, variable displays
+        timeline.py           Timeline events, badges, within-compare, source viewer
+        compare.py            Compare view, side-by-side diffs, reproduce box
+        components.py         Tabs, help, export, tags, inline editing, owl mascot
+        studies.py             Study management panel
+        images.py             Image gallery, modals, image comparison
+      js/
+        __init__.py           JS assembly: get_all_js() + all section re-exports
+        core.py               State variables, API helpers, dark mode, column config
+        owl.py                Mascot animation, speech bubble, easter egg
+        sidebar.py            Sidebar rendering, checkbox actions, bulk ops
+        table.py              Table rendering, sorting, column resizing
+        experiments.py        Experiment list filtering, grouping
+        inline_edit.py        Double-click inline editing
+        detail.py             Detail panel, tabs, metric charts, export
+        compare.py            Compare view, diff rendering, metric comparison
+        mutations.py          Tag/note/name/delete/pin mutation helpers
+        timeline.py           Timeline rendering, cell lineage viewer
+        image_compare.py      Image diff viewer with slider overlay
+        studies.py            Study management UI
+        stage.py              Stage/pipeline state tracking
+        manual.py             Manual experiment creation modal
+        init.py               Page initialization, event binding
+    js/
+      __init__.py             Convenience re-exports with short aliases
+    routes/
+      __init__.py             Package docstring
+      read_routes.py          GET endpoints (stats, experiments, metrics, etc.)
+      write_routes.py         POST endpoints (tag, note, delete, log-metric, etc.)
 ```
 
 ### Key modules
@@ -90,7 +131,7 @@ exptrack/
 - **`notebook.py`** — `%load_ext exptrack` magic + explicit API (`start()`, `metric()`, `metrics()`, `param()`, `tag()`, `note()`, `artifact()`, `out()`, `done()`, `current()`). Deferred experiment creation (skips `%load_ext` cell itself)
 - **`cli/`** — 24 subcommands across 4 modules. ANSI-colored terminal output. Shell pipeline commands (`run-start`/`run-finish`/`run-fail`) print to stdout for `eval $()` capture, everything else to stderr
 - **`plugins/__init__.py`** — `Plugin` base class with 4 lifecycle hooks (`on_start`, `on_finish`, `on_fail`, `on_metric`). `registry` singleton loads plugins dynamically from config
-- **`dashboard/`** — Web UI: stats cards, experiment list with filters, detail view with Chart.js metric plots, timeline view with cell source viewer, compare view, git diff viewer. Inline editing (double-click), tag autocomplete, timezone selector, bulk operations, export (JSON/Markdown/Plain Text)
+- **`dashboard/`** — Web UI: stats cards, experiment list with filters, detail view with Chart.js metric plots, timeline view with cell source viewer, compare view (pair + multi), image comparison, git diff viewer. Inline editing (double-click), tag autocomplete, timezone selector, bulk operations, studies/stages, manual experiment creation, export (JSON/Markdown/Plain Text). Fully modularized: 12 CSS modules in `static_parts/css/`, 15 JS modules in `static_parts/js/`, routes split into `routes/read_routes.py` and `routes/write_routes.py`
 
 ## Key Design Patterns
 
@@ -153,29 +194,16 @@ Indexed on: metrics(exp_id, key), params(exp_id), artifacts(exp_id), timeline(ex
 
 ### Dashboard Modularization
 
-`dashboard/static.py` (~2200 lines) contains all HTML, CSS, and JS as Python string constants. This is the largest file and the primary candidate for incremental modularization.
+The dashboard has been fully modularized. `static.py` is a thin assembler (~10 lines) that imports parts from `static_parts/` and concatenates into `DASHBOARD_HTML`.
 
-**Current structure within static.py:**
-- Lines 1-30: CSS variables and reset
-- Lines 30-420: All CSS styles
-- Lines 420-610: HTML structure (sidebar, main content, compare view, modals)
-- Lines 610-780: Core JS (state, init, data loading, rendering)
-- Lines 780-960: Selection, view switching, sidebar actions
-- Lines 960-1500: Table rendering, inline editing, tag management
-- Lines 1500-1810: Detail view, tabs, export
-- Lines 1810-1900: Compare view logic
-- Lines 1900-2200: Timeline, within-compare, utilities
-
-**Incremental modularization strategy:**
-1. Extract CSS into `dashboard/styles.py` — one string constant per section
-2. Extract JS into logical modules in `dashboard/js/` — each as a Python string constant:
-   - `experiment_list.py` — table rendering, sorting, filtering, grouping
-   - `detail_view.py` — experiment detail panel, tabs, inline editing
-   - `compare_view.py` — compare dropdowns, diff rendering, within-compare
-   - `timeline_view.py` — timeline rendering, cell source viewer
-   - `tag_manager.py` — tag autocomplete, inline tag editing, global tag operations
-3. `static.py` becomes the assembler: imports all parts and concatenates into `DASHBOARD_HTML`
-4. Each module should be independently testable by checking the JS string for syntax errors
+**Current structure:**
+- **`static_parts/css/`** — 12 CSS modules (reset, layout, cards, table, detail, code, timeline, compare, components, studies, images). Each exports a single string constant. `get_all_css()` assembles them
+- **`static_parts/js/`** — 15 JS modules (core, owl, sidebar, table, experiments, inline_edit, detail, compare, mutations, timeline, image_compare, studies, stage, manual, init). `get_all_js()` assembles them
+- **`static_parts/html.py`** — HTML_HEAD, HTML_BODY, HTML_FOOTER
+- **`static_parts/styles.py`** and **`static_parts/scripts.py`** — thin re-export shims for backward compatibility
+- **`dashboard/js/__init__.py`** — convenience re-exports with short aliases (e.g., `from exptrack.dashboard.js import core`)
+- **`routes/read_routes.py`** — GET API endpoints
+- **`routes/write_routes.py`** — POST API endpoints
 
 **Rules for dashboard changes:**
 - When modifying JS, keep the existing function signatures stable — other parts of the JS may call them
