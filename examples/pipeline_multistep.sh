@@ -14,7 +14,9 @@ echo "Study: $STUDY"
 echo ""
 
 # ── Step 1: Training ────────────────────────────────────────────────────────
-eval $(exptrack run-start --script train --study "$STUDY" --stage 1 --stage-name train \
+# --script takes a filename (train.py) or label (train) for naming + tracking.
+# If the file exists, expTrack resolves the full path; otherwise it's a label.
+eval $(exptrack run-start --script train.py --study "$STUDY" --stage 1 --stage-name train \
       --lr 0.01 --epochs 5)
 TRAIN_ID=$EXP_ID
 TRAIN_OUT=$EXP_OUT
@@ -35,7 +37,7 @@ exptrack run-finish $TRAIN_ID
 echo ""
 
 # ── Step 2: Testing ─────────────────────────────────────────────────────────
-eval $(exptrack run-start --script test --study "$STUDY" --stage 2 --stage-name test \
+eval $(exptrack run-start --script test.py --study "$STUDY" --stage 2 --stage-name test \
       --model "$TRAIN_OUT/model.pt")
 TEST_ID=$EXP_ID
 echo "[stage 2/3] Testing: $TEST_ID"
@@ -52,7 +54,7 @@ exptrack run-finish $TEST_ID
 echo ""
 
 # ── Step 3: Analysis ────────────────────────────────────────────────────────
-eval $(exptrack run-start --script analyze --study "$STUDY" --stage 3 --stage-name analyze)
+eval $(exptrack run-start --script analyze.py --study "$STUDY" --stage 3 --stage-name analyze)
 ANALYZE_ID=$EXP_ID
 echo "[stage 3/3] Analyzing: $ANALYZE_ID"
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import platform
 import re as _re
 import socket
@@ -91,9 +92,9 @@ class Experiment:
                 script = frame.f_globals.get("__file__", "") or sys.argv[0]
             except Exception:
                 script = sys.argv[0]  # frame detection failed, fall back to argv
-        # Resolve to absolute path only if the script is a real file;
-        # otherwise keep as-is (e.g. --script label from run-start)
-        if script and Path(script).is_file():
+        # Resolve to absolute path if it looks like a real file path;
+        # keep labels (e.g. "pipeline", "train") as-is from run-start
+        if script and (Path(script).is_file() or os.path.sep in script or script.startswith("/")):
             self.script = str(Path(script).resolve())
         else:
             self.script = script

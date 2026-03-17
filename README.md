@@ -212,7 +212,7 @@ For multi-step pipelines where Python isn't the only language:
 
 ```bash
 # Start experiment, get env vars back
-eval $(exptrack run-start --script train --lr 0.01 --epochs 50)
+eval $(exptrack run-start --script train.py --lr 0.01 --epochs 50)
 # Now $EXP_ID, $EXP_NAME, $EXP_OUT are set
 
 # Run your training

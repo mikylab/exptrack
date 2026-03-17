@@ -88,12 +88,24 @@ def cmd_run_start(args):
     notes = args.notes or ""
     name  = args.name or ""
 
+    # Resolve --script to a real file path if possible, otherwise keep as label
+    script_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
+    script_path = Path(script_hint)
+    if not script_path.is_file():
+        # Try common extensions
+        for ext in (".py", ".sh", ".r", ".R", ".jl"):
+            candidate = Path(script_hint + ext)
+            if candidate.is_file():
+                script_path = candidate
+                break
+    script_val = str(script_path.resolve()) if script_path.is_file() else script_hint
+
     exp = Experiment(
         name=name,
         params=params,
         tags=tags,
         notes=notes,
-        script=args.script or os.environ.get("SLURM_JOB_NAME", "pipeline"),
+        script=script_val,
         _caller_depth=0,
     )
 
