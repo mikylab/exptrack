@@ -53,6 +53,35 @@ exptrack run-finish $EXP_ID --metrics results.json
 
 SLURM environment variables (`SLURM_JOB_ID`, `SLURM_NODELIST`, etc.) are captured automatically.
 
+### How do I track a multi-step pipeline (train → test → analyze)?
+
+Each `run-start` creates a **separate experiment**. Call `run-start`/`run-finish` for each step and save `$EXP_ID` before the next step overwrites it. Use a shared tag to group them:
+
+```bash
+RUN_TAG="pipeline-$(date +%s)"
+
+# Step 1: Train
+eval $(exptrack run-start --script train.py --phase train --lr 0.01 --tag "$RUN_TAG")
+TRAIN_ID=$EXP_ID
+python train.py --train --lr 0.01
+exptrack run-finish $TRAIN_ID
+
+# Step 2: Test
+eval $(exptrack run-start --script train.py --phase test --tag "$RUN_TAG")
+TEST_ID=$EXP_ID
+python train.py --test
+exptrack run-finish $TEST_ID
+
+# Step 3: Analyze
+eval $(exptrack run-start --script analyze.py --phase analyze --tag "$RUN_TAG")
+python analyze.py
+exptrack run-finish $EXP_ID
+```
+
+Filter by the shared tag in the dashboard or CLI to see all steps together. See [`examples/pipeline_multistep.sh`](../examples/pipeline_multistep.sh) for a full working example.
+
+Note: `exptrack run` cannot wrap multiple scripts as one experiment — it's designed for single-script tracking. For multi-step workflows, use the `run-start`/`run-finish` shell commands as shown above.
+
 ### Does expTrack capture plots and figures automatically?
 
 Yes — if you use matplotlib. expTrack monkey-patches `plt.savefig()` and `Figure.savefig()` so any saved figure is automatically copied to the experiment's output directory and registered as an artifact. If you save figures before the experiment starts, they're buffered and linked when it begins.

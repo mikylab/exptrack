@@ -231,6 +231,37 @@ exptrack run-fail $EXP_ID "OOM on node gpu03"
 
 SLURM environment variables (`SLURM_JOB_ID`, etc.) are captured automatically.
 
+### Multi-step pipelines
+
+Each `run-start` creates a **separate experiment**. For pipelines with multiple scripts (train, test, analyze), call `run-start`/`run-finish` for each step. Save each `$EXP_ID` before the next `run-start` overwrites it. Use tags to group related steps:
+
+```bash
+RUN_TAG="pipeline-$(date +%s)"
+
+# Step 1: Train
+eval $(exptrack run-start --script train.py --phase train --lr 0.01 --tag "$RUN_TAG")
+TRAIN_ID=$EXP_ID
+python train.py --train --lr 0.01
+exptrack log-metric $TRAIN_ID loss 0.23 --step 100
+exptrack run-finish $TRAIN_ID --metrics results.json
+
+# Step 2: Test
+eval $(exptrack run-start --script train.py --phase test --tag "$RUN_TAG")
+TEST_ID=$EXP_ID
+python train.py --test
+exptrack log-metric $TEST_ID accuracy 0.94
+exptrack run-finish $TEST_ID
+
+# Step 3: Analyze
+eval $(exptrack run-start --script analyze.py --phase analyze --tag "$RUN_TAG")
+ANALYZE_ID=$EXP_ID
+python analyze.py
+exptrack log-artifact $ANALYZE_ID report.pdf --label "analysis"
+exptrack run-finish $ANALYZE_ID
+```
+
+Filter by the shared tag in the dashboard or CLI (`exptrack ls`) to see all steps from one pipeline run. See [`examples/pipeline_multistep.sh`](examples/pipeline_multistep.sh) for a full working example.
+
 ---
 
 ## Web Dashboard
@@ -338,6 +369,7 @@ The [`examples/`](examples/) directory contains ready-to-run scripts. Install ex
 | [`manual_tracking.py`](examples/manual_tracking.py) | Explicit Python API -- `Experiment` context manager, params, metrics, tags |
 | [`notebook_example.py`](examples/notebook_example.py) | Notebook workflow via `exptrack.notebook` |
 | [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM pipeline with `eval $(exptrack run-start ...)` |
+| [`pipeline_multistep.sh`](examples/pipeline_multistep.sh) | Multi-step pipeline: train → test → analyze as separate experiments |
 
 ```bash
 # Install and initialize

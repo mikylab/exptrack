@@ -151,6 +151,10 @@ HTML_BODY = r"""</style>
       <div class="faq-a">Yes. If argparse isn't detected, expTrack parses sys.argv directly. It recognizes --key value and --key=value patterns. Click, Fire, Typer, and manual parsing all work.</div>
     </div>
     <div class="faq-item">
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How do I track a multi-step pipeline (train &rarr; test &rarr; analyze)?</div>
+      <div class="faq-a">Each <code>run-start</code> creates a separate experiment. Call <code>run-start</code>/<code>run-finish</code> per step, saving <code>$EXP_ID</code> before the next step overwrites it. Use a shared <code>--tag</code> to group related steps, then filter by that tag in the dashboard. See <code>examples/pipeline_multistep.sh</code> for a full example.</div>
+    </div>
+    <div class="faq-item">
       <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does expTrack capture plots automatically?</div>
       <div class="faq-a">Yes, if you use matplotlib. plt.savefig() is monkey-patched so saved figures are auto-registered as artifacts. Figures saved before the experiment starts are buffered and linked when it begins.</div>
     </div>
