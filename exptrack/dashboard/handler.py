@@ -124,6 +124,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "delete-metric":   lambda: write_routes.api_delete_metric(conn, exp_id, body),
                 "rename-metric":   lambda: write_routes.api_rename_metric(conn, exp_id, body),
                 "edit-result":     lambda: write_routes.api_edit_result(conn, exp_id, body),
+                "edit-script":     lambda: write_routes.api_edit_script(conn, exp_id, body),
+                "edit-command":    lambda: write_routes.api_edit_command(conn, exp_id, body),
                 "export-diff":     lambda: write_routes.api_export_diff(conn, exp_id),
             }
             handler = dispatch.get(action)
@@ -145,6 +147,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/all-studies":          lambda: write_routes.api_all_studies(conn),
             "/api/bulk-add-to-study":    lambda: write_routes.api_bulk_add_to_study(conn, body),
             "/api/result-types":         lambda: write_routes.api_manage_result_types(body),
+            "/api/experiments/create":   lambda: write_routes.api_create_experiment(conn, body),
         }
         handler = global_dispatch.get(path)
         if handler:

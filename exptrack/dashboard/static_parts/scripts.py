@@ -1817,7 +1817,7 @@ async function refreshDetail(id) {
           <div>
             <div class="info-grid">
               <span class="label">ID</span><span>${exp.id}</span>
-              <span class="label">Script</span><span style="font-size:12px">${esc(exp.script||'--')}</span>
+              <span class="label">Script</span><span id="detail-script" class="editable-hint" ondblclick="startDetailScriptEdit('${exp.id}',this)" title="Double-click to edit" style="font-size:12px">${esc(exp.script||'--')}</span>
               <span class="label">Host</span><span>${exp.hostname||'--'}</span>
               <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
               <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
@@ -1826,7 +1826,7 @@ async function refreshDetail(id) {
               <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" ondblclick="startDetailNoteEdit('${exp.id}',this)" title="Double-click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">double-click to add notes</span>'}</span>
               <span class="label">Uncommitted</span><span>${diffData.diff ? (diffCompacted ? '<span style="color:var(--yellow)">' + esc(diffData.diff.split(' — ')[1] || 'compacted') + '</span>' : '<span style="color:var(--green)">' + exp.diff_lines + ' lines</span> <button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:6px" onclick="exportDiff(\'' + exp.id + '\')">Export</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="compactDiff(\'' + exp.id + '\')">Compact</button>') : '<span style="color:var(--muted)">none (all changes were committed)</span>'}</span>
             </div>
-            ${exp.command ? '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span><button class="copy-btn" data-cmd="' + esc(exp.command).replace(/"/g,'&quot;') + '" onclick="navigator.clipboard.writeText(this.dataset.cmd).then(()=>owlSay(\'Copied!\'))">Copy</button></div><code class="reproduce-cmd">' + esc(exp.command) + '</code></div>' : ''}
+            ${exp.command ? '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span><span><button class="copy-btn" style="margin-right:4px" onclick="startDetailCommandEdit(\'' + exp.id + '\')">Edit</button><button class="copy-btn" data-cmd="' + esc(exp.command).replace(/"/g,'&quot;') + '" onclick="navigator.clipboard.writeText(this.dataset.cmd).then(()=>owlSay(\'Copied!\'))">Copy</button></span></div><code class="reproduce-cmd" id="detail-command">' + esc(exp.command) + '</code></div>' : '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span><button class="copy-btn" onclick="startDetailCommandEdit(\'' + exp.id + '\')">Add command</button></div><code class="reproduce-cmd" id="detail-command" style="color:var(--muted)">no command recorded</code></div>'}
             ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
             ${varHtml}
           </div>
@@ -4033,10 +4033,230 @@ async function saveDetailStage(id) {
 }
 """
 
+# ── Script / Command inline editing + Manual experiment creation ──────────────
+
+JS_MANUAL = """
+function startDetailScriptEdit(id, el) {
+  const currentVal = el.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'inline-edit-input';
+  input.style.cssText = 'width:100%;font-size:12px;padding:4px 6px';
+  input.value = currentVal === '--' ? '' : currentVal;
+  el.textContent = '';
+  el.appendChild(input);
+  input.focus();
+  input.select();
+
+  let saved = false;
+  async function doSave() {
+    if (saved) return;
+    saved = true;
+    const newVal = input.value.trim();
+    if (newVal !== currentVal) {
+      const res = await postApi('/api/experiment/' + id + '/edit-script', {script: newVal});
+      if (res.ok) {
+        const exp = allExperiments.find(e => e.id === id);
+        if (exp) exp.script = newVal;
+      }
+    }
+    refreshDetail(id);
+  }
+  input.addEventListener('blur', doSave);
+  input.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { saved = true; refreshDetail(id); }
+  });
+}
+
+function startDetailCommandEdit(id) {
+  const codeEl = document.getElementById('detail-command');
+  if (!codeEl) return;
+  const currentVal = codeEl.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'inline-edit-input';
+  input.style.cssText = 'width:100%;font-size:13px;padding:4px 6px;font-family:var(--font-mono,monospace)';
+  input.value = currentVal === 'no command recorded' ? '' : currentVal;
+  codeEl.textContent = '';
+  codeEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  let saved = false;
+  async function doSave() {
+    if (saved) return;
+    saved = true;
+    const newVal = input.value.trim();
+    if (newVal !== currentVal) {
+      const res = await postApi('/api/experiment/' + id + '/edit-command', {command: newVal});
+      if (res.ok) {
+        const exp = allExperiments.find(e => e.id === id);
+        if (exp) exp.command = newVal;
+      }
+    }
+    refreshDetail(id);
+  }
+  input.addEventListener('blur', doSave);
+  input.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { saved = true; refreshDetail(id); }
+  });
+}
+
+// ── Manual experiment creation modal ─────────────────────────────────────────
+
+function openNewExpModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'img-modal-overlay';
+  overlay.style.zIndex = '10001';
+  overlay.addEventListener('click', function(ev) { if (ev.target === overlay) overlay.remove(); });
+
+  const content = document.createElement('div');
+  content.className = 'img-modal-content';
+  content.style.cssText = 'background:var(--bg);border-radius:8px;padding:24px;max-width:560px;width:90vw;max-height:85vh;overflow-y:auto';
+
+  content.innerHTML = `
+    <div class="img-modal-header" style="padding:0 0 12px 0;color:var(--fg)">
+      <span style="font-size:16px;font-weight:600">New Experiment</span>
+      <button class="img-modal-close" style="color:var(--fg)" onclick="this.closest('.img-modal-overlay').remove()">&times;</button>
+    </div>
+    <div class="new-exp-form">
+      <label>Name <span style="color:var(--red)">*</span></label>
+      <input type="text" id="new-exp-name" placeholder="e.g. baseline_resnet50" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        <div>
+          <label>Status</label>
+          <select id="new-exp-status" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+            <option value="done" selected>done</option>
+            <option value="failed">failed</option>
+            <option value="running">running</option>
+          </select>
+        </div>
+        <div>
+          <label>Date</label>
+          <input type="datetime-local" id="new-exp-date" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+        </div>
+      </div>
+
+      <label style="margin-top:8px">Script path</label>
+      <input type="text" id="new-exp-script" placeholder="/path/to/train.py (optional)" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+
+      <label style="margin-top:8px">Command</label>
+      <input type="text" id="new-exp-command" placeholder="python train.py --lr 0.01 (optional)" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+
+      <label style="margin-top:8px">Tags</label>
+      <input type="text" id="new-exp-tags" placeholder="comma-separated, e.g. baseline, v1" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+
+      <label style="margin-top:8px">Notes</label>
+      <textarea id="new-exp-notes" rows="2" placeholder="optional notes" style="width:100%;padding:6px 8px;font-size:13px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px;resize:vertical"></textarea>
+
+      <label style="margin-top:8px">Params</label>
+      <div id="new-exp-params">
+        <div class="kv-row" style="display:flex;gap:4px;margin-bottom:4px">
+          <input type="text" placeholder="key" class="kv-key" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+          <input type="text" placeholder="value" class="kv-val" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+          <button onclick="this.parentElement.remove()" style="padding:2px 8px;cursor:pointer;font-size:12px">&times;</button>
+        </div>
+      </div>
+      <button onclick="addKvRow('new-exp-params')" style="font-size:12px;padding:2px 10px;cursor:pointer;margin-top:2px">+ Add param</button>
+
+      <label style="margin-top:8px">Metrics</label>
+      <div id="new-exp-metrics">
+        <div class="kv-row" style="display:flex;gap:4px;margin-bottom:4px">
+          <input type="text" placeholder="key" class="kv-key" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+          <input type="text" placeholder="value (number)" class="kv-val" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+          <button onclick="this.parentElement.remove()" style="padding:2px 8px;cursor:pointer;font-size:12px">&times;</button>
+        </div>
+      </div>
+      <button onclick="addKvRow('new-exp-metrics')" style="font-size:12px;padding:2px 10px;cursor:pointer;margin-top:2px">+ Add metric</button>
+
+      <div style="margin-top:16px;text-align:right">
+        <button onclick="this.closest('.img-modal-overlay').remove()" style="padding:6px 16px;cursor:pointer;margin-right:8px;font-size:13px">Cancel</button>
+        <button onclick="submitNewExp()" style="padding:6px 16px;cursor:pointer;font-size:13px;background:var(--accent);color:#fff;border:none;border-radius:4px;font-weight:600">Create</button>
+      </div>
+    </div>
+  `;
+
+  overlay.appendChild(content);
+  document.body.appendChild(overlay);
+
+  // Set default date to now in local time
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  document.getElementById('new-exp-date').value =
+    now.getFullYear() + '-' + pad(now.getMonth()+1) + '-' + pad(now.getDate()) +
+    'T' + pad(now.getHours()) + ':' + pad(now.getMinutes());
+
+  document.getElementById('new-exp-name').focus();
+}
+
+function addKvRow(containerId) {
+  const container = document.getElementById(containerId);
+  const row = document.createElement('div');
+  row.className = 'kv-row';
+  row.style.cssText = 'display:flex;gap:4px;margin-bottom:4px';
+  row.innerHTML =
+    '<input type="text" placeholder="key" class="kv-key" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">' +
+    '<input type="text" placeholder="value" class="kv-val" style="flex:1;padding:4px 6px;font-size:12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px">' +
+    '<button onclick="this.parentElement.remove()" style="padding:2px 8px;cursor:pointer;font-size:12px">&times;</button>';
+  container.appendChild(row);
+  row.querySelector('.kv-key').focus();
+}
+
+function collectKv(containerId) {
+  const obj = {};
+  const rows = document.querySelectorAll('#' + containerId + ' .kv-row');
+  rows.forEach(function(row) {
+    const k = row.querySelector('.kv-key').value.trim();
+    const v = row.querySelector('.kv-val').value.trim();
+    if (k && v) obj[k] = v;
+  });
+  return obj;
+}
+
+async function submitNewExp() {
+  const name = document.getElementById('new-exp-name').value.trim();
+  if (!name) { owlSay('Name is required'); return; }
+
+  const dateVal = document.getElementById('new-exp-date').value;
+  let created_at = '';
+  if (dateVal) {
+    created_at = new Date(dateVal).toISOString();
+  }
+
+  const body = {
+    name: name,
+    status: document.getElementById('new-exp-status').value,
+    created_at: created_at,
+    script: document.getElementById('new-exp-script').value.trim(),
+    command: document.getElementById('new-exp-command').value.trim(),
+    tags: document.getElementById('new-exp-tags').value.trim(),
+    notes: document.getElementById('new-exp-notes').value.trim(),
+    params: collectKv('new-exp-params'),
+    metrics: collectKv('new-exp-metrics')
+  };
+
+  const res = await postApi('/api/experiments/create', body);
+  if (res.ok) {
+    document.querySelector('.img-modal-overlay').remove();
+    owlSay('Experiment created!');
+    await loadExperiments();
+    renderExperiments();
+    renderExpList();
+    // Select the new experiment
+    if (res.id) showDetail(res.id);
+  } else {
+    owlSay(res.error || 'Failed to create experiment');
+  }
+}
+"""
+
 
 def get_all_js() -> str:
     """Concatenate all JavaScript sections."""
     return (JS_CORE + JS_OWL + JS_SIDEBAR + JS_TABLE +
             JS_EXPERIMENTS + JS_INLINE_EDIT + JS_DETAIL +
             JS_COMPARE + JS_MUTATIONS + JS_TIMELINE +
-            JS_IMAGE_COMPARE + JS_STUDIES + JS_STAGE + JS_INIT)
+            JS_IMAGE_COMPARE + JS_STUDIES + JS_STAGE + JS_MANUAL + JS_INIT)

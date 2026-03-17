@@ -121,6 +121,7 @@ HTML_BODY = r"""</style>
         <div class="toolbar-btn-group">
           <button class="toolbar-btn compare-main-btn" onclick="showCompareView()" title="Compare two experiments">&#x2194; Compare</button>
           <button class="toolbar-btn" onclick="toggleManageDrawer()" title="Manage tags &amp; studies">&#x2699; Manage</button>
+          <button class="toolbar-btn" onclick="openNewExpModal()" title="Add manual experiment">&#x2795; New</button>
         </div>
         <div class="tag-filter-bar" id="filter-bar"></div>
       </div>
