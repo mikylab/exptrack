@@ -109,12 +109,10 @@ def cmd_run_start(args):
     notes = args.notes or ""
     name  = args.name or ""
 
-    # Detect the calling script (the shell script that invoked run-start)
-    calling_script = _detect_calling_script()
-
-    # --script is a naming hint only; use it for name generation but store
-    # the actual calling script path in the DB
+    # Detect the calling script (the shell script that invoked run-start).
+    # Fall back to --script value if /proc detection fails.
     naming_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
+    calling_script = _detect_calling_script() or naming_hint
 
     exp = Experiment(
         name=name or "",
@@ -125,7 +123,7 @@ def cmd_run_start(args):
         _caller_depth=0,
     )
     # Override name if not explicitly set — use the naming hint, not the
-    # calling script path
+    # calling script path (which may be the .sh wrapper)
     if not name:
         from ..core.naming import make_run_name
         exp.name = make_run_name(naming_hint, params)
