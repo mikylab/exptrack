@@ -652,8 +652,7 @@ CSS_COMPONENTS = """
   @keyframes owlBlink { 0%,92%,100% { height: 1; } 94%,98% { height: 0; } }
   @keyframes owlBounce { 0%,100% { transform: translateY(0); } 40% { transform: translateY(-8px); } 60% { transform: translateY(-4px); } }
   @keyframes owlWiggle { 0%,100% { transform: rotate(0deg); } 25% { transform: rotate(-8deg); } 75% { transform: rotate(8deg); } }
-  .owl-speech { position: fixed; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 11px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 10000; pointer-events: none; opacity: 0; transition: opacity 0.3s; }
-  .owl-speech.visible { opacity: 1; }
+  .owl-speech { position: fixed; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 11px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 10000; pointer-events: none; display: none; }
   .owl-speech::before { content: ''; position: absolute; bottom: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-bottom-color: var(--border); }
   .owl-container { position: relative; display: inline-block; }
   .tz-setting { display: inline-flex; align-items: center; gap: 6px; }

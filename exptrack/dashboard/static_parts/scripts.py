@@ -236,7 +236,7 @@ function renderHiddenPanel() {
     panel = document.createElement('div');
     panel.id = 'hidden-panel';
     panel.className = 'hidden-panel';
-    tableWrap.parentNode.insertBefore(panel, tableWrap);
+    tableWrap.parentNode.insertBefore(panel, tableWrap.nextSibling);
   }
   if (hiddenIds.size === 0) { panel.style.display = 'none'; return; }
   panel.style.display = 'block';
@@ -627,9 +627,9 @@ function owlSay(msg, anim) {
     el.style.left = (rect.left + rect.width / 2) + 'px';
     el.style.transform = 'translateX(-50%)';
   }
-  el.classList.add('visible');
+  el.style.display = 'block';
   if (owlSpeechTimer) clearTimeout(owlSpeechTimer);
-  owlSpeechTimer = setTimeout(() => el.classList.remove('visible'), 3500);
+  owlSpeechTimer = setTimeout(() => { el.style.display = 'none'; }, 3500);
   // Trigger animation
   const mascot = document.querySelector('.owl-mascot');
   if (mascot && anim) {
