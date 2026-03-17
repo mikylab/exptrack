@@ -136,6 +136,22 @@ python -m exptrack train.py --lr 0.01 --data train
 - Auto-links saved plots -- `plt.savefig("plot.png")` registers the file as an artifact
 - Marks done/failed when the script exits
 
+### Logging metrics from a wrapped script
+
+`exptrack run` auto-captures **parameters** and **artifacts**, but metrics (loss, accuracy, etc.) need to be logged explicitly. When your script runs under `exptrack run`, an `__exptrack__` global is injected into the script's namespace with the active `Experiment` object:
+
+```python
+# No imports needed — works only under `exptrack run`
+exp = globals().get("__exptrack__")
+
+for epoch in range(epochs):
+    loss = train(...)
+    if exp:
+        exp.log_metric("loss", loss, step=epoch)
+```
+
+The `globals().get()` pattern keeps your script portable -- it still runs with plain `python train.py` (metrics are just skipped). See [`examples/basic_script.py`](examples/basic_script.py) for a full example.
+
 ---
 
 ## Notebooks
