@@ -712,6 +712,35 @@ CSS_IMAGES = """
   .manage-section h4 { font-size: 13px; margin-bottom: 6px; }
   .tm-name-edit { cursor: pointer; }
   .tm-name-edit:hover { color: var(--blue); }
+
+  /* New experiment modal */
+  .new-exp-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 10000; display: flex; align-items: center; justify-content: center; }
+  .new-exp-dialog { background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; width: 520px; max-width: 95vw; max-height: 85vh; display: flex; flex-direction: column; }
+  .new-exp-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .new-exp-header h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  .new-exp-body { padding: 16px; overflow-y: auto; flex: 1; }
+  .new-exp-footer { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+  .new-exp-field { margin-bottom: 10px; }
+  .new-exp-field label { display: block; font-size: 12px; font-weight: 500; color: var(--muted); margin-bottom: 3px; }
+  .new-exp-field input, .new-exp-field textarea, .new-exp-field select {
+    font-family: inherit; font-size: 13px; padding: 6px 8px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--card-bg); color: var(--fg); width: 100%;
+  }
+  .new-exp-field input:focus, .new-exp-field textarea:focus, .new-exp-field select:focus { outline: none; border-color: var(--blue); }
+  .new-exp-field textarea { resize: vertical; }
+  .new-exp-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .new-exp-kv { display: flex; gap: 4px; margin-bottom: 4px; align-items: center; }
+  .new-exp-kv input {
+    flex: 1; font-family: inherit; font-size: 12px; padding: 4px 6px;
+    border: 1px solid var(--border); border-radius: 3px;
+    background: var(--card-bg); color: var(--fg);
+  }
+  .new-exp-kv input:focus { outline: none; border-color: var(--blue); }
+  .new-exp-kv-del { background: none; border: none; color: var(--muted); font-size: 14px; cursor: pointer; padding: 0 4px; line-height: 1; }
+  .new-exp-kv-del:hover { color: var(--red); }
+  .new-exp-kv-add { font-family: inherit; font-size: 12px; color: var(--blue); cursor: pointer; background: none; border: none; padding: 2px 0; }
+  .new-exp-kv-add:hover { text-decoration: underline; }
 """
 
 

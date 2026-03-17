@@ -883,6 +883,95 @@ def api_rename_metric(conn, exp_id: str, body: dict) -> dict:
     return {"ok": True, "old_key": old_key, "new_key": new_key}
 
 
+def api_edit_script(conn, exp_id: str, body: dict) -> dict:
+    """Edit the script/notebook path for an experiment."""
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    script = body.get("script", "").strip()
+    conn.execute(
+        "UPDATE experiments SET script=?, updated_at=? WHERE id=?",
+        (script or None, datetime.now(timezone.utc).isoformat(), exp["id"])
+    )
+    conn.commit()
+    return {"ok": True, "script": script}
+
+
+def api_edit_command(conn, exp_id: str, body: dict) -> dict:
+    """Edit the reproduce command for an experiment."""
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    command = body.get("command", "").strip()
+    conn.execute(
+        "UPDATE experiments SET command=?, updated_at=? WHERE id=?",
+        (command or None, datetime.now(timezone.utc).isoformat(), exp["id"])
+    )
+    conn.commit()
+    return {"ok": True, "command": command}
+
+
+def api_create_experiment(conn, body: dict) -> dict:
+    """Create a manual experiment entry."""
+    import uuid
+    name = body.get("name", "").strip()
+    if not name:
+        return {"error": "name is required"}
+
+    exp_id = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc).isoformat()
+    created_at = body.get("created_at", "").strip() or now
+    status = body.get("status", "done").strip()
+    if status not in ("done", "failed", "running"):
+        status = "done"
+
+    script = body.get("script", "").strip() or None
+    command = body.get("command", "").strip() or None
+    notes = body.get("notes", "").strip() or None
+    tags = body.get("tags", [])
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    tags_json = json.dumps(tags) if tags else "[]"
+
+    from ...config import load as load_config
+    conf = load_config()
+    project = conf.get("project", "")
+
+    conn.execute(
+        """INSERT INTO experiments
+           (id, project, name, status, created_at, updated_at,
+            script, command, hostname, python_ver, notes, tags, studies)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (exp_id, project, name, status, created_at, now,
+         script, command, None, None, notes, tags_json, "[]")
+    )
+
+    # Insert params
+    params = body.get("params", {})
+    if isinstance(params, dict):
+        for k, v in params.items():
+            conn.execute(
+                "INSERT INTO params (exp_id, key, value) VALUES (?,?,?)",
+                (exp_id, k, json.dumps(v))
+            )
+
+    # Insert metrics
+    metrics = body.get("metrics", {})
+    if isinstance(metrics, dict):
+        for k, v in metrics.items():
+            try:
+                num_val = float(v)
+            except (ValueError, TypeError):
+                continue
+            conn.execute(
+                "INSERT INTO metrics (exp_id, key, value, step, ts, source) VALUES (?,?,?,0,?,?)",
+                (exp_id, k, num_val, now, "manual")
+            )
+
+    conn.commit()
+    return {"ok": True, "id": exp_id}
+
+
 def api_log_path(conn, exp_id: str, body: dict) -> dict:
     """Manage log paths for an experiment (add/edit/delete).
 

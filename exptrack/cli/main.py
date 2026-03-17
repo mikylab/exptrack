@@ -31,7 +31,8 @@ from .mutate_cmds import (cmd_tag, cmd_untag, cmd_delete_tag, cmd_note,
                           cmd_stage)
 from .pipeline_cmds import (cmd_run_start, cmd_run_finish, cmd_run_fail,
                             cmd_log_metric, cmd_log_artifact,
-                            cmd_log_output, cmd_link_dir, cmd_log_result)
+                            cmd_log_output, cmd_link_dir, cmd_log_result,
+                            cmd_create)
 
 
 def main():
@@ -127,6 +128,24 @@ def main():
     p_lr.add_argument("--file", help="JSON file with results")
     p_lr.add_argument("--source", default="manual",
                        help="Source label (default: manual)")
+
+    p_create = sub.add_parser("create",
+        help="Create a manual experiment entry (for runs done outside exptrack)")
+    p_create.add_argument("--name", required=True, help="Experiment name")
+    p_create.add_argument("--params", default="",
+                          help="JSON string of params, e.g. '{\"lr\": 0.01}'")
+    p_create.add_argument("--metrics", default="",
+                          help="JSON string of metrics, e.g. '{\"accuracy\": 0.95}'")
+    p_create.add_argument("--tags", nargs="*", default=[],
+                          help="Tags for the experiment")
+    p_create.add_argument("--notes", default="", help="Notes text")
+    p_create.add_argument("--script", default="", help="Script/notebook path")
+    p_create.add_argument("--command", default="", help="Reproduce command")
+    p_create.add_argument("--status", default="done",
+                          choices=["done", "failed", "running"],
+                          help="Experiment status (default: done)")
+    p_create.add_argument("--date", default="",
+                          help="Created date (ISO format, default: now)")
 
     p_stale = sub.add_parser("stale", help="Mark killed/timed-out runs as failed")
     p_stale.add_argument("--hours", type=float, default=24,
@@ -301,6 +320,7 @@ def main():
         "log-output":   cmd_log_output,
         "link-dir":     cmd_link_dir,
         "log-result":   cmd_log_result,
+        "create":       cmd_create,
         "stale":        cmd_stale,
         "upgrade":      cmd_upgrade,
         "storage":      cmd_storage,

@@ -504,3 +504,65 @@ def cmd_link_dir(args):
     else:
         conn.commit()
         print(f"[exptrack] Linked file: {dir_path}", file=sys.stderr)
+
+
+def cmd_create(args):
+    """Create a manual experiment entry for runs done outside exptrack."""
+    import uuid
+
+    conn = get_db()
+    exp_id = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc).isoformat()
+    created_at = args.date.strip() if args.date else now
+    name = args.name.strip()
+
+    conf = cfg.load()
+    project = conf.get("project", "")
+
+    tags = args.tags or []
+    tags_json = json.dumps(tags) if tags else "[]"
+    notes = args.notes.strip() if args.notes else None
+    script = args.script.strip() if args.script else None
+    command = args.command.strip() if args.command else None
+
+    conn.execute(
+        """INSERT INTO experiments
+           (id, project, name, status, created_at, updated_at,
+            script, command, hostname, python_ver, notes, tags, studies)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (exp_id, project, name, args.status, created_at, now,
+         script, command, None, None, notes, tags_json, "[]")
+    )
+
+    # Parse and insert params
+    if args.params:
+        try:
+            params = json.loads(args.params)
+            if isinstance(params, dict):
+                for k, v in params.items():
+                    conn.execute(
+                        "INSERT INTO params (exp_id, key, value) VALUES (?,?,?)",
+                        (exp_id, k, json.dumps(v))
+                    )
+        except json.JSONDecodeError:
+            print(f"[exptrack] Warning: could not parse --params as JSON", file=sys.stderr)
+
+    # Parse and insert metrics
+    if args.metrics:
+        try:
+            metrics = json.loads(args.metrics)
+            if isinstance(metrics, dict):
+                for k, v in metrics.items():
+                    try:
+                        num_val = float(v)
+                    except (ValueError, TypeError):
+                        continue
+                    conn.execute(
+                        "INSERT INTO metrics (exp_id, key, value, step, ts, source) VALUES (?,?,?,0,?,?)",
+                        (exp_id, k, num_val, now, "manual")
+                    )
+        except json.JSONDecodeError:
+            print(f"[exptrack] Warning: could not parse --metrics as JSON", file=sys.stderr)
+
+    conn.commit()
+    print(f"[exptrack] Created experiment: {name} ({exp_id})", file=sys.stderr)
