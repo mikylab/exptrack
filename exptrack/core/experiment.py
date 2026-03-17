@@ -148,6 +148,7 @@ class Experiment:
         if diff_for_db:
             try:
                 diff_for_db = store_git_diff(conn, diff_for_db)
+                conn.commit()  # commit the dedup insert before main transaction
             except Exception:
                 pass  # fall back to storing inline
         try:

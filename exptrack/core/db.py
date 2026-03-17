@@ -27,9 +27,10 @@ def get_db() -> sqlite3.Connection:
             print("[exptrack] warning: WAL file exists without SHM file — "
                   "database may be in an inconsistent state", file=sys.stderr)
 
-    conn = sqlite3.connect(str(p))
+    conn = sqlite3.connect(str(p), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
 
     # Quick integrity check on first open
     try:
