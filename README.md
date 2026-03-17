@@ -611,7 +611,7 @@ exp.finish()
 
 ## Examples
 
-The [`examples/`](examples/) directory contains ready-to-run scripts:
+The [`examples/`](examples/) directory contains ready-to-run scripts. Install exptrack first (`pip install -e .`), then:
 
 | Example | What it shows |
 |---------|---------------|
@@ -621,12 +621,15 @@ The [`examples/`](examples/) directory contains ready-to-run scripts:
 | [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM pipeline with `eval $(exptrack run-start ...)` |
 
 ```bash
-# Try the zero-friction approach
+# Install and initialize
+pip install -e .
 exptrack init
+
+# Try the zero-friction approach (no exptrack imports in the script)
 exptrack run examples/basic_script.py --lr 0.01 --epochs 10
 exptrack ls
 
-# Or the explicit API
+# Or the explicit API (imports exptrack directly)
 python examples/manual_tracking.py
 ```
 
