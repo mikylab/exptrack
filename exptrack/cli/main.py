@@ -67,10 +67,13 @@ def main():
     # consumes them as unknown flags.
     if len(sys.argv) > 1 and sys.argv[1] == "run-start":
         p_rs = argparse.ArgumentParser(prog="exptrack run-start")
-        p_rs.add_argument("--name",   default="")
-        p_rs.add_argument("--script", default="")
-        p_rs.add_argument("--tags",   nargs="*")
-        p_rs.add_argument("--notes",  default="")
+        p_rs.add_argument("--name",       default="")
+        p_rs.add_argument("--script",     default="")
+        p_rs.add_argument("--tags",       nargs="*")
+        p_rs.add_argument("--study",      default="")
+        p_rs.add_argument("--stage",      type=int, default=None)
+        p_rs.add_argument("--stage-name", default=None)
+        p_rs.add_argument("--notes",      default="")
         known, unknown = p_rs.parse_known_args(sys.argv[2:])
         known.params = unknown
         cmd_run_start(known)
