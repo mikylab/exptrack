@@ -1088,7 +1088,7 @@ async function loadStats() {
 async function bulkCompactAll() {
   const doneIds = allExperiments.filter(e => e.status === 'done').map(e => e.id);
   if (!doneIds.length) { owlSay('No done experiments to compact'); return; }
-  if (!confirm('Compact diffs for all ' + doneIds.length + ' done experiments?')) return;
+  if (!confirm('Compact diffs for all ' + doneIds.length + ' done experiments?\\n\\nThis strips git diff data and cannot be undone.\\nTip: Run "exptrack compact --export DIR" from the CLI to save diffs first.')) return;
   const d = await postApi('/api/bulk-compact', {ids: doneIds});
   if (d.ok) {
     owlSay('Compacted ' + d.compacted + ' diff(s)');
@@ -2358,7 +2358,7 @@ async function finishExp(id) {
 // ── Diff compact / export ────────────────────────────────────────────────────
 
 async function compactDiff(id) {
-  if (!confirm('Strip the git diff from this experiment? The diff data will be replaced with a compact summary. This cannot be undone.')) return;
+  if (!confirm('Strip the git diff from this experiment?\\n\\nThe diff will be replaced with a compact summary. This cannot be undone.\\n\\nTip: Click "Export" first to save the diff as a markdown file.')) return;
   const d = await postApi('/api/bulk-compact', {ids: [id]});
   if (d.ok) {
     owlSay('Compacted diff (' + d.compacted + ' experiment)');
@@ -2382,7 +2382,7 @@ async function exportDiff(id) {
 async function bulkCompact() {
   const ids = [...selectedIds];
   if (!ids.length) return;
-  if (!confirm('Compact diffs for ' + ids.length + ' experiment(s)? This strips git diff data and cannot be undone.')) return;
+  if (!confirm('Compact diffs for ' + ids.length + ' experiment(s)?\\n\\nThis strips git diff data and cannot be undone.\\nTip: Use "Export" on individual experiments to save diffs first.')) return;
   const d = await postApi('/api/bulk-compact', {ids});
   if (d.ok) {
     owlSay('Compacted ' + d.compacted + ' diff(s)');
@@ -2692,7 +2692,8 @@ async function loadTimeline(expId, filter) {
       if (ev.source_diff && ev.source_diff.length) {
         html += '<div class="tl-diff">';
         for (const d of ev.source_diff.slice(0, 8)) {
-          if (d.op === '+') html += '<div class="diff-add">+ ' + esc(d.line.slice(0,80)) + '</div>';
+          if (d.op === 'summary') html += '<div style="color:var(--muted);font-style:italic">' + esc(d.line) + '</div>';
+          else if (d.op === '+') html += '<div class="diff-add">+ ' + esc(d.line.slice(0,80)) + '</div>';
           else if (d.op === '-') html += '<div class="diff-del">- ' + esc(d.line.slice(0,80)) + '</div>';
         }
         if (ev.source_diff.length > 8) html += '<div style="color:var(--muted)">... ' + (ev.source_diff.length - 8) + ' more lines</div>';
@@ -2762,10 +2763,12 @@ async function viewCellSource(cellHash, btnEl) {
   btnEl.textContent = 'loading...';
   const data = await api('/api/cell-source/' + cellHash);
   btnEl.textContent = 'hide source';
-  if (data.error) {
+  if (data.error || !data.source) {
     const div = document.createElement('div');
     div.className = 'source-view';
-    div.textContent = 'Source not available (cell hash: ' + cellHash + ')';
+    div.innerHTML = '<span style="color:var(--yellow)">Source was compacted to save space.</span>'
+      + '<br><span style="color:var(--muted);font-size:12px">Cell hash: ' + cellHash + '</span>'
+      + '<br><span style="color:var(--muted);font-size:12px">The cell lineage and variable changes are still tracked in the timeline.</span>';
     btnEl.parentElement.appendChild(div);
     return;
   }
