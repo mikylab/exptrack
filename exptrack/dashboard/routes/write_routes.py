@@ -205,11 +205,13 @@ def api_compact(conn, body: dict) -> dict:
         ).fetchone()
         if not row or not row["git_diff"] or row["git_diff"].startswith("[compacted"):
             continue
-        diff_len = len(row["git_diff"])
+        from ...core.db import resolve_git_diff
+        full_diff = resolve_git_diff(conn, row["git_diff"])
+        diff_len = len(full_diff)
         commit = row["git_commit"] or "unknown"
         # Extract changed file names
         files = [line.split()[-1].lstrip("b/")
-                 for line in row["git_diff"].splitlines()
+                 for line in full_diff.splitlines()
                  if line.startswith("diff --git ") and len(line.split()) >= 4]
         file_info = f"{len(files)} file(s): {', '.join(files[:5])}" if files else "no files"
         if len(files) > 5:
@@ -231,7 +233,8 @@ def api_export_diff(conn, exp_id: str) -> dict:
     exp = find_experiment(conn, exp_id, "id, name, git_branch, git_commit, git_diff")
     if not exp:
         return {"error": "not found"}
-    diff = exp["git_diff"] or ""
+    from ...core.db import resolve_git_diff
+    diff = resolve_git_diff(conn, exp["git_diff"])
     if diff.startswith("[compacted"):
         return {"error": "diff already compacted", "compacted": True}
     name = exp["name"] or exp["id"][:8]

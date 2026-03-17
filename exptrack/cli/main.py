@@ -244,10 +244,10 @@ def main():
     sub.add_parser("storage", help="Show data storage breakdown and tips")
 
     p_compact = sub.add_parser("compact",
-        help="Strip git diffs from experiments to reclaim DB space (keeps all results)")
+        help="Strip git diffs and/or cell data to reclaim space (keeps all results)")
     p_compact.add_argument("ids", nargs="*", default=[],
                            help="Experiment ID(s) to compact (prefix match). "
-                                "Default: all done experiments with a git commit")
+                                "Default: all done experiments")
     p_compact.add_argument("--older-than", dest="older_than", default=None,
                            help="Only compact experiments older than N days (e.g. 7d)")
     p_compact.add_argument("--all", action="store_true",
@@ -257,6 +257,16 @@ def main():
     p_compact.add_argument("--export", metavar="DIR",
                            help="Save diffs as markdown files to DIR before stripping "
                                 "(useful for lab notebooks)")
+    p_compact.add_argument("--cells", action="store_true",
+                           help="NULL out cell_lineage.source (lineage graph preserved)")
+    p_compact.add_argument("--timeline", action="store_true",
+                           help="NULL out timeline.source_diff")
+    p_compact.add_argument("--snapshots", action="store_true",
+                           help="Delete notebook_history/ JSON snapshot files")
+    p_compact.add_argument("--deep", action="store_true",
+                           help="All of the above: git_diff + cells + timeline + snapshots")
+    p_compact.add_argument("--dedup", action="store_true",
+                           help="Deduplicate existing raw git diffs into shared storage")
 
     p_watch = sub.add_parser("watch", help="Watch a running experiment for live metric updates")
     p_watch.add_argument("id", help="Experiment ID (prefix match)")

@@ -10,6 +10,8 @@ import json
 import sys
 from typing import Any
 
+from .db import resolve_git_diff
+
 
 # ── Experiment lookup ─────────────────────────────────────────────────────────
 
@@ -62,8 +64,8 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "command": exp["command"],
         "git_branch": exp["git_branch"],
         "git_commit": exp["git_commit"],
-        "git_diff": exp["git_diff"] or "",
-        "diff_lines": len((exp["git_diff"] or "").splitlines()),
+        "git_diff": resolve_git_diff(conn, exp["git_diff"]),
+        "diff_lines": len(resolve_git_diff(conn, exp["git_diff"]).splitlines()),
         "hostname": exp["hostname"],
         "python_ver": exp["python_ver"],
         "notes": exp["notes"],
@@ -278,7 +280,8 @@ def get_stats(conn) -> dict[str, Any]:
     # Git diff storage stats
     diff_rows = conn.execute(
         "SELECT LENGTH(git_diff) as sz FROM experiments "
-        "WHERE git_diff IS NOT NULL AND git_diff != '' AND git_diff NOT LIKE '[compacted%'"
+        "WHERE git_diff IS NOT NULL AND git_diff != '' "
+        "AND git_diff NOT LIKE '[compacted%' AND git_diff NOT LIKE '[ref:%'"
     ).fetchall()
     diff_total_bytes = sum(r["sz"] for r in diff_rows)
     diff_count = len(diff_rows)
@@ -400,24 +403,30 @@ def get_vars_at_seq(conn, exp_id: str, seq: int = 999999) -> dict:
 # ── Cell lineage ──────────────────────────────────────────────────────────────
 
 def get_cell_source(conn, cell_hash: str) -> dict | None:
-    """Return full source code for a cell by its content hash."""
+    """Return full source code for a cell by its content hash.
+
+    Returns source/parent_source as None if compacted.
+    """
     row = conn.execute(
         "SELECT source, parent_hash, notebook, created_at FROM cell_lineage WHERE cell_hash=?",
         (cell_hash,)
     ).fetchone()
     if not row:
         return None
+
+    source = row["source"]  # may be None if compacted
+
     parent_source = None
     if row["parent_hash"]:
         parent = conn.execute(
             "SELECT source FROM cell_lineage WHERE cell_hash=?",
             (row["parent_hash"],)
         ).fetchone()
-        if parent:
+        if parent and parent["source"] is not None:
             parent_source = parent["source"]
     return {
         "cell_hash": cell_hash,
-        "source": row["source"],
+        "source": source,
         "parent_hash": row["parent_hash"],
         "parent_source": parent_source,
         "notebook": row["notebook"],
@@ -436,7 +445,7 @@ def get_experiment_diff(conn, exp_id: str) -> dict | None:
     if not exp:
         return None
     return {
-        "diff": exp["git_diff"] or "",
+        "diff": resolve_git_diff(conn, exp["git_diff"]),
         "branch": exp["git_branch"],
         "commit": exp["git_commit"],
     }

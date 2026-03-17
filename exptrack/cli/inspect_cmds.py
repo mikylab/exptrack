@@ -301,7 +301,8 @@ def cmd_diff(args):
                        " WHERE id LIKE ?", (args.id + "%",)).fetchone()
     if not exp:
         print(col(f"Not found: {args.id}", R), file=sys.stderr); return
-    diff = exp["git_diff"]
+    from ..core.db import resolve_git_diff
+    diff = resolve_git_diff(conn, exp["git_diff"])
     if not diff:
         print(dim("No uncommitted changes were captured for this run."))
         print(dim(f"  (All changes were committed at {exp['git_commit'] or '???'})")); return
@@ -457,7 +458,11 @@ def _compare_within(conn, exp_id_prefix, seq1, seq2):
 
 
 def cmd_history(args):
-    """Show notebook cell snapshot history for an experiment."""
+    """Show notebook cell snapshot history for an experiment.
+
+    Reads from .exptrack/notebook_history/ snapshot files when available,
+    falls back to reconstructing from the database timeline.
+    """
     root = cfg.project_root()
     conf = cfg.load()
     hist_root = root / conf.get("notebook_history_dir", ".exptrack/notebook_history")
@@ -465,19 +470,23 @@ def cmd_history(args):
     nb = args.notebook
     exp_id = args.id or ""
 
+    # Try snapshot files first
     nb_dir = hist_root / nb
-    if not nb_dir.exists():
-        print(col(f"No history found for notebook '{nb}'", R))
-        print(dim(f"  Expected: {nb_dir}"))
-        return
-
-    files = sorted(nb_dir.glob("*.json"))
+    files = sorted(nb_dir.glob("*.json")) if nb_dir.exists() else []
     if exp_id:
         files = [f for f in files if _snap_exp_id(f).startswith(exp_id)]
 
-    if not files:
-        print(dim("No snapshots found.")); return
+    if files:
+        _history_from_snapshots(files, nb, exp_id)
+    elif exp_id:
+        _history_from_db(nb, exp_id)
+    else:
+        print(col(f"No history found for notebook '{nb}'", R))
+        print(dim("  Hint: provide an experiment ID to reconstruct from DB"))
 
+
+def _history_from_snapshots(files, nb, exp_id):
+    """Display history from snapshot files."""
     print()
     print(bold(f"  Notebook history: {nb}") + (f"  (exp {exp_id[:6]})" if exp_id else ""))
     print(dim("  " + "-"*70))
@@ -488,39 +497,127 @@ def cmd_history(args):
         except Exception as e:
             print(f"[exptrack] warning: could not read snapshot {f}: {e}", file=sys.stderr)
             continue
+        _print_history_entry(snap)
+    print()
 
-        changed = bool(snap.get("source_diff")) or bool(snap.get("changed_vars"))
-        icon = "*" if changed else "."
-        ts   = fmt_dt(snap.get("ts", ""))
-        ex   = snap.get("exec_num", "?")
 
-        print(f"\n  {icon} exec #{ex:<4} {ts}  exp={snap.get('exp_id','?')[:6]}")
+def _history_from_db(nb, exp_id):
+    """Reconstruct history from DB timeline when snapshot files are unavailable."""
+    conn = get_db()
 
-        cv = snap.get("changed_vars", {})
-        nv = snap.get("new_vars", {})
-        if nv:
-            print(col("    New vars:", G))
-            for k, v in list(nv.items())[:8]:
-                print(f"      {k} = {v}")
-        if cv:
-            print(col("    Changed vars:", Y))
-            for k, d in list(cv.items())[:8]:
+    # Find the experiment
+    exp = conn.execute(
+        "SELECT id FROM experiments WHERE id LIKE ?", (exp_id + "%",)
+    ).fetchone()
+    if not exp:
+        print(col(f"Experiment not found: {exp_id}", R)); return
+
+    full_id = exp["id"]
+
+    # Get cell_exec events
+    cell_events = conn.execute(
+        "SELECT seq, event_type, cell_hash, cell_pos, key, value, source_diff, ts "
+        "FROM timeline WHERE exp_id=? AND event_type IN ('cell_exec', 'observational') "
+        "ORDER BY seq",
+        (full_id,)
+    ).fetchall()
+
+    if not cell_events:
+        print(dim("No timeline events found for this experiment.")); return
+
+    # Get all var_set events for this experiment
+    var_events = conn.execute(
+        "SELECT cell_hash, cell_pos, key, value, prev_value "
+        "FROM timeline WHERE exp_id=? AND event_type='var_set' ORDER BY seq",
+        (full_id,)
+    ).fetchall()
+
+    # Group var events by (cell_hash, cell_pos)
+    var_by_cell = {}
+    for v in var_events:
+        k = (v["cell_hash"], v["cell_pos"])
+        var_by_cell.setdefault(k, []).append(v)
+
+    print()
+    print(bold(f"  Notebook history: {nb}") + f"  (exp {exp_id[:6]}, from DB)")
+    print(dim("  " + "-"*70))
+
+    for ev in cell_events:
+        cell_key = (ev["cell_hash"], ev["cell_pos"])
+        vars_for_cell = var_by_cell.get(cell_key, [])
+
+        # Parse cell_exec value JSON
+        val = {}
+        if ev["value"]:
+            try:
+                val = json.loads(ev["value"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Parse source_diff
+        source_diff = None
+        if ev["source_diff"]:
+            try:
+                source_diff = json.loads(ev["source_diff"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        new_vars = {v["key"]: v["value"] for v in vars_for_cell if not v["prev_value"]}
+        changed_vars = {v["key"]: {"from": v["prev_value"], "to": v["value"]}
+                        for v in vars_for_cell if v["prev_value"]}
+
+        snap = {
+            "exec_num": ev["cell_pos"],
+            "ts": ev["ts"],
+            "exp_id": full_id,
+            "source_diff": source_diff,
+            "new_vars": new_vars,
+            "changed_vars": changed_vars,
+            "output": val.get("output_preview"),
+        }
+        _print_history_entry(snap)
+    print()
+
+
+def _print_history_entry(snap):
+    """Print a single history entry (works for both snapshot and DB sources)."""
+    changed = bool(snap.get("source_diff")) or bool(snap.get("changed_vars"))
+    icon = "*" if changed else "."
+    ts   = fmt_dt(snap.get("ts", ""))
+    ex   = snap.get("exec_num", "?")
+
+    print(f"\n  {icon} exec #{ex:<4} {ts}  exp={snap.get('exp_id','?')[:6]}")
+
+    cv = snap.get("changed_vars", {})
+    nv = snap.get("new_vars", {})
+    if nv:
+        print(col("    New vars:", G))
+        for k, v in list(nv.items())[:8]:
+            print(f"      {k} = {v}")
+    if cv:
+        print(col("    Changed vars:", Y))
+        for k, d in list(cv.items())[:8]:
+            if isinstance(d, dict):
                 print(f"      {k}: {d.get('from')} -> {d.get('to')}")
+            else:
+                print(f"      {k}: {d}")
 
-        diff = snap.get("source_diff")
-        if diff:
+    diff = snap.get("source_diff")
+    if diff:
+        if isinstance(diff, list):
             print(col("    Cell diff:", C))
             for entry in diff[:20]:
                 op, line = entry.get("op","="), entry.get("line","")
                 if op == "+": print(col(f"      + {line}", G))
                 elif op == "-": print(col(f"      - {line}", R))
+                elif op == "summary": print(dim(f"      {line}"))
+        elif isinstance(diff, str) and diff.startswith("[compacted"):
+            print(dim(f"    Cell diff: {diff}"))
 
-        out = snap.get("output")
-        if out and out.strip():
-            lines = out.strip().splitlines()[:4]
-            print(dim(f"    Output: {' | '.join(lines)[:120]}"))
-
-    print()
+    out = snap.get("output")
+    if out and str(out).strip():
+        lines = str(out).strip().splitlines()[:4]
+        print(dim(f"    Output: {' | '.join(lines)[:120]}"))
 
 
 def _snap_exp_id(f: Path) -> str:

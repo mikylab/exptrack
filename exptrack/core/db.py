@@ -132,6 +132,13 @@ def _ensure_schema(conn):
             parent_hash TEXT,
             created_at  TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS git_diffs (
+            diff_hash   TEXT PRIMARY KEY,
+            diff_text   TEXT NOT NULL,
+            file_list   TEXT,
+            created_at  TEXT NOT NULL
+        );
     """)
 
     # Add timeline_seq, content_hash, size_bytes to artifacts if missing
@@ -202,6 +209,42 @@ def _ensure_schema(conn):
         print(f"[exptrack] warning: experiment migration error: {e}", file=sys.stderr)
 
     conn.commit()
+
+
+# ── Git diff deduplication ────────────────────────────────────────────────────
+
+def resolve_git_diff(conn, raw_diff: str | None) -> str:
+    """Resolve git_diff — inline text, a [ref:sha256:...] pointer, or a [compacted...] marker."""
+    if not raw_diff:
+        return ""
+    if raw_diff.startswith("[ref:sha256:"):
+        h = raw_diff[12:-1]
+        row = conn.execute(
+            "SELECT diff_text FROM git_diffs WHERE diff_hash=?", (h,)
+        ).fetchone()
+        return row["diff_text"] if row else raw_diff
+    return raw_diff
+
+
+def store_git_diff(conn, diff_text: str) -> str:
+    """Store diff text in git_diffs table (deduped) and return a reference marker."""
+    import hashlib
+    from datetime import datetime, timezone
+    diff_hash = hashlib.sha256(diff_text.encode()).hexdigest()[:16]
+    # Extract file list for summary
+    files = []
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git"):
+            parts = line.split()
+            if len(parts) >= 4:
+                files.append(parts[3].lstrip("b/"))
+    conn.execute(
+        "INSERT OR IGNORE INTO git_diffs (diff_hash, diff_text, file_list, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (diff_hash, diff_text, json.dumps(files) if files else None,
+         datetime.now(timezone.utc).isoformat()),
+    )
+    return f"[ref:sha256:{diff_hash}]"
 
 
 # ── Deletion helpers ──────────────────────────────────────────────────────────
