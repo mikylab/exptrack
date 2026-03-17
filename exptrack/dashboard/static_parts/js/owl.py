@@ -46,13 +46,23 @@ function owlSay(msg, anim) {
   const el = document.getElementById('owl-speech');
   if (!el) return;
   el.textContent = msg;
-  // Position fixed below the owl
+  // Position fixed below the owl, clamped to viewport
   const container = document.getElementById('header-owl');
   if (container) {
     const rect = container.getBoundingClientRect();
     el.style.top = (rect.bottom + 6) + 'px';
-    el.style.left = (rect.left + rect.width / 2) + 'px';
+    el.style.maxWidth = '280px';
+    el.style.whiteSpace = 'normal';
+    // Center on owl, then clamp so it doesn't overflow the viewport
+    const centerX = rect.left + rect.width / 2;
+    el.style.left = centerX + 'px';
     el.style.transform = 'translateX(-50%)';
+    // After rendering, check bounds and nudge if needed
+    requestAnimationFrame(() => {
+      const r = el.getBoundingClientRect();
+      if (r.left < 8) { el.style.left = '8px'; el.style.transform = 'none'; }
+      else if (r.right > window.innerWidth - 8) { el.style.left = (window.innerWidth - r.width - 8) + 'px'; el.style.transform = 'none'; }
+    });
   }
   el.style.display = 'block';
   el.style.pointerEvents = 'auto';
