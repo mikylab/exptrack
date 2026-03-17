@@ -96,6 +96,22 @@ HTML_BODY = r"""</style>
   <strong>Data Files</strong> — preview CSV, TSV, JSON, and JSONL artifacts as rendered tables.</p>
   <p><strong>Compare:</strong> Two modes — <em>Pair Compare</em> (side-by-side params, metrics with deltas, overlaid charts, image comparison) and <em>Multi Compare</em> (3+ experiments with bar charts per metric). Use "Show only differences" to hide matching values.</p>
 
+  <h3>Viewing Images</h3>
+  <p>Image artifacts (PNG, JPG, GIF, SVG, WebP) are displayed in a gallery grid under the <strong>Images</strong> tab. Click any thumbnail to open a full-size lightbox modal. When viewing two experiments in Pair Compare, use the image comparison tool with three modes:</p>
+  <p style="margin-left:16px"><strong>Side by side</strong> — both images shown next to each other for visual comparison.<br>
+  <strong>Overlay</strong> — layer images with an opacity slider to spot subtle differences.<br>
+  <strong>Swipe</strong> — drag a divider across the image to reveal one side vs. the other.</p>
+  <p>Images saved via <code>plt.savefig()</code> are auto-captured as artifacts. Other images can be registered with <code>exptrack log-artifact &lt;id&gt; path/to/image.png</code>.</p>
+
+  <h3>Viewing Logs &amp; Text Files</h3>
+  <p>Text-based artifacts (log files, plain text, stdout captures) are viewable directly from the artifact list in the Overview tab. Click the artifact path to open it. For scripts run via <code>exptrack run</code>, note that stdout/stderr is <em>not</em> auto-captured &mdash; redirect output to a file and register it as an artifact:</p>
+  <p style="margin-left:16px"><code>exptrack run train.py --lr 0.01 2&gt;&amp;1 | tee $EXP_OUT/train.log</code><br>
+  or after the run: <code>exptrack log-artifact &lt;id&gt; train.log --label "training log"</code></p>
+
+  <h3>Viewing CSVs &amp; Data Files</h3>
+  <p>CSV, TSV, JSON, and JSONL artifacts are rendered as interactive tables under the <strong>Data Files</strong> tab. The dashboard auto-detects file type by extension and displays columns with sortable headers. Large files are truncated to the first 100 rows with a note showing total row count.</p>
+  <p>To register a CSV as an artifact, either save it via <code>exp.out("results.csv")</code> in notebooks or <code>exptrack log-artifact &lt;id&gt; results.csv --label "predictions"</code> from the CLI. JSON files are displayed as formatted key-value tables; JSONL files show one row per line.</p>
+
   <h3>Bulk Operations</h3>
   <p>Select experiments via checkboxes, then use the action bar: <strong>Compare</strong> (2+), <strong>Add to Study</strong>, <strong>Export</strong> (JSON, CSV, TSV, Markdown, Plain Text), <strong>Copy</strong> to clipboard, <strong>Compact</strong> (strip diffs to free storage), or <strong>Delete</strong>.</p>
 
@@ -165,6 +181,18 @@ HTML_BODY = r"""</style>
     <div class="faq-item">
       <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Can I track experiments across multiple machines?</div>
       <div class="faq-a">expTrack is local-first. Each machine has its own database. To aggregate, use <code>exptrack export</code> for JSON, enable the GitHub Sync plugin, or query the SQLite database directly.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How do I view images in the dashboard?</div>
+      <div class="faq-a">Image artifacts appear in the <strong>Images</strong> tab of the detail view as a gallery grid. Click a thumbnail to see the full-size image. Use Pair Compare to compare images between experiments with side-by-side, overlay, or swipe modes. Images saved via <code>plt.savefig()</code> are auto-captured.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Can I view CSVs and data files in the dashboard?</div>
+      <div class="faq-a">Yes. CSV, TSV, JSON, and JSONL artifacts are rendered as interactive tables under the <strong>Data Files</strong> tab. Register them with <code>exp.out("results.csv")</code> or <code>exptrack log-artifact &lt;id&gt; results.csv</code>.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How do I capture training logs?</div>
+      <div class="faq-a">expTrack does not auto-capture stdout/stderr. Redirect output to a file and register it: <code>exptrack run train.py 2&gt;&amp;1 | tee train.log</code>, then <code>exptrack log-artifact &lt;id&gt; train.log</code>. In notebooks, use <code>exp.out("log.txt")</code> and write to that path.</div>
     </div>
   </div>
 </div>
