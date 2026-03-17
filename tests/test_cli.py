@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 
 
@@ -215,6 +214,7 @@ def test_cmd_show_not_found():
         from exptrack import config as cfg
         cfg.init("test")
         from exptrack.cli.inspect_cmds import cmd_show
+
         # Need at least one DB access to create schema
         from exptrack.core import get_db
         get_db()

@@ -18,21 +18,48 @@ exptrack upgrade              run schema migrations
 exptrack ui                   launch web dashboard
 """
 from __future__ import annotations
+
 import argparse
 import sys
 
-from .admin_cmds import cmd_init, cmd_run, cmd_ui, cmd_stale, cmd_upgrade, cmd_storage, cmd_compact
-from .inspect_cmds import (cmd_ls, cmd_show, cmd_timeline, cmd_diff,
-                           cmd_compare, cmd_history, cmd_export, cmd_verify,
-                           cmd_watch)
-from .mutate_cmds import (cmd_tag, cmd_untag, cmd_delete_tag, cmd_note,
-                          cmd_edit_note, cmd_rm, cmd_clean, cmd_finish,
-                          cmd_study, cmd_unstudy, cmd_studies, cmd_delete_study,
-                          cmd_stage)
-from .pipeline_cmds import (cmd_run_start, cmd_run_finish, cmd_run_fail,
-                            cmd_log_metric, cmd_log_artifact,
-                            cmd_log_output, cmd_link_dir, cmd_log_result,
-                            cmd_create)
+from .admin_cmds import cmd_compact, cmd_init, cmd_run, cmd_stale, cmd_storage, cmd_ui, cmd_upgrade
+from .inspect_cmds import (
+    cmd_compare,
+    cmd_diff,
+    cmd_export,
+    cmd_history,
+    cmd_ls,
+    cmd_show,
+    cmd_timeline,
+    cmd_verify,
+    cmd_watch,
+)
+from .mutate_cmds import (
+    cmd_clean,
+    cmd_delete_study,
+    cmd_delete_tag,
+    cmd_edit_note,
+    cmd_finish,
+    cmd_note,
+    cmd_rm,
+    cmd_stage,
+    cmd_studies,
+    cmd_study,
+    cmd_tag,
+    cmd_unstudy,
+    cmd_untag,
+)
+from .pipeline_cmds import (
+    cmd_create,
+    cmd_link_dir,
+    cmd_log_artifact,
+    cmd_log_metric,
+    cmd_log_output,
+    cmd_log_result,
+    cmd_run_fail,
+    cmd_run_finish,
+    cmd_run_start,
+)
 
 
 def main():

@@ -2,6 +2,7 @@
 exptrack/capture/variables.py — Variable capture, classification, and fingerprinting
 """
 from __future__ import annotations
+
 import hashlib
 import json
 import re
@@ -79,22 +80,22 @@ def var_summary(val) -> str | None:
         try:
             return f"ndarray(shape={val.shape}, dtype={val.dtype})"
         except Exception:
-            return f"ndarray(?)"
+            return "ndarray(?)"
     if tname == "DataFrame":
         try:
             return f"DataFrame(shape={val.shape}, cols={list(val.columns)[:8]})"
         except Exception:
-            return f"DataFrame(?)"
+            return "DataFrame(?)"
     if tname == "Series":
         try:
             return f"Series(len={len(val)}, dtype={val.dtype})"
         except Exception:
-            return f"Series(?)"
+            return "Series(?)"
     if tname == "Tensor":
         try:
             return f"Tensor(shape={list(val.shape)}, dtype={val.dtype})"
         except Exception:
-            return f"Tensor(?)"
+            return "Tensor(?)"
     if isinstance(val, (list, tuple, set, frozenset)):
         return f"{tname}(len={len(val)})"
     if isinstance(val, dict):

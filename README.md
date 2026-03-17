@@ -64,9 +64,11 @@ Your script needs **zero modifications**. expTrack automatically captures argpar
 - [Configuration](#configuration)
 - [Plugins](#plugins)
 - [Python API](#python-api)
+- [Examples](#examples)
 - [How It Works](#how-it-works)
 - [expTrack vs. TensorBoard](#exptrack-vs-tensorboard)
 - [Troubleshooting](#troubleshooting)
+- [Development](#development)
 - [Project Layout](#project-layout)
 - [Contributing](#contributing)
 - [License](#license)
@@ -607,6 +609,29 @@ exp.finish()
 
 ---
 
+## Examples
+
+The [`examples/`](examples/) directory contains ready-to-run scripts:
+
+| Example | What it shows |
+|---------|---------------|
+| [`basic_script.py`](examples/basic_script.py) | Zero-friction tracking -- no exptrack imports, just wrap with `exptrack run` |
+| [`manual_tracking.py`](examples/manual_tracking.py) | Explicit Python API -- `Experiment` context manager, params, metrics, tags |
+| [`notebook_example.py`](examples/notebook_example.py) | Notebook workflow via `exptrack.notebook` |
+| [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM pipeline with `eval $(exptrack run-start ...)` |
+
+```bash
+# Try the zero-friction approach
+exptrack init
+exptrack run examples/basic_script.py --lr 0.01 --epochs 10
+exptrack ls
+
+# Or the explicit API
+python examples/manual_tracking.py
+```
+
+---
+
 ## How It Works
 
 ### Capture mechanisms
@@ -695,6 +720,52 @@ expTrack stores data in `.exptrack/experiments.db` relative to the project root.
 
 ---
 
+## Development
+
+### Setup
+
+```bash
+git clone https://github.com/mikylab/expTrack.git
+cd expTrack
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+This installs exptrack in editable mode along with dev tools (pytest, ruff).
+
+### Linting
+
+expTrack uses [ruff](https://docs.astral.sh/ruff/) for linting and import sorting:
+
+```bash
+ruff check exptrack/ tests/        # check for issues
+ruff check exptrack/ tests/ --fix  # auto-fix what's possible
+```
+
+Ruff configuration is in `pyproject.toml` under `[tool.ruff]`.
+
+### Type Checking
+
+The package ships a `py.typed` marker (PEP 561), so type checkers like mypy and pyright will pick up the inline annotations:
+
+```bash
+# optional -- not required for development
+pip install mypy
+mypy exptrack/
+```
+
+Type annotations use `from __future__ import annotations` throughout, so modern syntax (`str | None`, `dict[str, Any]`) works on Python 3.8+.
+
+### Tests
+
+```bash
+pytest                             # run all tests
+pytest tests/test_experiment.py    # run a specific test file
+```
+
+---
+
 ## Project Layout
 
 ```
@@ -703,8 +774,10 @@ exptrack/
   README.md                   this file
   CHANGELOG.md                version history
   CLAUDE.md                   AI assistant context
+  examples/                   ready-to-run example scripts
   exptrack/
     __init__.py               public API, load_ipython_extension entry point
+    py.typed                  PEP 561 type checking marker
     __main__.py               python -m exptrack (wraps scripts via runpy)
     config.py                 project-aware config, root detection
     notebook.py               %load_ext magic + explicit API
@@ -758,12 +831,13 @@ Contributions are welcome! Here's how to get started:
    ```bash
    python -m venv .venv
    source .venv/bin/activate
-   pip install -e .
+   pip install -e ".[dev]"
    ```
 3. Create a branch for your change (`git checkout -b my-feature`)
 4. Make your changes -- remember, **stdlib only** (no external dependencies)
-5. Commit and push to your fork
-6. Open a pull request against `main`
+5. Run `ruff check exptrack/ tests/` and fix any issues
+6. Commit and push to your fork
+7. Open a pull request against `main`
 
 ### Guidelines
 

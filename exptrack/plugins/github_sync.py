@@ -20,12 +20,13 @@ Config in .exptrack/config.json:
 PAT scopes needed: repo > Contents (read + write)
 """
 from __future__ import annotations
+
 import base64
 import json
 import os
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,13 +47,13 @@ class GitHubSyncPlugin(Plugin):
         if not self.repo:
             print("[exptrack] github_sync: set plugins.github_sync.repo in config.json", file=sys.stderr)
 
-    def on_finish(self, exp: "Experiment"):
+    def on_finish(self, exp: Experiment):
         self._push(exp)
 
-    def on_fail(self, exp: "Experiment", error: str):
+    def on_fail(self, exp: Experiment, error: str):
         self._push(exp)
 
-    def _push(self, exp: "Experiment"):
+    def _push(self, exp: Experiment):
         if not self.repo:
             return
         tok = os.environ.get(self.token_env, "")

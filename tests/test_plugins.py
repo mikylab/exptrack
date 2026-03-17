@@ -1,5 +1,4 @@
 """Tests for exptrack/plugins — plugin registry and lifecycle hooks."""
-import sys
 
 
 class MockPlugin:

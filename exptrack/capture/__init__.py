@@ -11,22 +11,23 @@ Two capture modes:
                     - logs timeline events for ordering and context reconstruction
                   Stores snapshots in .exptrack/notebook_history/<nb_name>/
 """
-from .argparse_patch import patch_argparse, capture_argv
-from .notebook_hooks import (
-    attach_notebook, attach_notebook_deferred, detach_notebook,
-    _nb_state,
-)
+from .argparse_patch import capture_argv, patch_argparse
 from .matplotlib_patch import patch_savefig
+from .notebook_hooks import (
+    _nb_state,
+    attach_notebook,
+    attach_notebook_deferred,
+    detach_notebook,
+)
 from .script_tracking import capture_script_snapshot
-from .cell_lineage import cell_hash as _cell_hash
 
 __all__ = [
-    "patch_argparse",
-    "capture_argv",
+    "_nb_state",
     "attach_notebook",
     "attach_notebook_deferred",
-    "detach_notebook",
-    "patch_savefig",
+    "capture_argv",
     "capture_script_snapshot",
-    "_nb_state",
+    "detach_notebook",
+    "patch_argparse",
+    "patch_savefig",
 ]

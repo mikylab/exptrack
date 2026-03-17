@@ -6,10 +6,12 @@ Captures: params, metrics, git state (branch + uncommitted diff),
 output file paths, and fires plugin hooks on lifecycle events.
 """
 from __future__ import annotations
+
 import hashlib
 import json
 import math
 import platform
+import re as _re
 import socket
 import sys
 import time
@@ -18,16 +20,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_VALID_STATUSES = {"running", "done", "failed"}
-
-import re as _re
-
 from .. import config as cfg
 from ..plugins import registry as plugins
-from .db import get_db, store_git_diff
+from .db import get_db, rename_output_folder, store_git_diff
 from .git import git_info
-from .db import rename_output_folder
 from .naming import make_run_name, output_path
+
+_VALID_STATUSES = {"running", "done", "failed"}
 
 
 def _redact_params(params: dict) -> dict:
@@ -71,8 +70,8 @@ class Experiment:
     def __init__(
         self,
         name: str = "",
-        params: dict[str, Any] = None,
-        tags: list[str] = None,
+        params: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
         notes: str = "",
         script: str = "",
         _caller_depth: int = 1,
@@ -217,7 +216,7 @@ class Experiment:
 
     def log_params(self, params: dict[str, Any]):
         if self._finished:
-            print(f"[exptrack] warning: logging params after experiment finished",
+            print("[exptrack] warning: logging params after experiment finished",
                   file=sys.stderr)
         params = _redact_params(params)
         self._params.update(params)
@@ -265,7 +264,7 @@ class Experiment:
 
     # ── Metrics ───────────────────────────────────────────────────────────────
 
-    def log_metric(self, key: str, value: float, step: int = None):
+    def log_metric(self, key: str, value: float, step: int | None = None):
         if self._finished:
             print(f"[exptrack] warning: logging metric '{key}' after experiment finished",
                   file=sys.stderr)
@@ -282,9 +281,9 @@ class Experiment:
             conn.commit()
         plugins.on_metric(self, key, value, step)
 
-    def log_metrics(self, metrics: dict[str, float], step: int = None):
+    def log_metrics(self, metrics: dict[str, float], step: int | None = None):
         if self._finished:
-            print(f"[exptrack] warning: logging metrics after experiment finished",
+            print("[exptrack] warning: logging metrics after experiment finished",
                   file=sys.stderr)
         ts = datetime.now(timezone.utc).isoformat()
         for k, v in metrics.items():
@@ -399,9 +398,9 @@ class Experiment:
 
     _timeline_seq: int = 0
 
-    def log_event(self, event_type: str, cell_hash: str = None,
-                  cell_pos: int = None, key: str = None, value: Any = None,
-                  prev_value: Any = None, source_diff: str = None) -> int:
+    def log_event(self, event_type: str, cell_hash: str | None = None,
+                  cell_pos: int | None = None, key: str | None = None, value: Any | None = None,
+                  prev_value: Any | None = None, source_diff: str | None = None) -> int:
         """
         Append an event to the execution timeline.
 
@@ -426,7 +425,7 @@ class Experiment:
         return seq
 
     def log_artifact(self, path: str | Path, label: str = "",
-                     timeline_seq: int = None, content_hash: str = None):
+                     timeline_seq: int | None = None, content_hash: str | None = None):
         """Register an output file path (the file itself stays local).
 
         Deduplicates by resolved path — if the same file is already registered
@@ -446,8 +445,8 @@ class Experiment:
             rp = Path(resolved)
             if rp.is_file():
                 try:
-                    from .hashing import file_hash
                     from .. import config as _cfg
+                    from .hashing import file_hash
                     conf = _cfg.load()
                     max_bytes = int(conf.get("hash_max_mb", 500)) * 1024 * 1024
                     content_hash, size_bytes = file_hash(rp, max_bytes=max_bytes)
@@ -492,7 +491,7 @@ class Experiment:
             label = f"[{category}] {p.name}"
         self.log_artifact(str(p), label=label)
 
-    def get_variable_context(self, at_seq: int = None) -> dict:
+    def get_variable_context(self, at_seq: int | None = None) -> dict:
         """
         Reconstruct the variable state at a given timeline seq by walking
         backward through var_set events.  If at_seq is None, returns the

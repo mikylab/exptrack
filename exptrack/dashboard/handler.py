@@ -8,8 +8,8 @@ import json
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
-from .static import DASHBOARD_HTML
 from .routes import read_routes, write_routes
+from .static import DASHBOARD_HTML
 
 
 def get_db():
@@ -174,6 +174,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _serve_file(self, rel_path: str):
         """Serve a file from the project root (images only, with path validation)."""
         import os
+
         from exptrack.config import project_root
         root = str(project_root())
         if not root:

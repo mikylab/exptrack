@@ -2,6 +2,7 @@
 exptrack/cli/formatting.py — ANSI color helpers and formatters
 """
 from __future__ import annotations
+
 import os
 import sys
 from datetime import datetime

@@ -4,15 +4,16 @@ exptrack/cli/admin_cmds.py — Admin and project management commands
 init, run, stale, upgrade, storage, ui
 """
 from __future__ import annotations
+
 import json
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..core import get_db
 from .. import config as cfg
-from .formatting import G, R, Y, C, W, col, dim, bold
+from ..core import get_db
+from .formatting import C, G, R, W, Y, bold, col, dim
 
 
 def cmd_init(args):
@@ -22,7 +23,7 @@ def cmd_init(args):
 def cmd_run(args):
     """Hand off to __main__.py logic inline."""
     script = args.script
-    sys.argv = ["exptrack", script] + args.script_args
+    sys.argv = ["exptrack", script, *args.script_args]
     from .. import __main__ as m
     m.main()
 
@@ -519,7 +520,8 @@ def _export_one_diff(row, out_path):
     name = row["name"] or exp_id[:8]
     branch = row["git_branch"] or ""
     commit = row["git_commit"] or ""
-    from ..core.db import resolve_git_diff, get_db as _get_db
+    from ..core.db import get_db as _get_db
+    from ..core.db import resolve_git_diff
     _conn = _get_db()
     diff = resolve_git_diff(_conn, row["git_diff"])
 
@@ -528,15 +530,15 @@ def _export_one_diff(row, out_path):
 
     lines = [
         f"# Diff: {name}",
-        f"",
+        "",
         f"- **Experiment ID:** `{exp_id}`",
         f"- **Branch:** `{branch}`",
         f"- **Commit:** `{commit}`",
-        f"",
-        f"```diff",
+        "",
+        "```diff",
         diff,
-        f"```",
-        f"",
+        "```",
+        "",
     ]
     (out_path / filename).write_text("\n".join(lines), encoding="utf-8")
 

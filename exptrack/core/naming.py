@@ -2,6 +2,7 @@
 exptrack/core/naming.py — Run naming and output path helpers
 """
 from __future__ import annotations
+
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +10,7 @@ from pathlib import Path
 from .. import config as cfg
 
 
-def make_run_name(script: str = "", params: dict = None) -> str:
+def make_run_name(script: str = "", params: dict | None = None) -> str:
     """
     Produces:   train__lr0.01_bs32__0312_a3f2
     Script stem + top N params + date + short uid.

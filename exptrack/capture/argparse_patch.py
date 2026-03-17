@@ -2,6 +2,7 @@
 exptrack/capture/argparse_patch.py — Argparse monkey-patching and raw argv capture
 """
 from __future__ import annotations
+
 import sys
 from typing import TYPE_CHECKING
 
@@ -12,7 +13,7 @@ if TYPE_CHECKING:
 
 _patched = False
 
-def patch_argparse(exp: "Experiment"):
+def patch_argparse(exp: Experiment):
     """
     Monkey-patch ArgumentParser.parse_args AND parse_known_args once.
     When the user's script calls either, params flow into exp automatically.
@@ -44,7 +45,7 @@ def patch_argparse(exp: "Experiment"):
     argparse.ArgumentParser.parse_known_args = _hooked_known
 
 
-def _capture_namespace(exp: "Experiment", ns):
+def _capture_namespace(exp: Experiment, ns):
     from ..core import make_run_name
     d = {k: v for k, v in vars(ns).items()
          if not k.startswith("_") and v is not None}
@@ -53,7 +54,7 @@ def _capture_namespace(exp: "Experiment", ns):
         exp._rename(make_run_name(exp.script, exp._params))
 
 
-def _capture_remaining(exp: "Experiment", args: list[str]):
+def _capture_remaining(exp: Experiment, args: list[str]):
     """Parse residual --key value / --key=value / -k value from remaining args."""
     params = {}
     i = 0
@@ -84,7 +85,7 @@ def _capture_remaining(exp: "Experiment", args: list[str]):
 
 # ── Raw argv fallback ─────────────────────────────────────────────────────────
 
-def capture_argv(exp: "Experiment"):
+def capture_argv(exp: Experiment):
     """
     Parse --key value / --key=value / -k value / --flag from sys.argv directly.
     Used when the script doesn't use argparse at all (click, manual, etc.).

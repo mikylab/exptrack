@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -239,7 +238,7 @@ def test_run_start_finish():
     """run-start creates an experiment, run-finish marks it done."""
     with tempfile.TemporaryDirectory() as tmp:
         _setup_project(tmp)
-        from exptrack.cli.pipeline_cmds import cmd_run_start, cmd_run_finish
+        from exptrack.cli.pipeline_cmds import cmd_run_finish, cmd_run_start
         from exptrack.core import get_db
 
         args = SimpleNamespace(
@@ -269,7 +268,7 @@ def test_run_fail():
     """run-fail marks an experiment as failed with a reason."""
     with tempfile.TemporaryDirectory() as tmp:
         _setup_project(tmp)
-        from exptrack.cli.pipeline_cmds import cmd_run_start, cmd_run_fail
+        from exptrack.cli.pipeline_cmds import cmd_run_fail, cmd_run_start
         from exptrack.core import get_db
 
         args = SimpleNamespace(

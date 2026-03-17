@@ -2,6 +2,7 @@
 exptrack/capture/matplotlib_patch.py — Monkey-patch plt.savefig for auto artifact capture
 """
 from __future__ import annotations
+
 import shutil
 import sys
 from typing import TYPE_CHECKING
@@ -15,7 +16,7 @@ _plt_patched = False
 # Buffer for savefig calls that happen before an experiment is created
 _pending_artifacts: list[dict] = []
 
-def patch_savefig(exp: "Experiment | None" = None):
+def patch_savefig(exp: Experiment | None = None):
     """
     Monkey-patch matplotlib.pyplot.savefig and Figure.savefig so that every
     saved plot is automatically registered as an artifact on the active
@@ -35,8 +36,8 @@ def patch_savefig(exp: "Experiment | None" = None):
     _plt_patched = True
 
     try:
-        import matplotlib.pyplot as plt
         import matplotlib.figure as mfig
+        import matplotlib.pyplot as plt
     except ImportError:
         return
 
@@ -116,7 +117,6 @@ def patch_savefig(exp: "Experiment | None" = None):
 
 def _register_and_protect(exp, orig_path, fig_title=""):
     """Copy the saved file to the experiment's output dir and register as artifact."""
-    from pathlib import Path as _P
 
     art_seq = None
     try:

@@ -14,10 +14,9 @@ script itself. Works by:
 
 The script sees sys.argv exactly as if it were called directly.
 """
-import io
 import os
-import sys
 import runpy
+import sys
 from pathlib import Path
 
 
@@ -72,9 +71,9 @@ def main():
     # Strip 'exptrack' from argv so the script sees its own args
     sys.argv = sys.argv[1:]
 
-    from .core import Experiment
-    from .capture import patch_argparse, capture_argv, capture_script_snapshot, patch_savefig
     from . import config as cfg
+    from .capture import capture_argv, capture_script_snapshot, patch_argparse, patch_savefig
+    from .core import Experiment
 
     conf = cfg.load()
 

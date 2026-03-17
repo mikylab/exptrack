@@ -1,11 +1,10 @@
 """Tests for exptrack/core/queries.py — shared query functions."""
-import json
 
 
 def test_find_experiment_by_prefix(tmp_project, sample_experiment):
     """find_experiment returns experiment by prefix match."""
-    from exptrack.core.queries import find_experiment
     from exptrack.core import get_db
+    from exptrack.core.queries import find_experiment
 
     conn = get_db()
     result = find_experiment(conn, sample_experiment.id[:6])
@@ -15,8 +14,8 @@ def test_find_experiment_by_prefix(tmp_project, sample_experiment):
 
 def test_find_experiment_not_found(tmp_project):
     """find_experiment returns None for non-existent ID."""
-    from exptrack.core.queries import find_experiment
     from exptrack.core import get_db
+    from exptrack.core.queries import find_experiment
 
     conn = get_db()
     result = find_experiment(conn, "nonexistent")
@@ -25,8 +24,8 @@ def test_find_experiment_not_found(tmp_project):
 
 def test_get_experiment_detail(tmp_project, sample_experiment):
     """get_experiment_detail returns full experiment with params and metrics."""
-    from exptrack.core.queries import get_experiment_detail
     from exptrack.core import get_db
+    from exptrack.core.queries import get_experiment_detail
 
     conn = get_db()
     detail = get_experiment_detail(conn, sample_experiment.id[:6])
@@ -43,8 +42,8 @@ def test_get_experiment_detail(tmp_project, sample_experiment):
 
 def test_list_experiments(tmp_project, sample_experiment):
     """list_experiments returns recent experiments with metrics."""
-    from exptrack.core.queries import list_experiments
     from exptrack.core import get_db
+    from exptrack.core.queries import list_experiments
 
     conn = get_db()
     results = list_experiments(conn, limit=10)
@@ -74,8 +73,8 @@ def test_list_experiments_status_filter(tmp_project):
 
 def test_get_latest_metrics(tmp_project, sample_experiment):
     """get_latest_metrics returns the last value for each metric key."""
-    from exptrack.core.queries import get_latest_metrics
     from exptrack.core import get_db
+    from exptrack.core.queries import get_latest_metrics
 
     conn = get_db()
     metrics = get_latest_metrics(conn, sample_experiment.id)
