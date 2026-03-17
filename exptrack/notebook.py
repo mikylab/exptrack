@@ -46,6 +46,8 @@ def start(name: str = "", nb_file: str = "", **params) -> Experiment:
     if _active is not None:
         try: _active.finish()
         except Exception as e: print(f"[exptrack] warning: could not finish previous experiment: {e}", file=sys.stderr)
+        detach_notebook()
+        _active = None
 
     # Try to detect notebook filename
     if not nb_file:

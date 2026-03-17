@@ -13,11 +13,37 @@ from .. import config as cfg
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
+import threading
+_local = threading.local()
+
+
 def get_db() -> sqlite3.Connection:
+    """Return a cached per-thread database connection.
+
+    Reuses the same connection across calls within a thread (important for
+    long-lived processes like notebooks where start() may be called many times).
+    """
+    # Check for a cached connection that's still alive
+    conn = getattr(_local, "conn", None)
+    db_path = getattr(_local, "db_path", None)
+
     root = cfg.project_root()
     conf = cfg.load()
     p = root / conf.get("db", ".exptrack/experiments.db")
     p.parent.mkdir(parents=True, exist_ok=True)
+    p_str = str(p)
+
+    if conn is not None and db_path == p_str:
+        # Verify the connection is still usable
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _local.conn = None
 
     # Warn if WAL/SHM files are missing when DB exists (potential corruption)
     if p.exists():
@@ -27,7 +53,7 @@ def get_db() -> sqlite3.Connection:
             print("[exptrack] warning: WAL file exists without SHM file — "
                   "database may be in an inconsistent state", file=sys.stderr)
 
-    conn = sqlite3.connect(str(p), timeout=10)
+    conn = sqlite3.connect(p_str, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
@@ -43,6 +69,8 @@ def get_db() -> sqlite3.Connection:
               file=sys.stderr)
 
     _ensure_schema(conn)
+    _local.conn = conn
+    _local.db_path = p_str
     return conn
 
 
