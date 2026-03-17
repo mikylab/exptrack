@@ -122,6 +122,18 @@ CSS_COMPONENTS = """
   .help-panel .help-item span { font-size: 12px; color: var(--muted); }
   .help-close { float: right; cursor: pointer; font-size: 18px; background: none; border: none; font-family: inherit; color: var(--muted); }
   .help-close:hover { color: var(--fg); }
+  .faq-list { margin: 12px 0; }
+  .faq-item { border: 1px solid var(--border); border-radius: 4px; margin-bottom: 6px; overflow: hidden; }
+  .faq-q {
+    font-size: 13px; font-weight: 600; padding: 10px 14px; cursor: pointer;
+    background: var(--code-bg); user-select: none; position: relative; padding-right: 30px;
+  }
+  .faq-q:hover { background: var(--border); }
+  .faq-q::after { content: '+'; position: absolute; right: 12px; top: 50%; transform: translateY(-50%); font-size: 16px; color: var(--muted); font-weight: 400; }
+  .faq-item.open .faq-q::after { content: '\2212'; }
+  .faq-a { display: none; padding: 10px 14px; font-size: 12px; color: var(--muted); line-height: 1.5; border-top: 1px solid var(--border); }
+  .faq-item.open .faq-a { display: block; }
+  .faq-a code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
   .export-panel { background: var(--card-bg); border: 1px solid var(--border); padding: 16px; border-radius: 6px; margin-top: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); position: relative; z-index: 10; }
   .export-panel pre { white-space: pre-wrap; font-size: 12px; max-height: 400px; overflow-y: auto; background: var(--code-bg); padding: 12px; border-radius: 4px; border: 1px solid var(--border); }
   .export-panel .export-actions { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
