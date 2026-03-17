@@ -154,7 +154,31 @@ def _require() -> Experiment:
 
 
 def _detect_nb_name() -> str:
-    """Try to detect the running notebook's filename."""
+    """Try to detect the running notebook's filename.
+
+    Attempts multiple strategies in order of reliability:
+    1. VS Code sets __vsc_ipynb_file__ in IPython globals
+    2. NOTEBOOK_PATH / JPY_SESSION_NAME environment variables
+    3. ipykernel connection file → Jupyter session API lookup
+    """
+    import os as _os
+
+    # Strategy 1: VS Code injects the notebook path into IPython globals
+    try:
+        ip = get_ipython()  # type: ignore[name-defined]
+        vsc_path = ip.user_ns.get("__vsc_ipynb_file__", "")
+        if vsc_path:
+            return str(vsc_path)
+    except Exception:
+        pass
+
+    # Strategy 2: Environment variables set by various notebook runners
+    for var in ("NOTEBOOK_PATH", "JPY_SESSION_NAME"):
+        val = _os.environ.get(var, "")
+        if val:
+            return val
+
+    # Strategy 3: Query Jupyter session API via kernel ID
     try:
         import json as _json
         import re as _re
@@ -167,23 +191,41 @@ def _detect_nb_name() -> str:
             ipykernel.connect.get_connection_file()
         ).group(1)
 
+        # Build list of (url, headers) to try — token-based and xsrf
+        token = _os.environ.get("JUPYTER_TOKEN", "")
         for port in [8888, 8889, 8890]:
             try:
                 url = f"http://localhost:{port}/api/sessions"
-                # Try with token from environment if available
-                import os as _os
-                token = _os.environ.get("JUPYTER_TOKEN", "")
                 if token:
                     url += f"?token={token}"
                 with urllib.request.urlopen(url, timeout=2) as r:
                     sessions = _json.loads(r.read())
                 for s in sessions:
                     if kernel_id in s.get("kernel", {}).get("id", ""):
-                        return s.get("notebook", {}).get("path", "")
+                        nb_path = s.get("notebook", {}).get("path", "")
+                        if nb_path:
+                            return nb_path
             except Exception:
-                continue  # expected — port may not exist or may need auth
+                continue
     except Exception:
-        pass  # notebook name detection is best-effort
+        pass
+
+    # Strategy 4: Parse connection file path — some launchers embed the
+    # notebook name in the kernel connection filename
+    try:
+        import ipykernel
+        conn = ipykernel.connect.get_connection_file()
+        # e.g. kernel-my_notebook-abc123.json
+        import re as _re
+        m = _re.search(r"kernel-(.+?)-[0-9a-f]+\.json", conn)
+        if m:
+            candidate = m.group(1)
+            # Only use if it looks like a notebook name (not a UUID)
+            if not _re.match(r"^[0-9a-f-]{32,}$", candidate):
+                return candidate + ".ipynb"
+    except Exception:
+        pass
+
     return ""
 
 

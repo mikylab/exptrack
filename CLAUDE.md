@@ -24,15 +24,22 @@ exptrack init [project_name]
 exptrack run train.py --lr 0.01 --data train
 # Or: python -m exptrack train.py --lr 0.01
 
-# Shell/SLURM pipeline integration
+# Shell/SLURM pipeline integration (single step)
 eval $(exptrack run-start --lr 0.01 --epochs 50)
 # ... run training ...
 exptrack run-finish $EXP_ID --metrics results.json
 # or on failure:
 exptrack run-fail $EXP_ID "reason"
 
+# Multi-step pipeline (group steps in a study with numbered stages)
+eval $(exptrack run-start --script train --study my-run --stage 1 --stage-name train --lr 0.01)
+TRAIN_ID=$EXP_ID; python train.py; exptrack run-finish $TRAIN_ID
+eval $(exptrack run-start --script test --study my-run --stage 2 --stage-name test)
+TEST_ID=$EXP_ID; python test.py; exptrack run-finish $TEST_ID
+
 # CLI commands: ls, show, diff, compare, history, timeline, tag, untag, note,
-#   edit-note, rm, clean, finish, delete-tag, stale, upgrade, storage, export, verify, ui
+#   edit-note, rm, clean, finish, delete-tag, study, unstudy, stage, stale,
+#   upgrade, storage, export, verify, ui
 ```
 
 ## Testing & Linting

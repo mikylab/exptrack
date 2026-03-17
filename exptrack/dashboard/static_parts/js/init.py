@@ -13,8 +13,7 @@ loadResultTypes();
 loadStats();
 loadExperiments().then(() => {
   if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
-  if (allExperiments.length === 0) owlSpeak('empty');
-  else owlSpeak('welcome');
+  // owl only speaks when clicked, not on page load
 });
 """
 

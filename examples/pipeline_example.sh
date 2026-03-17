@@ -19,8 +19,9 @@ done
 
 # Save a results file and register it as an artifact
 echo "training_complete=true" > /tmp/results_${EXP_ID}.txt
-exptrack log-artifact $EXP_ID results /tmp/results_${EXP_ID}.txt
+exptrack log-artifact $EXP_ID /tmp/results_${EXP_ID}.txt --label results
 
-# Finish the run (or use run-fail "$EXP_ID" "reason" on error)
-exptrack run-finish $EXP_ID --metrics '{"final_loss": 0.42}'
+# Write final metrics to a file, then finish the run
+echo '{"final_loss": 0.42}' > /tmp/metrics_${EXP_ID}.json
+exptrack run-finish $EXP_ID --metrics /tmp/metrics_${EXP_ID}.json
 echo "Experiment $EXP_ID finished. View with: exptrack show $EXP_ID"

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import platform
 import re as _re
 import socket
@@ -91,7 +92,12 @@ class Experiment:
                 script = frame.f_globals.get("__file__", "") or sys.argv[0]
             except Exception:
                 script = sys.argv[0]  # frame detection failed, fall back to argv
-        self.script = str(Path(script).resolve()) if script else ""
+        # Resolve to absolute path if it looks like a real file path;
+        # keep labels (e.g. "pipeline", "train") as-is from run-start
+        if script and (Path(script).is_file() or os.path.sep in script or script.startswith("/")):
+            self.script = str(Path(script).resolve())
+        else:
+            self.script = script
 
         # Build initial name (may be updated after argparse capture)
         self.name = name or make_run_name(script, self._params)
@@ -122,6 +128,18 @@ class Experiment:
         plugins.on_start(self)
 
         print(f"[exptrack] {self.name}  ({self.id[:6]})", file=sys.stderr)
+
+    @staticmethod
+    def _build_command() -> str:
+        """Build a clean command string from sys.argv.
+
+        Replaces the full path to the Python entry point (e.g.
+        /Users/.../venv/bin/exptrack) with just the binary name.
+        """
+        argv = list(sys.argv)
+        if argv:
+            argv[0] = Path(argv[0]).name
+        return " ".join(argv)
 
     # ── Snapshot dedup ─────────────────────────────────────────────────────
 
@@ -161,7 +179,7 @@ class Experiment:
             """, (
                 self.id, self.project, self.name, self.status,
                 self.created_at, self.created_at,
-                self.script, " ".join(sys.argv),
+                self.script, self._build_command(),
                 self.git_branch, self.git_commit, diff_for_db,
                 self.hostname, self.python_ver,
                 self.notes, json.dumps(self.tags),

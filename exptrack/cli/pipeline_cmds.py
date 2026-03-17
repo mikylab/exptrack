@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .. import config as cfg
 from ..core import get_db
+from ..core.naming import make_run_name
 
 
 def _coerce_str(v: str):
@@ -39,6 +40,67 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
     return out
 
 
+def _detect_calling_script() -> str:
+    """Detect the shell script that invoked 'exptrack run-start'.
+
+    Walks up the process tree to find a parent whose command line
+    includes a script file (e.g. bash myscript.sh).
+
+    Uses /proc on Linux, ps on macOS/BSD.
+    Returns resolved absolute path, or empty string on failure.
+    """
+    try:
+        pid = os.getpid()
+        for _ in range(5):
+            ppid, cmdline = _get_parent_cmdline(pid)
+            if ppid <= 1 or not cmdline:
+                break
+            # Look for a script file in the command args (skip binary + flags)
+            for arg in cmdline[1:]:
+                if not arg or arg.startswith("-"):
+                    continue
+                p = Path(arg)
+                if p.is_file():
+                    return str(p.resolve())
+            pid = ppid
+    except Exception:
+        pass
+    return ""
+
+
+def _get_parent_cmdline(pid: int) -> tuple[int, list[str]]:
+    """Get parent PID and its command line arguments.
+
+    Returns (ppid, [arg0, arg1, ...]) or (0, []) on failure.
+    """
+    # Linux: read from /proc
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.exists():
+        stat = proc_stat.read_text().split()
+        ppid = int(stat[3])
+        cmdline = Path(f"/proc/{ppid}/cmdline").read_text().split("\0")
+        return ppid, [a for a in cmdline if a]
+
+    # macOS/BSD: use ps command
+    import subprocess
+    # Get parent PID
+    result = subprocess.run(
+        ["ps", "-o", "ppid=", "-p", str(pid)],
+        capture_output=True, text=True, timeout=2,
+    )
+    if result.returncode != 0:
+        return 0, []
+    ppid = int(result.stdout.strip())
+    # Get parent's full command line
+    result = subprocess.run(
+        ["ps", "-o", "command=", "-p", str(ppid)],
+        capture_output=True, text=True, timeout=2,
+    )
+    if result.returncode != 0:
+        return ppid, []
+    return ppid, result.stdout.strip().split()
+
+
 def cmd_run_start(args):
     """
     Start an experiment from a shell script. Prints shell-sourceable env vars
@@ -48,7 +110,9 @@ def cmd_run_start(args):
     """
     from ..core import Experiment
 
-    # Parse free-form --key value pairs from remaining args
+    # Parse free-form --key value pairs from remaining args,
+    # skipping keys that are handled by argparse as named flags
+    _reserved = {"name", "script", "tags", "study", "stage", "stage-name", "notes"}
     params = {}
     raw = args.params
     i = 0
@@ -58,12 +122,15 @@ def cmd_run_start(args):
             key = a[2:]
             if "=" in key:
                 k, v = key.split("=", 1)
-                params[k] = _coerce_str(v)
+                if k not in _reserved:
+                    params[k] = _coerce_str(v)
             elif i + 1 < len(raw) and not raw[i+1].startswith("--"):
-                params[key] = _coerce_str(raw[i+1])
+                if key not in _reserved:
+                    params[key] = _coerce_str(raw[i+1])
                 i += 1
             else:
-                params[key] = True
+                if key not in _reserved:
+                    params[key] = True
         i += 1
 
     # Add SLURM context if present
@@ -83,12 +150,20 @@ def cmd_run_start(args):
     notes = args.notes or ""
     name  = args.name or ""
 
+    # --script is a naming hint (e.g. "train.py" → name starts with "train__")
+    # The actual script field should be the calling shell script.
+    naming_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
+    calling_script = _detect_calling_script()
+    # Fallback: use the run-start command itself (cleaned up)
+    if not calling_script:
+        calling_script = "exptrack run-start " + " ".join(args.params)
+
     exp = Experiment(
-        name=name,
+        name=name or make_run_name(naming_hint, params),
         params=params,
         tags=tags,
         notes=notes,
-        script=args.script or os.environ.get("SLURM_JOB_NAME", "pipeline"),
+        script=calling_script,
         _caller_depth=0,
     )
 
@@ -104,6 +179,19 @@ def cmd_run_start(args):
     conn.commit()
 
     exp.log_artifact(str(out_dir), label="output_dir")
+
+    # Add to study if specified
+    if getattr(args, "study", ""):
+        from ..core.queries import add_to_study
+        add_to_study(conn, exp.id, args.study)
+        conn.commit()
+
+    # Set stage if specified
+    if getattr(args, "stage", None) is not None:
+        from ..core.queries import update_experiment_stage
+        update_experiment_stage(conn, exp.id, args.stage,
+                               getattr(args, "stage_name", None))
+        conn.commit()
 
     print(f'export EXP_ID="{exp.id}"')
     print(f'export EXP_NAME="{exp.name}"')

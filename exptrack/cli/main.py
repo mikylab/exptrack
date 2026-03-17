@@ -67,10 +67,13 @@ def main():
     # consumes them as unknown flags.
     if len(sys.argv) > 1 and sys.argv[1] == "run-start":
         p_rs = argparse.ArgumentParser(prog="exptrack run-start")
-        p_rs.add_argument("--name",   default="")
-        p_rs.add_argument("--script", default="")
-        p_rs.add_argument("--tags",   nargs="*")
-        p_rs.add_argument("--notes",  default="")
+        p_rs.add_argument("--name",       default="")
+        p_rs.add_argument("--script",     default="")
+        p_rs.add_argument("--tags",       nargs="*")
+        p_rs.add_argument("--study",      default="")
+        p_rs.add_argument("--stage",      type=int, default=None)
+        p_rs.add_argument("--stage-name", default=None)
+        p_rs.add_argument("--notes",      default="")
         known, unknown = p_rs.parse_known_args(sys.argv[2:])
         known.params = unknown
         cmd_run_start(known)
@@ -109,6 +112,9 @@ def main():
     p_rs.add_argument("--name",   default="", help="Override run name")
     p_rs.add_argument("--script", default="", help="Script/pipeline name for naming")
     p_rs.add_argument("--tags",   nargs="*",  help="Tags")
+    p_rs.add_argument("--study",  default="", help="Add to study (groups related pipeline steps)")
+    p_rs.add_argument("--stage",  type=int, default=None, help="Stage number (e.g. 1, 2, 3)")
+    p_rs.add_argument("--stage-name", default=None, help="Stage label (e.g. preprocess, train, eval)")
     p_rs.add_argument("--notes",  default="", help="Notes")
     p_rs.add_argument("params",   nargs=argparse.REMAINDER,
                       help="Params as --key value pairs, e.g. --lr 0.01 --epochs 50")
