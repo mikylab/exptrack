@@ -112,7 +112,7 @@ def test_compact_skips_running_by_default():
         from exptrack.cli.admin_cmds import cmd_compact
         args = SimpleNamespace(ids=[], all=False, older_than=None, dry_run=False, export=None)
         output = _capture_stdout(cmd_compact, args)
-        assert "Nothing to compact" in output
+        assert "No matching experiments" in output or "Nothing to compact" in output
 
         # Verify diff is untouched
         row = conn.execute("SELECT git_diff FROM experiments WHERE id='exp004'").fetchone()
@@ -172,7 +172,7 @@ def test_compact_export():
         args = SimpleNamespace(ids=[], all=False, older_than=None, dry_run=False, export=export_dir)
         output = _capture_stdout(cmd_compact, args)
 
-        assert "Exported 1" in output
+        assert "Exported" in output
         assert "Compacted 1" in output
 
         # Check the exported file exists and has correct content

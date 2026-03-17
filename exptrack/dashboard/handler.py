@@ -21,6 +21,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # suppress request logs
 
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except BrokenPipeError:
+            pass  # browser closed connection early — harmless
+
     # ── GET routing ──────────────────────────────────────────────────────────
 
     def do_GET(self):

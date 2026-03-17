@@ -34,6 +34,11 @@ DEFAULTS: dict = {
         "accuracy", "loss", "auroc", "f1", "precision", "recall",
         "mse", "mae", "r2", "perplexity", "bleu",
     ],
+    "max_cell_source_kb":    50,     # hard cap on cell source in cell_lineage
+    "max_source_diff_kb":    20,     # hard cap on source_diff in timeline events
+    "max_vars_per_cell":     50,     # max var_set events per cell execution
+    "max_cell_output_chars": 2000,   # output truncation limit for cell snapshots
+    "notebook_history":      False,  # write snapshot JSON files to disk
     "plugins": {
         "enabled": [],
     },

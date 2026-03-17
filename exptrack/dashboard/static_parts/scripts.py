@@ -1087,15 +1087,29 @@ async function loadStats() {
 
 async function bulkCompactAll() {
   const doneIds = allExperiments.filter(e => e.status === 'done').map(e => e.id);
-  if (!doneIds.length) { owlSay('No done experiments to compact'); return; }
-  if (!confirm('Compact diffs for all ' + doneIds.length + ' done experiments?')) return;
-  const d = await postApi('/api/bulk-compact', {ids: doneIds});
-  if (d.ok) {
-    owlSay('Compacted ' + d.compacted + ' diff(s)');
-    loadStats();
-    loadExperiments();
-    if (currentDetailId) refreshDetail(currentDetailId);
-  } else alert(d.error || 'Failed');
+  if (!doneIds.length) { alert('No done experiments to compact.'); return; }
+  const preview = await postApi('/api/bulk-compact', {ids: doneIds, mode: 'deep', dry_run: true});
+  if (preview.error) { alert('Error: ' + preview.error); return; }
+  if (!preview.will_remove || !preview.will_remove.length) {
+    alert('Nothing to compact \u2014 all done experiments are already compacted.');
+    return;
+  }
+  const msg = 'Compact all ' + doneIds.length + ' done experiments?\n\nWill remove:\n'
+    + preview.will_remove.map(function(s) { return '  \u2022 ' + s; }).join('\n')
+    + '\n\nTotal: ~' + preview.total_fmt
+    + '\n\nTip: Run "exptrack compact --export DIR" from the CLI to save diffs first.'
+    + '\n\nThis cannot be undone.';
+  if (!confirm(msg)) return;
+  const d = await postApi('/api/bulk-compact', {ids: doneIds, mode: 'deep'});
+  if (d.error) { alert('Compact error: ' + d.error); return; }
+  if (d.ok && d.freed > 0) {
+    owlSay('Compacted ' + d.compacted + ' experiment(s), freed ~' + fmtFreed(d.freed), 'owl-bounce');
+  } else {
+    alert('Nothing to compact \u2014 already fully compacted.');
+  }
+  await loadStats();
+  await loadExperiments();
+  if (currentDetailId) await refreshDetail(currentDetailId);
 }
 
 async function loadExperiments() {
@@ -1699,7 +1713,7 @@ async function refreshDetail(id) {
   summaryHtml += '<div class="summary-item"><div class="val">' + numVars + '</div><div class="lbl">Variables</div></div>';
   summaryHtml += '<div class="summary-item"><div class="val">' + numArt + '</div><div class="lbl">Artifacts</div></div>';
   summaryHtml += '<div class="summary-item"><div class="val">' + numCodeChanges + '</div><div class="lbl">Code Changes</div></div>';
-  summaryHtml += '</div></div>';
+  summaryHtml += '</div>' + _compactStatusHtml(exp) + '</div>';
 
   // Diff
   let diffHtml = '';
@@ -1782,6 +1796,7 @@ async function refreshDetail(id) {
             </div>
           </span>
           ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button>` : ''}
+          ${_compactBtnHtml(exp)}
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name)}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
         </div>
@@ -1833,7 +1848,7 @@ async function refreshDetail(id) {
         <!-- Full-width sections below the grid -->
         <div style="margin-top:20px">
           ${codeHtml}
-          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Uncommitted Changes (compacted)' : 'Uncommitted Changes ('+exp.diff_lines+' lines)')+'</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
+          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Uncommitted Changes (compacted)' : 'Uncommitted Changes ('+exp.diff_lines+' lines)' + ' <span style="float:right;font-size:12px;font-weight:normal">' + '<button class="action-btn" style="padding:1px 8px" onclick="event.stopPropagation();exportDiff(\'' + exp.id + '\')">Export</button>' + '<button class="action-btn" style="padding:1px 8px;margin-left:4px" onclick="event.stopPropagation();compactDiff(\'' + exp.id + '\')">Compact</button>' + '</span>')+'</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
         </div>
       </div>
 
@@ -2357,14 +2372,61 @@ async function finishExp(id) {
 
 // ── Diff compact / export ────────────────────────────────────────────────────
 
+function fmtFreed(b) { return b > 1024 ? (b/1024).toFixed(1) + ' KB' : b + ' B'; }
+
+function _compactBtnHtml(exp) {
+  const cs = exp.compact_status || {};
+  const hasCompactable = cs.diff === 'stored' || cs.cells === 'stored' || cs.cells === 'partial' || cs.timeline === 'stored';
+  if (!hasCompactable) {
+    const wasCompacted = cs.diff === 'compacted' || cs.cells === 'compacted' || cs.timeline === 'compacted';
+    if (wasCompacted) return '<span style="color:var(--muted);font-size:12px;padding:4px 8px">compacted</span>';
+    return '';
+  }
+  return '<button class="action-btn" onclick="compactExp(\'' + exp.id + '\')">Compact</button>';
+}
+
+function _compactStatusHtml(exp) {
+  const cs = exp.compact_status || {};
+  const parts = [];
+  if (cs.diff === 'compacted') parts.push('<span style="color:var(--green)">diff stripped</span>');
+  if (cs.cells === 'compacted') parts.push('<span style="color:var(--green)">cells stripped</span>');
+  if (cs.cells === 'shared') parts.push('<span style="color:var(--yellow)">cells shared</span>');
+  if (cs.timeline === 'compacted') parts.push('<span style="color:var(--green)">timeline stripped</span>');
+  if (!parts.length) return '';
+  return '<div style="margin-top:6px;font-size:12px;color:var(--muted)">Compacted: ' + parts.join(', ') + '</div>';
+}
+
+async function compactExp(id) {
+  // Dry-run first to show what will be removed
+  const preview = await postApi('/api/bulk-compact', {ids: [id], mode: 'deep', dry_run: true});
+  if (preview.error) { alert('Error: ' + preview.error); return; }
+  if (!preview.will_remove || !preview.will_remove.length) {
+    alert('Nothing to compact \u2014 this experiment has no stored diffs or cell data to strip.');
+    return;
+  }
+  const msg = 'Compact this experiment?\n\nWill remove:\n'
+    + preview.will_remove.map(function(s) { return '  \u2022 ' + s; }).join('\n')
+    + '\n\nTotal: ~' + preview.total_fmt
+    + '\n\nWhat is kept:\n  \u2022 All metrics, params, and results\n  \u2022 Variable change history\n  \u2022 Cell execution order and lineage\n  \u2022 Artifact records'
+    + '\n\nThis cannot be undone.';
+  if (!confirm(msg)) return;
+  const d = await postApi('/api/bulk-compact', {ids: [id], mode: 'deep'});
+  if (d.error) { alert('Compact error: ' + d.error); return; }
+  if (d.ok && d.freed > 0) {
+    owlSay('Compacted! Freed ~' + fmtFreed(d.freed), 'owl-bounce');
+    await loadExperiments();
+    await refreshDetail(id);
+    // Refresh active tab content (timeline, etc.)
+    if (currentDetailTab && currentDetailTab !== 'overview') {
+      switchDetailTab(currentDetailTab, id);
+    }
+  } else {
+    alert('Nothing to compact \u2014 already fully compacted.');
+  }
+}
+
 async function compactDiff(id) {
-  if (!confirm('Strip the git diff from this experiment? The diff data will be replaced with a compact summary. This cannot be undone.')) return;
-  const d = await postApi('/api/bulk-compact', {ids: [id]});
-  if (d.ok) {
-    owlSay('Compacted diff (' + d.compacted + ' experiment)');
-    refreshDetail(id);
-    loadExperiments();
-  } else alert(d.error || 'Failed');
+  return compactExp(id);
 }
 
 async function exportDiff(id) {
@@ -2381,14 +2443,27 @@ async function exportDiff(id) {
 
 async function bulkCompact() {
   const ids = [...selectedIds];
-  if (!ids.length) return;
-  if (!confirm('Compact diffs for ' + ids.length + ' experiment(s)? This strips git diff data and cannot be undone.')) return;
-  const d = await postApi('/api/bulk-compact', {ids});
-  if (d.ok) {
-    owlSay('Compacted ' + d.compacted + ' diff(s)');
-    loadExperiments();
-    if (currentDetailId) refreshDetail(currentDetailId);
-  } else alert(d.error || 'Failed');
+  if (!ids.length) { alert('Select experiments first (click checkboxes in the list).'); return; }
+  const preview = await postApi('/api/bulk-compact', {ids, mode: 'deep', dry_run: true});
+  if (preview.error) { alert('Error: ' + preview.error); return; }
+  if (!preview.will_remove || !preview.will_remove.length) {
+    alert('Nothing to compact \u2014 selected experiments have no stored diffs or cell data.');
+    return;
+  }
+  const msg = 'Compact ' + ids.length + ' experiment(s)?\n\nWill remove:\n'
+    + preview.will_remove.map(function(s) { return '  \u2022 ' + s; }).join('\n')
+    + '\n\nTotal: ~' + preview.total_fmt
+    + '\n\nThis cannot be undone.';
+  if (!confirm(msg)) return;
+  const d = await postApi('/api/bulk-compact', {ids, mode: 'deep'});
+  if (d.error) { alert('Compact error: ' + d.error); return; }
+  if (d.ok && d.freed > 0) {
+    owlSay('Compacted ' + d.compacted + ' experiment(s), freed ~' + fmtFreed(d.freed), 'owl-bounce');
+    await loadExperiments();
+    if (currentDetailId) await refreshDetail(currentDetailId);
+  } else {
+    alert('Nothing to compact \u2014 already fully compacted.');
+  }
 }
 
 // ── Add artifact ─────────────────────────────────────────────────────────────
@@ -2692,7 +2767,8 @@ async function loadTimeline(expId, filter) {
       if (ev.source_diff && ev.source_diff.length) {
         html += '<div class="tl-diff">';
         for (const d of ev.source_diff.slice(0, 8)) {
-          if (d.op === '+') html += '<div class="diff-add">+ ' + esc(d.line.slice(0,80)) + '</div>';
+          if (d.op === 'summary') html += '<div style="color:var(--muted);font-style:italic">' + esc(d.line) + '</div>';
+          else if (d.op === '+') html += '<div class="diff-add">+ ' + esc(d.line.slice(0,80)) + '</div>';
           else if (d.op === '-') html += '<div class="diff-del">- ' + esc(d.line.slice(0,80)) + '</div>';
         }
         if (ev.source_diff.length > 8) html += '<div style="color:var(--muted)">... ' + (ev.source_diff.length - 8) + ' more lines</div>';
@@ -2762,10 +2838,12 @@ async function viewCellSource(cellHash, btnEl) {
   btnEl.textContent = 'loading...';
   const data = await api('/api/cell-source/' + cellHash);
   btnEl.textContent = 'hide source';
-  if (data.error) {
+  if (data.error || !data.source) {
     const div = document.createElement('div');
     div.className = 'source-view';
-    div.textContent = 'Source not available (cell hash: ' + cellHash + ')';
+    div.innerHTML = '<span style="color:var(--yellow)">Source was compacted to save space.</span>'
+      + '<br><span style="color:var(--muted);font-size:12px">Cell hash: ' + cellHash + '</span>'
+      + '<br><span style="color:var(--muted);font-size:12px">The cell lineage and variable changes are still tracked in the timeline.</span>';
     btnEl.parentElement.appendChild(div);
     return;
   }

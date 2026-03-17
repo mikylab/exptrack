@@ -24,7 +24,8 @@ def find_parent_hash(notebook: str, source: str, current_hash: str) -> str | Non
         from ..core import get_db
         conn = get_db()
         rows = conn.execute(
-            "SELECT cell_hash, source FROM cell_lineage WHERE notebook=?",
+            "SELECT cell_hash, source FROM cell_lineage "
+            "WHERE notebook=? AND source IS NOT NULL",
             (notebook,)
         ).fetchall()
     except Exception as e:
@@ -51,10 +52,22 @@ def find_parent_hash(notebook: str, source: str, current_hash: str) -> str | Non
 
 
 def store_cell_lineage(notebook: str, source: str, parent_hash: str = None):
-    """Store a cell's source in the content-addressed lineage table."""
+    """Store a cell's source in the content-addressed lineage table.
+
+    Applies max_cell_source_kb truncation to the stored copy.
+    The cell_hash is always computed from the original source.
+    """
     try:
         from ..core import get_db
+        from .. import config as cfg
         ch = cell_hash(source)
+        # Truncate stored source if it exceeds the configured limit
+        stored_source = source
+        max_kb = cfg.load().get("max_cell_source_kb", 50)
+        if max_kb and len(source) > max_kb * 1024:
+            stored_source = source[:max_kb * 1024] + (
+                f"\n# [truncated at {max_kb} KB by exptrack]"
+            )
         with get_db() as conn:
             existing = conn.execute(
                 "SELECT cell_hash FROM cell_lineage WHERE cell_hash=?", (ch,)
@@ -64,7 +77,7 @@ def store_cell_lineage(notebook: str, source: str, parent_hash: str = None):
                     """INSERT INTO cell_lineage
                        (cell_hash, notebook, source, parent_hash, created_at)
                        VALUES (?,?,?,?,?)""",
-                    (ch, notebook, source, parent_hash,
+                    (ch, notebook, stored_source, parent_hash,
                      datetime.now(timezone.utc).isoformat())
                 )
                 conn.commit()
@@ -73,14 +86,19 @@ def store_cell_lineage(notebook: str, source: str, parent_hash: str = None):
 
 
 def get_cell_source(cell_hash_val: str) -> str | None:
-    """Retrieve source from the lineage table by hash."""
+    """Retrieve source from the lineage table by hash.
+
+    Returns None if the cell was not found or source was compacted (NULL).
+    """
     try:
         from ..core import get_db
         conn = get_db()
         row = conn.execute(
             "SELECT source FROM cell_lineage WHERE cell_hash=?", (cell_hash_val,)
         ).fetchone()
-        return row["source"] if row else None
+        if row and row["source"] is not None:
+            return row["source"]
+        return None
     except Exception as e:
         print(f"[exptrack] warning: could not get cell source: {e}", file=sys.stderr)
         return None

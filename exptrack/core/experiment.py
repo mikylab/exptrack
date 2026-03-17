@@ -24,7 +24,7 @@ import re as _re
 
 from .. import config as cfg
 from ..plugins import registry as plugins
-from .db import get_db
+from .db import get_db, store_git_diff
 from .git import git_info
 from .db import rename_output_folder
 from .naming import make_run_name, output_path
@@ -143,6 +143,14 @@ class Experiment:
         self._output_dir = str(
             cfg.project_root() / conf.get("outputs_dir", "outputs") / self.name
         )
+        # Deduplicate git diff: store full text once, reference by hash
+        diff_for_db = self.git_diff
+        if diff_for_db:
+            try:
+                diff_for_db = store_git_diff(conn, diff_for_db)
+                conn.commit()  # commit the dedup insert before main transaction
+            except Exception:
+                pass  # fall back to storing inline
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("""
@@ -155,7 +163,7 @@ class Experiment:
                 self.id, self.project, self.name, self.status,
                 self.created_at, self.created_at,
                 self.script, " ".join(sys.argv),
-                self.git_branch, self.git_commit, self.git_diff,
+                self.git_branch, self.git_commit, diff_for_db,
                 self.hostname, self.python_ver,
                 self.notes, json.dumps(self.tags),
                 self._output_dir,

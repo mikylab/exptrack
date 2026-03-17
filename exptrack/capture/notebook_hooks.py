@@ -318,9 +318,20 @@ def _post_run_cell(result=None):
         _nb_state["first_run"] = False
 
         # ── 6. Emit timeline events ──────────────────────────────────────────
+        from .. import config as _cfg
+        _conf = _cfg.load()
+
         diff_str = None
         if source_diff:
             diff_str = json.dumps(source_diff)
+            # Truncate large source diffs at capture time
+            max_diff_kb = _conf.get("max_source_diff_kb", 20)
+            if max_diff_kb and len(diff_str) > max_diff_kb * 1024:
+                n_lines = len(source_diff)
+                diff_str = json.dumps([{
+                    "op": "summary",
+                    "line": f"{n_lines} lines changed (diff truncated at {max_diff_kb} KB)"
+                }])
 
         event_type = "observational" if is_obs else "cell_exec"
         cell_seq = exp.log_event(
@@ -340,7 +351,19 @@ def _post_run_cell(result=None):
             source_diff=diff_str,
         )
 
+        max_vars = _conf.get("max_vars_per_cell", 50)
+        var_count = 0
         for name, display in new_vars.items():
+            var_count += 1
+            if max_vars and var_count > max_vars:
+                overflow = len(new_vars) + len(changed_vars) - max_vars
+                exp.log_event(
+                    event_type="var_set",
+                    cell_hash=ch, cell_pos=exec_num,
+                    key="_var_overflow",
+                    value=f"{overflow} more variables changed (truncated at {max_vars})",
+                )
+                break
             exp.log_event(
                 event_type="var_set",
                 cell_hash=ch,
@@ -351,6 +374,16 @@ def _post_run_cell(result=None):
             )
 
         for name, change in changed_vars.items():
+            var_count += 1
+            if max_vars and var_count > max_vars:
+                overflow = len(new_vars) + len(changed_vars) - max_vars
+                exp.log_event(
+                    event_type="var_set",
+                    cell_hash=ch, cell_pos=exec_num,
+                    key="_var_overflow",
+                    value=f"{overflow} more variables changed (truncated at {max_vars})",
+                )
+                break
             prev_display = change.get("from", "(unknown)")
             exp.log_event(
                 event_type="var_set",
@@ -410,12 +443,19 @@ def _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
                         source_diff, new_vars, changed_vars, output,
                         is_rerun=False, is_observational=False):
     from .. import config as cfg
+    conf = cfg.load()
+
+    # Skip writing snapshot files when notebook_history is disabled (default)
+    if not conf.get("notebook_history", False):
+        return
+
     root = cfg.project_root()
     nb_name = _nb_state["nb_name"]
-    hist_dir = root / cfg.load().get("notebook_history_dir",
-                                      ".exptrack/notebook_history") / nb_name
+    hist_dir = root / conf.get("notebook_history_dir",
+                                ".exptrack/notebook_history") / nb_name
     hist_dir.mkdir(parents=True, exist_ok=True)
 
+    max_output = conf.get("max_cell_output_chars", 2000)
     snap = {
         "exp_id":       exp.id,
         "exp_name":     exp.name,
@@ -426,7 +466,7 @@ def _save_cell_snapshot(exp, exec_num, cell_id, source, prev_source,
         "source_diff":  source_diff,
         "new_vars":     new_vars,
         "changed_vars": changed_vars,
-        "output":       str(output)[:2000] if output else None,
+        "output":       str(output)[:max_output] if output else None,
         "is_rerun":     is_rerun,
         "is_observational": is_observational,
         "source":       source if (not prev_source and source_diff) else None,

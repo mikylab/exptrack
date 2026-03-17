@@ -46,6 +46,8 @@ def start(name: str = "", nb_file: str = "", **params) -> Experiment:
     if _active is not None:
         try: _active.finish()
         except Exception as e: print(f"[exptrack] warning: could not finish previous experiment: {e}", file=sys.stderr)
+        detach_notebook()
+        _active = None
 
     # Try to detect notebook filename
     if not nb_file:
@@ -115,6 +117,28 @@ def done():
     _active = None
 
 
+def reset():
+    """Force-close the database connection and detach hooks.
+
+    Use this in a notebook to clean up leaked connections from before
+    the caching fix. Safe to call anytime — next operation reopens fresh.
+
+        from exptrack.notebook import reset
+        reset()
+    """
+    global _active
+    if _active is not None:
+        try:
+            _active.finish()
+        except Exception:
+            pass
+        detach_notebook()
+        _active = None
+    from .core import close_db
+    close_db()
+    print("[exptrack] Connection closed and hooks detached.")
+
+
 def current() -> Experiment | None:
     return _active
 
@@ -144,16 +168,20 @@ def _detect_nb_name() -> str:
         for port in [8888, 8889, 8890]:
             try:
                 url = f"http://localhost:{port}/api/sessions"
+                # Try with token from environment if available
+                import os as _os
+                token = _os.environ.get("JUPYTER_TOKEN", "")
+                if token:
+                    url += f"?token={token}"
                 with urllib.request.urlopen(url, timeout=2) as r:
                     sessions = _json.loads(r.read())
                 for s in sessions:
                     if kernel_id in s.get("kernel", {}).get("id", ""):
                         return s.get("notebook", {}).get("path", "")
-            except Exception as e:
-                print(f"[exptrack] warning: could not query Jupyter sessions on port {port}: {e}", file=sys.stderr)
-                continue
-    except Exception as e:
-        print(f"[exptrack] warning: notebook name detection failed: {e}", file=sys.stderr)
+            except Exception:
+                continue  # expected — port may not exist or may need auth
+    except Exception:
+        pass  # notebook name detection is best-effort
     return ""
 
 
@@ -205,10 +233,8 @@ def load_ipython_extension(ip):
     ip.register_magic_function(exp_note, magic_kind='line')
 
     # Finish experiment on kernel shutdown
-    try:
-        ip.events.register("shutdown_hook", lambda: done() if _active else None)
-    except Exception as e:
-        print(f"[exptrack] warning: could not register shutdown hook: {e}", file=sys.stderr)
+    import atexit
+    atexit.register(lambda: done() if _active else None)
 
     print(f"[exptrack] Loaded. Use %exp_status, %exp_done, %exp_tag, %exp_note")
 
