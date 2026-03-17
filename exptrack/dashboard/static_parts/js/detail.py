@@ -1,0 +1,460 @@
+"""Experiment detail panel, tabs, metric charts, and export."""
+
+JS_DETAIL = r"""
+
+async function compareSelected() {
+  if (selectedIds.size < 2) return;
+  owlSpeak('compare');
+  showCompareView();
+  const ids = [...selectedIds];
+  if (ids.length === 2) {
+    // Pair compare
+    document.getElementById('compare-pair-tab').classList.add('active');
+    document.getElementById('compare-multi-tab').classList.remove('active');
+    document.getElementById('compare-pair-content').style.display = '';
+    document.getElementById('compare-multi-content').style.display = 'none';
+    await populateCompareDropdowns();
+    document.getElementById('cmp-id1').value = ids[0];
+    document.getElementById('cmp-id2').value = ids[1];
+    doCompare();
+  } else {
+    // Multi compare
+    document.getElementById('compare-pair-tab').classList.remove('active');
+    document.getElementById('compare-multi-tab').classList.add('active');
+    document.getElementById('compare-pair-content').style.display = 'none';
+    document.getElementById('compare-multi-content').style.display = '';
+    await populateMultiCompareSelector();
+    doMultiCompare(ids);
+  }
+}
+
+function filterExps(status) {
+  if (status) owlSpeak('filter');
+  currentFilter = status;
+  renderStatusChips();
+  loadExperiments();
+}
+
+async function populateCompareDropdowns() {
+  const exps = await api('/api/experiments?limit=100');
+  const sel1 = document.getElementById('cmp-id1');
+  const sel2 = document.getElementById('cmp-id2');
+  const prev1 = sel1.value, prev2 = sel2.value;
+  const makeOpts = (exps) => '<option value="">-- Select experiment --</option>' +
+    exps.map(e => `<option value="${e.id}">${e.id.slice(0,6)} | ${esc(e.name.slice(0,35))} | ${e.status} | ${fmtDt(e.created_at)}</option>`).join('');
+  sel1.innerHTML = makeOpts(exps);
+  sel2.innerHTML = makeOpts(exps);
+  if (prev1) sel1.value = prev1;
+  if (prev2) sel2.value = prev2;
+  if (!prev1 && !prev2 && selectedIds.size === 2) {
+    const ids = [...selectedIds];
+    sel1.value = ids[0];
+    sel2.value = ids[1];
+  }
+}
+
+function artifactTypeBadge(path) {
+  const ext = (path || '').split('.').pop().toLowerCase();
+  if (['png','jpg','jpeg','svg','gif','bmp','tiff'].includes(ext)) return '<span class="artifact-type-badge img">image</span>';
+  if (['pt','pth','h5','hdf5','onnx','pkl','joblib','safetensors'].includes(ext)) return '<span class="artifact-type-badge model">model</span>';
+  if (['csv','json','jsonl','parquet','tsv','npy','npz'].includes(ext)) return '<span class="artifact-type-badge data">data</span>';
+  if (['log','txt','out','err'].includes(ext)) return '<span class="artifact-type-badge log">log</span>';
+  if (!ext || path.indexOf('.') === -1) return '<span class="artifact-type-badge dir">dir</span>';
+  return '<span class="artifact-type-badge">file</span>';
+}
+
+async function showDetail(id) {
+  // Toggle: clicking same experiment deselects
+  if (currentDetailId === id) {
+    showWelcome();
+    return;
+  }
+  return refreshDetail(id);
+}
+
+async function refreshDetail(id) {
+  currentDetailId = id;
+  showDetailView();
+  document.getElementById('exp-sidebar').classList.remove('collapsed');
+  renderExpList();
+
+  const [exp, metricsData, diffData] = await Promise.all([
+    api('/api/experiment/' + id),
+    api('/api/metrics/' + id),
+    api('/api/diff/' + id),
+  ]);
+  if (exp.error) return;
+
+  const regularParams = {};
+  const codeChanges = {};
+  const varChanges = {};
+  let cellsRan = null;
+  for (const [k, v] of Object.entries(exp.params)) {
+    if (k === '_code_changes' || k.startsWith('_code_change/')) {
+      codeChanges[k] = v;
+    } else if (k.startsWith('_var/')) {
+      varChanges[k.slice(5)] = v;
+    } else if (k.startsWith('_result:')) {
+      // Legacy _result:* params — skip (migrated to metrics table)
+    } else if (k === '_script_hash' || k === '_cells_ran' || k === '_result_source') {
+      if (k === '_cells_ran') cellsRan = v;
+    } else if (k === '_tags') {
+      // skip, shown elsewhere
+    } else {
+      regularParams[k] = v;
+    }
+  }
+
+  const paramRows = Object.entries(regularParams).map(([k,v]) =>
+    `<tr><td style="color:var(--blue)">${esc(k)}</td><td>${esc(JSON.stringify(v))}</td></tr>`
+  ).join('');
+
+  // Build unified metrics rows grouped by prefix (train/*, test/*, val/*, etc.)
+  function buildMetricRow(m, showFullKey) {
+    const src = m.source || 'auto';
+    const isManual = src === 'manual';
+    const keyColor = isManual ? 'var(--tl-metric)' : 'var(--green)';
+    const delBtn = `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`;
+    const editAttr = isManual ? ` class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(m.key)}',this)" title="Double-click to edit"` : '';
+    const displayKey = showFullKey ? abbrevMetric(m.key) : abbrevMetric(m.key.includes('/') ? m.key.split('/').slice(1).join('/') : m.key);
+    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="${esc(m.key)} — double-click to rename">${esc(displayKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${isManual ? '--' : (m.min?.toFixed(4) ?? '--')}</td><td>${isManual ? '--' : (m.max?.toFixed(4) ?? '--')}</td><td>${m.n}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
+  }
+  // Group metrics by prefix
+  const metricGroups = {};
+  for (const m of exp.metrics) {
+    const slashIdx = m.key.indexOf('/');
+    const group = slashIdx > 0 ? m.key.slice(0, slashIdx) : '';
+    (metricGroups[group] = metricGroups[group] || []).push(m);
+  }
+  const groupKeys = Object.keys(metricGroups).sort((a, b) => a === '' ? 1 : b === '' ? -1 : a.localeCompare(b));
+  let metricRows = '';
+  const thead = '<tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Count</th><th>Source</th></tr>';
+  if (groupKeys.length <= 1) {
+    // No grouping needed — single flat table, show abbreviated full key
+    metricRows = exp.metrics.map(m => buildMetricRow(m, true)).join('');
+    if (metricRows) metricRows = '<table class="metrics-table">' + thead + metricRows + '</table>';
+  } else {
+    // Grouped tables with prefix headers
+    for (const g of groupKeys) {
+      const label = g || 'Other';
+      const items = metricGroups[g];
+      metricRows += '<div class="metric-group"><h3 class="metric-group-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">' + esc(label) + ' <span style="font-weight:normal;font-size:12px">(' + items.length + ')</span></h3>';
+      metricRows += '<table class="metrics-table">' + thead;
+      for (const m of items) metricRows += buildMetricRow(m);
+      metricRows += '</table></div>';
+    }
+  }
+
+  const artRows = exp.artifacts.map(a => {
+    const ext = (a.path || '').split('.').pop().toLowerCase();
+    const isLog = ['log', 'txt', 'out', 'err'].includes(ext);
+    const isData = ['csv', 'json', 'jsonl'].includes(ext);
+    const viewBtn = (isLog || isData)
+      ? `<button onclick="viewLogFile('${esc(a.path)}','${esc(a.label)}')" title="View contents">view</button>`
+      : '';
+    return `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`;
+  }).join('');
+
+  const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
+    <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:210px">
+    <input type="text" id="art-path-${exp.id}" placeholder="Path (e.g. outputs/model.pt)" style="width:280px">
+    <button onclick="addArtifact('${exp.id}')">+ Add Artifact</button>
+  </div>`;
+
+  const logResultForm = `<div class="artifact-add-form" style="margin-top:8px;align-items:center;gap:4px" id="log-result-form-${exp.id}">
+    <input type="text" id="result-key-${exp.id}" list="metric-suggestions-${exp.id}" placeholder="Metric key" style="width:150px" autocomplete="off">
+    <datalist id="metric-suggestions-${exp.id}"></datalist>
+    <input type="text" id="result-val-${exp.id}" placeholder="Value" style="width:80px" onkeydown="if(event.key==='Enter')logMetric('${exp.id}')">
+    <input type="text" id="result-step-${exp.id}" placeholder="Step" style="width:55px;font-size:12px" title="Optional step number">
+    <button onclick="logMetric('${exp.id}')">+ Log</button>
+    <button onclick="openManageResultTypes()" style="background:transparent;color:var(--muted);border:none;font-size:16px;padding:0 4px;cursor:pointer;line-height:1" title="Manage metric types">&#9881;</button>
+  </div>`;
+
+  // Code changes
+  let codeHtml = '';
+  if (Object.keys(codeChanges).length) {
+    codeHtml = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Code Changes</h2><div class="section-body"><div class="code-changes">';
+    for (const [k, v] of Object.entries(codeChanges)) {
+      const label = k === '_code_changes' ? 'Script diff vs. last commit' : k.replace('_code_change/','Cell ');
+      const parts = String(v).split('; ').map(part => {
+        const trimmed = part.trim();
+        if (trimmed.startsWith('+')) return '<span class="diff-add">' + esc(trimmed) + '</span>';
+        if (trimmed.startsWith('-')) return '<span class="diff-del">' + esc(trimmed) + '</span>';
+        return esc(trimmed);
+      }).join('\n');
+      codeHtml += '<div class="change-item"><div class="change-label">' + esc(label) + '</div><div class="change-diff">' + parts + '</div></div>';
+    }
+    codeHtml += '</div></div>';
+  }
+
+  // Variable changes
+  let varHtml = '';
+  if (Object.keys(varChanges).length) {
+    const scalars = {}, arrays = {}, other = {};
+    for (const [k, v] of Object.entries(varChanges)) {
+      const sv = String(v);
+      if (sv.startsWith('ndarray(') || sv.startsWith('Tensor(') || sv.startsWith('DataFrame(') || sv.startsWith('Series(')) {
+        arrays[k] = v;
+      } else if (sv.startsWith("'") || sv.startsWith('"') || !isNaN(Number(sv)) || sv === 'True' || sv === 'False') {
+        scalars[k] = v;
+      } else {
+        other[k] = v;
+      }
+    }
+    varHtml = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Variables (' + Object.keys(varChanges).length + ')</h2><div class="section-body"><div class="var-changes">';
+    const renderGroup = (title, vars) => {
+      if (!Object.keys(vars).length) return '';
+      let h = '<div class="var-section-title">' + title + ' (' + Object.keys(vars).length + ')</div><table>';
+      for (const [k, v] of Object.entries(vars)) {
+        let displayVal = String(v);
+        // Strip "varname = " prefix if present (capture stores "x = expr  # type")
+        if (displayVal.startsWith(k + ' = ')) {
+          displayVal = displayVal.slice(k.length + 3);
+        }
+        h += '<tr><td class="var-name">' + esc(k) + '</td><td>= ' + esc(displayVal) + '</td></tr>';
+      }
+      return h + '</table>';
+    };
+    varHtml += renderGroup('Scalars', scalars);
+    varHtml += renderGroup('Arrays & Tensors', arrays);
+    varHtml += renderGroup('Other', other);
+    varHtml += '</div></div>';
+  }
+
+  // Summary card
+  const totalMetricSteps = exp.metrics.reduce((s,m) => s + m.n, 0);
+  const numVars = Object.keys(varChanges).length;
+  const numArt = exp.artifacts.length;
+  const numCodeChanges = Object.keys(codeChanges).length;
+  let summaryHtml = '<div class="summary-card"><div class="summary-grid">';
+  summaryHtml += '<div class="summary-item"><div class="val">' + Object.keys(regularParams).length + '</div><div class="lbl">Params</div></div>';
+  summaryHtml += '<div class="summary-item"><div class="val">' + exp.metrics.length + '</div><div class="lbl">Metric Keys</div></div>';
+  summaryHtml += '<div class="summary-item"><div class="val">' + totalMetricSteps + '</div><div class="lbl">Metric Points</div></div>';
+  summaryHtml += '<div class="summary-item"><div class="val">' + numVars + '</div><div class="lbl">Variables</div></div>';
+  summaryHtml += '<div class="summary-item"><div class="val">' + numArt + '</div><div class="lbl">Artifacts</div></div>';
+  summaryHtml += '<div class="summary-item"><div class="val">' + numCodeChanges + '</div><div class="lbl">Code Changes</div></div>';
+  summaryHtml += '</div>' + _compactStatusHtml(exp) + '</div>';
+
+  // Diff
+  let diffHtml = '';
+  let diffCompacted = false;
+  if (diffData.diff) {
+    if (diffData.diff.startsWith('[compacted')) {
+      diffCompacted = true;
+      diffHtml = '<div style="padding:16px;color:var(--yellow,#e8a735);font-style:italic">'
+        + esc(diffData.diff)
+        + (diffData.commit ? '<br><span style="color:var(--muted);font-size:12px">To recover: git diff ' + esc(diffData.commit) + '~1 ' + esc(diffData.commit) + '</span>' : '')
+        + '</div>';
+    } else {
+      diffHtml = diffData.diff.split('\n').map(line => {
+        if (line.startsWith('+') && !line.startsWith('+++')) return '<span class="diff-add">' + esc(line) + '</span>';
+        if (line.startsWith('-') && !line.startsWith('---')) return '<span class="diff-del">' + esc(line) + '</span>';
+        if (line.startsWith('@@')) return '<span class="diff-hunk">' + esc(line) + '</span>';
+        return esc(line);
+      }).join('\n');
+    }
+  }
+
+  const expTags = exp.tags || [];
+  const tagsHtml = '<span class="detail-tags-inline" id="detail-tags-area">' +
+    (expTags.length
+      ? expTags.map(t => '<span class="tag-removable">#' + esc(t) +
+        ' <span class="tag-delete" onclick="event.stopPropagation();deleteTagInline(\'' + exp.id + '\',\'' + esc(t) + '\')" title="Remove tag from this experiment">&times;</span>' +
+        '</span>').join('')
+      : '') +
+    '<span class="tag-input-area" id="detail-tag-input-area"></span>' +
+    '</span>';
+
+  const expStudies = exp.studies || [];
+  const studiesDetailHtml = '<span class="detail-tags-inline" id="detail-studies-area">' +
+    (expStudies.length
+      ? expStudies.map(g => '<span class="tag-removable" style="background:rgba(44,90,160,0.1);color:var(--blue)">' + esc(g) +
+        ' <span class="tag-delete" onclick="event.stopPropagation();deleteStudyInline(\'' + exp.id + '\',\'' + esc(g) + '\')" title="Remove study">&times;</span>' +
+        '</span>').join('')
+      : '') +
+    '<span class="tag-input-area" id="detail-study-input-area"></span>' +
+    '</span>';
+
+  document.getElementById('detail-panel').innerHTML = `
+    <div class="detail" style="border:none;padding:4px 16px;margin:0">
+      <!-- Summary bar -->
+      <div class="detail-summary">
+        <span class="sum-item"><strong class="status-${exp.status}">${exp.status}</strong></span>
+        <span class="sum-sep">|</span>
+        <span class="sum-item">Branch: <strong>${esc(exp.git_branch||'--')}</strong></span>
+        <span class="sum-item">Commit: <strong>${esc((exp.git_commit||'--').slice(0,7))}</strong></span>
+        <span class="sum-sep">|</span>
+        <span class="sum-item">Started: <strong>${fmtDt(exp.created_at)}</strong></span>
+        <span class="sum-item">Duration: <strong>${fmtDur(exp.duration_s)}</strong></span>
+        <span class="sum-sep">|</span>
+        <span class="sum-item">${Object.keys(regularParams).length} params</span>
+        <span class="sum-item">${exp.metrics.length} metrics</span>
+        <span class="sum-item">${exp.artifacts.length} artifacts</span>
+      </div>
+
+      <!-- Header with name + actions -->
+      <div class="detail-header">
+        <h2 id="detail-name" class="editable-hint" ondblclick="startInlineRename('${exp.id}',this)" title="Double-click to rename">${esc(exp.name)}</h2>
+        <div class="detail-actions">
+          ${exp.status === 'running' ? `<button class="action-btn primary" onclick="finishExp('${exp.id}')">Finish Run</button>` : ''}
+          <span style="position:relative;display:inline-block">
+            <button class="action-btn primary" onclick="toggleDetailExport(this)">Export ▼</button>
+            <div class="export-dropdown-menu" style="display:none">
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','json')">JSON</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','markdown')">Markdown</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','csv')">CSV</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','tsv')">TSV</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','plain')">Plain Text</button>
+            </div>
+          </span>
+          <span style="position:relative;display:inline-block">
+            <button class="action-btn" onclick="toggleDetailExport(this)">Copy ▼</button>
+            <div class="export-dropdown-menu" style="display:none">
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json')">JSON</button>
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','markdown')">Markdown</button>
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','plain')">Plain Text</button>
+            </div>
+          </span>
+          ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button>` : ''}
+          ${_compactBtnHtml(exp)}
+          <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name)}')">Delete</button>
+          <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
+        </div>
+      </div>
+
+      <div class="tabs" id="detail-tabs">
+        <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
+        <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
+        <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
+        <button class="tab" onclick="switchDetailTab('logs','${exp.id}')">Data Files</button>
+        <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
+      </div>
+
+      <div id="detail-tab-overview">
+        <!-- Two-column grid -->
+        <div class="detail-grid">
+          <!-- Left column: info + params -->
+          <div>
+            <div class="info-grid">
+              <span class="label">ID</span><span>${exp.id}</span>
+              <span class="label">Script</span><span id="detail-script" class="editable-hint" ondblclick="startDetailScriptEdit('${exp.id}',this)" title="Double-click to edit" style="font-size:12px">${esc(exp.script||'--')}</span>
+              <span class="label">Host</span><span>${exp.hostname||'--'}</span>
+              <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
+              <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
+              <span class="label">Studies</span><span class="tag-list" id="detail-studies">${studiesDetailHtml}</span>
+              <span class="label">Stage</span><span id="detail-stage" class="editable-hint" ondblclick="startDetailStageEdit('${exp.id}',this)" title="Double-click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
+              <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" ondblclick="startDetailNoteEdit('${exp.id}',this)" title="Double-click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">double-click to add notes</span>'}</span>
+              <span class="label">Uncommitted</span><span>${diffData.diff ? (diffCompacted ? '<span style="color:var(--yellow)">' + esc(diffData.diff.split(' — ')[1] || 'compacted') + '</span>' : '<span style="color:var(--green)">' + exp.diff_lines + ' lines</span> <button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:6px" onclick="exportDiff(\'' + exp.id + '\')">Export</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="compactDiff(\'' + exp.id + '\')">Compact</button>') : '<span style="color:var(--muted)">none (all changes were committed)</span>'}</span>
+            </div>
+            ${exp.command ? '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span><span><button class="copy-btn" style="margin-right:4px" onclick="startDetailCommandEdit(\'' + exp.id + '\')">Edit</button><button class="copy-btn" data-cmd="' + esc(exp.command).replace(/"/g,'&quot;') + '" onclick="navigator.clipboard.writeText(this.dataset.cmd).then(()=>owlSay(\'Copied!\'))">Copy</button></span></div><code class="reproduce-cmd" id="detail-command">' + esc(exp.command) + '</code></div>' : '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span><button class="copy-btn" onclick="startDetailCommandEdit(\'' + exp.id + '\')">Add command</button></div><code class="reproduce-cmd" id="detail-command" style="color:var(--muted)">no command recorded</code></div>'}
+            ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
+            ${varHtml}
+          </div>
+          <!-- Right column: metrics + charts + artifacts -->
+          <div>
+            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Metrics (${exp.metrics.length})</h2>
+            <div class="section-body">
+            ${metricRows || '<p style="color:var(--muted);font-size:13px">No metrics yet.</p>'}
+            ${logResultForm}
+            <div id="charts-container"></div>
+            </div>
+            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
+            <div class="section-body">
+            ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
+            ${addArtifactForm}
+            </div>
+          </div>
+        </div>
+        <!-- Full-width sections below the grid -->
+        <div style="margin-top:20px">
+          ${codeHtml}
+          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Uncommitted Changes (compacted)' : 'Uncommitted Changes ('+exp.diff_lines+' lines)' + ' <span style="float:right;font-size:12px;font-weight:normal">' + '<button class="action-btn" style="padding:1px 8px" onclick="event.stopPropagation();exportDiff(\'' + exp.id + '\')">Export</button>' + '<button class="action-btn" style="padding:1px 8px;margin-left:4px" onclick="event.stopPropagation();compactDiff(\'' + exp.id + '\')">Compact</button>' + '</span>')+'</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
+        </div>
+      </div>
+
+      <div id="detail-tab-timeline" style="display:none"></div>
+      <div id="detail-tab-images" style="display:none"></div>
+      <div id="detail-tab-logs" style="display:none"></div>
+      <div id="detail-tab-compare-within" style="display:none"></div>
+    </div>
+  `;
+
+  // Wire up inline tag input in detail view
+  const tagInputArea = document.getElementById('detail-tag-input-area');
+  if (tagInputArea) {
+    const detailTags = [...(exp.tags || [])];
+    const { wrapper, input } = createTagInput(exp.id, detailTags, null, () => {
+      loadExperiments().then(() => refreshDetail(exp.id));
+    }, { placeholder: '+ add tag', style: 'width:120px;font-size:13px;padding:4px 6px' });
+    tagInputArea.appendChild(wrapper);
+  }
+
+  // Wire up inline study input in detail view
+  const studyInputArea = document.getElementById('detail-study-input-area');
+  if (studyInputArea) {
+    const detailStudies = [...(exp.studies || [])];
+    const { wrapper: sWrapper, input: sInput } = createStudyInput(exp.id, detailStudies, null, () => {
+      loadExperiments().then(() => refreshDetail(exp.id));
+    }, { placeholder: '+ add study', style: 'width:130px;font-size:13px;padding:4px 6px' });
+    studyInputArea.appendChild(sWrapper);
+  }
+
+  // Render metric charts (click a point to delete it)
+  Object.values(charts).forEach(c => c.destroy());
+  charts = {};
+  const container = document.getElementById('charts-container');
+  for (const [key, points] of Object.entries(metricsData)) {
+    if (points.length < 1) continue;
+    const div = document.createElement('div');
+    div.className = 'chart-container';
+    const canvas = document.createElement('canvas');
+    div.appendChild(canvas);
+    container.appendChild(div);
+    const chartPoints = points.map((p,i) => ({ x: p.step !== null ? p.step : i, y: p.value, _step: p.step }));
+    charts[key] = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels: points.map((p,i) => p.step !== null ? p.step : i),
+        datasets: [{
+          label: key,
+          data: points.map(p => p.value),
+          borderColor: '#2c5aa0',
+          backgroundColor: 'rgba(44,90,160,0.1)',
+          fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 7,
+          pointHitRadius: 10,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } },
+          tooltip: {
+            callbacks: {
+              afterLabel: () => 'Click to delete this point'
+            }
+          }
+        },
+        scales: {
+          x: { title: { display: true, text: 'Step', font: { family: "'IBM Plex Mono'" } } },
+          y: { title: { display: true, text: key, font: { family: "'IBM Plex Mono'" } } }
+        },
+        onClick: (evt, elements) => {
+          if (!elements.length) return;
+          const idx = elements[0].index;
+          const pt = points[idx];
+          const step = pt.step;
+          const val = pt.value;
+          if (confirm('Delete point: ' + key + ' = ' + val + ' (step ' + (step ?? idx) + ')?')) {
+            deleteMetricPoint(currentDetailId, key, step ?? idx);
+          }
+        }
+      }
+    });
+  }
+
+  // Populate result type dropdown
+  populateResultTypeDropdown(exp.id);
+}
+"""
+
+# Compare view

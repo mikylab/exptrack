@@ -733,8 +733,17 @@ exptrack/
       github_sync.py          GitHub metadata sync (JSONL)
     dashboard/
       app.py                  Web server entry point
-      handler.py              HTTP request handler + API endpoints
-      static.py               Embedded HTML/CSS/JS assets
+      handler.py              HTTP request handler, dispatches to routes
+      static.py               Assembler: imports parts into DASHBOARD_HTML
+      static_parts/
+        html.py               HTML structure (HEAD, BODY, FOOTER)
+        styles.py             CSS re-exports from css/
+        scripts.py            JS re-exports from js/
+        css/                  12 CSS modules (reset, layout, cards, table, ...)
+        js/                   15 JS modules (core, sidebar, detail, compare, ...)
+      routes/
+        read_routes.py        GET API endpoints
+        write_routes.py       POST API endpoints
 ```
 
 ---

@@ -21,7 +21,7 @@ HTML_BODY = r"""</style>
 <body>
 
 <div class="header">
-  <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak('click')"><svg width="28" height="28" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
+  <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech" onclick="event.stopPropagation();dismissOwl()"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak('click')"><svg width="28" height="28" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
   <div class="header-actions">
     <span class="tz-setting" title="Set timezone for displaying timestamps">
       <select id="tz-select" onchange="setTimezone(this.value)">
@@ -54,43 +54,67 @@ HTML_BODY = r"""</style>
   <div class="help-grid">
     <div class="help-item">
       <strong>Params</strong>
-      <span>Hyperparameters and config values captured from argparse, CLI flags, or notebook variables (lr, batch_size, etc). These define WHAT you ran.</span>
+      <span>Hyperparameters captured from argparse, CLI flags, or notebook variables (lr, batch_size, etc). These define WHAT you ran.</span>
     </div>
     <div class="help-item">
       <strong>Metrics</strong>
-      <span>Numeric values logged during training (loss, accuracy, etc). Tracked per step with min/max/last. These measure HOW it performed.</span>
+      <span>Numeric values logged during training (loss, accuracy, etc). Tracked per step with min/max/last, visualized as line charts.</span>
     </div>
     <div class="help-item">
       <strong>Variables</strong>
-      <span>All notebook variable values captured automatically — scalars, arrays, DataFrames, tensors. Prefixed with _var/ in params. Shows the full state of your experiment.</span>
+      <span>Notebook variable values captured automatically — scalars, arrays, DataFrames, tensors. Grouped by type (Scalars, Arrays &amp; Tensors, Other).</span>
     </div>
     <div class="help-item">
       <strong>Artifacts</strong>
-      <span>Output files (plots, models, CSVs) auto-captured via plt.savefig() or manually via exptrack.notebook.out(). Linked to the experiment timeline.</span>
-    </div>
-    <div class="help-item">
-      <strong>Code Changes</strong>
-      <span>Diffs of your code vs. the last git commit (scripts) or previous cell version (notebooks). Only changed lines are stored. Prefixed with _code_change/.</span>
+      <span>Output files (plots, models, CSVs) auto-captured via plt.savefig() or manually. Viewable in-dashboard with image galleries and data file previews.</span>
     </div>
     <div class="help-item">
       <strong>Timeline</strong>
-      <span>Ordered log of every cell execution, variable change, and artifact save. Each event has a sequence number (seq) so you can reconstruct the full execution history.</span>
+      <span>Ordered log of every cell execution, variable change, and artifact save. Filter by event type. Includes cell lineage viewer and source diffs.</span>
     </div>
     <div class="help-item">
       <strong>Tags &amp; Notes</strong>
-      <span>Manual labels (tags) and free-text annotations (notes) you add to organize experiments. Use tags like "baseline", "best", "ablation".</span>
+      <span>Labels and annotations to organize experiments. Tags have autocomplete; notes support multi-line text. Both are inline-editable.</span>
     </div>
     <div class="help-item">
-      <strong>Compare</strong>
-      <span>Side-by-side comparison of two experiments (params, variables, metrics) or two points within the same experiment (variable state at different timeline positions).</span>
+      <strong>Studies</strong>
+      <span>Group related experiments into named studies. Create from selected experiments, add/remove members, rename or delete globally. Highlight by study for visual grouping.</span>
+    </div>
+    <div class="help-item">
+      <strong>Stages</strong>
+      <span>Assign a stage number and optional label to experiments (e.g. "1 (preprocessing)", "2 (training)"). Double-click to edit in table or detail view.</span>
     </div>
   </div>
 
   <h3>Dashboard Views</h3>
-  <p><strong>Experiment list:</strong> Collapsible sidebar on the left. Click any experiment to see details. Use checkboxes to select 2 experiments for comparison.</p>
-  <p><strong>Detail view:</strong> Shows full experiment info in the main area. Tabs: Overview, Timeline, Compare Within.</p>
-  <p><strong>Compare:</strong> Select two experiments via checkboxes in the sidebar, then click Compare.</p>
-  <p><strong>Export:</strong> Use the Export button on any experiment to get JSON, Markdown, or Plain Text.</p>
+  <p><strong>Experiment table:</strong> Main view with sortable columns, status chips, search bar, and tag/study filters. Group by git commit, branch, status, or none. Pin experiments (&#9734;) to keep them at the top. Configure visible columns via the &#9881; Columns button.</p>
+  <p><strong>Sidebar:</strong> Collapsible experiment list on the left. Use checkboxes to select experiments for bulk actions (compare, export, add to study, compact, delete). Opens automatically when viewing experiment details.</p>
+  <p><strong>Detail view:</strong> Click an experiment to see its full details. Four tabs:</p>
+  <p style="margin-left:16px"><strong>Overview</strong> — metadata, params, metrics with interactive charts, variables, artifacts, code changes, and reproduce command.<br>
+  <strong>Timeline</strong> — execution events filtered by type (code, variables, artifacts, observational), cell source viewer.<br>
+  <strong>Images</strong> — image gallery with side-by-side, overlay (opacity slider), and swipe comparison modes.<br>
+  <strong>Data Files</strong> — preview CSV, TSV, JSON, and JSONL artifacts as rendered tables.</p>
+  <p><strong>Compare:</strong> Two modes — <em>Pair Compare</em> (side-by-side params, metrics with deltas, overlaid charts, image comparison) and <em>Multi Compare</em> (3+ experiments with bar charts per metric). Use "Show only differences" to hide matching values.</p>
+
+  <h3>Bulk Operations</h3>
+  <p>Select experiments via checkboxes, then use the action bar: <strong>Compare</strong> (2+), <strong>Add to Study</strong>, <strong>Export</strong> (JSON, CSV, TSV, Markdown, Plain Text), <strong>Copy</strong> to clipboard, <strong>Compact</strong> (strip diffs to free storage), or <strong>Delete</strong>.</p>
+
+  <h3>Inline Editing</h3>
+  <p>Double-click to edit: experiment name, tags (with autocomplete), studies (with autocomplete), notes (Ctrl+Enter to save), stage, script path, and reproduce command. Press <strong>Enter</strong> to save, <strong>Escape</strong> to cancel.</p>
+
+  <h3>Settings</h3>
+  <p><strong>Dark mode:</strong> Toggle via the &#9790; button. Preference is saved locally.<br>
+  <strong>Timezone:</strong> Select from the TZ dropdown. Applied to all timestamps and saved to project config.<br>
+  <strong>Columns:</strong> Show/hide and resize table columns via &#9881; Columns. Preferences saved locally.<br>
+  <strong>Highlight mode:</strong> Toggle "Highlight by study" to color-code experiments by study membership.</p>
+
+  <h3>Other Features</h3>
+  <p><strong>Manual experiments:</strong> Click &#10133; New to create an experiment by hand — set name, status, date, params, metrics, tags, and notes.<br>
+  <strong>Manage drawer:</strong> Click &#9881; Manage for global tag and study management (rename, delete across all experiments).<br>
+  <strong>Artifact management:</strong> Add, edit labels/paths, or delete artifacts from the detail view.<br>
+  <strong>Metric logging:</strong> Log new metric values directly from the detail view.<br>
+  <strong>Hidden experiments:</strong> Hide selected experiments from the table; unhide from the hidden panel.<br>
+  <strong>Owl mascot:</strong> Click the owl for tips. Click the speech bubble to dismiss it.</p>
 </div>
 
 <div id="app-layout">
