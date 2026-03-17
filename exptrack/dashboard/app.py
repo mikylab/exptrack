@@ -20,6 +20,9 @@ def main(host: str = "127.0.0.1", port: int = 7331):
                 port = int(sys.argv[i + 1])
             elif arg.isdigit():
                 port = int(arg)
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"[exptrack] WARNING: Binding to {host} — the dashboard will be accessible "
+              f"from the network. There is no authentication.", file=sys.stderr)
     server = HTTPServer((host, port), DashboardHandler)
     print(f"[exptrack] Dashboard running at http://{host}:{port}", file=sys.stderr)
     print(f"[exptrack] Press Ctrl+C to stop", file=sys.stderr)

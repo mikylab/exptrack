@@ -53,6 +53,12 @@ def main():
         prog="exptrack",
         description="Experiment tracker -- scripts, notebooks, and SLURM pipelines",
     )
+    from importlib.metadata import version as _pkg_version
+    try:
+        _ver = _pkg_version("exptrack")
+    except Exception:
+        _ver = "unknown"
+    p.add_argument("--version", "-V", action="version", version=f"exptrack {_ver}")
     p.add_argument("--no-color", action="store_true",
                     help="Disable colored output (also auto-detected for non-TTY)")
     sub = p.add_subparsers(dest="cmd")

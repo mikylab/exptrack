@@ -662,7 +662,8 @@ def cmd_watch(args):
             changed_keys = {k for k in metrics if k in prev_metrics and metrics[k] != prev_metrics[k]}
 
             if new_keys or changed_keys:
-                ts = __import__("datetime").datetime.now().strftime("%H:%M:%S")
+                from datetime import datetime as _dt
+                ts = _dt.now().strftime("%H:%M:%S")
                 for k in sorted(new_keys | changed_keys):
                     v = metrics[k]
                     if k in changed_keys:
