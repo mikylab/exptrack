@@ -42,18 +42,18 @@ let highlightColors = {}; // study -> color mapping
 
 // Column configuration: id, label, default visibility, sortable, min-width
 const ALL_COLUMNS = [
-  {id: 'pin', label: '', sortable: false, defaultOn: true, width: 32},
-  {id: 'cb', label: '', sortable: false, defaultOn: true, width: 36},
-  {id: 'id', label: 'ID', sortable: true, defaultOn: true, width: 60},
-  {id: 'name', label: 'Name', sortable: true, defaultOn: true, width: 180},
-  {id: 'status', label: 'Status', sortable: true, defaultOn: true, width: 70},
-  {id: 'tags', label: 'Tags', sortable: true, defaultOn: true, width: 120},
-  {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 120},
-  {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 120},
-  {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 200},
-  {id: 'metrics', label: 'Metrics', sortable: false, defaultOn: true, width: 160},
-  {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 100},
-  {id: 'started', label: 'Started', sortable: true, defaultOn: true, width: 140},
+  {id: 'pin', label: '', sortable: false, defaultOn: true, width: 28},
+  {id: 'cb', label: '', sortable: false, defaultOn: true, width: 32},
+  {id: 'id', label: 'ID', sortable: true, defaultOn: true, width: 50},
+  {id: 'name', label: 'Name', sortable: true, defaultOn: true, width: 150},
+  {id: 'status', label: 'Status', sortable: true, defaultOn: true, width: 62},
+  {id: 'tags', label: 'Tags', sortable: true, defaultOn: true, width: 90},
+  {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 90},
+  {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 80},
+  {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 130},
+  {id: 'metrics', label: 'Metrics', sortable: false, defaultOn: true, width: 110},
+  {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 80},
+  {id: 'started', label: 'Started', sortable: true, defaultOn: true, width: 110},
 ];
 let visibleCols = (function() {
   const saved = JSON.parse(localStorage.getItem('exptrack-cols') || 'null');
