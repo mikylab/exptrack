@@ -33,7 +33,7 @@ CSS_RESET = """
 
 # Layout: header, sidebar, main content
 CSS_LAYOUT = """
-  .header { display: flex; justify-content: space-between; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--border); background: var(--card-bg); flex-shrink: 0; height: 52px; }
+  .header { display: flex; justify-content: space-between; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--border); background: var(--card-bg); flex-shrink: 0; height: 52px; position: relative; z-index: 101; overflow: visible; }
   .header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.5px; margin: 0; cursor: pointer; }
   .header h1:hover { color: var(--blue); }
   .header-actions { display: flex; gap: 8px; align-items: center; }
@@ -569,8 +569,8 @@ CSS_COMPONENTS = """
     border-radius: 3px; color: var(--muted);
   }
   .col-reset-btn:hover { background: var(--border); color: var(--fg); }
-  .table-scroll-wrap { overflow-x: auto; overflow-y: visible; }
-  #exp-table { table-layout: fixed; min-width: 100%; }
+  .table-scroll-wrap { overflow-x: auto; overflow-y: visible; max-width: 100%; }
+  #exp-table { table-layout: fixed; width: 100%; }
   #exp-table th { position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #exp-table td { max-width: 0; }
   #exp-table td.truncate-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -579,6 +579,12 @@ CSS_COMPONENTS = """
   .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 5px 8px; border-radius: 4px; background: var(--card-bg); width: 100%; max-width: 300px; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   .tags-cell .tag { font-size: 13px; padding: 3px 8px; }
+  .hide-btn { cursor: pointer; font-size: 13px; background: none; border: none; color: var(--border); padding: 0; width: 100%; text-align: center; line-height: 1; }
+  .hide-btn:hover { color: var(--red); }
+  .hide-btn.hidden-row { color: var(--muted); }
+  .hidden-bar { display: none; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
+  .hidden-bar button { font-family: inherit; font-size: 12px; background: var(--code-bg); border: 1px solid var(--border); padding: 4px 10px; cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .hidden-bar button:hover { background: var(--border); color: var(--fg); }
   .pin-btn { cursor: pointer; font-size: 14px; background: none; border: none; color: var(--muted); padding: 0; width: 100%; text-align: center; }
   .pin-btn:hover { color: var(--yellow); }
   .pin-btn.pinned { color: var(--yellow); }
@@ -639,10 +645,10 @@ CSS_COMPONENTS = """
   @keyframes owlBlink { 0%,92%,100% { height: 1; } 94%,98% { height: 0; } }
   @keyframes owlBounce { 0%,100% { transform: translateY(0); } 40% { transform: translateY(-8px); } 60% { transform: translateY(-4px); } }
   @keyframes owlWiggle { 0%,100% { transform: rotate(0deg); } 25% { transform: rotate(-8deg); } 75% { transform: rotate(8deg); } }
-  .owl-speech { position: absolute; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 11px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 100; bottom: 40px; left: 50%; transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity 0.3s; }
+  .owl-speech { position: absolute; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 11px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 100; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 8px; pointer-events: none; opacity: 0; transition: opacity 0.3s; }
   .owl-speech.visible { opacity: 1; }
-  .owl-speech::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: var(--border); }
-  .owl-container { position: relative; display: inline-block; }
+  .owl-speech::before { content: ''; position: absolute; bottom: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-bottom-color: var(--border); }
+  .owl-container { position: relative; display: inline-block; z-index: 100; }
   .tz-setting { display: inline-flex; align-items: center; gap: 6px; }
   .tz-setting select { font-family: inherit; font-size: 12px; border: 1px solid var(--border); padding: 5px 10px; border-radius: 4px; background: var(--code-bg); color: var(--muted); cursor: pointer; }
   .tz-setting select:hover { background: var(--border); color: var(--fg); }

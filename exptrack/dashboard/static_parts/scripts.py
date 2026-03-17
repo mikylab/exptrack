@@ -14,6 +14,8 @@ let studyFilter = '';
 let charts = {};
 let selectedIds = new Set();
 let pinnedIds = new Set(JSON.parse(localStorage.getItem('exptrack-pinned') || '[]'));
+let hiddenIds = new Set(JSON.parse(localStorage.getItem('exptrack-hidden') || '[]'));
+let showHiddenRows = false;
 let allExperiments = [];
 let currentDetailId = '';
 let sortCol = 'created_at';
@@ -41,6 +43,7 @@ let highlightColors = {}; // study -> color mapping
 
 // Column configuration: id, label, default visibility, sortable, min-width
 const ALL_COLUMNS = [
+  {id: 'hide', label: '', sortable: false, defaultOn: true, width: 28},
   {id: 'pin', label: '', sortable: false, defaultOn: true, width: 32},
   {id: 'cb', label: '', sortable: false, defaultOn: true, width: 36},
   {id: 'id', label: 'ID', sortable: true, defaultOn: true, width: 60},
@@ -82,7 +85,7 @@ function toggleColumnSettings() {
   for (const col of ALL_COLUMNS) {
     if (col.id === 'cb') continue; // checkbox always visible
     const checked = visibleCols.includes(col.id) ? 'checked' : '';
-    const label = col.label || (col.id === 'pin' ? 'Pin' : col.id);
+    const label = col.label || (col.id === 'pin' ? 'Pin' : col.id === 'hide' ? 'Hide' : col.id);
     html += '<label class="col-setting-item"><input type="checkbox" ' + checked + ' onchange="toggleColumn(\'' + col.id + '\',this.checked)"> ' + label + '</label>';
   }
   html += '</div>';
@@ -130,7 +133,7 @@ function renderTableHeader() {
     const resizer = '<span class="col-resizer" onmousedown="startColResize(event,\'' + colId + '\')"></span>';
     if (colId === 'cb') {
       html += '<th class="cb-col" style="width:' + w + 'px"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th>';
-    } else if (colId === 'pin') {
+    } else if (colId === 'pin' || colId === 'hide') {
       html += '<th style="width:' + w + 'px;position:relative">' + resizer + '</th>';
     } else if (col.sortable) {
       html += '<th class="sortable" style="width:' + w + 'px;min-width:50px;position:relative" onclick="toggleSort(\'' + (colId === 'started' ? 'created_at' : colId) + '\')">' + col.label + '<span class="sort-arrow"></span>' + resizer + '</th>';
@@ -193,6 +196,48 @@ function togglePin(id) {
   else pinnedIds.add(id);
   localStorage.setItem('exptrack-pinned', JSON.stringify([...pinnedIds]));
   renderExperiments();
+}
+
+function toggleHideRow(id) {
+  if (hiddenIds.has(id)) hiddenIds.delete(id);
+  else hiddenIds.add(id);
+  localStorage.setItem('exptrack-hidden', JSON.stringify([...hiddenIds]));
+  renderExperiments();
+  renderExpList();
+  renderHiddenBar();
+}
+
+function toggleShowHidden() {
+  showHiddenRows = !showHiddenRows;
+  renderExperiments();
+  renderExpList();
+  renderHiddenBar();
+}
+
+function clearAllHidden() {
+  hiddenIds.clear();
+  showHiddenRows = false;
+  localStorage.setItem('exptrack-hidden', '[]');
+  renderExperiments();
+  renderExpList();
+  renderHiddenBar();
+}
+
+function renderHiddenBar() {
+  let bar = document.getElementById('hidden-bar');
+  if (!bar) {
+    const groupBar = document.getElementById('group-bar');
+    if (!groupBar) return;
+    bar = document.createElement('div');
+    bar.id = 'hidden-bar';
+    bar.className = 'hidden-bar';
+    groupBar.parentNode.insertBefore(bar, groupBar.nextSibling);
+  }
+  if (hiddenIds.size === 0) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  bar.innerHTML = '<span>' + hiddenIds.size + ' row' + (hiddenIds.size > 1 ? 's' : '') + ' hidden</span>' +
+    '<button onclick="toggleShowHidden()">' + (showHiddenRows ? 'Hide them' : 'Show hidden') + '</button>' +
+    '<button onclick="clearAllHidden()">Clear all</button>';
 }
 
 function renderFilterBar() {
@@ -1002,6 +1047,9 @@ function updateSortHeaders() {
 
 function getFilteredExperiments() {
   let exps = allExperiments;
+  if (hiddenIds.size > 0 && !showHiddenRows) {
+    exps = exps.filter(e => !hiddenIds.has(e.id));
+  }
   if (tagFilter) {
     exps = exps.filter(e => (e.tags || []).includes(tagFilter));
   }
@@ -1118,6 +1166,7 @@ async function loadExperiments() {
   if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
   renderExperiments();
   renderExpList();
+  renderHiddenBar();
 }
 
 function onRowClick(id) {
@@ -1150,7 +1199,9 @@ function renderExpRow(e) {
   const editIcon = '<span class="edit-icon" title="Click to edit">&#9998;</span>';
 
   // Pre-compute cell content for all possible columns
+  const isHidden = hiddenIds.has(e.id);
   const cells = {
+    hide: '<td onclick="event.stopPropagation()"><button class="hide-btn' + (isHidden?' hidden-row':'') + '" onclick="toggleHideRow(\'' + e.id + '\')" title="' + (isHidden?'Unhide row':'Hide row') + '">' + (isHidden?'\u25C9':'\u00d7') + '</button></td>',
     pin: '<td' + hlBorder + ' onclick="event.stopPropagation()"><button class="pin-btn' + (isPinned?' pinned':'') + '" onclick="togglePin(\'' + e.id + '\')" title="' + (isPinned?'Unpin':'Pin') + '">' + (isPinned?'\u2605':'\u2606') + '</button></td>',
     cb: '<td onclick="event.stopPropagation()"><label style="display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4px"><input type="checkbox" ' + (isSelected?'checked':'') + ' onclick="toggleSelection(\'' + e.id + '\')" title="Select" style="cursor:pointer"></label></td>',
     id: '<td class="truncate-cell">' + e.id.slice(0,6) + '</td>',
