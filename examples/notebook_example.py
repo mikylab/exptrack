@@ -8,6 +8,7 @@
 # The explicit API gives you fine-grained control.
 
 import random
+
 import exptrack.notebook as exp
 
 # --- Cell 1: Start an experiment ---

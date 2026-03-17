@@ -4,7 +4,7 @@
 # Use this when you want full control over what gets tracked.
 
 import random
-import os
+
 from exptrack.core import Experiment
 
 # Experiment as a context manager — auto-finishes on exit
