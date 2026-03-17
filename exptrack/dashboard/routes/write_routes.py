@@ -191,42 +191,163 @@ def api_edit_artifact(conn, exp_id: str, body: dict) -> dict:
 
 
 def api_compact(conn, body: dict) -> dict:
-    """Strip git_diff from selected experiments, keeping a summary marker."""
+    """Compact experiments — supports git_diff, cells, timeline, deep modes.
+
+    body.ids: list of experiment IDs (prefix match)
+    body.mode: "diff" (default), "cells", "timeline", "deep" (all of the above)
+    """
     ids = body.get("ids", [])
     if not ids:
         return {"error": "no ids provided"}
 
-    compacted = 0
-    freed = 0
+    mode = body.get("mode", "diff")
+    do_deep = mode == "deep"
+    do_diff = mode == "diff" or do_deep
+    do_cells = mode == "cells" or do_deep
+    do_timeline = mode == "timeline" or do_deep
+
+    # Resolve experiment IDs
+    resolved_ids = []
     for eid in ids:
         row = conn.execute(
-            "SELECT id, git_diff, git_commit FROM experiments WHERE id LIKE ?",
-            (eid + "%",)
+            "SELECT id FROM experiments WHERE id LIKE ?", (eid + "%",)
         ).fetchone()
-        raw_diff = row["git_diff"]
-        if not row or not raw_diff or raw_diff.startswith("[compacted"):
+        if row:
+            resolved_ids.append(row["id"])
+    if not resolved_ids:
+        return {"ok": True, "compacted": 0, "freed": 0, "detail": "No matching experiments"}
+
+    freed = 0
+    detail_parts = []
+
+    # ── 1. Git diff compaction ────────────────────────────────────────────
+    if do_diff:
+        diff_freed, diff_count = _compact_git_diffs(conn, resolved_ids)
+        freed += diff_freed
+        if diff_count:
+            detail_parts.append(f"diffs: {diff_count}")
+
+    # ── 2. Cell lineage source compaction ─────────────────────────────────
+    if do_cells:
+        cell_freed = _compact_cell_sources(conn, resolved_ids)
+        freed += cell_freed
+        if cell_freed:
+            detail_parts.append(f"cells: {_fmt(cell_freed)}")
+
+    # ── 3. Timeline source_diff compaction ────────────────────────────────
+    if do_timeline:
+        tl_freed = _compact_timeline_sources(conn, resolved_ids)
+        freed += tl_freed
+        if tl_freed:
+            detail_parts.append(f"timeline: {_fmt(tl_freed)}")
+
+    compacted = len(resolved_ids) if freed > 0 else 0
+    detail = ", ".join(detail_parts) if detail_parts else "nothing to compact"
+    return {"ok": True, "compacted": compacted, "freed": freed, "detail": detail}
+
+
+def _fmt(b):
+    if b < 1024: return f"{b} B"
+    if b < 1024**2: return f"{b/1024:.1f} KB"
+    return f"{b/1024**2:.1f} MB"
+
+
+def _compact_git_diffs(conn, exp_ids: list) -> tuple:
+    """Strip git_diff from experiments, returns (freed_bytes, count)."""
+    from ...core.db import resolve_git_diff
+    freed = 0
+    count = 0
+    for eid in exp_ids:
+        row = conn.execute(
+            "SELECT id, git_diff, git_commit FROM experiments WHERE id=?", (eid,)
+        ).fetchone()
+        if not row:
             continue
-        from ...core.db import resolve_git_diff
+        raw_diff = row["git_diff"]
+        if not raw_diff or raw_diff.startswith("[compacted"):
+            continue
         full_diff = resolve_git_diff(conn, raw_diff)
         diff_len = len(full_diff)
         commit = row["git_commit"] or "unknown"
-        # Extract changed file names
         files = [line.split()[-1].lstrip("b/")
                  for line in full_diff.splitlines()
                  if line.startswith("diff --git ") and len(line.split()) >= 4]
         file_info = f"{len(files)} file(s): {', '.join(files[:5])}" if files else "no files"
         if len(files) > 5:
             file_info += f" +{len(files) - 5} more"
-        def _fmt(b):
-            if b < 1024: return f"{b} B"
-            if b < 1024**2: return f"{b/1024:.1f} KB"
-            return f"{b/1024**2:.1f} MB"
         summary = f"[compacted — {_fmt(diff_len)} stripped — {file_info} — see git commit {commit}]"
         conn.execute("UPDATE experiments SET git_diff = ? WHERE id = ?", (summary, row["id"]))
-        compacted += 1
         freed += diff_len
-    conn.commit()
-    return {"ok": True, "compacted": compacted, "freed": freed}
+        count += 1
+    if count:
+        conn.commit()
+    return freed, count
+
+
+def _compact_cell_sources(conn, exp_ids: list) -> int:
+    """NULL out cell_lineage.source for cells used by given experiments."""
+    if not exp_ids:
+        return 0
+    placeholders = ",".join("?" * len(exp_ids))
+    try:
+        size_row = conn.execute(f"""
+            SELECT COALESCE(SUM(LENGTH(cl.source)), 0) as sz
+            FROM cell_lineage cl
+            WHERE cl.source IS NOT NULL
+            AND cl.cell_hash IN (
+                SELECT DISTINCT cell_hash FROM timeline
+                WHERE exp_id IN ({placeholders}) AND cell_hash IS NOT NULL
+            )
+            AND cl.cell_hash NOT IN (
+                SELECT DISTINCT cell_hash FROM timeline
+                WHERE exp_id NOT IN ({placeholders})
+                  AND cell_hash IS NOT NULL
+                  AND exp_id IN (SELECT id FROM experiments WHERE status='running')
+            )
+        """, exp_ids + exp_ids).fetchone()
+        freed = size_row["sz"] if size_row else 0
+        if freed:
+            conn.execute(f"""
+                UPDATE cell_lineage SET source = NULL
+                WHERE source IS NOT NULL
+                AND cell_hash IN (
+                    SELECT DISTINCT cell_hash FROM timeline
+                    WHERE exp_id IN ({placeholders}) AND cell_hash IS NOT NULL
+                )
+                AND cell_hash NOT IN (
+                    SELECT DISTINCT cell_hash FROM timeline
+                    WHERE exp_id NOT IN ({placeholders})
+                      AND cell_hash IS NOT NULL
+                      AND exp_id IN (SELECT id FROM experiments WHERE status='running')
+                )
+            """, exp_ids + exp_ids)
+            conn.commit()
+        return freed
+    except Exception:
+        return 0
+
+
+def _compact_timeline_sources(conn, exp_ids: list) -> int:
+    """NULL out timeline.source_diff for given experiments."""
+    if not exp_ids:
+        return 0
+    placeholders = ",".join("?" * len(exp_ids))
+    try:
+        size_row = conn.execute(f"""
+            SELECT COALESCE(SUM(LENGTH(source_diff)), 0) as sz
+            FROM timeline
+            WHERE exp_id IN ({placeholders}) AND source_diff IS NOT NULL
+        """, exp_ids).fetchone()
+        freed = size_row["sz"] if size_row else 0
+        if freed:
+            conn.execute(f"""
+                UPDATE timeline SET source_diff = NULL
+                WHERE exp_id IN ({placeholders}) AND source_diff IS NOT NULL
+            """, exp_ids)
+            conn.commit()
+        return freed
+    except Exception:
+        return 0
 
 
 def api_export_diff(conn, exp_id: str) -> dict:

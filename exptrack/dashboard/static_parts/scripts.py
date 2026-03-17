@@ -655,7 +655,7 @@ function renderSidebarActionsBar() {
   html += '<button class="export-btn" onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
-  html += '<button onclick="bulkCompact()">Compact</button>';
+  html += '<button onclick="bulkCompact(\'deep\')">Compact</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '</div>';
   bar.innerHTML = html;
@@ -822,7 +822,7 @@ function renderTableActionsBar() {
   html += '<button onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
-  html += '<button onclick="bulkCompact()">Compact</button>';
+  html += '<button onclick="bulkCompact(\'deep\')">Compact</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   bar.innerHTML = html;
 }
@@ -1078,24 +1078,30 @@ async function loadStats() {
         + '<strong>Git diff storage:</strong> ' + kb + ' KB across ' + s.diff_count + ' experiment(s). '
         + 'Max per-run limit: ' + maxKb + ' KB (config: max_git_diff_kb). '
         + '<button style="margin-left:8px;font-size:12px;cursor:pointer;padding:2px 8px;border-radius:3px;border:1px solid rgba(232,167,53,0.4);background:transparent;color:inherit" '
-        + 'onclick="bulkCompactAll()">Compact All Done</button>'
+        + 'onclick="bulkCompactAll(\'deep\')">Compact All Done</button>'
         + '</div>';
     }
   }
   renderStatusChips();
 }
 
-async function bulkCompactAll() {
+async function bulkCompactAll(mode) {
+  mode = mode || 'deep';
   const doneIds = allExperiments.filter(e => e.status === 'done').map(e => e.id);
   if (!doneIds.length) { owlSay('No done experiments to compact'); return; }
-  if (!confirm('Compact diffs for all ' + doneIds.length + ' done experiments?\\n\\nThis strips git diff data and cannot be undone.\\nTip: Run "exptrack compact --export DIR" from the CLI to save diffs first.')) return;
-  const d = await postApi('/api/bulk-compact', {ids: doneIds});
-  if (d.ok) {
-    owlSay('Compacted ' + d.compacted + ' diff(s)');
-    loadStats();
-    loadExperiments();
-    if (currentDetailId) refreshDetail(currentDetailId);
-  } else alert(d.error || 'Failed');
+  if (!confirm('Deep compact all ' + doneIds.length + ' done experiments?\\n\\nThis strips git diffs, cell sources, and timeline diffs.\\nMetrics, params, and results are preserved.\\n\\nTip: Run "exptrack compact --export DIR" from the CLI to save diffs first.')) return;
+  const d = await postApi('/api/bulk-compact', {ids: doneIds, mode});
+  if (d.error) { alert(d.error); return; }
+  if (d.ok && d.freed > 0) {
+    owlSay('Compacted ' + d.compacted + ' exp(s), freed ~' + fmtFreed(d.freed) + (d.detail ? ' (' + d.detail + ')' : ''), 'owl-bounce');
+  } else if (d.ok) {
+    owlSay('Nothing to compact — already compacted');
+  } else {
+    alert('Compact failed: ' + (d.error || 'unknown error'));
+  }
+  await loadStats();
+  await loadExperiments();
+  if (currentDetailId) await refreshDetail(currentDetailId);
 }
 
 async function loadExperiments() {
@@ -1782,6 +1788,15 @@ async function refreshDetail(id) {
             </div>
           </span>
           ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button>` : ''}
+          <span style="position:relative;display:inline-block">
+            <button class="action-btn" onclick="toggleDetailExport(this)">Compact ▼</button>
+            <div class="export-dropdown-menu" style="display:none">
+              <button class="action-btn" onclick="closeDetailExport(this);compactExp('${exp.id}','diff')" ${!diffData.diff || diffCompacted ? 'disabled style="opacity:0.5"' : ''}>Git Diff</button>
+              <button class="action-btn" onclick="closeDetailExport(this);compactExp('${exp.id}','cells')">Cell Sources</button>
+              <button class="action-btn" onclick="closeDetailExport(this);compactExp('${exp.id}','timeline')">Timeline Diffs</button>
+              <button class="action-btn" onclick="closeDetailExport(this);compactExp('${exp.id}','deep')">Deep (All)</button>
+            </div>
+          </span>
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${esc(exp.name)}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
         </div>
@@ -2357,16 +2372,34 @@ async function finishExp(id) {
 
 // ── Diff compact / export ────────────────────────────────────────────────────
 
-async function compactDiff(id) {
-  if (!confirm('Strip the git diff from this experiment?\\n\\nThe diff will be replaced with a compact summary. This cannot be undone.\\n\\nTip: Click "Export" first to save the diff as a markdown file.')) return;
-  const d = await postApi('/api/bulk-compact', {ids: [id]});
-  if (d.ok && d.compacted > 0) {
-    owlSay('Compacted! Freed ~' + (d.freed > 1024 ? (d.freed/1024).toFixed(1) + ' KB' : d.freed + ' B'), 'owl-bounce');
+function fmtFreed(b) { return b > 1024 ? (b/1024).toFixed(1) + ' KB' : b + ' B'; }
+
+const compactModeLabels = {diff: 'git diff', cells: 'cell sources', timeline: 'timeline diffs', deep: 'all data (deep)'};
+const compactModeWarnings = {
+  diff: 'Strip the git diff from this experiment?\\n\\nThe diff will be replaced with a compact summary.\\nTip: Click "Export Diff" first to save it.',
+  cells: 'Remove stored cell source code for this experiment?\\n\\nCell lineage (hashes + parent pointers) is preserved.\\nVariable changes remain in the timeline.',
+  timeline: 'Remove source diffs from timeline events?\\n\\nThe timeline structure and variable changes are preserved.',
+  deep: 'Deep compact: strip git diff, cell sources, AND timeline diffs?\\n\\nThis frees the most space but removes all source code.\\nMetrics, params, and variable changes are preserved.'
+};
+
+async function compactExp(id, mode) {
+  mode = mode || 'diff';
+  if (!confirm(compactModeWarnings[mode] + '\\n\\nThis cannot be undone.')) return;
+  const d = await postApi('/api/bulk-compact', {ids: [id], mode});
+  if (d.error) { alert(d.error); return; }
+  if (d.ok && d.freed > 0) {
+    owlSay('Compacted ' + compactModeLabels[mode] + '! Freed ~' + fmtFreed(d.freed) + (d.detail ? ' (' + d.detail + ')' : ''), 'owl-bounce');
     await loadExperiments();
     await refreshDetail(id);
   } else if (d.ok) {
-    owlSay('Nothing to compact (already compacted or no diff)');
-  } else alert(d.error || 'Failed');
+    owlSay('Nothing to compact for ' + compactModeLabels[mode] + ' (already compacted or no data)');
+  } else {
+    alert('Compact failed: ' + (d.error || 'unknown error'));
+  }
+}
+
+async function compactDiff(id) {
+  return compactExp(id, 'diff');
 }
 
 async function exportDiff(id) {
@@ -2381,18 +2414,22 @@ async function exportDiff(id) {
   owlSay('Exported diff as markdown');
 }
 
-async function bulkCompact() {
+async function bulkCompact(mode) {
   const ids = [...selectedIds];
   if (!ids.length) return;
-  if (!confirm('Compact diffs for ' + ids.length + ' experiment(s)?\\n\\nThis strips git diff data and cannot be undone.\\nTip: Use "Export" on individual experiments to save diffs first.')) return;
-  const d = await postApi('/api/bulk-compact', {ids});
-  if (d.ok && d.compacted > 0) {
-    owlSay('Compacted ' + d.compacted + ' diff(s), freed ~' + (d.freed > 1024 ? (d.freed/1024).toFixed(1) + ' KB' : d.freed + ' B'), 'owl-bounce');
+  mode = mode || 'diff';
+  if (!confirm('Compact ' + compactModeLabels[mode] + ' for ' + ids.length + ' experiment(s)?\\n\\nThis cannot be undone.\\nTip: Use "Export" on individual experiments to save diffs first.')) return;
+  const d = await postApi('/api/bulk-compact', {ids, mode});
+  if (d.error) { alert(d.error); return; }
+  if (d.ok && d.freed > 0) {
+    owlSay('Compacted ' + compactModeLabels[mode] + ' for ' + d.compacted + ' exp(s), freed ~' + fmtFreed(d.freed), 'owl-bounce');
     await loadExperiments();
     if (currentDetailId) await refreshDetail(currentDetailId);
   } else if (d.ok) {
     owlSay('Nothing to compact');
-  } else alert(d.error || 'Failed');
+  } else {
+    alert('Compact failed: ' + (d.error || 'unknown error'));
+  }
 }
 
 // ── Add artifact ─────────────────────────────────────────────────────────────
