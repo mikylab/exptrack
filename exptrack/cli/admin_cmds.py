@@ -545,6 +545,11 @@ def cmd_storage(args):
     """Show data storage breakdown for the exptrack database and outputs."""
     conn = get_db()
 
+    if getattr(args, "checkpoint", False):
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        print(col("WAL checkpoint complete.", G))
+        return
+
     conf = cfg.load()
     root = cfg.project_root()
     db_path = root / conf.get("db", ".exptrack/experiments.db")
@@ -687,4 +692,24 @@ def cmd_storage(args):
     if outputs_size > 100 * 1024 * 1024:
         print(col("    Tip: Outputs directory is large. Delete old experiments "
                    "with \"exptrack rm\" to reclaim space.", Y))
+    print()
+
+    # Database health
+    print(bold(col("  Database Health", W)))
+    print(dim("  " + "-" * 50))
+    wal_path = Path(str(db_path) + "-wal")
+    wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+    journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    print(f"  Journal mode:    {journal_mode.upper()}")
+    print(f"  WAL file:        {fmt(wal_size)}")
+    if wal_size > 10 * 1024 * 1024:
+        print(col("    WAL file is large. Run \"exptrack storage --checkpoint\" to reclaim.", Y))
+    # Check for stale running experiments (potential leaked connections)
+    stale_running = conn.execute(
+        "SELECT COUNT(*) as n FROM experiments WHERE status='running' "
+        "AND created_at < datetime('now', '-24 hours')"
+    ).fetchone()["n"]
+    if stale_running:
+        print(col(f"    {stale_running} experiment(s) running for >24h — "
+                  f"possible orphans. Use \"exptrack stale\" to review.", Y))
     print()

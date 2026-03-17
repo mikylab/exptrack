@@ -241,7 +241,9 @@ def main():
     p_ui.add_argument("--port", type=int, default=7331)
     p_ui.add_argument("--host", type=str, default="127.0.0.1")
 
-    sub.add_parser("storage", help="Show data storage breakdown and tips")
+    p_storage = sub.add_parser("storage", help="Show data storage breakdown and tips")
+    p_storage.add_argument("--checkpoint", action="store_true",
+                           help="Force WAL checkpoint to reclaim space")
 
     p_compact = sub.add_parser("compact",
         help="Strip git diffs and/or cell data to reclaim space (keeps all results)")
