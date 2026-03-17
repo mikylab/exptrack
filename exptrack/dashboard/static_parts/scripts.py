@@ -1088,13 +1088,24 @@ async function loadStats() {
 async function bulkCompactAll() {
   const doneIds = allExperiments.filter(e => e.status === 'done').map(e => e.id);
   if (!doneIds.length) { alert('No done experiments to compact.'); return; }
-  if (!confirm('Compact all ' + doneIds.length + ' done experiments?\\n\\nRemoves: git diffs, cell source code, timeline diffs\\nKeeps: metrics, params, results, variable history\\n\\nTip: Run "exptrack compact --export DIR" from the CLI to save diffs first.')) return;
+  const preview = await postApi('/api/bulk-compact', {ids: doneIds, mode: 'deep', dry_run: true});
+  if (preview.error) { alert('Error: ' + preview.error); return; }
+  if (!preview.will_remove || !preview.will_remove.length) {
+    alert('Nothing to compact \u2014 all done experiments are already compacted.');
+    return;
+  }
+  const msg = 'Compact all ' + doneIds.length + ' done experiments?\n\nWill remove:\n'
+    + preview.will_remove.map(function(s) { return '  \u2022 ' + s; }).join('\n')
+    + '\n\nTotal: ~' + preview.total_fmt
+    + '\n\nTip: Run "exptrack compact --export DIR" from the CLI to save diffs first.'
+    + '\n\nThis cannot be undone.';
+  if (!confirm(msg)) return;
   const d = await postApi('/api/bulk-compact', {ids: doneIds, mode: 'deep'});
   if (d.error) { alert('Compact error: ' + d.error); return; }
   if (d.ok && d.freed > 0) {
-    alert('Compacted ' + d.compacted + ' experiment(s).\\nFreed ~' + fmtFreed(d.freed) + (d.detail !== 'nothing to compact' ? '\\n(' + d.detail + ')' : ''));
+    owlSay('Compacted ' + d.compacted + ' experiment(s), freed ~' + fmtFreed(d.freed), 'owl-bounce');
   } else {
-    alert('Nothing to compact — all done experiments are already compacted.');
+    alert('Nothing to compact \u2014 already fully compacted.');
   }
   await loadStats();
   await loadExperiments();
@@ -2378,15 +2389,30 @@ function _compactStatusHtml(exp) {
 }
 
 async function compactExp(id) {
-  if (!confirm('Compact this experiment?\\n\\nRemoves: git diffs, cell source code, timeline diffs\\nKeeps: metrics, params, results, variable history\\n\\nThis cannot be undone.')) return;
+  // Dry-run first to show what will be removed
+  const preview = await postApi('/api/bulk-compact', {ids: [id], mode: 'deep', dry_run: true});
+  if (preview.error) { alert('Error: ' + preview.error); return; }
+  if (!preview.will_remove || !preview.will_remove.length) {
+    alert('Nothing to compact \u2014 this experiment has no stored diffs or cell data to strip.');
+    return;
+  }
+  const msg = 'Compact this experiment?\n\nWill remove:\n'
+    + preview.will_remove.map(function(s) { return '  \u2022 ' + s; }).join('\n')
+    + '\n\nTotal: ~' + preview.total_fmt
+    + '\n\nWhat is kept:\n  \u2022 All metrics, params, and results\n  \u2022 Variable change history\n  \u2022 Cell execution order and lineage\n  \u2022 Artifact records'
+    + '\n\nThis cannot be undone.';
+  if (!confirm(msg)) return;
   const d = await postApi('/api/bulk-compact', {ids: [id], mode: 'deep'});
   if (d.error) { alert('Compact error: ' + d.error); return; }
   if (d.ok && d.freed > 0) {
-    alert('Compacted! Freed ~' + fmtFreed(d.freed) + (d.detail !== 'nothing to compact' ? '\\n(' + d.detail + ')' : ''));
+    owlSay('Compacted! Freed ~' + fmtFreed(d.freed), 'owl-bounce');
     await loadExperiments();
     await refreshDetail(id);
+    // Refresh timeline if that tab is active
+    const tlTab = document.querySelector('.detail-tab.active');
+    if (tlTab && tlTab.textContent.trim().toLowerCase() === 'timeline') loadTimeline(id);
   } else {
-    alert('Nothing to compact — this experiment has no stored diffs or cell data to strip.');
+    alert('Nothing to compact \u2014 already fully compacted.');
   }
 }
 
@@ -2409,15 +2435,25 @@ async function exportDiff(id) {
 async function bulkCompact() {
   const ids = [...selectedIds];
   if (!ids.length) { alert('Select experiments first (click checkboxes in the list).'); return; }
-  if (!confirm('Compact ' + ids.length + ' experiment(s)?\\n\\nRemoves: git diffs, cell source code, timeline diffs\\nKeeps: metrics, params, results, variable history\\n\\nThis cannot be undone.')) return;
+  const preview = await postApi('/api/bulk-compact', {ids, mode: 'deep', dry_run: true});
+  if (preview.error) { alert('Error: ' + preview.error); return; }
+  if (!preview.will_remove || !preview.will_remove.length) {
+    alert('Nothing to compact \u2014 selected experiments have no stored diffs or cell data.');
+    return;
+  }
+  const msg = 'Compact ' + ids.length + ' experiment(s)?\n\nWill remove:\n'
+    + preview.will_remove.map(function(s) { return '  \u2022 ' + s; }).join('\n')
+    + '\n\nTotal: ~' + preview.total_fmt
+    + '\n\nThis cannot be undone.';
+  if (!confirm(msg)) return;
   const d = await postApi('/api/bulk-compact', {ids, mode: 'deep'});
   if (d.error) { alert('Compact error: ' + d.error); return; }
   if (d.ok && d.freed > 0) {
-    alert('Compacted ' + d.compacted + ' experiment(s).\\nFreed ~' + fmtFreed(d.freed) + (d.detail !== 'nothing to compact' ? '\\n(' + d.detail + ')' : ''));
+    owlSay('Compacted ' + d.compacted + ' experiment(s), freed ~' + fmtFreed(d.freed), 'owl-bounce');
     await loadExperiments();
     if (currentDetailId) await refreshDetail(currentDetailId);
   } else {
-    alert('Nothing to compact — selected experiments have no stored diffs or cell data to strip.');
+    alert('Nothing to compact \u2014 already fully compacted.');
   }
 }
 
