@@ -39,35 +39,6 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
     return out
 
 
-def _detect_calling_script() -> str:
-    """Detect the shell script that called 'exptrack run-start'.
-
-    Walks up the process tree via /proc looking for a parent whose
-    cmdline includes a script file (e.g. bash myscript.sh).
-    Returns resolved absolute path, or empty string on failure.
-    """
-    try:
-        pid = os.getpid()
-        # Walk up to 5 levels: parent, grandparent, etc.
-        for _ in range(5):
-            stat = Path(f"/proc/{pid}/stat").read_text().split()
-            ppid = int(stat[3])
-            if ppid <= 1:
-                break
-            cmdline = Path(f"/proc/{ppid}/cmdline").read_text().split("\0")
-            # Look for a script file arg (skip the binary itself and flags)
-            for arg in cmdline[1:]:
-                if not arg or arg.startswith("-"):
-                    continue
-                p = Path(arg)
-                if p.is_file():
-                    return str(p.resolve())
-            pid = ppid
-    except Exception:
-        pass
-    return ""
-
-
 def cmd_run_start(args):
     """
     Start an experiment from a shell script. Prints shell-sourceable env vars
@@ -117,35 +88,19 @@ def cmd_run_start(args):
     notes = args.notes or ""
     name  = args.name or ""
 
-    # --script is for naming only; the actual script stored in DB should be
-    # the shell script that called run-start (detected via /proc)
-    naming_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
-    calling_script = _detect_calling_script()
-    # Fallback: store "exptrack run-start" command rather than the --script
-    # label, which would be misleading (e.g. "analyze.py" is a naming hint,
-    # not the script being tracked)
-    if not calling_script:
-        calling_script = " ".join(sys.argv)
+    # Resolve --script to a full path from cwd. Always resolve so the
+    # dashboard shows the complete path, even if the file doesn't exist yet.
+    script_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
+    script_val = str(Path(script_hint).resolve())
 
     exp = Experiment(
         name=name or "",
         params=params,
         tags=tags,
         notes=notes,
-        script=calling_script,
+        script=script_val,
         _caller_depth=0,
     )
-    # Override name if not explicitly set — use the naming hint, not the
-    # calling script path (which may be the .sh wrapper)
-    if not name:
-        from ..core.naming import make_run_name
-        exp.name = make_run_name(naming_hint, params)
-        # Update DB with the corrected name
-        from ..core import get_db as _gdb
-        _conn = _gdb()
-        _conn.execute("UPDATE experiments SET name=? WHERE id=?",
-                      (exp.name, exp.id))
-        _conn.commit()
 
     conf = cfg.load()
     out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name
