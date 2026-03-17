@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .. import config as cfg
 from ..core import get_db
+from ..core.naming import make_run_name
 
 
 def _coerce_str(v: str):
@@ -37,6 +38,33 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
         else:
             out[key] = v
     return out
+
+
+def _detect_calling_script() -> str:
+    """Detect the shell script that invoked 'exptrack run-start'.
+
+    Walks up the process tree via /proc to find a parent whose cmdline
+    includes a script file (e.g. bash myscript.sh).
+    Returns resolved absolute path, or empty string on failure.
+    """
+    try:
+        pid = os.getpid()
+        for _ in range(5):
+            stat = Path(f"/proc/{pid}/stat").read_text().split()
+            ppid = int(stat[3])
+            if ppid <= 1:
+                break
+            cmdline = Path(f"/proc/{ppid}/cmdline").read_text().split("\0")
+            for arg in cmdline[1:]:
+                if not arg or arg.startswith("-"):
+                    continue
+                p = Path(arg)
+                if p.is_file():
+                    return str(p.resolve())
+            pid = ppid
+    except Exception:
+        pass
+    return ""
 
 
 def cmd_run_start(args):
@@ -88,17 +116,17 @@ def cmd_run_start(args):
     notes = args.notes or ""
     name  = args.name or ""
 
-    # Resolve --script to a full path from cwd. Always resolve so the
-    # dashboard shows the complete path, even if the file doesn't exist yet.
-    script_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
-    script_val = str(Path(script_hint).resolve())
+    # --script is a naming hint (e.g. "train.py" → name starts with "train__")
+    # The actual script field should be the calling shell script.
+    naming_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
+    calling_script = _detect_calling_script()
 
     exp = Experiment(
-        name=name or "",
+        name=name or make_run_name(naming_hint, params),
         params=params,
         tags=tags,
         notes=notes,
-        script=script_val,
+        script=calling_script,
         _caller_depth=0,
     )
 
