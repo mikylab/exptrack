@@ -4118,13 +4118,13 @@ function openNewExpModal() {
     return '<div class="new-exp-kv">' +
       '<input type="text" placeholder="key" class="kv-key">' +
       '<input type="text" placeholder="' + (placeholder || 'value') + '" class="kv-val">' +
-      '<span class="new-exp-kv-del" onclick="removeNewExpKvRow(this)" title="Remove row">&times;</span>' +
+      '<span class="new-exp-kv-del" title="Remove row">&times;</span>' +
       '</div>';
   };
 
-  overlay.innerHTML = '<div class="new-exp-dialog">' +
+  var html = '<div class="new-exp-dialog">' +
     '<div class="new-exp-header"><h3 onclick="newExpOwlEgg(this)" style="cursor:default">New Experiment</h3>' +
-    '<button class="close-btn" onclick="this.closest(\'.new-exp-overlay\').remove()">&times;</button></div>' +
+    '<button class="close-btn" id="new-exp-close-btn">&times;</button></div>' +
     '<div class="new-exp-body">' +
       '<div class="new-exp-field"><label>Name <span style="color:var(--red)">*</span></label>' +
       '<input type="text" id="new-exp-name" placeholder="e.g. baseline_resnet50"></div>' +
@@ -4144,16 +4144,29 @@ function openNewExpModal() {
       '<textarea id="new-exp-notes" rows="2" placeholder="Optional notes"></textarea></div>' +
       '<div class="new-exp-field"><label>Params</label>' +
       '<div id="new-exp-params">' + kvRowHtml('value') + '</div>' +
-      '<button class="new-exp-kv-add" onclick="addNewExpKvRow(\'new-exp-params\',\'value\')">+ Add param</button></div>' +
+      '<button class="new-exp-kv-add" id="new-exp-add-param">+ Add param</button></div>' +
       '<div class="new-exp-field"><label>Metrics</label>' +
       '<div id="new-exp-metrics">' + kvRowHtml('value (number)') + '</div>' +
-      '<button class="new-exp-kv-add" onclick="addNewExpKvRow(\'new-exp-metrics\',\'value (number)\')">+ Add metric</button></div>' +
+      '<button class="new-exp-kv-add" id="new-exp-add-metric">+ Add metric</button></div>' +
     '</div>' +
     '<div class="new-exp-footer">' +
-      '<button class="action-btn" onclick="this.closest(\'.new-exp-overlay\').remove()">Cancel</button>' +
-      '<button class="action-btn primary" onclick="submitNewExp()">Create Experiment</button>' +
+      '<button class="action-btn" id="new-exp-cancel-btn">Cancel</button>' +
+      '<button class="action-btn primary" id="new-exp-submit-btn">Create Experiment</button>' +
     '</div>' +
   '</div>';
+  overlay.innerHTML = html;
+
+  // Wire up buttons via JS instead of inline onclick with quotes
+  overlay.querySelector('#new-exp-close-btn').onclick = function() { overlay.remove(); };
+  overlay.querySelector('#new-exp-cancel-btn').onclick = function() { overlay.remove(); };
+  overlay.querySelector('#new-exp-submit-btn').onclick = submitNewExp;
+  overlay.querySelector('#new-exp-add-param').onclick = function() { addNewExpKvRow('new-exp-params', 'value'); };
+  overlay.querySelector('#new-exp-add-metric').onclick = function() { addNewExpKvRow('new-exp-metrics', 'value (number)'); };
+
+  // Event delegation for delete buttons (handles dynamically added rows too)
+  overlay.addEventListener('click', function(ev) {
+    if (ev.target.classList.contains('new-exp-kv-del')) removeNewExpKvRow(ev.target);
+  });
 
   document.body.appendChild(overlay);
 
@@ -4174,7 +4187,7 @@ function addNewExpKvRow(containerId, placeholder) {
   row.innerHTML =
     '<input type="text" placeholder="key" class="kv-key">' +
     '<input type="text" placeholder="' + (placeholder || 'value') + '" class="kv-val">' +
-    '<span class="new-exp-kv-del" onclick="removeNewExpKvRow(this)" title="Remove row">&times;</span>';
+    '<span class="new-exp-kv-del" title="Remove row">&times;</span>';
   container.appendChild(row);
   row.querySelector('.kv-key').focus();
 }
