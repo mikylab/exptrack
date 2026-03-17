@@ -87,13 +87,22 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
 
 
 def _get_compact_status(conn, exp_id: str, raw_git_diff) -> dict:
-    """Check what has been compacted for an experiment."""
+    """Check what has been compacted for an experiment.
+
+    Returns status per category:
+      diff:     'stored' | 'compacted' | 'clean'
+      cells:    'stored' | 'compacted' | 'partial' | 'shared' | 'none'
+      timeline: 'stored' | 'compacted' | 'none'
+
+    'shared' means cells exist but can't be compacted because other
+    experiments reference the same cell hashes.
+    """
     diff_compacted = bool(raw_git_diff and raw_git_diff.startswith("[compacted"))
     # Check if cells are compacted (any NULL source for cells used by this experiment)
     try:
         cell_row = conn.execute("""
             SELECT COUNT(*) as total,
-                   SUM(CASE WHEN cl.source IS NULL THEN 1 ELSE 0 END) as nulled
+                   SUM(CASE WHEN cl.source IS NULL OR LENGTH(cl.source) = 0 THEN 1 ELSE 0 END) as nulled
             FROM cell_lineage cl
             WHERE cl.cell_hash IN (
                 SELECT DISTINCT cell_hash FROM timeline
@@ -104,6 +113,30 @@ def _get_compact_status(conn, exp_id: str, raw_git_diff) -> dict:
         cells_compacted = (cell_row["nulled"] or 0) if cell_row else 0
     except Exception:
         cells_total, cells_compacted = 0, 0
+
+    # For non-compacted cells, check if they're shared with experiments
+    # that still have non-compacted timeline data
+    cells_compactable = 0
+    if cells_total > cells_compacted:
+        try:
+            compactable_row = conn.execute("""
+                SELECT COUNT(*) as cnt
+                FROM cell_lineage cl
+                WHERE cl.source IS NOT NULL AND LENGTH(cl.source) > 0
+                AND cl.cell_hash IN (
+                    SELECT DISTINCT cell_hash FROM timeline
+                    WHERE exp_id=? AND cell_hash IS NOT NULL
+                )
+                AND cl.cell_hash NOT IN (
+                    SELECT DISTINCT t.cell_hash FROM timeline t
+                    WHERE t.exp_id!=? AND t.cell_hash IS NOT NULL
+                      AND t.source_diff IS NOT NULL
+                )
+            """, (exp_id, exp_id)).fetchone()
+            cells_compactable = (compactable_row["cnt"] or 0) if compactable_row else 0
+        except Exception:
+            cells_compactable = 0
+
     # Check if timeline diffs are compacted
     try:
         tl_row = conn.execute("""
@@ -115,9 +148,24 @@ def _get_compact_status(conn, exp_id: str, raw_git_diff) -> dict:
         tl_has_diff = (tl_row["has_diff"] or 0) if tl_row else 0
     except Exception:
         tl_total, tl_has_diff = 0, 0
+
+    # Determine cell status
+    if cells_total == 0:
+        cell_status = "none"
+    elif cells_compacted == cells_total:
+        cell_status = "compacted"
+    elif cells_compacted > 0 and cells_compactable == 0:
+        cell_status = "shared"  # remaining cells are all shared
+    elif cells_compacted > 0:
+        cell_status = "partial"
+    elif cells_compactable == 0:
+        cell_status = "shared"  # all cells shared with other experiments
+    else:
+        cell_status = "stored"
+
     return {
         "diff": "compacted" if diff_compacted else ("clean" if not raw_git_diff else "stored"),
-        "cells": "compacted" if (cells_total > 0 and cells_compacted == cells_total) else ("partial" if cells_compacted > 0 else ("none" if cells_total == 0 else "stored")),
+        "cells": cell_status,
         "timeline": "compacted" if (tl_total > 0 and tl_has_diff == 0) else ("none" if tl_total == 0 else "stored"),
     }
 

@@ -282,15 +282,16 @@ def _compact_preview(conn, exp_ids: list, do_diff: bool, do_cells: bool,
                 SELECT COALESCE(SUM(LENGTH(cl.source)), 0) as sz,
                        COUNT(*) as cnt
                 FROM cell_lineage cl
-                WHERE cl.source IS NOT NULL
+                WHERE cl.source IS NOT NULL AND LENGTH(cl.source) > 0
                 AND cl.cell_hash IN (
                     SELECT DISTINCT cell_hash FROM timeline
                     WHERE exp_id IN ({placeholders}) AND cell_hash IS NOT NULL
                 )
                 AND cl.cell_hash NOT IN (
-                    SELECT DISTINCT cell_hash FROM timeline
-                    WHERE exp_id NOT IN ({placeholders})
-                      AND cell_hash IS NOT NULL
+                    SELECT DISTINCT t.cell_hash FROM timeline t
+                    WHERE t.exp_id NOT IN ({placeholders})
+                      AND t.cell_hash IS NOT NULL
+                      AND t.source_diff IS NOT NULL
                 )
             """, exp_ids + exp_ids).fetchone()
             sz = row["sz"] if row else 0
@@ -353,6 +354,14 @@ def _compact_git_diffs(conn, exp_ids: list) -> tuple:
             file_info += f" +{len(files) - 5} more"
         summary = f"[compacted — {_fmt(diff_len)} stripped — {file_info} — see git commit {commit}]"
         conn.execute("UPDATE experiments SET git_diff = ? WHERE id = ?", (summary, row["id"]))
+        # Delete the blob from git_diffs if it was a ref and no other experiment uses it
+        if raw_diff.startswith("[ref:sha256:"):
+            diff_hash = raw_diff[12:-1]
+            other = conn.execute(
+                "SELECT 1 FROM experiments WHERE git_diff=? AND id!=?", (raw_diff, eid)
+            ).fetchone()
+            if not other:
+                conn.execute("DELETE FROM git_diffs WHERE diff_hash=?", (diff_hash,))
         freed += diff_len
         count += 1
     if count:
@@ -361,44 +370,52 @@ def _compact_git_diffs(conn, exp_ids: list) -> tuple:
 
 
 def _compact_cell_sources(conn, exp_ids: list) -> int:
-    """NULL out cell_lineage.source for cells used only by given experiments.
+    """Strip cell_lineage.source for cells that no longer need source text.
 
-    Protects cells referenced by ANY other experiment (not just running ones),
-    since those experiments may still need to view the cell source.
+    Sets source to '' (empty string) since the column has NOT NULL constraint.
+    A cell is safe to strip when ALL experiments referencing it either:
+      - are in the current compact batch, OR
+      - have already had their timeline source_diff stripped (compacted)
     """
     if not exp_ids:
         return 0
     placeholders = ",".join("?" * len(exp_ids))
+    # Find cells used by target experiments, excluding cells still needed
+    # by other non-compacted experiments
+    query = f"""
+        SELECT COALESCE(SUM(LENGTH(cl.source)), 0) as sz
+        FROM cell_lineage cl
+        WHERE cl.source IS NOT NULL AND LENGTH(cl.source) > 0
+        AND cl.cell_hash IN (
+            SELECT DISTINCT cell_hash FROM timeline
+            WHERE exp_id IN ({placeholders}) AND cell_hash IS NOT NULL
+        )
+        AND cl.cell_hash NOT IN (
+            SELECT DISTINCT t.cell_hash FROM timeline t
+            WHERE t.exp_id NOT IN ({placeholders})
+              AND t.cell_hash IS NOT NULL
+              AND t.source_diff IS NOT NULL
+        )
+    """
+    update_query = f"""
+        UPDATE cell_lineage SET source = ''
+        WHERE source IS NOT NULL AND LENGTH(source) > 0
+        AND cell_hash IN (
+            SELECT DISTINCT cell_hash FROM timeline
+            WHERE exp_id IN ({placeholders}) AND cell_hash IS NOT NULL
+        )
+        AND cell_hash NOT IN (
+            SELECT DISTINCT t.cell_hash FROM timeline t
+            WHERE t.exp_id NOT IN ({placeholders})
+              AND t.cell_hash IS NOT NULL
+              AND t.source_diff IS NOT NULL
+        )
+    """
     try:
-        size_row = conn.execute(f"""
-            SELECT COALESCE(SUM(LENGTH(cl.source)), 0) as sz
-            FROM cell_lineage cl
-            WHERE cl.source IS NOT NULL
-            AND cl.cell_hash IN (
-                SELECT DISTINCT cell_hash FROM timeline
-                WHERE exp_id IN ({placeholders}) AND cell_hash IS NOT NULL
-            )
-            AND cl.cell_hash NOT IN (
-                SELECT DISTINCT cell_hash FROM timeline
-                WHERE exp_id NOT IN ({placeholders})
-                  AND cell_hash IS NOT NULL
-            )
-        """, exp_ids + exp_ids).fetchone()
+        size_row = conn.execute(query, exp_ids + exp_ids).fetchone()
         freed = size_row["sz"] if size_row else 0
         if freed:
-            conn.execute(f"""
-                UPDATE cell_lineage SET source = NULL
-                WHERE source IS NOT NULL
-                AND cell_hash IN (
-                    SELECT DISTINCT cell_hash FROM timeline
-                    WHERE exp_id IN ({placeholders}) AND cell_hash IS NOT NULL
-                )
-                AND cell_hash NOT IN (
-                    SELECT DISTINCT cell_hash FROM timeline
-                    WHERE exp_id NOT IN ({placeholders})
-                      AND cell_hash IS NOT NULL
-                )
-            """, exp_ids + exp_ids)
+            conn.execute(update_query, exp_ids + exp_ids)
             conn.commit()
         return freed
     except Exception:

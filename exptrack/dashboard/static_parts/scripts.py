@@ -2375,6 +2375,13 @@ async function finishExp(id) {
 function fmtFreed(b) { return b > 1024 ? (b/1024).toFixed(1) + ' KB' : b + ' B'; }
 
 function _compactBtnHtml(exp) {
+  const cs = exp.compact_status || {};
+  const hasCompactable = cs.diff === 'stored' || cs.cells === 'stored' || cs.cells === 'partial' || cs.timeline === 'stored';
+  if (!hasCompactable) {
+    const wasCompacted = cs.diff === 'compacted' || cs.cells === 'compacted' || cs.timeline === 'compacted';
+    if (wasCompacted) return '<span style="color:var(--muted);font-size:12px;padding:4px 8px">compacted</span>';
+    return '';
+  }
   return '<button class="action-btn" onclick="compactExp(\'' + exp.id + '\')">Compact</button>';
 }
 
@@ -2383,6 +2390,7 @@ function _compactStatusHtml(exp) {
   const parts = [];
   if (cs.diff === 'compacted') parts.push('<span style="color:var(--green)">diff stripped</span>');
   if (cs.cells === 'compacted') parts.push('<span style="color:var(--green)">cells stripped</span>');
+  if (cs.cells === 'shared') parts.push('<span style="color:var(--yellow)">cells shared</span>');
   if (cs.timeline === 'compacted') parts.push('<span style="color:var(--green)">timeline stripped</span>');
   if (!parts.length) return '';
   return '<div style="margin-top:6px;font-size:12px;color:var(--muted)">Compacted: ' + parts.join(', ') + '</div>';
@@ -2408,9 +2416,10 @@ async function compactExp(id) {
     owlSay('Compacted! Freed ~' + fmtFreed(d.freed), 'owl-bounce');
     await loadExperiments();
     await refreshDetail(id);
-    // Refresh timeline if that tab is active
-    const tlTab = document.querySelector('.detail-tab.active');
-    if (tlTab && tlTab.textContent.trim().toLowerCase() === 'timeline') loadTimeline(id);
+    // Refresh active tab content (timeline, etc.)
+    if (currentDetailTab && currentDetailTab !== 'overview') {
+      switchDetailTab(currentDetailTab, id);
+    }
   } else {
     alert('Nothing to compact \u2014 already fully compacted.');
   }
