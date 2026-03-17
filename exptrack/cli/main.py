@@ -109,6 +109,9 @@ def main():
     p_rs.add_argument("--name",   default="", help="Override run name")
     p_rs.add_argument("--script", default="", help="Script/pipeline name for naming")
     p_rs.add_argument("--tags",   nargs="*",  help="Tags")
+    p_rs.add_argument("--study",  default="", help="Add to study (groups related pipeline steps)")
+    p_rs.add_argument("--stage",  type=int, default=None, help="Stage number (e.g. 1, 2, 3)")
+    p_rs.add_argument("--stage-name", default=None, help="Stage label (e.g. preprocess, train, eval)")
     p_rs.add_argument("--notes",  default="", help="Notes")
     p_rs.add_argument("params",   nargs=argparse.REMAINDER,
                       help="Params as --key value pairs, e.g. --lr 0.01 --epochs 50")

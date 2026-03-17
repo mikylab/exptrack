@@ -233,34 +233,39 @@ SLURM environment variables (`SLURM_JOB_ID`, etc.) are captured automatically.
 
 ### Multi-step pipelines
 
-Each `run-start` creates a **separate experiment**. For pipelines with multiple scripts (train, test, analyze), call `run-start`/`run-finish` for each step. Save each `$EXP_ID` before the next `run-start` overwrites it. Use tags to group related steps:
+Each `run-start` creates a **separate experiment**. For pipelines with multiple scripts (train, test, analyze), call `run-start`/`run-finish` for each step. Save each `$EXP_ID` before the next `run-start` overwrites it.
+
+Use `--study` to group related steps into a study, and `--stage` to number them:
 
 ```bash
-RUN_TAG="pipeline-$(date +%s)"
+STUDY="resnet-ablation-$(date +%s)"
 
 # Step 1: Train
-eval $(exptrack run-start --script train.py --phase train --lr 0.01 --tag "$RUN_TAG")
+eval $(exptrack run-start --script train.py --study "$STUDY" --stage 1 --stage-name train \
+      --lr 0.01 --epochs 50)
 TRAIN_ID=$EXP_ID
 python train.py --train --lr 0.01
 exptrack log-metric $TRAIN_ID loss 0.23 --step 100
 exptrack run-finish $TRAIN_ID --metrics results.json
 
 # Step 2: Test
-eval $(exptrack run-start --script train.py --phase test --tag "$RUN_TAG")
+eval $(exptrack run-start --script train.py --study "$STUDY" --stage 2 --stage-name test)
 TEST_ID=$EXP_ID
 python train.py --test
 exptrack log-metric $TEST_ID accuracy 0.94
 exptrack run-finish $TEST_ID
 
 # Step 3: Analyze
-eval $(exptrack run-start --script analyze.py --phase analyze --tag "$RUN_TAG")
+eval $(exptrack run-start --script analyze.py --study "$STUDY" --stage 3 --stage-name analyze)
 ANALYZE_ID=$EXP_ID
 python analyze.py
 exptrack log-artifact $ANALYZE_ID report.pdf --label "analysis"
 exptrack run-finish $ANALYZE_ID
 ```
 
-Filter by the shared tag in the dashboard or CLI (`exptrack ls`) to see all steps from one pipeline run. See [`examples/pipeline_multistep.sh`](examples/pipeline_multistep.sh) for a full working example.
+Filter by study in the dashboard or CLI (`exptrack ls --study <name>`) to see all steps together. You can also manage studies after the fact with `exptrack study <id> <name>` and `exptrack studies`. See [`examples/pipeline_multistep.sh`](examples/pipeline_multistep.sh) for a full working example.
+
+**Studies vs tags:** Studies group experiments that belong together (pipeline steps, ablation runs). Tags are categorical labels (`baseline`, `production`, `slow`). An experiment can have both.
 
 ---
 

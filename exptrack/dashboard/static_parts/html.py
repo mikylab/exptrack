@@ -152,7 +152,15 @@ HTML_BODY = r"""</style>
     </div>
     <div class="faq-item">
       <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How do I track a multi-step pipeline (train &rarr; test &rarr; analyze)?</div>
-      <div class="faq-a">Each <code>run-start</code> creates a separate experiment. Call <code>run-start</code>/<code>run-finish</code> per step, saving <code>$EXP_ID</code> before the next step overwrites it. Use a shared <code>--tag</code> to group related steps, then filter by that tag in the dashboard. See <code>examples/pipeline_multistep.sh</code> for a full example.</div>
+      <div class="faq-a">Each <code>run-start</code> creates a separate experiment. Call <code>run-start</code>/<code>run-finish</code> per step, saving <code>$EXP_ID</code> before the next step overwrites it. Use <code>--study</code> to group steps and <code>--stage</code> to number them, then filter by study in the dashboard. See <code>examples/pipeline_multistep.sh</code> for a full example.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">What's the difference between studies and tags?</div>
+      <div class="faq-a"><strong>Studies</strong> group experiments that belong together (pipeline steps, ablation sweeps). <strong>Tags</strong> are categorical labels (<code>baseline</code>, <code>production</code>). An experiment can have both. Think of studies as &ldquo;which batch?&rdquo; and tags as &ldquo;what kind?&rdquo;</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How are default experiment names generated?</div>
+      <div class="faq-a">Names follow the pattern <code>{script}__{params}__{MMDD}_{uid}</code>, e.g. <code>train__lr0.01_bs32__0312_a3f2</code>. Script stem + top N params + date + random 4-char hex. Override with <code>--name</code> or adjust <code>naming.max_param_keys</code> / <code>naming.key_max_len</code> in config.</div>
     </div>
     <div class="faq-item">
       <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does expTrack capture plots automatically?</div>

@@ -55,32 +55,63 @@ SLURM environment variables (`SLURM_JOB_ID`, `SLURM_NODELIST`, etc.) are capture
 
 ### How do I track a multi-step pipeline (train → test → analyze)?
 
-Each `run-start` creates a **separate experiment**. Call `run-start`/`run-finish` for each step and save `$EXP_ID` before the next step overwrites it. Use a shared tag to group them:
+Each `run-start` creates a **separate experiment**. Call `run-start`/`run-finish` for each step and save `$EXP_ID` before the next step overwrites it. Use `--study` to group them and `--stage` to order them:
 
 ```bash
-RUN_TAG="pipeline-$(date +%s)"
+STUDY="resnet-ablation-$(date +%s)"
 
 # Step 1: Train
-eval $(exptrack run-start --script train.py --phase train --lr 0.01 --tag "$RUN_TAG")
+eval $(exptrack run-start --script train.py --study "$STUDY" --stage 1 --stage-name train \
+      --lr 0.01)
 TRAIN_ID=$EXP_ID
 python train.py --train --lr 0.01
 exptrack run-finish $TRAIN_ID
 
 # Step 2: Test
-eval $(exptrack run-start --script train.py --phase test --tag "$RUN_TAG")
+eval $(exptrack run-start --script train.py --study "$STUDY" --stage 2 --stage-name test)
 TEST_ID=$EXP_ID
 python train.py --test
 exptrack run-finish $TEST_ID
 
 # Step 3: Analyze
-eval $(exptrack run-start --script analyze.py --phase analyze --tag "$RUN_TAG")
+eval $(exptrack run-start --script analyze.py --study "$STUDY" --stage 3 --stage-name analyze)
 python analyze.py
 exptrack run-finish $EXP_ID
 ```
 
-Filter by the shared tag in the dashboard or CLI to see all steps together. See [`examples/pipeline_multistep.sh`](../examples/pipeline_multistep.sh) for a full working example.
+Filter by study in the dashboard or CLI (`exptrack ls --study <name>`). You can also add experiments to studies after the fact: `exptrack study <id> <name>`. See [`examples/pipeline_multistep.sh`](../examples/pipeline_multistep.sh) for a full working example.
 
 Note: `exptrack run` cannot wrap multiple scripts as one experiment — it's designed for single-script tracking. For multi-step workflows, use the `run-start`/`run-finish` shell commands as shown above.
+
+### What's the difference between studies and tags?
+
+**Studies** group experiments that belong together — pipeline steps, ablation sweeps, related runs across a phase of work. Use `--study` on `run-start` or `exptrack study <id> <name>` after the fact. Filter with `exptrack ls --study <name>`.
+
+**Tags** are categorical labels — `baseline`, `production`, `needs-review`. Use `--tags` on `run-start` or `exptrack tag <id> <tag>`.
+
+An experiment can have both. Think of studies as "which batch is this part of?" and tags as "what kind of run is this?"
+
+### How are default experiment names generated?
+
+Names follow the pattern `{script}__{params}__{MMDD}_{uid}`, e.g. `train__lr0.01_bs32__0312_a3f2`.
+
+- **Script** — filename without extension (`train.py` → `train`). Falls back to `exp` if no script.
+- **Params** — first N params as `key=value` (floats get 3 sig figs, bools become 0/1, strings truncated to 12 chars).
+- **Date** — month + day (`MMDD`).
+- **UID** — 4 hex chars from a random UUID (guarantees uniqueness).
+
+Customize via `.exptrack/config.json`:
+
+```json
+{
+  "naming": {
+    "max_param_keys": 4,
+    "key_max_len": 8
+  }
+}
+```
+
+Or override entirely with `--name` on `exptrack run` or `run-start`. For pipeline steps, use `--script` to set the script stem (e.g. `--script preprocess` → `preprocess__...`).
 
 ### Does expTrack capture plots and figures automatically?
 

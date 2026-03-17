@@ -2,22 +2,23 @@
 # Multi-step pipeline example for expTrack.
 #
 # Shows how to track separate experiments for each stage of a pipeline
-# (train → test → analyze) and group them with a shared tag.
+# (train → test → analyze) and group them in a study with numbered stages.
 #
 # Run with: bash examples/pipeline_multistep.sh
 
 set -e
 
-# Shared tag to group all steps in this pipeline run
-RUN_TAG="pipeline-$(date +%s)"
-echo "Pipeline tag: $RUN_TAG"
+# Study name groups all steps in this pipeline run
+STUDY="pipeline-$(date +%s)"
+echo "Study: $STUDY"
 echo ""
 
 # ── Step 1: Training ────────────────────────────────────────────────────────
-eval $(exptrack run-start --script train --phase train --lr 0.01 --epochs 5 --tag "$RUN_TAG")
+eval $(exptrack run-start --script train --study "$STUDY" --stage 1 --stage-name train \
+      --lr 0.01 --epochs 5)
 TRAIN_ID=$EXP_ID
 TRAIN_OUT=$EXP_OUT
-echo "[step 1/3] Training: $TRAIN_ID"
+echo "[stage 1/3] Training: $TRAIN_ID"
 
 # Simulate training with metrics
 for epoch in 1 2 3 4 5; do
@@ -34,9 +35,10 @@ exptrack run-finish $TRAIN_ID
 echo ""
 
 # ── Step 2: Testing ─────────────────────────────────────────────────────────
-eval $(exptrack run-start --script test --phase test --model "$TRAIN_OUT/model.pt" --tag "$RUN_TAG")
+eval $(exptrack run-start --script test --study "$STUDY" --stage 2 --stage-name test \
+      --model "$TRAIN_OUT/model.pt")
 TEST_ID=$EXP_ID
-echo "[step 2/3] Testing: $TEST_ID"
+echo "[stage 2/3] Testing: $TEST_ID"
 
 # Simulate test metrics
 exptrack log-metric $TEST_ID test_acc 0.94
@@ -50,9 +52,9 @@ exptrack run-finish $TEST_ID
 echo ""
 
 # ── Step 3: Analysis ────────────────────────────────────────────────────────
-eval $(exptrack run-start --script analyze --phase analyze --tag "$RUN_TAG")
+eval $(exptrack run-start --script analyze --study "$STUDY" --stage 3 --stage-name analyze)
 ANALYZE_ID=$EXP_ID
-echo "[step 3/3] Analyzing: $ANALYZE_ID"
+echo "[stage 3/3] Analyzing: $ANALYZE_ID"
 
 # Simulate generating a report
 echo "Analysis complete. Model accuracy: 0.94, F1: 0.91" > "$EXP_OUT/report.txt"
@@ -67,5 +69,6 @@ echo "  Test:    exptrack show $TEST_ID"
 echo "  Analyze: exptrack show $ANALYZE_ID"
 echo ""
 echo "View all steps together:"
-echo "  exptrack ls               # filter by tag '$RUN_TAG' in dashboard"
-echo "  exptrack ui               # open dashboard, filter by tag"
+echo "  exptrack ls --study $STUDY"
+echo "  exptrack studies"
+echo "  exptrack ui               # open dashboard, filter by study"

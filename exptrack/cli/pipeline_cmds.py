@@ -105,6 +105,19 @@ def cmd_run_start(args):
 
     exp.log_artifact(str(out_dir), label="output_dir")
 
+    # Add to study if specified
+    if getattr(args, "study", ""):
+        from ..core.queries import add_to_study
+        add_to_study(conn, exp.id, args.study)
+        conn.commit()
+
+    # Set stage if specified
+    if getattr(args, "stage", None) is not None:
+        from ..core.queries import update_experiment_stage
+        update_experiment_stage(conn, exp.id, args.stage,
+                               getattr(args, "stage_name", None))
+        conn.commit()
+
     print(f'export EXP_ID="{exp.id}"')
     print(f'export EXP_NAME="{exp.name}"')
     print(f'export EXP_OUT="{out_dir}"')
