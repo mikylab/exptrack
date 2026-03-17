@@ -196,7 +196,8 @@ def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = Fa
         return
 
     days = int(match.group(1))
-    cutoff = datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     status_filter = "" if all_statuses else "AND status='failed'"
     rows = conn.execute(f"""

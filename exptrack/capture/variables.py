@@ -2,9 +2,10 @@
 exptrack/capture/variables.py — Variable capture, classification, and fingerprinting
 """
 from __future__ import annotations
+import hashlib
 import json
 import re
-import hashlib
+import sys
 
 # Heuristic: variable names that look like hyperparameters
 _HP_RE = re.compile(
@@ -138,14 +139,14 @@ def var_fingerprint(val) -> str:
             if len(j) < 10000:
                 return j
         except Exception as e:
-            import sys; print(f"[exptrack] warning: could not fingerprint {tname}: {e}", file=sys.stderr)
+            print(f"[exptrack] warning: could not fingerprint {tname}: {e}", file=sys.stderr)
         return f"{tname}:{len(val)}:{id(val)}"
     try:
         r = repr(val)
         if len(r) < 1000:
             return r
     except Exception as e:
-        import sys; print(f"[exptrack] warning: repr failed for {tname}: {e}", file=sys.stderr)
+        print(f"[exptrack] warning: repr failed for {tname}: {e}", file=sys.stderr)
     return f"{tname}:{id(val)}"
 
 

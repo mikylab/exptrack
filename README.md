@@ -29,7 +29,8 @@ Most experiment trackers ask you to rewrite your training code, install heavy de
 
 ```bash
 # 1. Install exptrack
-pip install -e /path/to/exptrack
+pip install exptrack
+# Or for development: pip install -e .
 
 # 2. Initialize in your project
 cd your_project/

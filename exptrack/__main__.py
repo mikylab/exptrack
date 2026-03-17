@@ -65,6 +65,9 @@ def main():
     if not script_path.exists():
         print(f"[exptrack] Error: {script_path} not found")
         sys.exit(1)
+    if not script_path.is_file():
+        print(f"[exptrack] Error: {script_path} is not a file")
+        sys.exit(1)
 
     # Strip 'exptrack' from argv so the script sees its own args
     sys.argv = sys.argv[1:]
