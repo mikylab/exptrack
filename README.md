@@ -625,12 +625,14 @@ The [`examples/`](examples/) directory contains ready-to-run scripts. Install ex
 pip install -e .
 exptrack init
 
-# Try the zero-friction approach (no exptrack imports in the script)
-exptrack run examples/basic_script.py --lr 0.01 --epochs 10
+# Copy an example into your project, then run it
+cp examples/basic_script.py .
+exptrack run basic_script.py --lr 0.01 --epochs 10
 exptrack ls
 
 # Or the explicit API (imports exptrack directly)
-python examples/manual_tracking.py
+cp examples/manual_tracking.py .
+python manual_tracking.py
 ```
 
 ---

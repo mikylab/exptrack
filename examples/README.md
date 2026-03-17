@@ -20,34 +20,40 @@ Then initialize a project:
 exptrack init
 ```
 
-## Files
+## Usage
+
+Copy an example into your project directory (where you ran `exptrack init`), then run it. The script path must be relative to your current directory.
 
 ### basic_script.py
 **Zero-friction tracking** — A minimal training script using argparse. No exptrack imports needed; just wrap it with `exptrack run` and parameters are captured automatically.
 
 ```bash
-exptrack run examples/basic_script.py --lr 0.01 --epochs 10
+cp examples/basic_script.py .
+exptrack run basic_script.py --lr 0.01 --epochs 10
 ```
 
 ### manual_tracking.py
 **Explicit Python API** — Shows how to use the `Experiment` class directly: context manager usage, logging params/metrics, tagging, notes, and saving output files.
 
 ```bash
-python examples/manual_tracking.py
+cp examples/manual_tracking.py .
+python manual_tracking.py
 ```
 
 ### notebook_example.py
 **Notebook workflow** — Demonstrates the exptrack notebook API (`exptrack.notebook`) as a plain Python file. Shows the explicit function API (in a real notebook you'd use `%load_ext exptrack` instead).
 
 ```bash
-python examples/notebook_example.py
+cp examples/notebook_example.py .
+python notebook_example.py
 ```
 
 ### pipeline_example.sh
 **Shell/SLURM pipeline** — Shows how to integrate exptrack into shell scripts and job schedulers using `run-start`, `log-metric`, `log-artifact`, and `run-finish`.
 
 ```bash
-bash examples/pipeline_example.sh
+cp examples/pipeline_example.sh .
+bash pipeline_example.sh
 ```
 
 ## Viewing Results
