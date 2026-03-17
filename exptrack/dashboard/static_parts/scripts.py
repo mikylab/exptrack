@@ -14,6 +14,7 @@ let studyFilter = '';
 let charts = {};
 let selectedIds = new Set();
 let pinnedIds = new Set(JSON.parse(localStorage.getItem('exptrack-pinned') || '[]'));
+let hiddenIds = new Set(JSON.parse(localStorage.getItem('exptrack-hidden') || '[]'));
 let allExperiments = [];
 let currentDetailId = '';
 let sortCol = 'created_at';
@@ -41,18 +42,18 @@ let highlightColors = {}; // study -> color mapping
 
 // Column configuration: id, label, default visibility, sortable, min-width
 const ALL_COLUMNS = [
-  {id: 'pin', label: '', sortable: false, defaultOn: true, width: 32},
-  {id: 'cb', label: '', sortable: false, defaultOn: true, width: 36},
-  {id: 'id', label: 'ID', sortable: true, defaultOn: true, width: 60},
-  {id: 'name', label: 'Name', sortable: true, defaultOn: true, width: 180},
-  {id: 'status', label: 'Status', sortable: true, defaultOn: true, width: 70},
-  {id: 'tags', label: 'Tags', sortable: true, defaultOn: true, width: 120},
-  {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 120},
-  {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 120},
-  {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 200},
-  {id: 'metrics', label: 'Metrics', sortable: false, defaultOn: true, width: 160},
-  {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 100},
-  {id: 'started', label: 'Started', sortable: true, defaultOn: true, width: 140},
+  {id: 'pin', label: '', sortable: false, defaultOn: true, width: 28},
+  {id: 'cb', label: '', sortable: false, defaultOn: true, width: 32},
+  {id: 'id', label: 'ID', sortable: true, defaultOn: true, width: 50},
+  {id: 'name', label: 'Name', sortable: true, defaultOn: true, width: 150},
+  {id: 'status', label: 'Status', sortable: true, defaultOn: true, width: 62},
+  {id: 'tags', label: 'Tags', sortable: true, defaultOn: true, width: 90},
+  {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 90},
+  {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 80},
+  {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 130},
+  {id: 'metrics', label: 'Metrics', sortable: false, defaultOn: true, width: 110},
+  {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 80},
+  {id: 'started', label: 'Started', sortable: true, defaultOn: true, width: 110},
 ];
 let visibleCols = (function() {
   const saved = JSON.parse(localStorage.getItem('exptrack-cols') || 'null');
@@ -133,9 +134,9 @@ function renderTableHeader() {
     } else if (colId === 'pin') {
       html += '<th style="width:' + w + 'px;position:relative">' + resizer + '</th>';
     } else if (col.sortable) {
-      html += '<th class="sortable" style="width:' + w + 'px;min-width:50px;position:relative" onclick="toggleSort(\'' + (colId === 'started' ? 'created_at' : colId) + '\')">' + col.label + '<span class="sort-arrow"></span>' + resizer + '</th>';
+      html += '<th class="sortable" style="width:' + w + 'px;position:relative" onclick="toggleSort(\'' + (colId === 'started' ? 'created_at' : colId) + '\')">' + col.label + '<span class="sort-arrow"></span>' + resizer + '</th>';
     } else {
-      html += '<th style="width:' + w + 'px;min-width:50px;position:relative">' + col.label + resizer + '</th>';
+      html += '<th style="width:' + w + 'px;position:relative">' + col.label + resizer + '</th>';
     }
   }
   html += '</tr>';
@@ -193,6 +194,70 @@ function togglePin(id) {
   else pinnedIds.add(id);
   localStorage.setItem('exptrack-pinned', JSON.stringify([...pinnedIds]));
   renderExperiments();
+}
+
+function hideSelected() {
+  for (const id of selectedIds) hiddenIds.add(id);
+  selectedIds.clear();
+  localStorage.setItem('exptrack-hidden', JSON.stringify([...hiddenIds]));
+  renderExperiments();
+  renderExpList();
+  renderHiddenPanel();
+}
+
+function unhideRow(id) {
+  hiddenIds.delete(id);
+  localStorage.setItem('exptrack-hidden', JSON.stringify([...hiddenIds]));
+  renderExperiments();
+  renderExpList();
+  renderHiddenPanel();
+}
+
+function unhideAll() {
+  hiddenIds.clear();
+  localStorage.setItem('exptrack-hidden', '[]');
+  renderExperiments();
+  renderExpList();
+  renderHiddenPanel();
+}
+
+let hiddenPanelOpen = false;
+
+function toggleHiddenPanel() {
+  hiddenPanelOpen = !hiddenPanelOpen;
+  renderHiddenPanel();
+}
+
+function renderHiddenPanel() {
+  let panel = document.getElementById('hidden-panel');
+  if (!panel) {
+    const tableWrap = document.querySelector('.table-scroll-wrap');
+    if (!tableWrap) return;
+    panel = document.createElement('div');
+    panel.id = 'hidden-panel';
+    panel.className = 'hidden-panel';
+    tableWrap.parentNode.insertBefore(panel, tableWrap.nextSibling);
+  }
+  if (hiddenIds.size === 0) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  const hiddenExps = allExperiments.filter(e => hiddenIds.has(e.id));
+  let html = '<div class="hidden-panel-header" onclick="toggleHiddenPanel()">';
+  html += '<span class="hidden-panel-toggle">' + (hiddenPanelOpen ? '\u25BC' : '\u25B6') + '</span> ';
+  html += hiddenIds.size + ' hidden row' + (hiddenIds.size > 1 ? 's' : '');
+  html += '<button class="hidden-panel-clear" onclick="event.stopPropagation();unhideAll()">Unhide all</button>';
+  html += '</div>';
+  if (hiddenPanelOpen) {
+    html += '<div class="hidden-panel-list">';
+    for (const e of hiddenExps) {
+      html += '<div class="hidden-panel-item">';
+      html += '<span class="hidden-panel-name" title="' + esc(e.id) + '">' + esc(e.name.slice(0, 40)) + '</span>';
+      html += '<span class="hidden-panel-status status-' + e.status + '">' + e.status + '</span>';
+      html += '<button class="hidden-panel-unhide" onclick="unhideRow(\'' + e.id + '\')" title="Unhide">Unhide</button>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  panel.innerHTML = html;
 }
 
 function renderFilterBar() {
@@ -554,9 +619,17 @@ function owlSay(msg, anim) {
   const el = document.getElementById('owl-speech');
   if (!el) return;
   el.textContent = msg;
-  el.classList.add('visible');
+  // Position fixed below the owl
+  const container = document.getElementById('header-owl');
+  if (container) {
+    const rect = container.getBoundingClientRect();
+    el.style.top = (rect.bottom + 6) + 'px';
+    el.style.left = (rect.left + rect.width / 2) + 'px';
+    el.style.transform = 'translateX(-50%)';
+  }
+  el.style.display = 'block';
   if (owlSpeechTimer) clearTimeout(owlSpeechTimer);
-  owlSpeechTimer = setTimeout(() => el.classList.remove('visible'), 3500);
+  owlSpeechTimer = setTimeout(() => { el.style.display = 'none'; }, 3500);
   // Trigger animation
   const mascot = document.querySelector('.owl-mascot');
   if (mascot && anim) {
@@ -819,6 +892,7 @@ function renderTableActionsBar() {
   if (n >= 2) {
     html += '<button class="primary" onclick="compareSelected()">Compare (' + n + ')</button>';
   }
+  html += '<button onclick="hideSelected()">Hide (' + n + ')</button>';
   html += '<button onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
@@ -1002,6 +1076,9 @@ function updateSortHeaders() {
 
 function getFilteredExperiments() {
   let exps = allExperiments;
+  if (hiddenIds.size > 0) {
+    exps = exps.filter(e => !hiddenIds.has(e.id));
+  }
   if (tagFilter) {
     exps = exps.filter(e => (e.tags || []).includes(tagFilter));
   }
@@ -1118,6 +1195,7 @@ async function loadExperiments() {
   if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
   renderExperiments();
   renderExpList();
+  renderHiddenPanel();
 }
 
 function onRowClick(id) {

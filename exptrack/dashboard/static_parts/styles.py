@@ -569,8 +569,8 @@ CSS_COMPONENTS = """
     border-radius: 3px; color: var(--muted);
   }
   .col-reset-btn:hover { background: var(--border); color: var(--fg); }
-  .table-scroll-wrap { overflow-x: auto; overflow-y: visible; }
-  #exp-table { table-layout: fixed; min-width: 100%; }
+  .table-scroll-wrap { overflow-x: auto; overflow-y: visible; max-width: 100%; }
+  #exp-table { table-layout: fixed; width: 100%; }
   #exp-table th { position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #exp-table td { max-width: 0; }
   #exp-table td.truncate-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -579,6 +579,19 @@ CSS_COMPONENTS = """
   .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 5px 8px; border-radius: 4px; background: var(--card-bg); width: 100%; max-width: 300px; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   .tags-cell .tag { font-size: 13px; padding: 3px 8px; }
+  .hidden-panel { display: none; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); font-size: 13px; }
+  .hidden-panel-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; color: var(--muted); user-select: none; }
+  .hidden-panel-header:hover { background: var(--code-bg); }
+  .hidden-panel-toggle { font-size: 10px; }
+  .hidden-panel-clear { margin-left: auto; font-family: inherit; font-size: 12px; background: var(--code-bg); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .hidden-panel-clear:hover { background: var(--border); color: var(--fg); }
+  .hidden-panel-list { border-top: 1px solid var(--border); max-height: 200px; overflow-y: auto; }
+  .hidden-panel-item { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+  .hidden-panel-item:last-child { border-bottom: none; }
+  .hidden-panel-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hidden-panel-status { font-size: 12px; color: var(--muted); }
+  .hidden-panel-unhide { font-family: inherit; font-size: 12px; background: var(--code-bg); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; border-radius: 3px; color: var(--blue); }
+  .hidden-panel-unhide:hover { background: var(--blue); color: #fff; border-color: var(--blue); }
   .pin-btn { cursor: pointer; font-size: 14px; background: none; border: none; color: var(--muted); padding: 0; width: 100%; text-align: center; }
   .pin-btn:hover { color: var(--yellow); }
   .pin-btn.pinned { color: var(--yellow); }
@@ -639,9 +652,8 @@ CSS_COMPONENTS = """
   @keyframes owlBlink { 0%,92%,100% { height: 1; } 94%,98% { height: 0; } }
   @keyframes owlBounce { 0%,100% { transform: translateY(0); } 40% { transform: translateY(-8px); } 60% { transform: translateY(-4px); } }
   @keyframes owlWiggle { 0%,100% { transform: rotate(0deg); } 25% { transform: rotate(-8deg); } 75% { transform: rotate(8deg); } }
-  .owl-speech { position: absolute; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 11px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 100; bottom: 40px; left: 50%; transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity 0.3s; }
-  .owl-speech.visible { opacity: 1; }
-  .owl-speech::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: var(--border); }
+  .owl-speech { position: fixed; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 11px; color: var(--fg); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 10000; pointer-events: none; display: none; }
+  .owl-speech::before { content: ''; position: absolute; bottom: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-bottom-color: var(--border); }
   .owl-container { position: relative; display: inline-block; }
   .tz-setting { display: inline-flex; align-items: center; gap: 6px; }
   .tz-setting select { font-family: inherit; font-size: 12px; border: 1px solid var(--border); padding: 5px 10px; border-radius: 4px; background: var(--code-bg); color: var(--muted); cursor: pointer; }
