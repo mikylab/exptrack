@@ -10,13 +10,16 @@ Script tracking
 
 Shell/SLURM pipeline
   exptrack run-start [--key val]    Start experiment, print env vars for eval $()
+                     [--study name] Add to study (groups pipeline steps)
+                     [--stage N]    Set stage number
+                     [--stage-name] Stage label (e.g. train, eval)
   exptrack run-finish <id>          Mark done (--metrics file.json)
   exptrack run-fail <id> [reason]   Mark failed
   exptrack log-metric <id> <k> <v>  Log metric (--step N, --file f.json)
   exptrack log-artifact <id> <path> Register output file (--label name)
 
 Inspection
-  exptrack ls [-n 50]               List experiments
+  exptrack ls [-n 50]               List experiments (--tag, --study filters)
   exptrack show <id> [--timeline]   Full details (params, metrics, artifacts, diff)
   exptrack timeline <id> [-c]       Execution timeline (--type event_type)
   exptrack diff <id>                Colorized git diff captured at run time
@@ -29,6 +32,10 @@ Management
   exptrack tag <id> <tag>           Add tag
   exptrack untag <id> <tag>         Remove tag
   exptrack delete-tag <tag>         Delete a tag from all experiments
+  exptrack study <id> <name>        Add experiment to a study
+  exptrack unstudy <id> <name>      Remove experiment from a study
+  exptrack delete-study <name>      Delete a study from all experiments
+  exptrack stage <id> <N> [--name]  Set stage number and optional label
   exptrack note <id> "text"         Append note
   exptrack edit-note <id> "text"    Replace notes
   exptrack rm <id>                  Delete run

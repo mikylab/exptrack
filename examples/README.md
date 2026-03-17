@@ -49,11 +49,19 @@ python notebook_example.py
 ```
 
 ### pipeline_example.sh
-**Shell/SLURM pipeline** — Shows how to integrate exptrack into shell scripts and job schedulers using `run-start`, `log-metric`, `log-artifact`, and `run-finish`.
+**Shell/SLURM pipeline** — Shows how to integrate exptrack into shell scripts and job schedulers using `run-start`, `log-metric`, `log-artifact`, and `run-finish`. Single-step example.
 
 ```bash
 cp examples/pipeline_example.sh .
 bash pipeline_example.sh
+```
+
+### pipeline_multistep.sh
+**Multi-step pipeline** — Demonstrates a train → test → analyze pipeline where each step is a separate experiment grouped into a study with numbered stages. Shows `--study`, `--stage`, and `--stage-name` flags.
+
+```bash
+cp examples/pipeline_multistep.sh .
+bash pipeline_multistep.sh
 ```
 
 ## Viewing Results
