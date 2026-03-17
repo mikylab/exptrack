@@ -82,6 +82,43 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         } for m in metrics],
         "artifacts": [{"label": a["label"], "path": a["path"],
                        "timeline_seq": a["timeline_seq"]} for a in artifacts],
+        "compact_status": _get_compact_status(conn, full_id, exp["git_diff"]),
+    }
+
+
+def _get_compact_status(conn, exp_id: str, raw_git_diff) -> dict:
+    """Check what has been compacted for an experiment."""
+    diff_compacted = bool(raw_git_diff and raw_git_diff.startswith("[compacted"))
+    # Check if cells are compacted (any NULL source for cells used by this experiment)
+    try:
+        cell_row = conn.execute("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN cl.source IS NULL THEN 1 ELSE 0 END) as nulled
+            FROM cell_lineage cl
+            WHERE cl.cell_hash IN (
+                SELECT DISTINCT cell_hash FROM timeline
+                WHERE exp_id=? AND cell_hash IS NOT NULL
+            )
+        """, (exp_id,)).fetchone()
+        cells_total = (cell_row["total"] or 0) if cell_row else 0
+        cells_compacted = (cell_row["nulled"] or 0) if cell_row else 0
+    except Exception:
+        cells_total, cells_compacted = 0, 0
+    # Check if timeline diffs are compacted
+    try:
+        tl_row = conn.execute("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN source_diff IS NOT NULL THEN 1 ELSE 0 END) as has_diff
+            FROM timeline WHERE exp_id=? AND event_type IN ('cell_exec', 'observational')
+        """, (exp_id,)).fetchone()
+        tl_total = (tl_row["total"] or 0) if tl_row else 0
+        tl_has_diff = (tl_row["has_diff"] or 0) if tl_row else 0
+    except Exception:
+        tl_total, tl_has_diff = 0, 0
+    return {
+        "diff": "compacted" if diff_compacted else ("clean" if not raw_git_diff else "stored"),
+        "cells": "compacted" if (cells_total > 0 and cells_compacted == cells_total) else ("partial" if cells_compacted > 0 else ("none" if cells_total == 0 else "stored")),
+        "timeline": "compacted" if (tl_total > 0 and tl_has_diff == 0) else ("none" if tl_total == 0 else "stored"),
     }
 
 
