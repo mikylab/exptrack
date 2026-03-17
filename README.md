@@ -54,6 +54,7 @@ Your script needs **zero modifications**. expTrack automatically captures argpar
 
 - [Why expTrack?](#why-exptrack)
 - [Quick Start](#quick-start)
+- [What Gets Captured](#what-gets-captured)
 - [Installation](#installation)
 - [Scripts](#scripts)
 - [Notebooks](#notebooks)
@@ -64,12 +65,32 @@ Your script needs **zero modifications**. expTrack automatically captures argpar
 - [Configuration](#configuration)
 - [Plugins](#plugins)
 - [Python API](#python-api)
+- [Examples](#examples)
 - [How It Works](#how-it-works)
 - [expTrack vs. TensorBoard](#exptrack-vs-tensorboard)
 - [Troubleshooting](#troubleshooting)
+- [Development](#development)
 - [Project Layout](#project-layout)
 - [Contributing](#contributing)
 - [License](#license)
+
+---
+
+## What Gets Captured
+
+expTrack works in four modes. Here's what each captures automatically vs. what you log yourself:
+
+| | `exptrack run` (scripts) | `%load_ext exptrack` (notebooks) | Shell / SLURM | Python API |
+|---|---|---|---|---|
+| **How you use it** | `exptrack run train.py --lr 0.01` | `%load_ext exptrack` in first cell | `eval $(exptrack run-start ...)` | `with Experiment() as exp:` |
+| **Parameters** | Auto from argparse / sys.argv | Auto from HP-like variables (`lr`, `batch_size`, etc.) | You pass them: `--lr 0.01` | You log them: `exp.log_param()` |
+| **Metrics** | You log them via `__exptrack__` global | You log them: `exp.metric()` | You log them: `exptrack log-metric` | You log them: `exp.log_metric()` |
+| **Git state** | Auto (branch, commit, diff) | Auto (branch, commit, diff) | Auto (branch, commit, diff) | Auto (branch, commit, diff) |
+| **Code changes** | Auto (script diff vs last commit) | Auto (cell diffs, variable changes) | Not captured | Not captured |
+| **Artifacts** | Auto (`plt.savefig` + new files) | Auto (`plt.savefig`) | You log them: `exptrack log-artifact` | You log them: `exp.log_artifact()` |
+| **Status** | Auto (done/failed on exit) | You call `exp.done()` or `%exp_done` | You call `run-finish` or `run-fail` | Auto with context manager, or `exp.finish()` |
+
+**Key takeaway:** Parameters, git state, and artifacts are mostly automatic. **Metrics always need explicit logging** -- exptrack can't guess which numbers matter to you.
 
 ---
 
@@ -133,6 +154,22 @@ python -m exptrack train.py --lr 0.01 --data train
 - Diffs the script against the last git commit and logs only changed lines
 - Auto-links saved plots -- `plt.savefig("plot.png")` registers the file as an artifact
 - Marks done/failed when the script exits
+
+### Logging metrics from a wrapped script
+
+`exptrack run` auto-captures **parameters** and **artifacts**, but metrics (loss, accuracy, etc.) need to be logged explicitly. When your script runs under `exptrack run`, an `__exptrack__` global is injected into the script's namespace with the active `Experiment` object:
+
+```python
+# No imports needed — works only under `exptrack run`
+exp = globals().get("__exptrack__")
+
+for epoch in range(epochs):
+    loss = train(...)
+    if exp:
+        exp.log_metric("loss", loss, step=epoch)
+```
+
+The `globals().get()` pattern keeps your script portable -- it still runs with plain `python train.py` (metrics are just skipped). See [`examples/basic_script.py`](examples/basic_script.py) for a full example.
 
 ---
 
@@ -607,6 +644,34 @@ exp.finish()
 
 ---
 
+## Examples
+
+The [`examples/`](examples/) directory contains ready-to-run scripts. Install exptrack first (`pip install -e .`), then:
+
+| Example | What it shows |
+|---------|---------------|
+| [`basic_script.py`](examples/basic_script.py) | Zero-friction tracking -- no exptrack imports, just wrap with `exptrack run` |
+| [`manual_tracking.py`](examples/manual_tracking.py) | Explicit Python API -- `Experiment` context manager, params, metrics, tags |
+| [`notebook_example.py`](examples/notebook_example.py) | Notebook workflow via `exptrack.notebook` |
+| [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM pipeline with `eval $(exptrack run-start ...)` |
+
+```bash
+# Install and initialize
+pip install -e .
+exptrack init
+
+# Copy an example into your project, then run it
+cp examples/basic_script.py .
+exptrack run basic_script.py --lr 0.01 --epochs 10
+exptrack ls
+
+# Or the explicit API (imports exptrack directly)
+cp examples/manual_tracking.py .
+python manual_tracking.py
+```
+
+---
+
 ## How It Works
 
 ### Capture mechanisms
@@ -695,6 +760,52 @@ expTrack stores data in `.exptrack/experiments.db` relative to the project root.
 
 ---
 
+## Development
+
+### Setup
+
+```bash
+git clone https://github.com/mikylab/expTrack.git
+cd expTrack
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+This installs exptrack in editable mode along with dev tools (pytest, ruff).
+
+### Linting
+
+expTrack uses [ruff](https://docs.astral.sh/ruff/) for linting and import sorting:
+
+```bash
+ruff check exptrack/ tests/        # check for issues
+ruff check exptrack/ tests/ --fix  # auto-fix what's possible
+```
+
+Ruff configuration is in `pyproject.toml` under `[tool.ruff]`.
+
+### Type Checking
+
+The package ships a `py.typed` marker (PEP 561), so type checkers like mypy and pyright will pick up the inline annotations:
+
+```bash
+# optional -- not required for development
+pip install mypy
+mypy exptrack/
+```
+
+Type annotations use `from __future__ import annotations` throughout, so modern syntax (`str | None`, `dict[str, Any]`) works on Python 3.8+.
+
+### Tests
+
+```bash
+pytest                             # run all tests
+pytest tests/test_experiment.py    # run a specific test file
+```
+
+---
+
 ## Project Layout
 
 ```
@@ -703,8 +814,10 @@ exptrack/
   README.md                   this file
   CHANGELOG.md                version history
   CLAUDE.md                   AI assistant context
+  examples/                   ready-to-run example scripts
   exptrack/
     __init__.py               public API, load_ipython_extension entry point
+    py.typed                  PEP 561 type checking marker
     __main__.py               python -m exptrack (wraps scripts via runpy)
     config.py                 project-aware config, root detection
     notebook.py               %load_ext magic + explicit API
@@ -758,12 +871,13 @@ Contributions are welcome! Here's how to get started:
    ```bash
    python -m venv .venv
    source .venv/bin/activate
-   pip install -e .
+   pip install -e ".[dev]"
    ```
 3. Create a branch for your change (`git checkout -b my-feature`)
 4. Make your changes -- remember, **stdlib only** (no external dependencies)
-5. Commit and push to your fork
-6. Open a pull request against `main`
+5. Run `ruff check exptrack/ tests/` and fix any issues
+6. Commit and push to your fork
+7. Open a pull request against `main`
 
 ### Guidelines
 

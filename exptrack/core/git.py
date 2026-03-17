@@ -2,6 +2,7 @@
 exptrack/core/git.py — Git state capture
 """
 from __future__ import annotations
+
 import subprocess
 import sys
 
@@ -18,7 +19,7 @@ def _git(*cmd) -> str:
         return ""
 
 
-def git_info() -> dict:
+def git_info() -> dict[str, str]:
     return {
         "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
         "git_commit": _git("rev-parse", "--short", "HEAD"),

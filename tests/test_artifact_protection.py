@@ -185,8 +185,8 @@ def test_delete_cleans_archived():
         cfg.init("test")
 
         from exptrack.core import Experiment, get_db
-        from exptrack.core.db import delete_experiment
         from exptrack.core.artifact_protection import protect_previous_artifacts
+        from exptrack.core.db import delete_experiment
 
         # Run 1 creates file
         ckpt = Path("model.pt")
@@ -276,7 +276,7 @@ def test_outputs_already_namespaced_skipped():
         from exptrack import config as cfg
         cfg.init("test")
 
-        from exptrack.core import Experiment, get_db
+        from exptrack.core import Experiment
         from exptrack.core.artifact_protection import protect_previous_artifacts
 
         # Create file inside outputs/ (already namespaced)

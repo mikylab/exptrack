@@ -1,6 +1,5 @@
 """Tests for exptrack compact — stripping git diffs while keeping results."""
 import io
-import json
 import os
 import sys
 import tempfile
@@ -371,7 +370,8 @@ if __name__ == "__main__":
             passed += 1
         except Exception as e:
             print(f"  [FAIL] {t.__name__}: {e}")
-            import traceback; traceback.print_exc()
+            import traceback
+            traceback.print_exc()
             failed += 1
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)

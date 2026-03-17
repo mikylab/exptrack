@@ -1,7 +1,5 @@
 """Tests for exptrack/config.py — project configuration."""
 import json
-import os
-from pathlib import Path
 
 
 def test_init_creates_config(tmp_path, monkeypatch):

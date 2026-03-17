@@ -2,18 +2,18 @@
 exptrack/core/db.py — Database schema, connections, and deletion helpers
 """
 from __future__ import annotations
+
 import json
 import shutil
 import sqlite3
 import sys
+
+# ── Database ──────────────────────────────────────────────────────────────────
+import threading
 from pathlib import Path
 
 from .. import config as cfg
 
-
-# ── Database ──────────────────────────────────────────────────────────────────
-
-import threading
 _local = threading.local()
 
 
@@ -74,7 +74,7 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
-def close_db():
+def close_db() -> None:
     """Close the cached database connection for the current thread.
 
     Call this to release any lingering connections, e.g. from a notebook
@@ -260,7 +260,7 @@ def _ensure_schema(conn):
 
 # ── Git diff deduplication ────────────────────────────────────────────────────
 
-def resolve_git_diff(conn, raw_diff: str | None) -> str:
+def resolve_git_diff(conn: sqlite3.Connection, raw_diff: str | None) -> str:
     """Resolve git_diff — inline text, a [ref:sha256:...] pointer, or a [compacted...] marker."""
     if not raw_diff:
         return ""
@@ -273,7 +273,7 @@ def resolve_git_diff(conn, raw_diff: str | None) -> str:
     return raw_diff
 
 
-def store_git_diff(conn, diff_text: str) -> str:
+def store_git_diff(conn: sqlite3.Connection, diff_text: str) -> str:
     """Store diff text in git_diffs table (deduped) and return a reference marker."""
     import hashlib
     from datetime import datetime, timezone
@@ -297,7 +297,7 @@ def store_git_diff(conn, diff_text: str) -> str:
 # ── Deletion helpers ──────────────────────────────────────────────────────────
 
 def delete_experiment(conn: sqlite3.Connection, exp_id: str,
-                      delete_files: bool = True):
+                      delete_files: bool = True) -> None:
     """Delete an experiment and all related DB records.
 
     If *delete_files* is True, also removes artifact files on disk, the
@@ -388,7 +388,7 @@ def _delete_notebook_history(exp_id: str):
 
 
 def rename_output_folder(conn: sqlite3.Connection, exp_id: str,
-                         old_name: str, new_name: str):
+                         old_name: str, new_name: str) -> None:
     """Rename the output folder on disk and update artifact paths + output_dir.
 
     Called when an experiment is renamed so the output directory stays in sync.
@@ -409,7 +409,6 @@ def rename_output_folder(conn: sqlite3.Connection, exp_id: str,
             pass
 
     # Update output_dir in experiments table
-    actual_dir = str(new_dir) if renamed else None
     if renamed:
         conn.execute("UPDATE experiments SET output_dir=? WHERE id=?",
                      (str(new_dir), exp_id))

@@ -2,10 +2,11 @@
 exptrack/capture/cell_lineage.py — Content-addressed cell lineage and diffing
 """
 from __future__ import annotations
+
 import hashlib
 import sys
-from difflib import SequenceMatcher
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 
 
 def cell_hash(source: str) -> str:
@@ -51,15 +52,15 @@ def find_parent_hash(notebook: str, source: str, current_hash: str) -> str | Non
     return None
 
 
-def store_cell_lineage(notebook: str, source: str, parent_hash: str = None):
+def store_cell_lineage(notebook: str, source: str, parent_hash: str | None = None):
     """Store a cell's source in the content-addressed lineage table.
 
     Applies max_cell_source_kb truncation to the stored copy.
     The cell_hash is always computed from the original source.
     """
     try:
-        from ..core import get_db
         from .. import config as cfg
+        from ..core import get_db
         ch = cell_hash(source)
         # Truncate stored source if it exceeds the configured limit
         stored_source = source

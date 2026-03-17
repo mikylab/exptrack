@@ -2,20 +2,30 @@
 exptrack/capture/notebook_hooks.py — IPython post_run_cell hook and snapshot saving
 """
 from __future__ import annotations
-import json
+
 import hashlib
+import json
 import sys
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from .variables import (
-    _HP_RE, _SCALAR, _SKIP_NAMES, is_observational,
-    var_summary, var_fingerprint, extract_assignments,
-)
 from .cell_lineage import (
-    cell_hash, find_parent_hash, store_cell_lineage,
-    get_cell_source, get_cell_baseline, update_cell_baseline,
+    cell_hash,
+    find_parent_hash,
+    get_cell_baseline,
+    get_cell_source,
     simple_diff,
+    store_cell_lineage,
+    update_cell_baseline,
+)
+from .variables import (
+    _HP_RE,
+    _SCALAR,
+    _SKIP_NAMES,
+    extract_assignments,
+    is_observational,
+    var_fingerprint,
+    var_summary,
 )
 
 if TYPE_CHECKING:
@@ -39,7 +49,7 @@ _nb_state: dict = {
 }
 
 
-def attach_notebook(exp: "Experiment", nb_name: str = "notebook", ip=None):
+def attach_notebook(exp: Experiment, nb_name: str = "notebook", ip=None):
     """
     Install the post_run_cell hook into the running IPython kernel.
     Safe to call outside notebooks — does nothing if IPython isn't active.
@@ -55,7 +65,7 @@ def attach_notebook(exp: "Experiment", nb_name: str = "notebook", ip=None):
     _nb_state["hash_to_last_exec_hash"] = {}
     if ip is None:
         try:
-            ip = get_ipython()  # noqa — only defined in IPython
+            ip = get_ipython()
         except NameError:
             return
     _nb_state["ip"] = ip
@@ -91,7 +101,7 @@ def attach_notebook_deferred(nb_file: str = "", ip=None, start_fn=None):
 
     if ip is None:
         try:
-            ip = get_ipython()  # noqa
+            ip = get_ipython()
         except NameError:
             return
     _nb_state["ip"] = ip
@@ -116,7 +126,7 @@ def detach_notebook():
     ip = _nb_state.get("ip")
     if ip is None:
         try:
-            ip = get_ipython()  # noqa
+            ip = get_ipython()
         except NameError:
             return
     _unregister_hook(ip)
@@ -142,7 +152,7 @@ def _post_run_cell(result=None):
         ip = _nb_state.get("ip")
         if ip is None:
             try:
-                ip = get_ipython()  # noqa
+                ip = get_ipython()
             except NameError:
                 return
 
@@ -234,9 +244,7 @@ def _post_run_cell(result=None):
 
         # ── 2b. Also update legacy position-based baselines ──────────────────
         baseline_source = get_cell_baseline(notebook, exec_num)
-        if baseline_source is None:
-            update_cell_baseline(notebook, exec_num, source)
-        elif source != baseline_source:
+        if baseline_source is None or source != baseline_source:
             update_cell_baseline(notebook, exec_num, source)
 
         # ── 3. Detect observational cells ────────────────────────────────────
@@ -314,7 +322,6 @@ def _post_run_cell(result=None):
                 }
         _nb_state["var_snapshot"] = new_snap
 
-        is_first = _nb_state["first_run"]
         _nb_state["first_run"] = False
 
         # ── 6. Emit timeline events ──────────────────────────────────────────
@@ -334,7 +341,7 @@ def _post_run_cell(result=None):
                 }])
 
         event_type = "observational" if is_obs else "cell_exec"
-        cell_seq = exp.log_event(
+        exp.log_event(
             event_type=event_type,
             cell_hash=ch,
             cell_pos=exec_num,

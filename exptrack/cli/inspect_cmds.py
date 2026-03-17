@@ -4,13 +4,14 @@ exptrack/cli/inspect_cmds.py — Read-only inspection commands
 ls, show, timeline, diff, compare, history, export, verify
 """
 from __future__ import annotations
+
 import json
 import sys
 from pathlib import Path
 
-from ..core import get_db
 from .. import config as cfg
-from .formatting import G, R, Y, C, M, W, DIM, col, dim, bold, fmt_dt, fmt_dur, STATUS_C, STATUS_I
+from ..core import get_db
+from .formatting import STATUS_C, STATUS_I, C, G, M, R, W, Y, bold, col, dim, fmt_dt, fmt_dur
 
 
 def cmd_ls(args):
@@ -77,7 +78,8 @@ def cmd_ls(args):
             fmt_dt(exp["created_at"]),
             fmt_dur(exp["duration_s"]),
             dim(exp["git_branch"] or "--"),
-        ] + mvals
+            *mvals,
+        ]
 
         line = "  ".join(str(v).ljust(w) for v, (w, _) in zip(vals, cols))
         print(line)
@@ -381,7 +383,7 @@ def cmd_compare(args):
 
 def _compare_within(conn, exp_id_prefix, seq1, seq2):
     """Compare variable state, metrics, and artifacts at two timeline points."""
-    from ..core.queries import find_experiment, get_vars_at_seq, get_timeline_events
+    from ..core.queries import find_experiment, get_timeline_events, get_vars_at_seq
     exp = find_experiment(conn, exp_id_prefix, "id, name")
     if not exp:
         print(col(f"Not found: {exp_id_prefix}", R)); return
@@ -393,7 +395,7 @@ def _compare_within(conn, exp_id_prefix, seq1, seq2):
 
     print()
     print(bold(f"  Within-experiment comparison: {exp['name']}"))
-    print(f"  {'':26} {bold(col(f'Point A (#' + str(lo) + ')', C)):<36} {bold(col(f'Point B (#' + str(hi) + ')', M))}")
+    print(f"  {'':26} {bold(col('Point A (#' + str(lo) + ')', C)):<36} {bold(col('Point B (#' + str(hi) + ')', M))}")
     print(dim("  " + "-" * 82))
 
     for s, label in [(lo, C), (hi, M)]:
@@ -416,7 +418,7 @@ def _compare_within(conn, exp_id_prefix, seq1, seq2):
     all_keys = sorted(set(v1) | set(v2))
     changed_count = sum(1 for k in all_keys if v1.get(k) != v2.get(k))
     if all_keys:
-        print(bold(col(f"  Variables", M)) + dim(f"  ({changed_count} changed / {len(all_keys)} total)"))
+        print(bold(col("  Variables", M)) + dim(f"  ({changed_count} changed / {len(all_keys)} total)"))
         for k in all_keys:
             sv1 = str(v1.get(k, dim("--")))[:30]
             sv2 = str(v2.get(k, dim("--")))[:30]
@@ -631,6 +633,7 @@ def _snap_exp_id(f: Path) -> str:
 def cmd_watch(args):
     """Watch a running experiment for live metric updates."""
     import time
+
     from ..core.queries import find_experiment, get_latest_metrics
     conn = get_db()
     exp = find_experiment(conn, args.id, "id, name, status")
@@ -691,8 +694,11 @@ def cmd_watch(args):
 
 def cmd_export(args):
     """Export experiment data: exptrack export <id> [--format json|markdown|csv|tsv]"""
-    from ..core.queries import (get_export_data, get_batch_export_data,
-                                format_export_markdown, format_export_csv)
+    from ..core.queries import (
+        format_export_csv,
+        format_export_markdown,
+        get_export_data,
+    )
     conn = get_db()
     fmt = getattr(args, "format", "json")
     export_all = getattr(args, "export_all", False)
@@ -720,8 +726,7 @@ def cmd_export(args):
 
 def _export_batch(conn, fmt, export_all, exp_id_prefix):
     """Export one or all experiments in CSV/TSV/JSON/markdown batch format."""
-    from ..core.queries import (get_batch_export_data, format_export_csv,
-                                format_export_markdown)
+    from ..core.queries import format_export_csv, format_export_markdown, get_batch_export_data
 
     exp_ids = None
     if not export_all and exp_id_prefix:
@@ -784,8 +789,8 @@ def cmd_verify(args):
         _verify_dry_run(rows)
         return
 
-    from ..core.hashing import file_hash
     from .. import config as _cfg
+    from ..core.hashing import file_hash
     conf = _cfg.load()
     max_bytes = int(conf.get("hash_max_mb", 500)) * 1024 * 1024
 

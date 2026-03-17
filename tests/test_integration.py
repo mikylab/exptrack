@@ -1,8 +1,6 @@
 """Integration tests — end-to-end workflows."""
 import json
-import os
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 
@@ -59,7 +57,7 @@ def test_full_lifecycle(tmp_project):
 
 def test_pipeline_workflow(tmp_project):
     """Shell pipeline: run-start -> log-metric -> run-finish."""
-    from exptrack.cli.pipeline_cmds import cmd_run_start, cmd_run_finish, cmd_log_metric
+    from exptrack.cli.pipeline_cmds import cmd_log_metric, cmd_run_finish, cmd_run_start
     from exptrack.core import get_db
 
     # run-start (captures stdout output)
@@ -100,8 +98,8 @@ def test_pipeline_workflow(tmp_project):
 
 def test_tag_workflow(tmp_project):
     """Tag operations: tag -> untag -> delete-tag."""
-    from exptrack.core import Experiment, get_db
     from exptrack.cli.mutate_cmds import cmd_tag, cmd_untag
+    from exptrack.core import Experiment, get_db
 
     exp1 = Experiment(script="a.py")
     exp1.finish()

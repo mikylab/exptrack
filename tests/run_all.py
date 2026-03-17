@@ -3,7 +3,6 @@
 
 Discovers test modules, runs each, and reports totals.
 """
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,8 +16,6 @@ def main():
         print("No test files found.")
         sys.exit(1)
 
-    total_passed = 0
-    total_failed = 0
     results = []
 
     for tf in test_files:

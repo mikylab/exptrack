@@ -28,12 +28,13 @@ Magic commands:
     done()
 """
 from __future__ import annotations
+
 import sys
 from pathlib import Path
 from typing import Any
 
-from .core import Experiment, output_path
 from .capture import attach_notebook, detach_notebook, patch_savefig
+from .core import Experiment
 
 _active: Experiment | None = None
 
@@ -56,7 +57,7 @@ def start(name: str = "", nb_file: str = "", **params) -> Experiment:
     # Try to get the IPython shell instance for reliable hook registration
     ip = None
     try:
-        ip = get_ipython()  # noqa
+        ip = get_ipython()
     except NameError:
         pass
 
@@ -71,25 +72,25 @@ def start(name: str = "", nb_file: str = "", **params) -> Experiment:
     return _active
 
 
-def metric(key: str, value: float, step: int = None):
+def metric(key: str, value: float, step: int | None = None) -> None:
     _require().log_metric(key, value, step=step)
 
 
-def metrics(step: int = None, **kwargs):
+def metrics(step: int | None = None, **kwargs: float) -> None:
     _require().log_metrics(kwargs, step=step)
 
 
-def param(key: str, value: Any):
+def param(key: str, value: Any) -> None:
     _require().log_param(key, value)
 
 
-def tag(*tags: str):
+def tag(*tags: str) -> None:
     exp = _require()
     exp.tags.extend(tags)
     exp.log_param("_tags", exp.tags)
 
 
-def note(text: str):
+def note(text: str) -> None:
     exp = _require()
     exp.notes = (exp.notes + "\n" + text).strip()
     from .core import get_db
@@ -98,7 +99,7 @@ def note(text: str):
         conn.commit()
 
 
-def artifact(path: str | Path, label: str = ""):
+def artifact(path: str | Path, label: str = "") -> None:
     _require().log_artifact(path, label)
 
 
@@ -107,7 +108,7 @@ def out(filename: str) -> Path:
     return _require().save_output(filename)
 
 
-def done():
+def done() -> None:
     global _active
     if _active is None:
         print("[exptrack] No active experiment.")
@@ -117,7 +118,7 @@ def done():
     _active = None
 
 
-def reset():
+def reset() -> None:
     """Force-close the database connection and detach hooks.
 
     Use this in a notebook to clean up leaked connections from before
@@ -155,10 +156,11 @@ def _require() -> Experiment:
 def _detect_nb_name() -> str:
     """Try to detect the running notebook's filename."""
     try:
-        import ipykernel
         import json as _json
         import re as _re
         import urllib.request
+
+        import ipykernel
 
         kernel_id = _re.search(
             r"kernel-(.+)\.json",
@@ -187,7 +189,7 @@ def _detect_nb_name() -> str:
 
 # ── IPython magic extension ───────────────────────────────────────────────────
 
-def load_ipython_extension(ip):
+def load_ipython_extension(ip: Any) -> None:
     """Called by %load_ext exptrack"""
     from .capture import attach_notebook_deferred
 
@@ -236,10 +238,10 @@ def load_ipython_extension(ip):
     import atexit
     atexit.register(lambda: done() if _active else None)
 
-    print(f"[exptrack] Loaded. Use %exp_status, %exp_done, %exp_tag, %exp_note")
+    print("[exptrack] Loaded. Use %exp_status, %exp_done, %exp_tag, %exp_note")
 
 
-def _auto_start(nb_file: str = "", name: str = "", ip=None):
+def _auto_start(nb_file: str = "", name: str = "", ip: Any = None) -> None:
     global _active
     if _active is not None:
         try: _active.finish()

@@ -1,5 +1,4 @@
 """Tests for exptrack/core/db.py — schema, connections, deletion, rename, finish."""
-import json
 import os
 import sys
 import tempfile
@@ -256,9 +255,8 @@ def test_finish_experiment_not_found():
         from exptrack import config as cfg
         cfg.init("test")
 
-        from exptrack.core.db import finish_experiment
         # Force schema creation by opening DB
-        from exptrack.core.db import get_db
+        from exptrack.core.db import finish_experiment, get_db
         get_db()
 
         result = finish_experiment("nonexistent_id_12345")

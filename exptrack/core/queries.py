@@ -12,7 +12,6 @@ from typing import Any
 
 from .db import resolve_git_diff
 
-
 # ── Experiment lookup ─────────────────────────────────────────────────────────
 
 def find_experiment(conn, exp_id_prefix: str, columns: str = "id") -> dict | None:
@@ -710,7 +709,7 @@ def format_export_markdown(data: dict) -> str:
     """Generate a markdown summary of an experiment from export data."""
     lines = [
         f"# {data['name']}",
-        f"",
+        "",
         f"**ID:** {data['id']}  ",
         f"**Status:** {data['status']}  ",
         f"**Created:** {data['created_at']}  ",
@@ -742,30 +741,30 @@ def format_export_markdown(data: dict) -> str:
         lines.append(f"**Project:** {data['project']}  ")
     lines.append("")
     if data.get("notes"):
-        lines += [f"## Notes", f"", data["notes"], f""]
+        lines += ["## Notes", "", data["notes"], ""]
     if data.get("params"):
-        lines += [f"## Parameters", f"", "| Key | Value |", "| --- | --- |"]
+        lines += ["## Parameters", "", "| Key | Value |", "| --- | --- |"]
         for k, v in data["params"].items():
             lines.append(f"| {k} | {json.dumps(v)} |")
         lines.append("")
     if data.get("variables"):
-        lines += [f"## Variables", f"", "| Name | Value |", "| --- | --- |"]
+        lines += ["## Variables", "", "| Name | Value |", "| --- | --- |"]
         for k, v in data["variables"].items():
             lines.append(f"| {k} | {json.dumps(v)} |")
         lines.append("")
     if data.get("metrics_series"):
-        lines += [f"## Metrics", f"", "| Key | Last | Steps |", "| --- | --- | --- |"]
+        lines += ["## Metrics", "", "| Key | Last | Steps |", "| --- | --- | --- |"]
         for k, pts in data["metrics_series"].items():
             last = pts[-1]["value"] if pts else "--"
             lines.append(f"| {k} | {last} | {len(pts)} |")
         lines.append("")
     if data.get("artifacts"):
-        lines += [f"## Artifacts", f""]
+        lines += ["## Artifacts", ""]
         for a in data["artifacts"]:
             lines.append(f"- **{a['label']}**: `{a['path']}`")
         lines.append("")
     if data.get("code_changes"):
-        lines += [f"## Code Changes", f""]
+        lines += ["## Code Changes", ""]
         for name, diff in data["code_changes"].items():
             lines.append(f"### {name}")
             lines.append("```diff")
@@ -775,8 +774,8 @@ def format_export_markdown(data: dict) -> str:
     ts = data.get("timeline_summary", {})
     if ts.get("total_events"):
         lines += [
-            f"## Timeline Summary",
-            f"",
+            "## Timeline Summary",
+            "",
             f"- Total events: {ts['total_events']}",
             f"- Cell executions: {ts['cell_executions']}",
             f"- Variable changes: {ts['variable_sets']}",
@@ -861,7 +860,7 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
         # Artifacts as semicolon-separated label:path pairs
         art_str = ";".join(f"{a.get('label','')}:{a.get('path','')}" for a in artifacts)
         # Code changes as semicolon-separated key:value
-        cc_str = ";".join(f"{k}" for k in code_changes.keys()) if code_changes else ""
+        cc_str = ";".join(f"{k}" for k in code_changes) if code_changes else ""
         row += [art_str, cc_str,
                 ts.get("total_events", ""), ts.get("cell_executions", ""),
                 ts.get("variable_sets", ""), ts.get("artifact_events", "")]

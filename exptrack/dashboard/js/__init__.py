@@ -23,27 +23,69 @@ Sections:
 """
 
 from ..static_parts.js import (
-    JS_CORE as core,
-    JS_OWL as owl,
-    JS_SIDEBAR as sidebar,
-    JS_TABLE as table,
-    JS_EXPERIMENTS as experiments,
-    JS_INLINE_EDIT as inline_edit,
-    JS_DETAIL as detail,
     JS_COMPARE as compare,
-    JS_MUTATIONS as mutations,
-    JS_TIMELINE as timeline,
+)
+from ..static_parts.js import (
+    JS_CORE as core,
+)
+from ..static_parts.js import (
+    JS_DETAIL as detail,
+)
+from ..static_parts.js import (
+    JS_EXPERIMENTS as experiments,
+)
+from ..static_parts.js import (
     JS_IMAGE_COMPARE as image_compare,
-    JS_STUDIES as studies,
-    JS_STAGE as stage,
-    JS_MANUAL as manual,
+)
+from ..static_parts.js import (
     JS_INIT as init,
+)
+from ..static_parts.js import (
+    JS_INLINE_EDIT as inline_edit,
+)
+from ..static_parts.js import (
+    JS_MANUAL as manual,
+)
+from ..static_parts.js import (
+    JS_MUTATIONS as mutations,
+)
+from ..static_parts.js import (
+    JS_OWL as owl,
+)
+from ..static_parts.js import (
+    JS_SIDEBAR as sidebar,
+)
+from ..static_parts.js import (
+    JS_STAGE as stage,
+)
+from ..static_parts.js import (
+    JS_STUDIES as studies,
+)
+from ..static_parts.js import (
+    JS_TABLE as table,
+)
+from ..static_parts.js import (
+    JS_TIMELINE as timeline,
+)
+from ..static_parts.js import (
     get_all_js,
 )
 
 __all__ = [
-    "core", "owl", "sidebar", "table", "experiments",
-    "inline_edit", "detail", "compare", "mutations",
-    "timeline", "image_compare", "studies", "stage",
-    "manual", "init", "get_all_js",
+    "compare",
+    "core",
+    "detail",
+    "experiments",
+    "get_all_js",
+    "image_compare",
+    "init",
+    "inline_edit",
+    "manual",
+    "mutations",
+    "owl",
+    "sidebar",
+    "stage",
+    "studies",
+    "table",
+    "timeline",
 ]

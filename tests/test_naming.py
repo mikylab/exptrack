@@ -1,6 +1,5 @@
 """Tests for exptrack/core/naming.py — run naming and output paths."""
 import re
-from pathlib import Path
 
 
 def test_make_run_name_basic(tmp_project):

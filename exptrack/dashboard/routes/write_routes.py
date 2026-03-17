@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ...core.queries import find_experiment, update_experiment_tags, remove_tag_global
+from ...core.queries import find_experiment, remove_tag_global, update_experiment_tags
 
 
 def api_add_note(conn, exp_id: str, body: dict) -> dict:
@@ -479,8 +479,7 @@ def api_bulk_delete(conn, body: dict) -> dict:
 
 
 def api_bulk_export(conn, body: dict) -> dict | list:
-    from ...core.queries import (get_batch_export_data, format_export_csv,
-                                 format_export_markdown)
+    from ...core.queries import format_export_csv, format_export_markdown, get_batch_export_data
     ids = body.get("ids", [])
     fmt = body.get("format", "json")
     if not ids:
@@ -655,7 +654,7 @@ def api_set_stage(conn, exp_id: str, body: dict) -> dict:
 
 def api_manage_result_types(body: dict) -> dict:
     """Add/remove result types or namespace prefixes from project config."""
-    from ...config import load, save, reload
+    from ...config import load, reload, save
     conf = load()
     default_types = ["accuracy", "loss", "auroc", "f1", "precision", "recall",
                      "mse", "mae", "r2", "perplexity", "bleu"]

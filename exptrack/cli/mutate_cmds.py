@@ -4,11 +4,12 @@ exptrack/cli/mutate_cmds.py — Commands that modify experiments
 tag, untag, note, edit-note, rm, clean, finish
 """
 from __future__ import annotations
+
 import json
 import sys
 from datetime import datetime, timezone
 
-from ..core import get_db, delete_experiment
+from ..core import delete_experiment, get_db
 from .formatting import G, R, Y, col, dim
 
 
@@ -243,8 +244,8 @@ def cmd_finish(args):
 
     # Fire plugin hooks
     try:
-        from ..plugins import registry as plugins
         from .. import config as cfg
+        from ..plugins import registry as plugins
         plugins.load_from_config(cfg.load())
 
         class _FinishProxy:
@@ -285,7 +286,8 @@ def cmd_unstudy(args):
 def cmd_studies(args):
     """List all studies: exptrack studies"""
     from ..core.queries import get_studies
-    from .formatting import bold, dim, col, C, W, G as GRN, R, Y, fmt_dt
+    from .formatting import C, R, W, bold, col, dim, fmt_dt
+    from .formatting import G as GRN
     conn = get_db()
     studies = get_studies(conn)
     if not studies:
@@ -308,7 +310,7 @@ def cmd_studies(args):
 
 def cmd_delete_study(args):
     """Remove a study from ALL runs globally: exptrack delete-study <name>"""
-    from ..core.queries import remove_study_global, get_all_studies
+    from ..core.queries import get_all_studies, remove_study_global
     conn = get_db()
     all_studies = get_all_studies(conn)
     match = [s for s in all_studies if s["name"] == args.name]

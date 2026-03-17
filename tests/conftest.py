@@ -1,8 +1,5 @@
 """Shared pytest fixtures for exptrack tests."""
-import json
 import os
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -40,7 +37,7 @@ def tmp_project(tmp_path, monkeypatch):
 @pytest.fixture
 def sample_experiment(tmp_project):
     """Create a finished experiment with params, metrics, and an artifact."""
-    from exptrack.core import Experiment, get_db
+    from exptrack.core import Experiment
 
     exp = Experiment(script="train.py", params={"lr": 0.01, "epochs": 10})
     exp.log_metric("loss", 0.5, step=1)

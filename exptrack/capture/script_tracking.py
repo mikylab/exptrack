@@ -2,6 +2,7 @@
 exptrack/capture/script_tracking.py — Script source change tracking via git diff
 """
 from __future__ import annotations
+
 import hashlib
 import subprocess
 import sys
@@ -11,13 +12,14 @@ if TYPE_CHECKING:
     from ..core import Experiment
 
 
-def capture_script_snapshot(exp: "Experiment", script_path: str):
+def capture_script_snapshot(exp: Experiment, script_path: str):
     """
     Diff the script against the last git commit (HEAD) and log only the
     changed lines.  No full-source copies are stored — the committed file
     in git is always the reference point, keeping storage minimal.
     """
     from pathlib import Path as _Path
+
     from .. import config as _cfg
 
     try:

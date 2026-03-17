@@ -1,8 +1,4 @@
 """Tests for exptrack/capture/matplotlib_patch.py — savefig monkey-patching."""
-import os
-import sys
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 
 def test_patch_registers_artifact_on_savefig(tmp_project):
@@ -16,9 +12,9 @@ def test_patch_registers_artifact_on_savefig(tmp_project):
         import pytest
         pytest.skip("matplotlib not installed")
 
-    from exptrack.core import Experiment, get_db
-    from exptrack.capture.matplotlib_patch import patch_savefig
     import exptrack.capture.matplotlib_patch as mp_mod
+    from exptrack.capture.matplotlib_patch import patch_savefig
+    from exptrack.core import Experiment, get_db
 
     # Reset patch state
     mp_mod._patched = False

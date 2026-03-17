@@ -5,8 +5,8 @@ Config lives at <project_root>/.exptrack/config.json
 Project root = nearest ancestor directory containing .git or .exptrack/
 """
 from __future__ import annotations
+
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -88,21 +88,21 @@ def load() -> dict:
     return _cache
 
 
-def save(cfg: dict):
+def save(cfg: dict) -> None:
     p = config_path()
     p.write_text(json.dumps(cfg, indent=2))
     global _cache
     _cache = cfg
 
 
-def reload():
+def reload() -> dict:
     """Force reload config from disk (used after upgrade)."""
     global _cache
     _cache = None
     return load()
 
 
-def init(project_name: str = "", here: bool = False):
+def init(project_name: str = "", here: bool = False) -> None:
     """Called by `exptrack init` — writes config + .gitignore rules.
 
     By default, init creates .exptrack/ in the current working directory.
@@ -125,7 +125,7 @@ def init(project_name: str = "", here: bool = False):
                   file=sys.stderr)
             print(f"[exptrack] Initializing in current directory: {cwd}",
                   file=sys.stderr)
-    d = exptrack_dir()
+    exptrack_dir()
     p = config_path()
 
     if not p.exists():
@@ -153,12 +153,12 @@ def init(project_name: str = "", here: bool = False):
     if to_add:
         with gitignore.open("a") as f:
             f.write("\n".join(to_add) + "\n")
-        print(f"[exptrack] Updated .gitignore")
+        print("[exptrack] Updated .gitignore")
 
     print(f"\n  Project root : {root}")
-    print(f"  DB           : .exptrack/experiments.db  (local, gitignored)")
-    print(f"  Config       : .exptrack/config.json     (commit this)")
-    print(f"  Outputs      : outputs/                  (gitignored)")
+    print("  DB           : .exptrack/experiments.db  (local, gitignored)")
+    print("  Config       : .exptrack/config.json     (commit this)")
+    print("  Outputs      : outputs/                  (gitignored)")
 
 
 def _find_git_root(start: Path) -> Path | None:

@@ -5,17 +5,17 @@ Each module contains one or more related CSS sections as string constants.
 The get_all_css() function assembles them in the correct order.
 """
 
-from .reset import CSS_RESET
-from .layout import CSS_LAYOUT
 from .cards import CSS_CARDS
-from .table import CSS_TABLE
-from .detail import CSS_DETAIL
 from .code import CSS_CODE
-from .timeline import CSS_TIMELINE
 from .compare import CSS_COMPARE
 from .components import CSS_COMPONENTS
+from .detail import CSS_DETAIL
+from .images import CSS_IMAGE_COMPARE, CSS_IMAGES
+from .layout import CSS_LAYOUT
+from .reset import CSS_RESET
 from .studies import CSS_STUDIES
-from .images import CSS_IMAGES, CSS_IMAGE_COMPARE
+from .table import CSS_TABLE
+from .timeline import CSS_TIMELINE
 
 
 def get_all_css() -> str:
@@ -26,8 +26,17 @@ def get_all_css() -> str:
 
 
 __all__ = [
-    "CSS_RESET", "CSS_LAYOUT", "CSS_CARDS", "CSS_TABLE",
-    "CSS_DETAIL", "CSS_CODE", "CSS_TIMELINE", "CSS_COMPARE",
-    "CSS_COMPONENTS", "CSS_STUDIES", "CSS_IMAGES", "CSS_IMAGE_COMPARE",
+    "CSS_CARDS",
+    "CSS_CODE",
+    "CSS_COMPARE",
+    "CSS_COMPONENTS",
+    "CSS_DETAIL",
+    "CSS_IMAGES",
+    "CSS_IMAGE_COMPARE",
+    "CSS_LAYOUT",
+    "CSS_RESET",
+    "CSS_STUDIES",
+    "CSS_TABLE",
+    "CSS_TIMELINE",
     "get_all_css",
 ]

@@ -6,15 +6,33 @@ This file re-exports them for backward compatibility.
 """
 
 from .css import (
-    CSS_RESET, CSS_LAYOUT, CSS_CARDS, CSS_TABLE,
-    CSS_DETAIL, CSS_CODE, CSS_TIMELINE, CSS_COMPARE,
-    CSS_COMPONENTS, CSS_STUDIES, CSS_IMAGES, CSS_IMAGE_COMPARE,
+    CSS_CARDS,
+    CSS_CODE,
+    CSS_COMPARE,
+    CSS_COMPONENTS,
+    CSS_DETAIL,
+    CSS_IMAGE_COMPARE,
+    CSS_IMAGES,
+    CSS_LAYOUT,
+    CSS_RESET,
+    CSS_STUDIES,
+    CSS_TABLE,
+    CSS_TIMELINE,
     get_all_css,
 )
 
 __all__ = [
-    "CSS_RESET", "CSS_LAYOUT", "CSS_CARDS", "CSS_TABLE",
-    "CSS_DETAIL", "CSS_CODE", "CSS_TIMELINE", "CSS_COMPARE",
-    "CSS_COMPONENTS", "CSS_STUDIES", "CSS_IMAGES", "CSS_IMAGE_COMPARE",
+    "CSS_CARDS",
+    "CSS_CODE",
+    "CSS_COMPARE",
+    "CSS_COMPONENTS",
+    "CSS_DETAIL",
+    "CSS_IMAGES",
+    "CSS_IMAGE_COMPARE",
+    "CSS_LAYOUT",
+    "CSS_RESET",
+    "CSS_STUDIES",
+    "CSS_TABLE",
+    "CSS_TIMELINE",
     "get_all_css",
 ]

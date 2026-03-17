@@ -5,9 +5,9 @@ import sys
 
 def test_patch_captures_parse_args(tmp_project):
     """Patching argparse captures params from parse_args()."""
-    from exptrack.core import Experiment, get_db
-    from exptrack.capture.argparse_patch import patch_argparse, _patched
     import exptrack.capture.argparse_patch as ap_mod
+    from exptrack.capture.argparse_patch import patch_argparse
+    from exptrack.core import Experiment
 
     # Reset patch state
     ap_mod._patched = False
@@ -39,9 +39,9 @@ def test_patch_captures_parse_args(tmp_project):
 
 def test_patch_captures_parse_known_args(tmp_project):
     """Patching argparse captures params from parse_known_args()."""
-    from exptrack.core import Experiment
-    from exptrack.capture.argparse_patch import patch_argparse
     import exptrack.capture.argparse_patch as ap_mod
+    from exptrack.capture.argparse_patch import patch_argparse
+    from exptrack.core import Experiment
 
     ap_mod._patched = False
 
@@ -69,8 +69,8 @@ def test_patch_captures_parse_known_args(tmp_project):
 
 def test_capture_argv_fallback(tmp_project):
     """capture_argv() parses sys.argv for scripts that don't use argparse."""
-    from exptrack.core import Experiment
     from exptrack.capture.argparse_patch import capture_argv
+    from exptrack.core import Experiment
 
     exp = Experiment(script="train.py")
 
@@ -103,8 +103,8 @@ def test_coerce_types(tmp_project):
 
 def test_key_value_equals_syntax(tmp_project):
     """capture_argv handles --key=value syntax."""
-    from exptrack.core import Experiment
     from exptrack.capture.argparse_patch import capture_argv
+    from exptrack.core import Experiment
 
     exp = Experiment(script="train.py")
 
@@ -123,8 +123,8 @@ def test_key_value_equals_syntax(tmp_project):
 
 def test_single_dash_flags(tmp_project):
     """capture_argv handles -k value single-dash flags."""
-    from exptrack.core import Experiment
     from exptrack.capture.argparse_patch import capture_argv
+    from exptrack.core import Experiment
 
     exp = Experiment(script="train.py")
 

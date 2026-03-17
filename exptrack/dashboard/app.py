@@ -25,7 +25,7 @@ def main(host: str = "127.0.0.1", port: int = 7331):
               f"from the network. There is no authentication.", file=sys.stderr)
     server = HTTPServer((host, port), DashboardHandler)
     print(f"[exptrack] Dashboard running at http://{host}:{port}", file=sys.stderr)
-    print(f"[exptrack] Press Ctrl+C to stop", file=sys.stderr)
+    print("[exptrack] Press Ctrl+C to stop", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

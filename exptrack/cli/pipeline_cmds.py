@@ -6,14 +6,15 @@ run-start, run-finish, run-fail, log-metric, log-artifact
 All output to stderr so stdout can be captured cleanly by eval $(...).
 """
 from __future__ import annotations
+
 import json
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..core import get_db
 from .. import config as cfg
+from ..core import get_db
 
 
 def _coerce_str(v: str):
@@ -545,7 +546,7 @@ def cmd_create(args):
                         (exp_id, k, json.dumps(v))
                     )
         except json.JSONDecodeError:
-            print(f"[exptrack] Warning: could not parse --params as JSON", file=sys.stderr)
+            print("[exptrack] Warning: could not parse --params as JSON", file=sys.stderr)
 
     # Parse and insert metrics
     if args.metrics:
@@ -562,7 +563,7 @@ def cmd_create(args):
                         (exp_id, k, num_val, now, "manual")
                     )
         except json.JSONDecodeError:
-            print(f"[exptrack] Warning: could not parse --metrics as JSON", file=sys.stderr)
+            print("[exptrack] Warning: could not parse --metrics as JSON", file=sys.stderr)
 
     conn.commit()
     print(f"[exptrack] Created experiment: {name} ({exp_id})", file=sys.stderr)
