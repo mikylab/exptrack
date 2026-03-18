@@ -744,14 +744,14 @@ def api_log_metric(conn, exp_id: str, body: dict) -> dict:
 
     source = body.get("source", "manual")
 
-    # Never allow manual metrics to overwrite auto-captured ones
+    # Never allow a manual metric to overwrite an auto-captured point at the same step
     if source == "manual":
         auto_row = conn.execute(
-            "SELECT 1 FROM metrics WHERE exp_id=? AND key=? AND (source IS NULL OR source != 'manual') LIMIT 1",
-            (exp["id"], key)
+            "SELECT 1 FROM metrics WHERE exp_id=? AND key=? AND step=? AND (source IS NULL OR source != 'manual') LIMIT 1",
+            (exp["id"], key, step)
         ).fetchone()
         if auto_row:
-            return {"error": f"metric '{key}' already has auto-captured data — choose a different key"}
+            return {"error": f"metric '{key}' already has an auto-captured value at step {step}"}
 
     conn.execute(
         "INSERT INTO metrics (exp_id, key, value, step, ts, source) VALUES (?,?,?,?,?,?)",
