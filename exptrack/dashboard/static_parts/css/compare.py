@@ -32,6 +32,7 @@ CSS_COMPARE = """
   .source-badge.auto { background: rgba(44,90,160,0.15); color: var(--blue); }
   .source-badge.manual { background: rgba(212,130,15,0.15); color: var(--tl-metric); }
   .source-badge.pipeline { background: rgba(63,185,80,0.15); color: var(--green); }
+  .source-badge.mixed { background: rgba(142,68,173,0.15); color: #8e44ad; }
   .reproduce-box { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 8px 0 12px; }
   .reproduce-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
   .reproduce-cmd { font-size: 13px; word-break: break-all; white-space: pre-wrap; display: block; }

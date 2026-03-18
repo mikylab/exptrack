@@ -113,11 +113,13 @@ async function refreshDetail(id) {
   function buildMetricRow(m, showFullKey) {
     const src = m.source || 'auto';
     const isManual = src === 'manual';
+    const isMixed = src === 'mixed';
     const keyColor = isManual ? 'var(--tl-metric)' : 'var(--green)';
     const delBtn = `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`;
     const editAttr = isManual ? ` class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(m.key)}',this)" title="Double-click to edit"` : '';
+    const showStats = !isManual;
     const displayKey = showFullKey ? abbrevMetric(m.key) : abbrevMetric(m.key.includes('/') ? m.key.split('/').slice(1).join('/') : m.key);
-    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="${esc(m.key)} — double-click to rename">${esc(displayKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${isManual ? '--' : (m.min?.toFixed(4) ?? '--')}</td><td>${isManual ? '--' : (m.max?.toFixed(4) ?? '--')}</td><td>${m.n}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
+    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="${esc(m.key)} — double-click to rename">${esc(displayKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${showStats ? (m.min?.toFixed(4) ?? '--') : '--'}</td><td>${showStats ? (m.max?.toFixed(4) ?? '--') : '--'}</td><td>${m.n}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
   }
   // Group metrics by prefix
   const metricGroups = {};

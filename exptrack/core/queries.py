@@ -244,13 +244,19 @@ def get_latest_metrics(conn, exp_id: str) -> dict[str, float]:
 def get_latest_metrics_with_source(conn, exp_id: str) -> dict[str, dict]:
     """Get the last value and source of each metric key for an experiment."""
     rows = conn.execute("""
-        SELECT key, value, COALESCE(source, 'auto') as source FROM metrics m WHERE exp_id=?
+        SELECT key, value, COALESCE(source, 'auto') as source,
+               (SELECT COUNT(DISTINCT COALESCE(source, 'auto')) FROM metrics m3
+                WHERE m3.exp_id=m.exp_id AND m3.key=m.key) as source_count
+        FROM metrics m WHERE exp_id=?
         AND COALESCE(step, 0) = (
             SELECT MAX(COALESCE(step, 0)) FROM metrics m2
             WHERE m2.exp_id=m.exp_id AND m2.key=m.key
         )
     """, (exp_id,)).fetchall()
-    return {r["key"]: {"value": r["value"], "source": r["source"]} for r in rows}
+    return {r["key"]: {
+        "value": r["value"],
+        "source": "mixed" if r["source_count"] > 1 else r["source"],
+    } for r in rows}
 
 
 def get_metrics_sparkline(conn, exp_id: str, max_points: int = 10) -> dict[str, list[float]]:
@@ -286,15 +292,22 @@ def get_metrics_summary(conn, exp_id: str) -> list[dict]:
                MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
                 AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v,
-               (SELECT COALESCE(source, 'auto') FROM metrics m3 WHERE m3.exp_id=metrics.exp_id
-                AND m3.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as source
+               COUNT(DISTINCT COALESCE(source, 'auto')) as source_count,
+               MIN(COALESCE(source, 'auto')) as first_source
         FROM metrics WHERE exp_id=? GROUP BY key ORDER BY key
     """, (exp_id,)).fetchall()
-    return [{
-        "key": m["key"], "last": m["last_v"],
-        "min": m["min_v"], "max": m["max_v"], "n": m["n"],
-        "source": m["source"] or "auto",
-    } for m in rows]
+    results = []
+    for m in rows:
+        if m["source_count"] > 1:
+            source = "mixed"
+        else:
+            source = m["first_source"] or "auto"
+        results.append({
+            "key": m["key"], "last": m["last_v"],
+            "min": m["min_v"], "max": m["max_v"], "n": m["n"],
+            "source": source,
+        })
+    return results
 
 
 def get_all_latest_metrics(conn, limit: int = 50) -> dict[str, dict[str, float]]:
