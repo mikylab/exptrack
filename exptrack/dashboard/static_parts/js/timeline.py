@@ -17,6 +17,7 @@ function switchDetailTab(tab, expId) {
     const el = document.getElementById('detail-tab-'+t);
     if (el) el.style.display = t === tab ? '' : 'none';
   });
+  if (tab === 'overview') renderOverviewChartPreview(_chartsMetricsData);
   if (tab === 'charts') loadChartsTab(expId);
   if (tab === 'timeline') loadTimeline(expId);
   if (tab === 'images') loadImages(expId);

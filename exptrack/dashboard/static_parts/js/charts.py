@@ -62,9 +62,12 @@ function createChart(canvas, key, points, colorIdx, scaleOpts) {
   });
 }
 
-function destroyAllCharts() {
-  Object.values(charts).forEach(c => c.destroy());
-  charts = {};
+function destroyTabCharts() {
+  for (const [k, c] of Object.entries(charts)) {
+    if (k === '_preview') continue;
+    c.destroy();
+    delete charts[k];
+  }
 }
 
 function getChartScaleOpts() {
@@ -103,7 +106,7 @@ function renderSingleChart(container, selectedKey, metricsData, scaleOpts) {
 // ── All charts view ──────────────────────────────────────────────────────────
 
 function renderAllCharts(container, metricsData, scaleOpts) {
-  destroyAllCharts();
+  destroyTabCharts();
   const grid = container.querySelector('.charts-all-grid');
   if (!grid) return;
   grid.innerHTML = '';
@@ -175,7 +178,7 @@ function buildChartsTabContent(metricsData, viewMode) {
 function initChartsTab(container, metricsData, viewMode) {
   _chartsMetricsData = metricsData;
   _chartsViewMode = viewMode;
-  destroyAllCharts();
+  destroyTabCharts();
 
   const metricKeys = Object.entries(metricsData)
     .filter(([k, pts]) => pts.length >= 1)
@@ -250,7 +253,7 @@ async function loadChartsTab(expId, viewMode) {
 
 function renderOverviewChartPreview(metricsData) {
   const container = document.getElementById('overview-chart-preview');
-  if (!container) return;
+  if (!container || !metricsData) return;
 
   const metricKeys = Object.entries(metricsData)
     .filter(([k, pts]) => pts.length >= 1)
