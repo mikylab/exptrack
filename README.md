@@ -7,7 +7,13 @@
 
 **Local-first experiment tracker for ML workflows. Zero dependencies. Zero code changes.**
 
-expTrack automatically captures parameters, metrics, git state, and code changes from your training scripts and notebooks -- without touching your code. It monkey-patches argparse and IPython hooks so tracking is invisible. Everything is stored locally in SQLite.
+expTrack automatically captures parameters, metrics, git state, and code changes from your training scripts and notebooks without touching your code. It monkey-patches argparse and IPython hooks so tracking is invisible. Everything is stored locally in SQLite.
+
+---
+## expTrack Dashboard View
+
+<img width="1393" height="705" alt="Screenshot 2026-03-18 at 11 14 06 AM" src="https://github.com/user-attachments/assets/7e41bf20-a428-40cf-a732-5e9a0cd8123f" />
+
 
 ---
 
