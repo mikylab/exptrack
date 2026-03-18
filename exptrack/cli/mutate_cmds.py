@@ -213,8 +213,20 @@ def _clean_reset(conn, dry_run: bool = False):
     n_artifacts = conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
     n_timeline = conn.execute("SELECT COUNT(*) FROM timeline").fetchone()[0]
 
+    # Count output files/dirs too
+    import shutil
+    n_output_items = 0
+    try:
+        root = cfg.project_root()
+        conf = cfg.load()
+        outputs_dir = root / conf.get("outputs_dir", "outputs")
+        if outputs_dir.is_dir():
+            n_output_items = sum(1 for _ in outputs_dir.iterdir())
+    except Exception:
+        pass
+
     total = n_exp + n_params + n_metrics + n_artifacts + n_timeline
-    if not total:
+    if not total and not n_output_items:
         print(dim("Database is already empty.")); return
 
     print(f"This will delete ALL data:")
@@ -223,9 +235,11 @@ def _clean_reset(conn, dry_run: bool = False):
     print(f"  metrics:     {n_metrics}")
     print(f"  artifacts:   {n_artifacts}")
     print(f"  timeline:    {n_timeline}")
+    if n_output_items:
+        print(f"  output dirs: {n_output_items}")
 
     if dry_run:
-        print(dim(f"Dry run: would delete {total} row(s) and VACUUM.")); return
+        print(dim(f"Dry run: would delete {total} row(s) + {n_output_items} output(s) and VACUUM.")); return
 
     if input(col("Delete everything? This cannot be undone. [y/N] ", R)).lower() != "y":
         return
@@ -244,21 +258,22 @@ def _clean_reset(conn, dry_run: bool = False):
             pass
     conn.commit()
 
-    # Also clean the outputs directory
+    # Clean outputs directory and notebook_history
     try:
-        import shutil
         root = cfg.project_root()
         conf = cfg.load()
-        outputs_dir = root / conf.get("outputs_dir", "outputs")
-        if outputs_dir.is_dir():
-            for child in outputs_dir.iterdir():
-                try:
-                    if child.is_dir():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink()
-                except Exception:
-                    pass
+        for dirname in (conf.get("outputs_dir", "outputs"),
+                        conf.get("notebook_history_dir", ".exptrack/notebook_history")):
+            target = root / dirname
+            if target.is_dir():
+                for child in target.iterdir():
+                    try:
+                        if child.is_dir():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink()
+                    except Exception:
+                        pass
     except Exception:
         pass
 

@@ -106,22 +106,36 @@ def _sweep_orphans(conn: sqlite3.Connection) -> int:
     """Silently delete rows in child tables whose exp_id has no experiment.
 
     Returns the total number of orphaned rows removed.
+    Uses SELECT COUNT checks first to avoid starting implicit transactions
+    with zero-row DELETEs (which would dirty pages after VACUUM).
     """
     total = 0
     for table in ("params", "metrics", "artifacts", "timeline"):
-        cur = conn.execute(
-            f"DELETE FROM {table} "
+        n = conn.execute(
+            f"SELECT COUNT(*) FROM {table} "
             f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
-        )
-        total += cur.rowcount
+        ).fetchone()[0]
+        if n:
+            conn.execute(
+                f"DELETE FROM {table} "
+                f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
+            )
+            total += n
     # cell_lineage: remove cells no longer referenced by any timeline row
-    cur = conn.execute(
-        "DELETE FROM cell_lineage "
+    n = conn.execute(
+        "SELECT COUNT(*) FROM cell_lineage "
         "WHERE cell_hash NOT IN ("
         "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
         ")"
-    )
-    total += cur.rowcount
+    ).fetchone()[0]
+    if n:
+        conn.execute(
+            "DELETE FROM cell_lineage "
+            "WHERE cell_hash NOT IN ("
+            "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
+            ")"
+        )
+        total += n
     if total:
         conn.commit()
     return total

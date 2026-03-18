@@ -1046,10 +1046,47 @@ def api_image_path(conn, exp_id: str, body: dict) -> dict:
 
 
 def api_clean_db(conn) -> dict:
-    """Remove orphaned rows from all child tables."""
+    """Remove orphaned rows from all child tables and orphaned output dirs."""
+    import shutil
+
+    from ... import config as cfg
     from ...core.db import sweep_orphans
+
     counts = sweep_orphans(conn)
     total = sum(counts.values())
+
+    # Clean orphaned output directories
+    n_dirs = 0
+    try:
+        root = cfg.project_root()
+        conf = cfg.load()
+        outputs_dir = root / conf.get("outputs_dir", "outputs")
+        if outputs_dir.is_dir():
+            exp_dirs = set()
+            for r in conn.execute(
+                "SELECT output_dir FROM experiments WHERE output_dir IS NOT NULL"
+            ).fetchall():
+                exp_dirs.add(str(Path(r["output_dir"]).resolve()))
+            exp_names = {r[0] for r in conn.execute("SELECT name FROM experiments").fetchall()}
+            for child in outputs_dir.iterdir():
+                if not child.is_dir():
+                    # Remove orphan files too (e.g. leftover .exptrack_run.env)
+                    resolved = str(child.resolve())
+                    # Check if any experiment output_dir contains this file
+                    if not any(resolved.startswith(d) for d in exp_dirs):
+                        child.unlink()
+                        n_dirs += 1
+                    continue
+                resolved = str(child.resolve())
+                if resolved not in exp_dirs and child.name not in exp_names:
+                    shutil.rmtree(child)
+                    n_dirs += 1
+    except Exception:
+        pass
+    if n_dirs:
+        counts["output_dirs"] = n_dirs
+        total += n_dirs
+
     return {"ok": True, "removed": total, "details": counts}
 
 
