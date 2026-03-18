@@ -1,4 +1,4 @@
-"""CSS for metric chart tab: selector, scale controls, and chart container."""
+"""CSS for metric charts: toolbar, scale controls, chart containers, and overview preview."""
 
 CSS_CHARTS = """
   .charts-tab-content { padding: 4px 0; }
@@ -31,14 +31,34 @@ CSS_CHARTS = """
   .chart-scale-group input:focus {
     border-color: var(--blue); outline: none;
   }
-  .chart-scale-group .action-btn {
-    font-size: 13px; padding: 6px 14px;
-  }
+  .chart-scale-group .action-btn { font-size: 13px; padding: 6px 14px; }
   .chart-container { max-width: 700px; margin: 16px 0; }
   .chart-empty {
     padding: 40px 20px; text-align: center;
     color: var(--muted); font-size: 14px;
   }
+  .charts-all-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+    gap: 16px; margin-top: 14px;
+  }
+  .charts-all-grid .chart-container { max-width: 100%; margin: 0; }
+  .chart-view-toggle {
+    display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden;
+  }
+  .chart-view-toggle button {
+    font-family: inherit; font-size: 13px; padding: 6px 16px;
+    background: var(--code-bg); border: none; cursor: pointer;
+    color: var(--muted); border-right: 1px solid var(--border);
+  }
+  .chart-view-toggle button:last-child { border-right: none; }
+  .chart-view-toggle button:hover { background: var(--border); color: var(--fg); }
+  .chart-view-toggle button.active { background: var(--fg); color: var(--bg); }
+  .chart-preview-container { max-width: 100%; margin: 8px 0; }
+  .chart-preview-link {
+    display: inline-block; font-size: 12px; color: var(--blue);
+    cursor: pointer; margin-top: 4px;
+  }
+  .chart-preview-link:hover { text-decoration: underline; }
   .artifact-path-cell {
     font-size: 12px; color: var(--muted);
     max-width: 250px; overflow: hidden;

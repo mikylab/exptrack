@@ -10,10 +10,10 @@ function switchDetailTab(tab, expId) {
   currentDetailTab = tab;
   currentDetailExpId = expId;
   document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
-    const tabs = ['overview','charts','timeline','images','logs','compare-within'];
+    const tabs = ['overview','timeline','charts','images','logs','compare-within'];
     t.classList.toggle('active', tabs[i] === tab);
   });
-  ['overview','charts','timeline','images','logs','compare-within'].forEach(t => {
+  ['overview','timeline','charts','images','logs','compare-within'].forEach(t => {
     const el = document.getElementById('detail-tab-'+t);
     if (el) el.style.display = t === tab ? '' : 'none';
   });

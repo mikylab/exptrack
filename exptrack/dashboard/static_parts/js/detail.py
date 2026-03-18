@@ -325,9 +325,9 @@ async function refreshDetail(id) {
       <div class="tabs" id="detail-tabs">
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
         <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
+        <button class="tab" onclick="switchDetailTab('charts','${exp.id}')">Charts</button>
         <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
         <button class="tab" onclick="switchDetailTab('logs','${exp.id}')">Data Files</button>
-        <button class="tab" onclick="switchDetailTab('charts','${exp.id}')">Charts</button>
         <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
       </div>
 
@@ -357,6 +357,7 @@ async function refreshDetail(id) {
             <div class="section-body">
             ${metricRows || '<p style="color:var(--muted);font-size:13px">No metrics yet.</p>'}
             ${logResultForm}
+            <div id="overview-chart-preview" style="margin-top:12px"></div>
             </div>
             <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
             <div class="section-body">
@@ -372,8 +373,8 @@ async function refreshDetail(id) {
         </div>
       </div>
 
-      <div id="detail-tab-charts" style="display:none"></div>
       <div id="detail-tab-timeline" style="display:none"></div>
+      <div id="detail-tab-charts" style="display:none"></div>
       <div id="detail-tab-images" style="display:none"></div>
       <div id="detail-tab-logs" style="display:none"></div>
       <div id="detail-tab-compare-within" style="display:none"></div>
@@ -400,8 +401,9 @@ async function refreshDetail(id) {
     studyInputArea.appendChild(sWrapper);
   }
 
-  // Cache metrics data for Charts tab
+  // Cache metrics data for Charts tab and render overview preview
   _chartsMetricsData = metricsData;
+  renderOverviewChartPreview(metricsData);
 
   // Populate result type dropdown
   populateResultTypeDropdown(exp.id);
