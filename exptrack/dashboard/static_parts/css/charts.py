@@ -16,22 +16,32 @@ CSS_CHARTS = """
     border-radius: 4px; color: var(--fg); cursor: pointer;
   }
   .chart-toolbar select:hover { border-color: var(--fg); }
-  .chart-scale-group {
-    display: flex; gap: 8px; align-items: center;
-    margin-left: auto; flex-wrap: wrap;
+  .chart-scale-bar {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 8px 14px; margin-bottom: 14px;
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px;
   }
-  .chart-scale-group label {
+  .chart-scale-bar .scale-label {
+    font-size: 12px; color: var(--muted); font-weight: 500;
+    white-space: nowrap;
+  }
+  .chart-scale-pair {
+    display: inline-flex; gap: 6px; align-items: center; white-space: nowrap;
+  }
+  .chart-scale-pair label {
     font-size: 12px; color: var(--muted); font-weight: 400;
   }
-  .chart-scale-group input {
+  .chart-scale-pair input {
     font-family: inherit; font-size: 13px; width: 80px;
     padding: 5px 10px; background: var(--code-bg);
     border: 1px solid var(--border); border-radius: 4px; color: var(--fg);
   }
-  .chart-scale-group input:focus {
+  .chart-scale-pair input:focus {
     border-color: var(--blue); outline: none;
   }
-  .chart-scale-group .action-btn { font-size: 13px; padding: 6px 14px; }
+  .chart-scale-actions {
+    display: inline-flex; gap: 6px; align-items: center; margin-left: auto;
+  }
   .chart-container { max-width: 700px; margin: 16px 0; }
   .chart-empty {
     padding: 40px 20px; text-align: center;

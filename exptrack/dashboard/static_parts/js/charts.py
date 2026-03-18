@@ -102,7 +102,7 @@ function renderSingleChart(container, selectedKey, metricsData, scaleOpts) {
 
 // ── All charts view ──────────────────────────────────────────────────────────
 
-function renderAllCharts(container, metricsData) {
+function renderAllCharts(container, metricsData, scaleOpts) {
   destroyAllCharts();
   const grid = container.querySelector('.charts-all-grid');
   if (!grid) return;
@@ -116,7 +116,7 @@ function renderAllCharts(container, metricsData) {
     const canvas = document.createElement('canvas');
     div.appendChild(canvas);
     grid.appendChild(div);
-    charts['all_' + key] = createChart(canvas, key, points, colorIdx, null);
+    charts['all_' + key] = createChart(canvas, key, points, colorIdx, scaleOpts);
     colorIdx++;
   }
 }
@@ -136,26 +136,31 @@ function buildChartsTabContent(metricsData, viewMode) {
   const isSingle = viewMode === 'single';
 
   let html = '<div class="charts-tab-content">';
+
+  // Top bar: view toggle + metric selector (single only)
   html += '<div class="chart-toolbar">';
   html += '<div class="chart-view-toggle">'
     + '<button class="' + (isSingle ? 'active' : '') + '" id="chart-view-single">Single</button>'
     + '<button class="' + (!isSingle ? 'active' : '') + '" id="chart-view-all">Show All</button>'
     + '</div>';
-
   if (isSingle) {
     html += '<label for="chart-metric-select">Metric</label>'
-      + '<select id="chart-metric-select">' + options + '</select>'
-      + '<div class="chart-scale-group">'
-      +   '<label>Y min</label><input type="number" id="chart-y-min" placeholder="auto">'
-      +   '<label>Y max</label><input type="number" id="chart-y-max" placeholder="auto">'
-      +   '<label>X min</label><input type="number" id="chart-x-min" placeholder="auto">'
-      +   '<label>X max</label><input type="number" id="chart-x-max" placeholder="auto">'
-      +   '<button class="action-btn" id="chart-scale-apply">Apply</button>'
-      +   '<button class="action-btn" id="chart-scale-reset">Reset</button>'
-      + '</div>';
+      + '<select id="chart-metric-select">' + options + '</select>';
   }
-
   html += '</div>';
+
+  // Scale controls bar (both modes)
+  html += '<div class="chart-scale-bar">'
+    + '<span class="scale-label">Axis range</span>'
+    + '<div class="chart-scale-pair"><label>Y min</label><input type="number" id="chart-y-min" placeholder="auto"></div>'
+    + '<div class="chart-scale-pair"><label>Y max</label><input type="number" id="chart-y-max" placeholder="auto"></div>'
+    + '<div class="chart-scale-pair"><label>X min</label><input type="number" id="chart-x-min" placeholder="auto"></div>'
+    + '<div class="chart-scale-pair"><label>X max</label><input type="number" id="chart-x-max" placeholder="auto"></div>'
+    + '<div class="chart-scale-actions">'
+    +   '<button class="action-btn" id="chart-scale-apply">Apply</button>'
+    +   '<button class="action-btn" id="chart-scale-reset">Reset</button>'
+    + '</div>'
+    + '</div>';
 
   if (isSingle) {
     html += '<div class="chart-container"></div>';
@@ -183,8 +188,23 @@ function initChartsTab(container, metricsData, viewMode) {
   if (singleBtn) singleBtn.addEventListener('click', () => loadChartsTab(currentDetailId, 'single'));
   if (allBtn) allBtn.addEventListener('click', () => loadChartsTab(currentDetailId, 'all'));
 
+  // Scale controls (shared by both modes)
+  const applyBtn = container.querySelector('#chart-scale-apply');
+  const resetBtn = container.querySelector('#chart-scale-reset');
+
   if (viewMode === 'all') {
-    renderAllCharts(container, metricsData);
+    renderAllCharts(container, metricsData, null);
+    if (applyBtn) {
+      applyBtn.addEventListener('click', () => {
+        renderAllCharts(container, metricsData, getChartScaleOpts());
+      });
+    }
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        resetChartScaleInputs();
+        renderAllCharts(container, metricsData, null);
+      });
+    }
     return;
   }
 
@@ -196,14 +216,12 @@ function initChartsTab(container, metricsData, viewMode) {
     renderSingleChart(container, sel.value, metricsData, getChartScaleOpts());
   });
 
-  const applyBtn = container.querySelector('#chart-scale-apply');
   if (applyBtn) {
     applyBtn.addEventListener('click', () => {
       renderSingleChart(container, sel.value, metricsData, getChartScaleOpts());
     });
   }
 
-  const resetBtn = container.querySelector('#chart-scale-reset');
   if (resetBtn) {
     resetBtn.addEventListener('click', () => {
       resetChartScaleInputs();
