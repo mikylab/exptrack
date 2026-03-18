@@ -201,10 +201,12 @@ function initChartsTab(container, metricsData, viewMode) {
     const ptsEl = document.getElementById('chart-max-points');
     const newMax = ptsEl ? parseInt(ptsEl.value, 10) : _chartsMaxPoints;
     if (newMax && newMax !== _chartsMaxPoints) {
+      // Max points changed — re-fetch from server with new limit
       _chartsMaxPoints = Math.max(10, Math.min(50000, newMax));
-      loadChartsTab(currentDetailId, _chartsViewMode, true);
+      loadChartsTab(currentDetailId, _chartsViewMode);
       return;
     }
+    // Only scale changed — just re-render
     if (viewMode === 'all') {
       renderAllCharts(container, metricsData, getChartScaleOpts());
     } else {
@@ -215,9 +217,8 @@ function initChartsTab(container, metricsData, viewMode) {
 
   function handleReset() {
     resetChartScaleInputs();
-    const ptsEl = document.getElementById('chart-max-points');
-    if (ptsEl) { ptsEl.value = 500; _chartsMaxPoints = 500; }
-    loadChartsTab(currentDetailId, _chartsViewMode, true);
+    _chartsMaxPoints = 500;
+    loadChartsTab(currentDetailId, _chartsViewMode);
   }
 
   if (applyBtn) applyBtn.addEventListener('click', handleApply);
@@ -239,16 +240,13 @@ function initChartsTab(container, metricsData, viewMode) {
   renderSingleChart(container, metricKeys[0], metricsData, null);
 }
 
-async function loadChartsTab(expId, viewMode, forceRefetch) {
+async function loadChartsTab(expId, viewMode) {
   const container = document.getElementById('detail-tab-charts');
   if (!container) return;
 
   const mode = viewMode || _chartsViewMode || 'single';
-  let metricsData = _chartsMetricsData;
-  if (!metricsData || forceRefetch) {
-    metricsData = await api('/api/metrics/' + expId + '?max_points=' + _chartsMaxPoints);
-    _chartsMetricsData = metricsData;
-  }
+  const metricsData = await api('/api/metrics/' + expId + '?max_points=' + _chartsMaxPoints);
+  _chartsMetricsData = metricsData;
 
   container.innerHTML = buildChartsTabContent(metricsData, mode);
   initChartsTab(container, metricsData, mode);

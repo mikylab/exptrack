@@ -283,6 +283,15 @@ class Experiment:
 
     # ── Metrics ───────────────────────────────────────────────────────────────
 
+    def _should_store_metric(self, step: int | None) -> bool:
+        """Check if this metric point should be stored based on thinning config."""
+        if step is None:
+            return True
+        keep_every = cfg.load().get("metric_keep_every", 1)
+        if keep_every <= 1:
+            return True
+        return step % keep_every == 0
+
     def log_metric(self, key: str, value: float, step: int | None = None):
         if self._finished:
             print(f"[exptrack] warning: logging metric '{key}' after experiment finished",
@@ -291,6 +300,8 @@ class Experiment:
         if not math.isfinite(fval):
             print(f"[exptrack] warning: metric '{key}' has non-finite value: {fval}",
                   file=sys.stderr)
+        if not self._should_store_metric(step):
+            return
         ts = datetime.now(timezone.utc).isoformat()
         with get_db() as conn:
             conn.execute(
@@ -304,6 +315,8 @@ class Experiment:
         if self._finished:
             print("[exptrack] warning: logging metrics after experiment finished",
                   file=sys.stderr)
+        if not self._should_store_metric(step):
+            return
         ts = datetime.now(timezone.utc).isoformat()
         for k, v in metrics.items():
             fv = float(v)
