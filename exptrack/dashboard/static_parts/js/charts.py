@@ -277,26 +277,7 @@ function renderOverviewChartPreview(metricsData) {
     const points = metricsData[key];
     if (!points || points.length < 1) return;
     const keyIdx = metricKeys.indexOf(key);
-    const color = CHART_COLORS[keyIdx % CHART_COLORS.length];
-    charts._preview = new Chart(canvas, {
-      type: 'line',
-      data: {
-        labels: points.map((p, i) => p.step !== null ? p.step : i),
-        datasets: [{
-          label: key, data: points.map(p => p.value),
-          borderColor: color, backgroundColor: color + '1a',
-          fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 5,
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { title: { display: false }, ticks: { font: { size: 10 } } },
-          y: { title: { display: false }, ticks: { font: { size: 10 } } },
-        },
-      }
-    });
+    charts._preview = createChart(canvas, key, points, keyIdx, null);
   }
 
   const sel = document.getElementById('overview-chart-select');

@@ -743,6 +743,16 @@ def api_log_metric(conn, exp_id: str, body: dict) -> dict:
         step = (row["max_step"] + 1) if row and row["max_step"] is not None else 0
 
     source = body.get("source", "manual")
+
+    # Never allow manual metrics to overwrite auto-captured ones
+    if source == "manual":
+        auto_row = conn.execute(
+            "SELECT 1 FROM metrics WHERE exp_id=? AND key=? AND (source IS NULL OR source != 'manual') LIMIT 1",
+            (exp["id"], key)
+        ).fetchone()
+        if auto_row:
+            return {"error": f"metric '{key}' already has auto-captured data — choose a different key"}
+
     conn.execute(
         "INSERT INTO metrics (exp_id, key, value, step, ts, source) VALUES (?,?,?,?,?,?)",
         (exp["id"], key, num_val, step, ts, source)
