@@ -125,6 +125,16 @@ def main():
         except Exception as e:
             print(f"[exptrack] warning: could not set up output capture: {e}", file=sys.stderr)
 
+    # Ensure sys.path[0] is the script's directory, matching the behavior of
+    # `python script.py`.  runpy.run_path does NOT do this automatically, so
+    # sibling imports (and any path-relative config loading) would break.
+    script_dir = str(script_path.parent)
+    original_path0 = sys.path[0] if sys.path else None
+    if sys.path and sys.path[0] != script_dir:
+        sys.path[0] = script_dir
+    elif not sys.path:
+        sys.path.insert(0, script_dir)
+
     # Run the script in its own namespace
     try:
         runpy.run_path(
@@ -150,6 +160,10 @@ def main():
         traceback.print_exc()
         exp.fail(str(e))
         sys.exit(1)
+    finally:
+        # Restore sys.path[0] so exptrack's own imports aren't affected
+        if original_path0 is not None and sys.path:
+            sys.path[0] = original_path0
 
 
 def _restore_streams(log_files):
