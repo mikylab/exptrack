@@ -57,6 +57,7 @@ def get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
 
     # Quick integrity check on first open
     try:
@@ -77,11 +78,15 @@ def get_db() -> sqlite3.Connection:
 def close_db() -> None:
     """Close the cached database connection for the current thread.
 
-    Checkpoints the WAL first to keep the WAL file from growing unbounded,
-    then closes the connection.  The next get_db() call will open a fresh one.
+    Sweeps orphaned rows, checkpoints the WAL, then closes the connection.
+    The next get_db() call will open a fresh one.
     """
     conn = getattr(_local, "conn", None)
     if conn is not None:
+        try:
+            _sweep_orphans(conn)
+        except Exception:
+            pass
         try:
             # TRUNCATE mode flushes all WAL pages to the DB and then
             # truncates the WAL file to zero bytes.  This is safe because
@@ -95,6 +100,54 @@ def close_db() -> None:
             pass
         _local.conn = None
         _local.db_path = None
+
+
+def _sweep_orphans(conn: sqlite3.Connection) -> int:
+    """Silently delete rows in child tables whose exp_id has no experiment.
+
+    Returns the total number of orphaned rows removed.
+    """
+    total = 0
+    for table in ("params", "metrics", "artifacts", "timeline"):
+        cur = conn.execute(
+            f"DELETE FROM {table} "
+            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
+        )
+        total += cur.rowcount
+    # cell_lineage: remove cells no longer referenced by any timeline row
+    cur = conn.execute(
+        "DELETE FROM cell_lineage "
+        "WHERE cell_hash NOT IN ("
+        "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
+        ")"
+    )
+    total += cur.rowcount
+    if total:
+        conn.commit()
+    return total
+
+
+def sweep_orphans(conn: sqlite3.Connection) -> dict:
+    """Public API for orphan cleanup. Returns counts per table."""
+    counts = {}
+    for table in ("params", "metrics", "artifacts", "timeline"):
+        cur = conn.execute(
+            f"DELETE FROM {table} "
+            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
+        )
+        if cur.rowcount:
+            counts[table] = cur.rowcount
+    cur = conn.execute(
+        "DELETE FROM cell_lineage "
+        "WHERE cell_hash NOT IN ("
+        "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
+        ")"
+    )
+    if cur.rowcount:
+        counts["cell_lineage"] = cur.rowcount
+    if counts:
+        conn.commit()
+    return counts
 
 
 def _ensure_schema(conn):

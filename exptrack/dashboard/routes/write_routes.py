@@ -1043,3 +1043,11 @@ def api_image_path(conn, exp_id: str, body: dict) -> dict:
     )
     conn.commit()
     return {"ok": True, "paths": paths}
+
+
+def api_clean_db(conn) -> dict:
+    """Remove orphaned rows from all child tables."""
+    from ...core.db import sweep_orphans
+    counts = sweep_orphans(conn)
+    total = sum(counts.values())
+    return {"ok": True, "removed": total, "details": counts}

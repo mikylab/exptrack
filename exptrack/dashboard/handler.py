@@ -149,6 +149,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/bulk-add-to-study":    lambda: write_routes.api_bulk_add_to_study(conn, body),
             "/api/result-types":         lambda: write_routes.api_manage_result_types(body),
             "/api/experiments/create":   lambda: write_routes.api_create_experiment(conn, body),
+            "/api/clean-db":             lambda: write_routes.api_clean_db(conn),
         }
         handler = global_dispatch.get(path)
         if handler:

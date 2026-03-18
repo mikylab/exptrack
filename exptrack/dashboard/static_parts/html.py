@@ -41,6 +41,7 @@ HTML_BODY = r"""</style>
       </select>
     </span>
     <button class="theme-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
+    <button class="help-btn" onclick="cleanDatabase()" title="Clean orphaned data from database">&#x2702; Clean DB</button>
     <button class="help-btn" onclick="toggleHelp()">? Docs</button>
   </div>
 </div>

@@ -570,6 +570,21 @@ function toggleHelp() {
   document.getElementById('help-panel').classList.toggle('visible');
 }
 
+async function cleanDatabase() {
+  if (!confirm('Clean orphaned data from the database?\\n\\nThis removes rows in params, metrics, artifacts, and timeline that are not linked to any experiment.')) return;
+  try {
+    const res = await postApi('/api/clean-db');
+    if (res.error) { alert('Error: ' + res.error); return; }
+    if (res.removed === 0) {
+      alert('Database is clean — no orphaned data found.');
+    } else {
+      const parts = Object.entries(res.details).map(([t,n]) => t + ': ' + n).join(', ');
+      alert('Removed ' + res.removed + ' orphaned row(s).\\n\\n' + parts);
+      loadExperiments();
+    }
+  } catch(e) { alert('Failed to clean database: ' + e.message); }
+}
+
 """
 
 # Owl mascot phrases and animation
