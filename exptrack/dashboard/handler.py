@@ -18,8 +18,6 @@ def get_db():
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    _request_count = 0  # class-level counter for periodic WAL maintenance
-
     def log_message(self, fmt, *args):
         pass  # suppress request logs
 
@@ -37,11 +35,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         qs = dict(urllib.parse.parse_qsl(parsed.query))
         conn = get_db()
 
-        # Periodically checkpoint the WAL so pages written by external CLI
-        # commands (run-start, run-finish, etc.) get folded back into the DB.
-        DashboardHandler._request_count += 1
-        if DashboardHandler._request_count % 10 == 0:
-            self._wal_checkpoint(conn)
+        # Checkpoint WAL on every API request.  External CLI commands
+        # (run-start, run-finish, clean --reset) cannot truncate the WAL
+        # while the dashboard holds a connection — only we can do it.
+        # wal_checkpoint(TRUNCATE) is a no-op (<1ms) when the WAL is empty.
+        self._wal_checkpoint(conn)
 
         if path == "/" or path == "/index.html":
             self._html()

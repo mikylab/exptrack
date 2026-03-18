@@ -547,6 +547,14 @@ def cmd_storage(args):
     """Show data storage breakdown for the exptrack database and outputs."""
     conn = get_db()
 
+    # Always try to checkpoint WAL before reporting sizes so the numbers
+    # reflect the real state.  TRUNCATE may fail if another process (e.g.
+    # dashboard) holds a connection — that's fine, we'll show the WAL size.
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        pass
+
     if getattr(args, "checkpoint", False):
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         print(col("WAL checkpoint complete.", G))
