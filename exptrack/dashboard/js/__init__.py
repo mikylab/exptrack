@@ -6,6 +6,7 @@ This package provides convenient aliased access for testing and external use.
 
 Sections:
   - core: State variables, API helpers, dark mode, filter bar
+  - charts_tab: Metric chart selector, scale controls, Chart.js rendering
   - owl: Mascot animation and speech bubble
   - sidebar: Sidebar actions, bulk operations
   - table: Table rendering, sorting, filtering
@@ -22,6 +23,9 @@ Sections:
   - init: Initialization and event binding
 """
 
+from ..static_parts.js import (
+    JS_CHARTS as charts_tab,
+)
 from ..static_parts.js import (
     JS_COMPARE as compare,
 )
@@ -72,6 +76,7 @@ from ..static_parts.js import (
 )
 
 __all__ = [
+    "charts_tab",
     "compare",
     "core",
     "detail",

@@ -33,17 +33,6 @@ CSS_DETAIL = """
   .params-table, .metrics-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
   .params-table td, .metrics-table td { padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
   .params-table th, .metrics-table th { padding: 9px 14px; font-size: 13px; text-align: left; border-bottom: 2px solid var(--border); }
-  .chart-container { max-width: 550px; margin: 12px 0; }
-  .chart-selector { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-  .chart-selector select { font-family: inherit; font-size: 13px; padding: 4px 8px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; color: var(--fg); }
-  .chart-selector label { font-size: 12px; color: var(--muted); }
-  .chart-scale-controls { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
-  .chart-scale-controls label { font-size: 11px; color: var(--muted); }
-  .chart-scale-controls input { font-family: inherit; font-size: 12px; width: 70px; padding: 2px 6px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 3px; color: var(--fg); }
-  .chart-scale-controls button { font-family: inherit; font-size: 11px; padding: 2px 8px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 3px; cursor: pointer; color: var(--fg); }
-  .chart-scale-controls button:hover { background: var(--border); }
-  .artifact-path-cell { font-size: 12px; color: var(--muted); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .artifact-path-cell:hover { white-space: normal; word-break: break-all; }
   .summary-card { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; border-radius: 4px; margin-bottom: 20px; }
   .summary-card .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
   .summary-card .summary-item { text-align: center; }
