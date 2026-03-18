@@ -50,7 +50,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/experiment/"):
             self._json(read_routes.api_experiment(conn, path.split("/")[-1]))
         elif path.startswith("/api/metrics/"):
-            self._json(read_routes.api_metrics(conn, path.split("/")[-1]))
+            self._json(read_routes.api_metrics(conn, path.split("/")[-1], qs))
         elif path.startswith("/api/diff/"):
             self._json(read_routes.api_diff(conn, path.split("/")[-1]))
         elif path == "/api/compare":

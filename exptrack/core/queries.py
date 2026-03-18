@@ -314,7 +314,7 @@ def _downsample_points(points: list[dict], max_points: int = 1500) -> list[dict]
     return result
 
 
-def get_metrics_series(conn, exp_id: str, max_points: int = 1500) -> dict[str, list[dict]]:
+def get_metrics_series(conn, exp_id: str, max_points: int = 500) -> dict[str, list[dict]]:
     """Get metric points grouped by key, downsampled if over max_points."""
     rows = conn.execute("""
         SELECT key, value, step, ts FROM metrics

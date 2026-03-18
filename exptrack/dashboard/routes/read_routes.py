@@ -35,12 +35,18 @@ def api_experiment(conn, exp_id: str) -> dict:
     return result if result else {"error": "not found"}
 
 
-def api_metrics(conn, exp_id: str) -> dict:
+def api_metrics(conn, exp_id: str, qs: dict | None = None) -> dict:
     from ...core.queries import find_experiment
     exp = find_experiment(conn, exp_id)
     if not exp:
         return {"error": "not found"}
-    return get_metrics_series(conn, exp["id"])
+    max_points = 500
+    if qs and "max_points" in qs:
+        try:
+            max_points = max(10, min(50000, int(qs["max_points"])))
+        except (ValueError, TypeError):
+            pass
+    return get_metrics_series(conn, exp["id"], max_points=max_points)
 
 
 def api_diff(conn, exp_id: str) -> dict:

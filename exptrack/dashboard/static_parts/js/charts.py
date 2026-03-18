@@ -6,6 +6,7 @@ JS_CHARTS = r"""
 
 let _chartsMetricsData = null;
 let _chartsViewMode = 'single';
+let _chartsMaxPoints = 500;
 
 const CHART_COLORS = [
   '#2c5aa0', '#e07b39', '#2d8659', '#c0392b', '#8e44ad',
@@ -159,6 +160,7 @@ function buildChartsTabContent(metricsData, viewMode) {
     + '<div class="chart-scale-pair"><label>Y max</label><input type="number" id="chart-y-max" placeholder="auto"></div>'
     + '<div class="chart-scale-pair"><label>X min</label><input type="number" id="chart-x-min" placeholder="auto"></div>'
     + '<div class="chart-scale-pair"><label>X max</label><input type="number" id="chart-x-max" placeholder="auto"></div>'
+    + '<div class="chart-scale-pair"><label>Max pts</label><input type="number" id="chart-max-points" value="' + _chartsMaxPoints + '" min="10" max="50000" style="width:65px"></div>'
     + '<div class="chart-scale-actions">'
     +   '<button class="action-btn" id="chart-scale-apply">Apply</button>'
     +   '<button class="action-btn" id="chart-scale-reset">Reset</button>'
@@ -195,19 +197,34 @@ function initChartsTab(container, metricsData, viewMode) {
   const applyBtn = container.querySelector('#chart-scale-apply');
   const resetBtn = container.querySelector('#chart-scale-reset');
 
+  function handleApply() {
+    const ptsEl = document.getElementById('chart-max-points');
+    const newMax = ptsEl ? parseInt(ptsEl.value, 10) : _chartsMaxPoints;
+    if (newMax && newMax !== _chartsMaxPoints) {
+      _chartsMaxPoints = Math.max(10, Math.min(50000, newMax));
+      loadChartsTab(currentDetailId, _chartsViewMode, true);
+      return;
+    }
+    if (viewMode === 'all') {
+      renderAllCharts(container, metricsData, getChartScaleOpts());
+    } else {
+      const sel = container.querySelector('#chart-metric-select');
+      if (sel) renderSingleChart(container, sel.value, metricsData, getChartScaleOpts());
+    }
+  }
+
+  function handleReset() {
+    resetChartScaleInputs();
+    const ptsEl = document.getElementById('chart-max-points');
+    if (ptsEl) { ptsEl.value = 500; _chartsMaxPoints = 500; }
+    loadChartsTab(currentDetailId, _chartsViewMode, true);
+  }
+
+  if (applyBtn) applyBtn.addEventListener('click', handleApply);
+  if (resetBtn) resetBtn.addEventListener('click', handleReset);
+
   if (viewMode === 'all') {
     renderAllCharts(container, metricsData, null);
-    if (applyBtn) {
-      applyBtn.addEventListener('click', () => {
-        renderAllCharts(container, metricsData, getChartScaleOpts());
-      });
-    }
-    if (resetBtn) {
-      resetBtn.addEventListener('click', () => {
-        resetChartScaleInputs();
-        renderAllCharts(container, metricsData, null);
-      });
-    }
     return;
   }
 
@@ -219,30 +236,18 @@ function initChartsTab(container, metricsData, viewMode) {
     renderSingleChart(container, sel.value, metricsData, getChartScaleOpts());
   });
 
-  if (applyBtn) {
-    applyBtn.addEventListener('click', () => {
-      renderSingleChart(container, sel.value, metricsData, getChartScaleOpts());
-    });
-  }
-
-  if (resetBtn) {
-    resetBtn.addEventListener('click', () => {
-      resetChartScaleInputs();
-      renderSingleChart(container, sel.value, metricsData, null);
-    });
-  }
-
   renderSingleChart(container, metricKeys[0], metricsData, null);
 }
 
-async function loadChartsTab(expId, viewMode) {
+async function loadChartsTab(expId, viewMode, forceRefetch) {
   const container = document.getElementById('detail-tab-charts');
   if (!container) return;
 
   const mode = viewMode || _chartsViewMode || 'single';
   let metricsData = _chartsMetricsData;
-  if (!metricsData) {
-    metricsData = await api('/api/metrics/' + expId);
+  if (!metricsData || forceRefetch) {
+    metricsData = await api('/api/metrics/' + expId + '?max_points=' + _chartsMaxPoints);
+    _chartsMetricsData = metricsData;
   }
 
   container.innerHTML = buildChartsTabContent(metricsData, mode);
