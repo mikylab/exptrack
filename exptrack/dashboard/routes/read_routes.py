@@ -36,11 +36,13 @@ def api_experiment(conn, exp_id: str) -> dict:
 
 
 def api_metrics(conn, exp_id: str, qs: dict | None = None) -> dict:
+    from ...config import load
     from ...core.queries import find_experiment
     exp = find_experiment(conn, exp_id)
     if not exp:
         return {"error": "not found"}
-    max_points = 500
+    conf = load()
+    max_points = conf.get("metric_max_points", 500)
     if qs and "max_points" in qs:
         try:
             max_points = max(10, min(50000, int(qs["max_points"])))
@@ -109,6 +111,15 @@ def api_get_timezone() -> dict:
     from ...config import load
     conf = load()
     return {"timezone": conf.get("timezone", "")}
+
+
+def api_get_metric_settings() -> dict:
+    from ...config import load
+    conf = load()
+    return {
+        "metric_keep_every": conf.get("metric_keep_every", 1),
+        "metric_max_points": conf.get("metric_max_points", 500),
+    }
 
 
 def api_result_types() -> dict:

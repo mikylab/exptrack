@@ -552,6 +552,36 @@ async function loadTimezoneConfig() {
   if (sel) sel.value = currentTimezone;
 }
 
+async function loadMetricSettings() {
+  try {
+    const data = await api('/api/config/metrics');
+    _chartsMaxPoints = data.metric_max_points || 500;
+    const keepEl = document.getElementById('settings-keep-every');
+    const ptsEl = document.getElementById('settings-max-points');
+    if (keepEl) keepEl.value = data.metric_keep_every || 1;
+    if (ptsEl) ptsEl.value = data.metric_max_points || 500;
+  } catch(e) {}
+}
+
+async function saveMetricSettings() {
+  const keepEl = document.getElementById('settings-keep-every');
+  const ptsEl = document.getElementById('settings-max-points');
+  const keepEvery = keepEl ? parseInt(keepEl.value, 10) : 1;
+  const maxPoints = ptsEl ? parseInt(ptsEl.value, 10) : 500;
+  try {
+    const res = await postApi('/api/config/metrics', {
+      metric_keep_every: keepEvery,
+      metric_max_points: maxPoints
+    });
+    if (res.ok) {
+      _chartsMaxPoints = res.metric_max_points;
+      owlSay('Metric settings saved!');
+    } else {
+      alert(res.error || 'Failed to save');
+    }
+  } catch(e) { alert('Failed to save settings'); }
+}
+
 async function loadAllTags() {
   try {
     const data = await api('/api/all-tags');

@@ -160,7 +160,6 @@ function buildChartsTabContent(metricsData, viewMode) {
     + '<div class="chart-scale-pair"><label>Y max</label><input type="number" id="chart-y-max" placeholder="auto"></div>'
     + '<div class="chart-scale-pair"><label>X min</label><input type="number" id="chart-x-min" placeholder="auto"></div>'
     + '<div class="chart-scale-pair"><label>X max</label><input type="number" id="chart-x-max" placeholder="auto"></div>'
-    + '<div class="chart-scale-pair"><label>Max pts</label><input type="number" id="chart-max-points" value="' + _chartsMaxPoints + '" min="10" max="50000" style="width:65px"></div>'
     + '<div class="chart-scale-actions">'
     +   '<button class="action-btn" id="chart-scale-apply">Apply</button>'
     +   '<button class="action-btn" id="chart-scale-reset">Reset</button>'
@@ -198,15 +197,6 @@ function initChartsTab(container, metricsData, viewMode) {
   const resetBtn = container.querySelector('#chart-scale-reset');
 
   function handleApply() {
-    const ptsEl = document.getElementById('chart-max-points');
-    const newMax = ptsEl ? parseInt(ptsEl.value, 10) : _chartsMaxPoints;
-    if (newMax && newMax !== _chartsMaxPoints) {
-      // Max points changed — re-fetch from server with new limit
-      _chartsMaxPoints = Math.max(10, Math.min(50000, newMax));
-      loadChartsTab(currentDetailId, _chartsViewMode);
-      return;
-    }
-    // Only scale changed — just re-render
     if (viewMode === 'all') {
       renderAllCharts(container, metricsData, getChartScaleOpts());
     } else {
@@ -217,8 +207,12 @@ function initChartsTab(container, metricsData, viewMode) {
 
   function handleReset() {
     resetChartScaleInputs();
-    _chartsMaxPoints = 500;
-    loadChartsTab(currentDetailId, _chartsViewMode);
+    if (viewMode === 'all') {
+      renderAllCharts(container, metricsData, null);
+    } else {
+      const sel = container.querySelector('#chart-metric-select');
+      if (sel) renderSingleChart(container, sel.value, metricsData, null);
+    }
   }
 
   if (applyBtn) applyBtn.addEventListener('click', handleApply);

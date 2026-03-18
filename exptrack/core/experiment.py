@@ -75,6 +75,7 @@ class Experiment:
         tags: list[str] | None = None,
         notes: str = "",
         script: str = "",
+        thin_every: int | None = None,
         _caller_depth: int = 1,
     ):
         conf          = cfg.load()
@@ -83,6 +84,7 @@ class Experiment:
         self.tags     = list(tags or [])
         self.notes    = notes
         self.status   = "running"
+        self._thin_every = thin_every  # None = use config default
         self.duration_s: float | None = None
 
         # Detect caller script if not given
@@ -284,10 +286,16 @@ class Experiment:
     # ── Metrics ───────────────────────────────────────────────────────────────
 
     def _should_store_metric(self, step: int | None) -> bool:
-        """Check if this metric point should be stored based on thinning config."""
+        """Check if this metric point should be stored based on thinning setting.
+
+        Uses thin_every from __init__ if set, otherwise falls back to
+        metric_keep_every from project config (default: 1 = keep all).
+        """
         if step is None:
             return True
-        keep_every = cfg.load().get("metric_keep_every", 1)
+        keep_every = self._thin_every
+        if keep_every is None:
+            keep_every = cfg.load().get("metric_keep_every", 1)
         if keep_every <= 1:
             return True
         return step % keep_every == 0

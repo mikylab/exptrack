@@ -522,6 +522,29 @@ def api_set_timezone(body: dict) -> dict:
     return {"ok": True, "timezone": tz}
 
 
+def api_set_metric_settings(body: dict) -> dict:
+    from ...config import load, reload, save
+    conf = load()
+    keep_every = body.get("metric_keep_every")
+    max_points = body.get("metric_max_points")
+    if keep_every is not None:
+        try:
+            val = max(1, int(keep_every))
+            conf["metric_keep_every"] = val
+        except (ValueError, TypeError):
+            return {"error": "metric_keep_every must be a positive integer"}
+    if max_points is not None:
+        try:
+            val = max(10, min(50000, int(max_points)))
+            conf["metric_max_points"] = val
+        except (ValueError, TypeError):
+            return {"error": "metric_max_points must be an integer (10-50000)"}
+    save(conf)
+    reload()
+    return {"ok": True, "metric_keep_every": conf.get("metric_keep_every", 1),
+            "metric_max_points": conf.get("metric_max_points", 500)}
+
+
 # ── Study management ─────────────────────────────────────────────────────────
 
 def api_create_study(conn, body: dict) -> dict:

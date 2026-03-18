@@ -6,6 +6,7 @@ JS_INIT = r"""
 document.getElementById('exp-sidebar').classList.add('collapsed');
 syncHighlightCheckbox();
 loadTimezoneConfig();
+loadMetricSettings();
 renderTableHeader();
 loadAllTags();
 loadAllStudies();
