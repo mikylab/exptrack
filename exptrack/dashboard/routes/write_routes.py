@@ -737,10 +737,14 @@ def api_log_metric(conn, exp_id: str, body: dict) -> dict:
             return {"error": "step must be an integer"}
     else:
         row = conn.execute(
-            "SELECT MAX(COALESCE(step, -1)) as max_step FROM metrics WHERE exp_id=? AND key=?",
+            "SELECT MAX(COALESCE(step, -1)) as max_step, COUNT(*) as cnt FROM metrics WHERE exp_id=? AND key=?",
             (exp["id"], key)
         ).fetchone()
-        step = (row["max_step"] + 1) if row and row["max_step"] is not None else 0
+        max_step = row["max_step"] if row and row["max_step"] is not None else -1
+        cnt = row["cnt"] if row else 0
+        # Use whichever is higher: max explicit step + 1, or total point count
+        # This handles auto metrics with NULL steps (count-based) and explicit steps
+        step = max(max_step + 1, cnt)
 
     source = body.get("source", "manual")
 
@@ -751,7 +755,13 @@ def api_log_metric(conn, exp_id: str, body: dict) -> dict:
             (exp["id"], key, step)
         ).fetchone()
         if auto_row:
-            return {"error": f"metric '{key}' already has an auto-captured value at step {step}"}
+            # Find the next available step after all existing data
+            max_row = conn.execute(
+                "SELECT MAX(COALESCE(step, -1)) as ms, COUNT(*) as cnt FROM metrics WHERE exp_id=? AND key=?",
+                (exp["id"], key)
+            ).fetchone()
+            next_step = max(max_row["ms"] + 1, max_row["cnt"]) if max_row else step + 1
+            return {"error": f"step {step} already has auto data — try step {next_step} or higher"}
 
     conn.execute(
         "INSERT INTO metrics (exp_id, key, value, step, ts, source) VALUES (?,?,?,?,?,?)",

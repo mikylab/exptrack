@@ -40,6 +40,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
     metrics = conn.execute("""
         SELECT key, COALESCE(source, 'auto') as src,
                MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n,
+               MIN(step) as step_min, MAX(step) as step_max,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
                 AND m2.key=metrics.key AND COALESCE(m2.source, 'auto')=COALESCE(metrics.source, 'auto')
                 ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v
@@ -77,6 +78,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
             "key": m["key"], "last": m["last_v"],
             "min": m["min_v"], "max": m["max_v"], "n": m["n"],
             "source": m["src"],
+            "step_min": m["step_min"], "step_max": m["step_max"],
         } for m in metrics],
         "artifacts": [{"label": a["label"], "path": a["path"],
                        "timeline_seq": a["timeline_seq"]} for a in artifacts],
