@@ -12,6 +12,16 @@ from typing import Any
 
 from .db import resolve_git_diff
 
+
+def _safe_json(s):
+    """Parse a JSON string, returning the raw string if parsing fails."""
+    if not s:
+        return None
+    try:
+        return json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        return s
+
 # ── Experiment lookup ─────────────────────────────────────────────────────────
 
 def find_experiment(conn, exp_id_prefix: str, columns: str = "id") -> dict | None:
@@ -511,9 +521,9 @@ def get_timeline_events(conn, exp_id: str, event_type: str = "") -> list[dict]:
         "cell_hash": r["cell_hash"],
         "cell_pos": r["cell_pos"],
         "key": r["key"],
-        "value": json.loads(r["value"]) if r["value"] else None,
-        "prev_value": json.loads(r["prev_value"]) if r["prev_value"] else None,
-        "source_diff": json.loads(r["source_diff"]) if r["source_diff"] else None,
+        "value": _safe_json(r["value"]),
+        "prev_value": _safe_json(r["prev_value"]),
+        "source_diff": _safe_json(r["source_diff"]),
         "ts": r["ts"],
     } for r in rows]
 
