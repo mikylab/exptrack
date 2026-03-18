@@ -76,7 +76,11 @@ def main():
         p_rs.add_argument("--notes",      default="")
         known, unknown = p_rs.parse_known_args(sys.argv[2:])
         known.params = unknown
-        cmd_run_start(known)
+        try:
+            cmd_run_start(known)
+        finally:
+            from ..core.db import close_db
+            close_db()
         return
 
     p = argparse.ArgumentParser(
