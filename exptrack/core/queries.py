@@ -38,13 +38,12 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         (full_id,)
     ).fetchall()
     metrics = conn.execute("""
-        SELECT key,
+        SELECT key, COALESCE(source, 'auto') as src,
                MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
-                AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v,
-               COUNT(DISTINCT COALESCE(source, 'auto')) as source_count,
-               MIN(COALESCE(source, 'auto')) as first_source
-        FROM metrics WHERE exp_id=? GROUP BY key ORDER BY key
+                AND m2.key=metrics.key AND COALESCE(m2.source, 'auto')=COALESCE(metrics.source, 'auto')
+                ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v
+        FROM metrics WHERE exp_id=? GROUP BY key, COALESCE(source, 'auto') ORDER BY key, src
     """, (full_id,)).fetchall()
     artifacts = conn.execute(
         "SELECT label, path, created_at, timeline_seq FROM artifacts WHERE exp_id=?",
@@ -77,7 +76,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "metrics": [{
             "key": m["key"], "last": m["last_v"],
             "min": m["min_v"], "max": m["max_v"], "n": m["n"],
-            "source": "mixed" if m["source_count"] > 1 else (m["first_source"] or "auto"),
+            "source": m["src"],
         } for m in metrics],
         "artifacts": [{"label": a["label"], "path": a["path"],
                        "timeline_seq": a["timeline_seq"]} for a in artifacts],
@@ -286,26 +285,21 @@ def get_metrics_series(conn, exp_id: str) -> dict[str, list[dict]]:
 
 
 def get_metrics_summary(conn, exp_id: str) -> list[dict]:
-    """Get min/max/count/last for each metric key."""
+    """Get min/max/count/last for each metric key, split by source."""
     rows = conn.execute("""
-        SELECT key,
+        SELECT key, COALESCE(source, 'auto') as src,
                MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
-                AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v,
-               COUNT(DISTINCT COALESCE(source, 'auto')) as source_count,
-               MIN(COALESCE(source, 'auto')) as first_source
-        FROM metrics WHERE exp_id=? GROUP BY key ORDER BY key
+                AND m2.key=metrics.key AND COALESCE(m2.source, 'auto')=COALESCE(metrics.source, 'auto')
+                ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v
+        FROM metrics WHERE exp_id=? GROUP BY key, COALESCE(source, 'auto') ORDER BY key, src
     """, (exp_id,)).fetchall()
     results = []
     for m in rows:
-        if m["source_count"] > 1:
-            source = "mixed"
-        else:
-            source = m["first_source"] or "auto"
         results.append({
             "key": m["key"], "last": m["last_v"],
             "min": m["min_v"], "max": m["max_v"], "n": m["n"],
-            "source": source,
+            "source": m["src"],
         })
     return results
 
