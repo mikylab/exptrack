@@ -131,6 +131,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             handler = dispatch.get(action)
             if handler:
                 self._json(handler())
+                self._wal_checkpoint(conn)
                 return
 
         # Global mutations
@@ -152,8 +153,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         handler = global_dispatch.get(path)
         if handler:
             self._json(handler())
+            self._wal_checkpoint(conn)
         else:
             self.send_error(404)
+
+    # ── WAL maintenance ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _wal_checkpoint(conn):
+        """Flush WAL after writes. PASSIVE won't block readers."""
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except Exception:
+            pass
 
     # ── Response helpers ─────────────────────────────────────────────────────
 
