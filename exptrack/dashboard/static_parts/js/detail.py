@@ -116,11 +116,10 @@ async function refreshDetail(id) {
     const keyColor = isManual ? 'var(--tl-metric)' : 'var(--green)';
     const delBtn = `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`;
     const editAttr = isManual ? ` class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(m.key)}',this)" title="Double-click to edit"` : '';
-    const showStats = !isManual;
     const displayKey = showFullKey ? abbrevMetric(m.key) : abbrevMetric(m.key.includes('/') ? m.key.split('/').slice(1).join('/') : m.key);
     const sMin = m.step_min, sMax = m.step_max;
     const stepStr = sMin == null ? '--' : (sMin === sMax ? String(sMin) : sMin + '-' + sMax);
-    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="${esc(m.key)} — double-click to rename">${esc(displayKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${showStats ? (m.min?.toFixed(4) ?? '--') : '--'}</td><td>${showStats ? (m.max?.toFixed(4) ?? '--') : '--'}</td><td style="font-size:12px;color:var(--muted)">${stepStr}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
+    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="${esc(m.key)} — double-click to rename">${esc(displayKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td style="font-size:12px;color:var(--muted)">${stepStr}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
   }
   // Group metrics by prefix
   const metricGroups = {};
