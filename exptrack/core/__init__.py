@@ -9,6 +9,7 @@ from . import queries
 from .db import close_db, delete_experiment, finish_experiment, get_db, rename_output_folder
 from .experiment import Experiment
 from .git import git_info
+from .gpu import gpu_info
 from .naming import make_run_name, output_path
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "finish_experiment",
     "get_db",
     "git_info",
+    "gpu_info",
     "make_run_name",
     "output_path",
     "queries",

@@ -25,6 +25,7 @@ from .. import config as cfg
 from ..plugins import registry as plugins
 from .db import get_db, rename_output_folder, store_git_diff
 from .git import git_info
+from .gpu import gpu_info
 from .naming import make_run_name, output_path
 
 _VALID_STATUSES = {"running", "done", "failed"}
@@ -118,6 +119,14 @@ class Experiment:
         self.hostname   = socket.gethostname()
         self.python_ver = platform.python_version()
         self.id         = uuid.uuid4().hex[:12]
+
+        # Capture GPU/CUDA state so the experiment records device info
+        try:
+            ginfo_gpu = gpu_info()
+            if ginfo_gpu.get("gpu_count", 0) > 0:
+                self._params["_gpu"] = ginfo_gpu
+        except Exception:
+            pass  # never let GPU detection crash the user's script
         self._finished  = False
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.project    = conf.get("project", cfg.project_root().name)

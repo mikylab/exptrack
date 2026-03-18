@@ -146,6 +146,15 @@ def cmd_run_start(args):
     if slurm:
         params["_slurm"] = slurm
 
+    # Add GPU context if available
+    try:
+        from ..core.gpu import gpu_info
+        ginfo_gpu = gpu_info()
+        if ginfo_gpu.get("gpu_count", 0) > 0:
+            params["_gpu"] = ginfo_gpu
+    except Exception:
+        pass
+
     tags  = args.tags or []
     notes = args.notes or ""
     name  = args.name or ""
