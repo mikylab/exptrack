@@ -342,8 +342,9 @@ def _clean_orphans(conn, dry_run: bool = False):
     except Exception:
         pass
 
-    # VACUUM to reclaim space (especially WAL)
+    # VACUUM to reclaim space — checkpoint WAL first so VACUUM can shrink it
     try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("VACUUM")
     except Exception:
         pass
