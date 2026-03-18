@@ -12,6 +12,8 @@ if TYPE_CHECKING:
 # ── Argparse patch ────────────────────────────────────────────────────────────
 
 _patched = False
+_orig_parse = None
+_orig_known = None
 
 def patch_argparse(exp: Experiment):
     """
@@ -19,14 +21,17 @@ def patch_argparse(exp: Experiment):
     When the user's script calls either, params flow into exp automatically.
     After capture, the run name is refreshed to include real param values.
     """
-    global _patched
+    global _patched, _orig_parse, _orig_known
     if _patched:
         return
     _patched = True
 
     import argparse
-    _orig_parse = argparse.ArgumentParser.parse_args
-    _orig_known = argparse.ArgumentParser.parse_known_args
+    # Save originals only if not already saved (avoid capturing hooked versions)
+    if _orig_parse is None:
+        _orig_parse = argparse.ArgumentParser.parse_args
+    if _orig_known is None:
+        _orig_known = argparse.ArgumentParser.parse_known_args
 
     def _hooked_parse(self_ap, args=None, namespace=None):
         ns = _orig_parse(self_ap, args, namespace)

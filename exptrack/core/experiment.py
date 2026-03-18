@@ -236,6 +236,7 @@ class Experiment:
         if self._finished:
             print("[exptrack] warning: logging params after experiment finished",
                   file=sys.stderr)
+            return
         params = _redact_params(params)
         self._params.update(params)
         with get_db() as conn:
