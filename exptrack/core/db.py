@@ -83,7 +83,10 @@ def close_db() -> None:
     conn = getattr(_local, "conn", None)
     if conn is not None:
         try:
-            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            # TRUNCATE mode flushes all WAL pages to the DB and then
+            # truncates the WAL file to zero bytes.  This is safe because
+            # we're about to close the only connection on this thread.
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except Exception:
             pass
         try:
@@ -308,26 +311,20 @@ def delete_experiment(conn: sqlite3.Connection, exp_id: str,
     """
     if delete_files:
         _delete_experiment_files(conn, exp_id)
-    # Collect cell hashes before deleting timeline rows so we can clean up
-    # cell_lineage entries that are no longer referenced by any experiment.
-    cell_hashes = [r[0] for r in conn.execute(
-        "SELECT DISTINCT cell_hash FROM timeline WHERE exp_id=? AND cell_hash IS NOT NULL",
-        (exp_id,)
-    ).fetchall()]
     for table in ("metrics", "params", "artifacts", "timeline"):
         conn.execute(f"DELETE FROM {table} WHERE exp_id=?", (exp_id,))
     conn.execute("DELETE FROM experiments WHERE id=?", (exp_id,))
-    # Remove cell_lineage rows no longer referenced by any remaining timeline
-    if cell_hashes:
-        placeholders = ",".join("?" * len(cell_hashes))
-        conn.execute(f"""
-            DELETE FROM cell_lineage
-            WHERE cell_hash IN ({placeholders})
-              AND cell_hash NOT IN (
-                  SELECT DISTINCT cell_hash FROM timeline
-                  WHERE cell_hash IS NOT NULL
-              )
-        """, cell_hashes)
+    # Remove cell_lineage rows no longer referenced by any remaining timeline.
+    # Always do the general check (not just for this experiment's hashes),
+    # because cell_lineage is content-addressed and may have entries that
+    # were never linked to any timeline row.
+    conn.execute("""
+        DELETE FROM cell_lineage
+        WHERE cell_hash NOT IN (
+            SELECT DISTINCT cell_hash FROM timeline
+            WHERE cell_hash IS NOT NULL
+        )
+    """)
 
 
 def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str):

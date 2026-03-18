@@ -392,7 +392,12 @@ def main():
         "clean":        cmd_clean,
         "ui":           cmd_ui,
     }
-    dispatch[args.cmd](args)
+    try:
+        dispatch[args.cmd](args)
+    finally:
+        # Checkpoint WAL and close the DB so the WAL file doesn't bloat
+        from .core.db import close_db
+        close_db()
 
 
 if __name__ == "__main__":
