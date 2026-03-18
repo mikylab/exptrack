@@ -10,7 +10,14 @@ import sys
 from datetime import datetime, timezone
 
 from ..core import delete_experiment, get_db
+from .. import config as cfg
 from .formatting import G, R, Y, col, dim
+
+
+def _fmt_bytes(b):
+    if b < 1024: return f"{b} B"
+    if b < 1024 * 1024: return f"{b / 1024:.1f} KB"
+    return f"{b / (1024 * 1024):.1f} MB"
 
 
 def cmd_tag(args):
@@ -237,12 +244,33 @@ def _clean_reset(conn, dry_run: bool = False):
             pass
     conn.commit()
 
+    # Also clean the outputs directory
+    try:
+        import shutil
+        root = cfg.project_root()
+        conf = cfg.load()
+        outputs_dir = root / conf.get("outputs_dir", "outputs")
+        if outputs_dir.is_dir():
+            for child in outputs_dir.iterdir():
+                try:
+                    if child.is_dir():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # VACUUM to reclaim all space
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("VACUUM")
-    except Exception:
-        pass
+    except Exception as e:
+        # VACUUM fails if another process (e.g. dashboard) has the DB open
+        print(dim(f"Note: could not VACUUM ({e}). "
+                  "Close other connections and run `exptrack storage --checkpoint`."),
+              file=sys.stderr)
 
     print(col("Database reset to empty state.", G))
 
@@ -287,7 +315,6 @@ def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = Fa
 
 def _clean_orphans(conn, dry_run: bool = False):
     """Purge DB rows and files not linked to any existing experiment."""
-    from .. import config as cfg
 
     orphan_tables = ("params", "metrics", "artifacts", "timeline")
     total = 0
@@ -349,11 +376,45 @@ def _clean_orphans(conn, dry_run: bool = False):
     except Exception:
         pass
 
+    # outputs: directories not linked to any existing experiment
+    import shutil
+    orphan_dirs = []
+    try:
+        root = cfg.project_root()
+        conf = cfg.load()
+        outputs_dir = root / conf.get("outputs_dir", "outputs")
+        if outputs_dir.is_dir():
+            # Collect output_dir values from all experiments
+            exp_dirs = set()
+            for r in conn.execute("SELECT output_dir FROM experiments WHERE output_dir IS NOT NULL").fetchall():
+                exp_dirs.add(str(Path(r["output_dir"]).resolve()))
+            # Also collect experiment names for name-based matching
+            exp_names = {r[0] for r in conn.execute("SELECT name FROM experiments").fetchall()}
+            for child in outputs_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                resolved = str(child.resolve())
+                if resolved not in exp_dirs and child.name not in exp_names:
+                    orphan_dirs.append(child)
+            if orphan_dirs:
+                dir_size = sum(
+                    f.stat().st_size for d in orphan_dirs
+                    for f in d.rglob("*") if f.is_file()
+                )
+                print(f"  outputs: {len(orphan_dirs)} orphaned dir(s) "
+                      f"({_fmt_bytes(dir_size)})", file=sys.stderr)
+                total += len(orphan_dirs)
+    except Exception:
+        pass
+
     if not total:
         print(dim("No orphaned data found."), file=sys.stderr)
         return
 
     if dry_run:
+        if orphan_dirs:
+            for d in orphan_dirs:
+                print(f"    {d.name}/", file=sys.stderr)
         print(dim(f"Dry run: would purge {total} orphaned item(s)."), file=sys.stderr)
         return
 
@@ -381,6 +442,11 @@ def _clean_orphans(conn, dry_run: bool = False):
             fp.unlink()
         except Exception:
             pass
+    for d in orphan_dirs:
+        try:
+            shutil.rmtree(d)
+        except Exception:
+            pass
     # Clean up empty notebook_history dirs
     try:
         root = cfg.project_root()
@@ -401,7 +467,8 @@ def _clean_orphans(conn, dry_run: bool = False):
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("VACUUM")
     except Exception:
-        pass
+        print(dim("Note: could not VACUUM (another connection may be open)."),
+              file=sys.stderr)
 
     print(col(f"Purged {total} orphaned item(s).", G), file=sys.stderr)
 

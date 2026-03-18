@@ -1065,7 +1065,11 @@ def api_vacuum_db(conn) -> dict:
 
 def api_reset_db(conn) -> dict:
     """Delete ALL experiments and data, then VACUUM."""
+    import shutil
+
+    from ... import config as cfg
     from ...core.db import delete_experiment
+
     rows = conn.execute("SELECT id FROM experiments").fetchall()
     n_exp = len(rows)
     for r in rows:
@@ -1078,6 +1082,22 @@ def api_reset_db(conn) -> dict:
         except Exception:
             pass
     conn.commit()
+    # Clean outputs directory
+    try:
+        root = cfg.project_root()
+        conf = cfg.load()
+        outputs_dir = root / conf.get("outputs_dir", "outputs")
+        if outputs_dir.is_dir():
+            for child in outputs_dir.iterdir():
+                try:
+                    if child.is_dir():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("VACUUM")
