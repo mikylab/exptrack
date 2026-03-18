@@ -152,7 +152,7 @@ async function refreshDetail(id) {
     const viewBtn = (isLog || isData)
       ? `<button onclick="viewLogFile('${esc(a.path)}','${esc(a.label)}')" title="View contents">view</button>`
       : '';
-    return `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`;
+    return `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td class="artifact-path-cell" title="${esc(a.path)}">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`;
   }).join('');
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
@@ -399,57 +399,117 @@ async function refreshDetail(id) {
     studyInputArea.appendChild(sWrapper);
   }
 
-  // Render metric charts (click a point to delete it)
+  // Render metric charts with selector (show one at a time) + scale controls
   Object.values(charts).forEach(c => c.destroy());
   charts = {};
   const container = document.getElementById('charts-container');
-  for (const [key, points] of Object.entries(metricsData)) {
-    if (points.length < 1) continue;
-    const div = document.createElement('div');
-    div.className = 'chart-container';
+  const metricKeys = Object.entries(metricsData).filter(([k, pts]) => pts.length >= 1).map(([k]) => k);
+
+  if (metricKeys.length > 0) {
+    // Chart selector row
+    const selectorDiv = document.createElement('div');
+    selectorDiv.className = 'chart-selector';
+    const selLabel = document.createElement('label');
+    selLabel.textContent = 'Chart:';
+    const sel = document.createElement('select');
+    sel.id = 'chart-metric-select';
+    metricKeys.forEach(k => {
+      const opt = document.createElement('option');
+      opt.value = k; opt.textContent = k;
+      sel.appendChild(opt);
+    });
+    selectorDiv.appendChild(selLabel);
+    selectorDiv.appendChild(sel);
+    container.appendChild(selectorDiv);
+
+    // Scale controls row
+    const scaleDiv = document.createElement('div');
+    scaleDiv.className = 'chart-scale-controls';
+    scaleDiv.innerHTML = '<label>Y min:</label><input type="number" id="chart-y-min" placeholder="auto">'
+      + '<label>Y max:</label><input type="number" id="chart-y-max" placeholder="auto">'
+      + '<label>X min:</label><input type="number" id="chart-x-min" placeholder="auto">'
+      + '<label>X max:</label><input type="number" id="chart-x-max" placeholder="auto">'
+      + '<button id="chart-scale-apply">Apply</button>'
+      + '<button id="chart-scale-reset">Reset</button>';
+    container.appendChild(scaleDiv);
+
+    // Chart canvas container
+    const chartDiv = document.createElement('div');
+    chartDiv.className = 'chart-container';
+    chartDiv.id = 'active-chart-container';
     const canvas = document.createElement('canvas');
-    div.appendChild(canvas);
-    container.appendChild(div);
-    const chartPoints = points.map((p,i) => ({ x: p.step !== null ? p.step : i, y: p.value, _step: p.step }));
-    charts[key] = new Chart(canvas, {
-      type: 'line',
-      data: {
-        labels: points.map((p,i) => p.step !== null ? p.step : i),
-        datasets: [{
-          label: key,
-          data: points.map(p => p.value),
-          borderColor: '#2c5aa0',
-          backgroundColor: 'rgba(44,90,160,0.1)',
-          fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 7,
-          pointHitRadius: 10,
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } },
-          tooltip: {
-            callbacks: {
-              afterLabel: () => 'Click to delete this point'
+    canvas.id = 'active-chart-canvas';
+    chartDiv.appendChild(canvas);
+    container.appendChild(chartDiv);
+
+    function renderSelectedChart(selectedKey, scaleOpts) {
+      if (charts._active) { charts._active.destroy(); delete charts._active; }
+      const points = metricsData[selectedKey];
+      if (!points || points.length < 1) return;
+      const cvs = document.getElementById('active-chart-canvas');
+      const yScale = { title: { display: true, text: selectedKey, font: { family: "'IBM Plex Mono'" } } };
+      const xScale = { title: { display: true, text: 'Step', font: { family: "'IBM Plex Mono'" } } };
+      if (scaleOpts) {
+        if (scaleOpts.yMin !== '') yScale.min = Number(scaleOpts.yMin);
+        if (scaleOpts.yMax !== '') yScale.max = Number(scaleOpts.yMax);
+        if (scaleOpts.xMin !== '') xScale.min = Number(scaleOpts.xMin);
+        if (scaleOpts.xMax !== '') xScale.max = Number(scaleOpts.xMax);
+      }
+      charts._active = new Chart(cvs, {
+        type: 'line',
+        data: {
+          labels: points.map((p,i) => p.step !== null ? p.step : i),
+          datasets: [{
+            label: selectedKey,
+            data: points.map(p => p.value),
+            borderColor: '#2c5aa0',
+            backgroundColor: 'rgba(44,90,160,0.1)',
+            fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 7,
+            pointHitRadius: 10,
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } },
+            tooltip: { callbacks: { afterLabel: () => 'Click to delete this point' } }
+          },
+          scales: { x: xScale, y: yScale },
+          onClick: (evt, elements) => {
+            if (!elements.length) return;
+            const idx = elements[0].index;
+            const pt = points[idx];
+            const step = pt.step;
+            const val = pt.value;
+            if (confirm('Delete point: ' + selectedKey + ' = ' + val + ' (step ' + (step ?? idx) + ')?')) {
+              deleteMetricPoint(currentDetailId, selectedKey, step ?? idx);
             }
           }
-        },
-        scales: {
-          x: { title: { display: true, text: 'Step', font: { family: "'IBM Plex Mono'" } } },
-          y: { title: { display: true, text: key, font: { family: "'IBM Plex Mono'" } } }
-        },
-        onClick: (evt, elements) => {
-          if (!elements.length) return;
-          const idx = elements[0].index;
-          const pt = points[idx];
-          const step = pt.step;
-          const val = pt.value;
-          if (confirm('Delete point: ' + key + ' = ' + val + ' (step ' + (step ?? idx) + ')?')) {
-            deleteMetricPoint(currentDetailId, key, step ?? idx);
-          }
         }
-      }
+      });
+    }
+
+    function getScaleOpts() {
+      return {
+        yMin: document.getElementById('chart-y-min').value,
+        yMax: document.getElementById('chart-y-max').value,
+        xMin: document.getElementById('chart-x-min').value,
+        xMax: document.getElementById('chart-x-max').value,
+      };
+    }
+
+    sel.addEventListener('change', () => renderSelectedChart(sel.value, getScaleOpts()));
+    document.getElementById('chart-scale-apply').addEventListener('click', () => renderSelectedChart(sel.value, getScaleOpts()));
+    document.getElementById('chart-scale-reset').addEventListener('click', () => {
+      document.getElementById('chart-y-min').value = '';
+      document.getElementById('chart-y-max').value = '';
+      document.getElementById('chart-x-min').value = '';
+      document.getElementById('chart-x-max').value = '';
+      renderSelectedChart(sel.value, null);
     });
+
+    // Render first metric by default
+    renderSelectedChart(metricKeys[0], null);
   }
 
   // Populate result type dropdown
