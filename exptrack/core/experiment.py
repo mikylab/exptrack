@@ -399,6 +399,11 @@ class Experiment:
                 WHERE id=?
             """, (status, datetime.now(timezone.utc).isoformat(), self.duration_s, self.name, self.id))
             conn.commit()
+        # Checkpoint and close the DB connection so the WAL doesn't grow
+        # unbounded across runs (especially in notebooks and scripts).
+        from .db import close_db
+        close_db()
+
         m, s = divmod(self.duration_s, 60)
         icon = "done" if status == "done" else "FAILED"
         print(f"[exptrack] {icon}: {self.name}  ({int(m)}m {s:.1f}s)", file=sys.stderr)

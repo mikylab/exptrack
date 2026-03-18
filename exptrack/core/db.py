@@ -77,13 +77,15 @@ def get_db() -> sqlite3.Connection:
 def close_db() -> None:
     """Close the cached database connection for the current thread.
 
-    Call this to release any lingering connections, e.g. from a notebook
-    cell: `from exptrack.core import close_db; close_db()`
-
-    The next get_db() call will open a fresh connection.
+    Checkpoints the WAL first to keep the WAL file from growing unbounded,
+    then closes the connection.  The next get_db() call will open a fresh one.
     """
     conn = getattr(_local, "conn", None)
     if conn is not None:
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except Exception:
+            pass
         try:
             conn.close()
         except Exception:
