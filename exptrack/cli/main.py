@@ -292,6 +292,10 @@ def main():
                          help="Delete experiments older than N days (e.g. 30d, 7d)")
     p_clean.add_argument("--all-statuses", action="store_true",
                          help="Include done experiments (default: only failed)")
+    p_clean.add_argument("--orphans", action="store_true",
+                         help="Purge orphaned rows (params, metrics, timeline, "
+                              "cell_lineage, code_baselines, notebook_history) "
+                              "not linked to any existing experiment")
     p_clean.add_argument("--dry-run", action="store_true", dest="dry_run",
                          help="List what would be deleted without deleting")
 

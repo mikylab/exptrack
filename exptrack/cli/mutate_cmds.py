@@ -153,6 +153,11 @@ def cmd_clean(args):
     conn = get_db()
     dry_run = getattr(args, "dry_run", False)
 
+    # --orphans: purge rows not linked to any existing experiment
+    if getattr(args, "orphans", False):
+        _clean_orphans(conn, dry_run)
+        return
+
     # --baselines: wipe code_baselines table
     if getattr(args, "baselines", False):
         try:
@@ -224,6 +229,126 @@ def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = Fa
             delete_experiment(conn, r["id"])
         conn.commit()
         print(col(f"Cleaned {len(rows)} experiment(s).", G))
+
+
+def _clean_orphans(conn, dry_run: bool = False):
+    """Purge DB rows and files not linked to any existing experiment."""
+    from .. import config as cfg
+
+    orphan_tables = ("params", "metrics", "artifacts", "timeline")
+    total = 0
+    for table in orphan_tables:
+        n = conn.execute(
+            f"SELECT COUNT(*) FROM {table} "
+            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
+        ).fetchone()[0]
+        if n:
+            print(f"  {table}: {n} orphaned row(s)", file=sys.stderr)
+            total += n
+
+    # cell_lineage: cells not referenced by any timeline row
+    n_cells = conn.execute(
+        "SELECT COUNT(*) FROM cell_lineage "
+        "WHERE cell_hash NOT IN ("
+        "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
+        ")"
+    ).fetchone()[0]
+    if n_cells:
+        print(f"  cell_lineage: {n_cells} unreferenced cell(s)", file=sys.stderr)
+        total += n_cells
+
+    # code_baselines: check if any exist
+    try:
+        n_baselines = conn.execute("SELECT COUNT(*) FROM code_baselines").fetchone()[0]
+    except Exception:
+        n_baselines = 0
+    # Only count as orphans if no experiments exist at all
+    exp_count = conn.execute("SELECT COUNT(*) FROM experiments").fetchone()[0]
+    if n_baselines and exp_count == 0:
+        print(f"  code_baselines: {n_baselines} row(s) (no experiments remain)",
+              file=sys.stderr)
+        total += n_baselines
+    else:
+        n_baselines = 0  # don't delete if experiments still exist
+
+    # notebook_history: snapshots referencing non-existent experiments
+    n_snaps = 0
+    snap_files = []
+    try:
+        root = cfg.project_root()
+        hist_dir = root / cfg.load().get("notebook_history_dir",
+                                          ".exptrack/notebook_history")
+        if hist_dir.is_dir():
+            exp_ids = {r[0] for r in conn.execute("SELECT id FROM experiments").fetchall()}
+            for fp in hist_dir.rglob("*.json"):
+                try:
+                    snap = json.loads(fp.read_text())
+                    if snap.get("exp_id") and snap["exp_id"] not in exp_ids:
+                        snap_files.append(fp)
+                        n_snaps += 1
+                except Exception:
+                    continue
+            if n_snaps:
+                print(f"  notebook_history: {n_snaps} orphaned snapshot(s)",
+                      file=sys.stderr)
+                total += n_snaps
+    except Exception:
+        pass
+
+    if not total:
+        print(dim("No orphaned data found."), file=sys.stderr)
+        return
+
+    if dry_run:
+        print(dim(f"Dry run: would purge {total} orphaned item(s)."), file=sys.stderr)
+        return
+
+    if input(f"Purge {total} orphaned item(s)? [y/N] ").lower() != "y":
+        return
+
+    for table in orphan_tables:
+        conn.execute(
+            f"DELETE FROM {table} "
+            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
+        )
+    if n_cells:
+        conn.execute(
+            "DELETE FROM cell_lineage "
+            "WHERE cell_hash NOT IN ("
+            "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
+            ")"
+        )
+    if n_baselines:
+        conn.execute("DELETE FROM code_baselines")
+    conn.commit()
+
+    for fp in snap_files:
+        try:
+            fp.unlink()
+        except Exception:
+            pass
+    # Clean up empty notebook_history dirs
+    try:
+        root = cfg.project_root()
+        hist_dir = root / cfg.load().get("notebook_history_dir",
+                                          ".exptrack/notebook_history")
+        if hist_dir.is_dir():
+            for d in sorted(hist_dir.rglob("*"), reverse=True):
+                if d.is_dir():
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        pass
+    except Exception:
+        pass
+
+    # VACUUM to reclaim space (especially WAL)
+    try:
+        conn.execute("VACUUM")
+    except Exception:
+        pass
+
+    print(col(f"Purged {total} orphaned item(s).", G), file=sys.stderr)
 
 
 def cmd_finish(args):
