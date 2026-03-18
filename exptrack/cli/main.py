@@ -396,7 +396,7 @@ def main():
         dispatch[args.cmd](args)
     finally:
         # Checkpoint WAL and close the DB so the WAL file doesn't bloat
-        from .core.db import close_db
+        from ..core.db import close_db
         close_db()
 
 
