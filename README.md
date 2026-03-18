@@ -136,7 +136,9 @@ for epoch in range(epochs):
         exp.log_metrics({"loss": loss, "accuracy": acc}, step=epoch)
 ```
 
-The `globals().get()` pattern keeps your script portable -- it still runs with plain `python train.py` (metrics are just skipped). See [`examples/basic_script.py`](examples/basic_script.py) for a full example.
+The `globals().get()` pattern keeps your script portable -- it still runs with plain `python train.py` (metrics are just skipped). See [`examples/resnet_exptrack_run.py`](examples/resnet_exptrack_run.py) for a full ResNet example, or [`examples/resnet_python_api.py`](examples/resnet_python_api.py) for the same thing using the explicit Python API.
+
+> **Is `__exptrack__` namespace pollution?** No. It's injected via `runpy.run_path(init_globals=...)`, which creates a fresh, isolated namespace for your script. It doesn't touch `builtins`, `sys.modules`, or any other module's globals. The `__dunder__` naming convention signals it's framework-provided (like `__name__` or `__file__`), and it only exists while your script is running under `exptrack run`.
 
 ---
 
@@ -482,6 +484,8 @@ The [`examples/`](examples/) directory contains ready-to-run scripts. Install ex
 | Example | What it shows |
 |---------|---------------|
 | [`basic_script.py`](examples/basic_script.py) | Zero-friction tracking -- no exptrack imports, just wrap with `exptrack run` |
+| [`resnet_exptrack_run.py`](examples/resnet_exptrack_run.py) | ResNet training via `exptrack run` -- `log_metrics()` with multiple metrics per step |
+| [`resnet_python_api.py`](examples/resnet_python_api.py) | Same ResNet training via explicit Python API -- full lifecycle control |
 | [`manual_tracking.py`](examples/manual_tracking.py) | Explicit Python API -- `Experiment` context manager, params, metrics, tags |
 | [`notebook_example.py`](examples/notebook_example.py) | Notebook workflow via `exptrack.notebook` |
 | [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM pipeline with `eval $(exptrack run-start ...)` |

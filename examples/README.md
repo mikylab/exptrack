@@ -48,6 +48,23 @@ cp examples/notebook_example.py .
 python notebook_example.py
 ```
 
+### resnet_exptrack_run.py
+**`exptrack run` with metrics** — A ResNet training loop (simulated) that logs multiple metrics per epoch via the `__exptrack__` global. Shows the zero-import approach: the script works with both `exptrack run` and plain `python`.
+
+```bash
+cp examples/resnet_exptrack_run.py .
+exptrack run resnet_exptrack_run.py --lr 0.1 --epochs 90
+# Also works standalone: python resnet_exptrack_run.py --lr 0.1 --epochs 90
+```
+
+### resnet_python_api.py
+**Python API with metrics** — The same ResNet training, but using the explicit `Experiment` class. Shows `params=vars(args)`, `log_metrics()`, `log_metric()`, tagging, notes, and artifact saving.
+
+```bash
+cp examples/resnet_python_api.py .
+python resnet_python_api.py --lr 0.1 --epochs 90
+```
+
 ### pipeline_example.sh
 **Shell/SLURM pipeline** — Shows how to integrate exptrack into shell scripts and job schedulers using `run-start`, `log-metric`, `log-artifact`, and `run-finish`. Single-step example.
 
