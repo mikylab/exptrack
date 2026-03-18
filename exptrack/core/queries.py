@@ -262,18 +262,60 @@ def get_latest_metrics_with_source(conn, exp_id: str) -> dict[str, dict]:
 
 def get_metrics_sparkline(conn, exp_id: str, max_points: int = 10) -> dict[str, list[float]]:
     """Get last N values per metric key for sparkline rendering."""
-    rows = conn.execute("""
-        SELECT key, value FROM metrics WHERE exp_id=?
-        ORDER BY key, COALESCE(step, 0)
-    """, (exp_id,)).fetchall()
+    # Get distinct keys first, then fetch only the last N points per key
+    keys = conn.execute(
+        "SELECT DISTINCT key FROM metrics WHERE exp_id=?", (exp_id,)
+    ).fetchall()
     by_key: dict[str, list] = {}
-    for r in rows:
-        by_key.setdefault(r["key"], []).append(r["value"])
-    return {k: v[-max_points:] for k, v in by_key.items()}
+    for k_row in keys:
+        key = k_row["key"]
+        rows = conn.execute("""
+            SELECT value FROM metrics WHERE exp_id=? AND key=?
+            ORDER BY COALESCE(step, 0) DESC LIMIT ?
+        """, (exp_id, key, max_points)).fetchall()
+        by_key[key] = [r["value"] for r in reversed(rows)]
+    return by_key
 
 
-def get_metrics_series(conn, exp_id: str) -> dict[str, list[dict]]:
-    """Get all metric points grouped by key."""
+def _downsample_points(points: list[dict], max_points: int = 1500) -> list[dict]:
+    """Downsample a metric series using min-max bucketing to preserve peaks/valleys.
+
+    Splits points into buckets and keeps the min and max value point from each,
+    plus always keeps the first and last points. This preserves the visual shape
+    of the data far better than simple every-Nth sampling.
+    """
+    n = len(points)
+    if n <= max_points:
+        return points
+
+    # Always keep first and last
+    result = [points[0]]
+    # Number of buckets (each contributes up to 2 points: min + max)
+    num_buckets = (max_points - 2) // 2
+    bucket_size = (n - 2) / num_buckets
+
+    for i in range(num_buckets):
+        start = int(1 + i * bucket_size)
+        end = int(1 + (i + 1) * bucket_size)
+        bucket = points[start:end]
+        if not bucket:
+            continue
+        min_pt = min(bucket, key=lambda p: p["value"])
+        max_pt = max(bucket, key=lambda p: p["value"])
+        # Add in step order so chart stays chronological
+        if min_pt is max_pt:
+            result.append(min_pt)
+        else:
+            pair = sorted([min_pt, max_pt],
+                          key=lambda p: p["step"] if p["step"] is not None else 0)
+            result.extend(pair)
+
+    result.append(points[-1])
+    return result
+
+
+def get_metrics_series(conn, exp_id: str, max_points: int = 1500) -> dict[str, list[dict]]:
+    """Get metric points grouped by key, downsampled if over max_points."""
     rows = conn.execute("""
         SELECT key, value, step, ts FROM metrics
         WHERE exp_id=? ORDER BY key, COALESCE(step, 0)
@@ -283,7 +325,7 @@ def get_metrics_series(conn, exp_id: str) -> dict[str, list[dict]]:
         by_key.setdefault(r["key"], []).append({
             "value": r["value"], "step": r["step"], "ts": r["ts"]
         })
-    return by_key
+    return {k: _downsample_points(v, max_points) for k, v in by_key.items()}
 
 
 def get_metrics_summary(conn, exp_id: str) -> list[dict]:
