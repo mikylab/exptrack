@@ -1051,3 +1051,63 @@ def api_clean_db(conn) -> dict:
     counts = sweep_orphans(conn)
     total = sum(counts.values())
     return {"ok": True, "removed": total, "details": counts}
+
+
+def api_vacuum_db(conn) -> dict:
+    """Checkpoint WAL and VACUUM the database to reclaim space."""
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True}
+
+
+def api_reset_db(conn) -> dict:
+    """Delete ALL experiments and data, then VACUUM."""
+    from ...core.db import delete_experiment
+    rows = conn.execute("SELECT id FROM experiments").fetchall()
+    n_exp = len(rows)
+    for r in rows:
+        delete_experiment(conn, r["id"])
+    # Clear remaining tables
+    for table in ("params", "metrics", "artifacts", "timeline",
+                  "cell_lineage", "code_baselines", "git_diffs"):
+        try:
+            conn.execute(f"DELETE FROM {table}")
+        except Exception:
+            pass
+    conn.commit()
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+    except Exception:
+        pass
+    return {"ok": True, "deleted_experiments": n_exp}
+
+
+def api_storage_info(conn) -> dict:
+    """Return database size and WAL size info."""
+    from ... import config as cfg
+    root = cfg.project_root()
+    conf = cfg.load()
+    db_path = root / conf.get("db", ".exptrack/experiments.db")
+    wal_path = Path(str(db_path) + "-wal")
+    db_size = db_path.stat().st_size if db_path.exists() else 0
+    wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+    n_exp = conn.execute("SELECT COUNT(*) FROM experiments").fetchone()[0]
+    n_params = conn.execute("SELECT COUNT(*) FROM params").fetchone()[0]
+    n_metrics = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
+    n_artifacts = conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
+    n_timeline = conn.execute("SELECT COUNT(*) FROM timeline").fetchone()[0]
+    return {
+        "ok": True,
+        "db_bytes": db_size,
+        "wal_bytes": wal_size,
+        "total_bytes": db_size + wal_size,
+        "experiments": n_exp,
+        "params": n_params,
+        "metrics": n_metrics,
+        "artifacts": n_artifacts,
+        "timeline": n_timeline,
+    }

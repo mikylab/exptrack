@@ -23,26 +23,43 @@ HTML_BODY = r"""</style>
 <div class="header">
   <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech" onclick="event.stopPropagation();dismissOwl()"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak('click')"><svg width="28" height="28" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
   <div class="header-actions">
-    <span class="tz-setting" title="Set timezone for displaying timestamps">
-      <select id="tz-select" onchange="setTimezone(this.value)">
-        <option value="">TZ: Browser local</option>
-        <option value="UTC">UTC</option>
-        <option value="America/New_York">US Eastern</option>
-        <option value="America/Chicago">US Central</option>
-        <option value="America/Denver">US Mountain</option>
-        <option value="America/Los_Angeles">US Pacific</option>
-        <option value="Europe/London">London</option>
-        <option value="Europe/Berlin">Berlin</option>
-        <option value="Europe/Paris">Paris</option>
-        <option value="Asia/Tokyo">Tokyo</option>
-        <option value="Asia/Shanghai">Shanghai</option>
-        <option value="Asia/Kolkata">India</option>
-        <option value="Australia/Sydney">Sydney</option>
-      </select>
-    </span>
     <button class="theme-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
-    <button class="help-btn" onclick="cleanDatabase()" title="Clean orphaned data from database">&#x2702; Clean DB</button>
     <button class="help-btn" onclick="toggleHelp()">? Docs</button>
+    <div class="settings-wrap">
+      <button class="settings-btn" onclick="toggleSettingsPanel()" title="Settings">&#9881;</button>
+      <div class="settings-panel" id="settings-panel">
+        <div class="settings-section">
+          <div class="settings-section-title">Display</div>
+          <div class="settings-row">
+            <label>Timezone</label>
+            <select id="tz-select" onchange="setTimezone(this.value)">
+              <option value="">Browser local</option>
+              <option value="UTC">UTC</option>
+              <option value="America/New_York">US Eastern</option>
+              <option value="America/Chicago">US Central</option>
+              <option value="America/Denver">US Mountain</option>
+              <option value="America/Los_Angeles">US Pacific</option>
+              <option value="Europe/London">London</option>
+              <option value="Europe/Berlin">Berlin</option>
+              <option value="Europe/Paris">Paris</option>
+              <option value="Asia/Tokyo">Tokyo</option>
+              <option value="Asia/Shanghai">Shanghai</option>
+              <option value="Asia/Kolkata">India</option>
+              <option value="Australia/Sydney">Sydney</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Database</div>
+          <div class="settings-storage" id="settings-storage"></div>
+          <div class="settings-actions">
+            <button onclick="settingsCleanDb()" title="Remove orphaned rows not linked to any experiment">&#x2702; Clean orphans</button>
+            <button onclick="settingsVacuumDb()" title="Checkpoint WAL and compact the database file">&#x1F5DC; Vacuum</button>
+            <button class="danger" onclick="settingsResetDb()" title="Delete ALL experiments and data">&#x26A0; Reset DB</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 

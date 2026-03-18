@@ -570,20 +570,85 @@ function toggleHelp() {
   document.getElementById('help-panel').classList.toggle('visible');
 }
 
-async function cleanDatabase() {
-  if (!confirm('Clean orphaned data from the database?\\n\\nThis removes rows in params, metrics, artifacts, and timeline that are not linked to any experiment.')) return;
+// ── Settings panel ─────────────────────────────────────────────────────────
+
+function toggleSettingsPanel() {
+  const panel = document.getElementById('settings-panel');
+  const isOpen = panel.classList.toggle('visible');
+  if (isOpen) loadStorageInfo();
+}
+
+// Close settings when clicking outside
+document.addEventListener('click', function(e) {
+  const panel = document.getElementById('settings-panel');
+  if (!panel) return;
+  const wrap = panel.closest('.settings-wrap');
+  if (panel.classList.contains('visible') && !wrap.contains(e.target)) {
+    panel.classList.remove('visible');
+  }
+});
+
+function fmtBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+  return (b/(1024*1024)).toFixed(1) + ' MB';
+}
+
+async function loadStorageInfo() {
+  const el = document.getElementById('settings-storage');
+  try {
+    const res = await postApi('/api/storage-info');
+    if (!res.ok) { el.textContent = 'Could not load'; return; }
+    el.innerHTML =
+      '<div class="storage-row"><span>DB file</span><span class="storage-val">' + fmtBytes(res.db_bytes) + '</span></div>' +
+      '<div class="storage-row"><span>WAL file</span><span class="storage-val">' + fmtBytes(res.wal_bytes) + '</span></div>' +
+      '<div class="storage-row"><span>Experiments</span><span class="storage-val">' + res.experiments + '</span></div>' +
+      '<div class="storage-row"><span>Params</span><span class="storage-val">' + res.params + '</span></div>' +
+      '<div class="storage-row"><span>Metrics</span><span class="storage-val">' + res.metrics + '</span></div>' +
+      '<div class="storage-row"><span>Artifacts</span><span class="storage-val">' + res.artifacts + '</span></div>' +
+      '<div class="storage-row"><span>Timeline</span><span class="storage-val">' + res.timeline + '</span></div>';
+  } catch(e) { el.textContent = 'Error loading storage info'; }
+}
+
+async function settingsCleanDb() {
   try {
     const res = await postApi('/api/clean-db');
     if (res.error) { alert('Error: ' + res.error); return; }
     if (res.removed === 0) {
-      alert('Database is clean — no orphaned data found.');
+      owlSay('Database is clean — no orphans!');
     } else {
       const parts = Object.entries(res.details).map(([t,n]) => t + ': ' + n).join(', ');
-      alert('Removed ' + res.removed + ' orphaned row(s).\\n\\n' + parts);
+      owlSay('Removed ' + res.removed + ' orphaned row(s)');
       loadExperiments();
     }
-  } catch(e) { alert('Failed to clean database: ' + e.message); }
+    loadStorageInfo();
+  } catch(e) { alert('Failed: ' + e.message); }
 }
+
+async function settingsVacuumDb() {
+  try {
+    const res = await postApi('/api/vacuum-db');
+    if (!res.ok) { alert('Error: ' + (res.error || 'vacuum failed')); return; }
+    owlSay('Database vacuumed — WAL cleared!');
+    loadStorageInfo();
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+async function settingsResetDb() {
+  if (!confirm('DELETE ALL EXPERIMENTS AND DATA?\\n\\nThis cannot be undone!')) return;
+  if (!confirm('Are you really sure? This will permanently erase everything.')) return;
+  try {
+    const res = await postApi('/api/reset-db');
+    if (!res.ok) { alert('Error: ' + (res.error || 'reset failed')); return; }
+    owlSay('Database reset — ' + res.deleted_experiments + ' experiment(s) removed');
+    loadExperiments();
+    loadStorageInfo();
+    showWelcome();
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+// Legacy alias (in case anything still references it)
+async function cleanDatabase() { settingsCleanDb(); }
 
 """
 

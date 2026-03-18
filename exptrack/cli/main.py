@@ -300,6 +300,8 @@ def main():
                          help="Purge orphaned rows (params, metrics, timeline, "
                               "cell_lineage, code_baselines, notebook_history) "
                               "not linked to any existing experiment")
+    p_clean.add_argument("--reset", action="store_true",
+                         help="Delete ALL experiments and data, reset DB to empty state")
     p_clean.add_argument("--dry-run", action="store_true", dest="dry_run",
                          help="List what would be deleted without deleting")
 

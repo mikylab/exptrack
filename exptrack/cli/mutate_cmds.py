@@ -153,6 +153,11 @@ def cmd_clean(args):
     conn = get_db()
     dry_run = getattr(args, "dry_run", False)
 
+    # --reset: delete EVERYTHING and VACUUM
+    if getattr(args, "reset", False):
+        _clean_reset(conn, dry_run)
+        return
+
     # --orphans: purge rows not linked to any existing experiment
     if getattr(args, "orphans", False):
         _clean_orphans(conn, dry_run)
@@ -191,6 +196,55 @@ def cmd_clean(args):
             delete_experiment(conn, r["id"])
         conn.commit()
         print(col(f"Cleaned {len(rows)} experiments (including output files).", G))
+
+
+def _clean_reset(conn, dry_run: bool = False):
+    """Delete ALL experiments and data, VACUUM to shrink DB to minimum."""
+    n_exp = conn.execute("SELECT COUNT(*) FROM experiments").fetchone()[0]
+    n_params = conn.execute("SELECT COUNT(*) FROM params").fetchone()[0]
+    n_metrics = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
+    n_artifacts = conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
+    n_timeline = conn.execute("SELECT COUNT(*) FROM timeline").fetchone()[0]
+
+    total = n_exp + n_params + n_metrics + n_artifacts + n_timeline
+    if not total:
+        print(dim("Database is already empty.")); return
+
+    print(f"This will delete ALL data:")
+    print(f"  experiments: {n_exp}")
+    print(f"  params:      {n_params}")
+    print(f"  metrics:     {n_metrics}")
+    print(f"  artifacts:   {n_artifacts}")
+    print(f"  timeline:    {n_timeline}")
+
+    if dry_run:
+        print(dim(f"Dry run: would delete {total} row(s) and VACUUM.")); return
+
+    if input(col("Delete everything? This cannot be undone. [y/N] ", R)).lower() != "y":
+        return
+
+    # Delete experiment files first
+    rows = conn.execute("SELECT id FROM experiments").fetchall()
+    for r in rows:
+        delete_experiment(conn, r["id"])
+
+    # Clear remaining tables
+    for table in ("params", "metrics", "artifacts", "timeline",
+                  "cell_lineage", "code_baselines", "git_diffs"):
+        try:
+            conn.execute(f"DELETE FROM {table}")
+        except Exception:
+            pass
+    conn.commit()
+
+    # VACUUM to reclaim all space
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+    except Exception:
+        pass
+
+    print(col("Database reset to empty state.", G))
 
 
 def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = False):

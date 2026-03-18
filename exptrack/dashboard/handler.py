@@ -158,6 +158,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/result-types":         lambda: write_routes.api_manage_result_types(body),
             "/api/experiments/create":   lambda: write_routes.api_create_experiment(conn, body),
             "/api/clean-db":             lambda: write_routes.api_clean_db(conn),
+            "/api/vacuum-db":            lambda: write_routes.api_vacuum_db(conn),
+            "/api/reset-db":             lambda: write_routes.api_reset_db(conn),
+            "/api/storage-info":         lambda: write_routes.api_storage_info(conn),
         }
         handler = global_dispatch.get(path)
         if handler:
