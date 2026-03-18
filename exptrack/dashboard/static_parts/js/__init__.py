@@ -5,6 +5,7 @@ Each module contains one JS section as a string constant.
 The get_all_js() function assembles them in the correct order.
 """
 
+from .charts import JS_CHARTS
 from .compare import JS_COMPARE
 from .core import JS_CORE
 from .detail import JS_DETAIL
@@ -25,12 +26,13 @@ from .timeline import JS_TIMELINE
 def get_all_js() -> str:
     """Concatenate all JavaScript sections in the correct order."""
     return (JS_CORE + JS_OWL + JS_SIDEBAR + JS_TABLE +
-            JS_EXPERIMENTS + JS_INLINE_EDIT + JS_DETAIL +
+            JS_EXPERIMENTS + JS_INLINE_EDIT + JS_DETAIL + JS_CHARTS +
             JS_COMPARE + JS_MUTATIONS + JS_TIMELINE +
             JS_IMAGE_COMPARE + JS_STUDIES + JS_STAGE + JS_MANUAL + JS_INIT)
 
 
 __all__ = [
+    "JS_CHARTS",
     "JS_COMPARE",
     "JS_CORE",
     "JS_DETAIL",

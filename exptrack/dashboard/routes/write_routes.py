@@ -522,6 +522,29 @@ def api_set_timezone(body: dict) -> dict:
     return {"ok": True, "timezone": tz}
 
 
+def api_set_metric_settings(body: dict) -> dict:
+    from ...config import load, reload, save
+    conf = load()
+    keep_every = body.get("metric_keep_every")
+    max_points = body.get("metric_max_points")
+    if keep_every is not None:
+        try:
+            val = max(1, int(keep_every))
+            conf["metric_keep_every"] = val
+        except (ValueError, TypeError):
+            return {"error": "metric_keep_every must be a positive integer"}
+    if max_points is not None:
+        try:
+            val = max(10, min(50000, int(max_points)))
+            conf["metric_max_points"] = val
+        except (ValueError, TypeError):
+            return {"error": "metric_max_points must be an integer (10-50000)"}
+    save(conf)
+    reload()
+    return {"ok": True, "metric_keep_every": conf.get("metric_keep_every", 1),
+            "metric_max_points": conf.get("metric_max_points", 500)}
+
+
 # ── Study management ─────────────────────────────────────────────────────────
 
 def api_create_study(conn, body: dict) -> dict:
@@ -737,12 +760,32 @@ def api_log_metric(conn, exp_id: str, body: dict) -> dict:
             return {"error": "step must be an integer"}
     else:
         row = conn.execute(
-            "SELECT MAX(COALESCE(step, -1)) as max_step FROM metrics WHERE exp_id=? AND key=?",
+            "SELECT MAX(COALESCE(step, -1)) as max_step, COUNT(*) as cnt FROM metrics WHERE exp_id=? AND key=?",
             (exp["id"], key)
         ).fetchone()
-        step = (row["max_step"] + 1) if row and row["max_step"] is not None else 0
+        max_step = row["max_step"] if row and row["max_step"] is not None else -1
+        cnt = row["cnt"] if row else 0
+        # Use whichever is higher: max explicit step + 1, or total point count
+        # This handles auto metrics with NULL steps (count-based) and explicit steps
+        step = max(max_step + 1, cnt)
 
     source = body.get("source", "manual")
+
+    # Never allow a manual metric to overwrite an auto-captured point at the same step
+    if source == "manual":
+        auto_row = conn.execute(
+            "SELECT 1 FROM metrics WHERE exp_id=? AND key=? AND step=? AND (source IS NULL OR source != 'manual') LIMIT 1",
+            (exp["id"], key, step)
+        ).fetchone()
+        if auto_row:
+            # Find the next available step after all existing data
+            max_row = conn.execute(
+                "SELECT MAX(COALESCE(step, -1)) as ms, COUNT(*) as cnt FROM metrics WHERE exp_id=? AND key=?",
+                (exp["id"], key)
+            ).fetchone()
+            next_step = max(max_row["ms"] + 1, max_row["cnt"]) if max_row else step + 1
+            return {"error": f"step {step} already has auto data — try step {next_step} or higher"}
+
     conn.execute(
         "INSERT INTO metrics (exp_id, key, value, step, ts, source) VALUES (?,?,?,?,?,?)",
         (exp["id"], key, num_val, step, ts, source)

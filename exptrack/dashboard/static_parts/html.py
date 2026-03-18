@@ -50,6 +50,17 @@ HTML_BODY = r"""</style>
           </div>
         </div>
         <div class="settings-section">
+          <div class="settings-section-title">Metrics</div>
+          <div class="settings-row">
+            <label title="Only store every Nth metric point during training (1 = keep all)">Save every Nth step</label>
+            <input type="number" id="settings-keep-every" min="1" value="1" style="width:70px;font-family:inherit;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--code-bg);color:var(--fg)" onchange="saveMetricSettings()">
+          </div>
+          <div class="settings-row">
+            <label title="Max points to show on charts (server-side downsampling)">Chart max points</label>
+            <input type="number" id="settings-max-points" min="10" max="50000" value="500" style="width:70px;font-family:inherit;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--code-bg);color:var(--fg)" onchange="saveMetricSettings()">
+          </div>
+        </div>
+        <div class="settings-section">
           <div class="settings-section-title">Database</div>
           <div class="settings-storage" id="settings-storage"></div>
           <div class="settings-actions">

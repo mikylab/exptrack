@@ -117,7 +117,9 @@ async function refreshDetail(id) {
     const delBtn = `<span class="result-del-x" onclick="event.stopPropagation();deleteMetric('${exp.id}','${esc(m.key)}')" title="Delete all">&times;</span>`;
     const editAttr = isManual ? ` class="editable-hint" ondblclick="startResultEdit('${exp.id}','${esc(m.key)}',this)" title="Double-click to edit"` : '';
     const displayKey = showFullKey ? abbrevMetric(m.key) : abbrevMetric(m.key.includes('/') ? m.key.split('/').slice(1).join('/') : m.key);
-    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="${esc(m.key)} — double-click to rename">${esc(displayKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${isManual ? '--' : (m.min?.toFixed(4) ?? '--')}</td><td>${isManual ? '--' : (m.max?.toFixed(4) ?? '--')}</td><td>${m.n}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
+    const sMin = m.step_min, sMax = m.step_max;
+    const stepStr = sMin == null ? '--' : (sMin === sMax ? String(sMin) : sMin + '-' + sMax);
+    return `<tr><td style="color:${keyColor}" class="editable-hint" ondblclick="startMetricRename('${exp.id}','${esc(m.key)}',this)" title="${esc(m.key)} — double-click to rename">${esc(displayKey)}</td><td${editAttr}>${m.last?.toFixed(4) ?? '--'}</td><td>${m.min?.toFixed(4) ?? '--'}</td><td>${m.max?.toFixed(4) ?? '--'}</td><td style="font-size:12px;color:var(--muted)">${stepStr}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
   }
   // Group metrics by prefix
   const metricGroups = {};
@@ -128,7 +130,7 @@ async function refreshDetail(id) {
   }
   const groupKeys = Object.keys(metricGroups).sort((a, b) => a === '' ? 1 : b === '' ? -1 : a.localeCompare(b));
   let metricRows = '';
-  const thead = '<tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Count</th><th>Source</th></tr>';
+  const thead = '<tr><th>Key</th><th>Last</th><th>Min</th><th>Max</th><th>Steps</th><th>Source</th></tr>';
   if (groupKeys.length <= 1) {
     // No grouping needed — single flat table, show abbreviated full key
     metricRows = exp.metrics.map(m => buildMetricRow(m, true)).join('');
@@ -152,7 +154,7 @@ async function refreshDetail(id) {
     const viewBtn = (isLog || isData)
       ? `<button onclick="viewLogFile('${esc(a.path)}','${esc(a.label)}')" title="View contents">view</button>`
       : '';
-    return `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td style="font-size:12px;color:var(--muted)">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`;
+    return `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td class="artifact-path-cell" title="${esc(a.path)}">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`;
   }).join('');
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
@@ -325,6 +327,7 @@ async function refreshDetail(id) {
       <div class="tabs" id="detail-tabs">
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
         <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
+        <button class="tab" onclick="switchDetailTab('charts','${exp.id}')">Charts</button>
         <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
         <button class="tab" onclick="switchDetailTab('logs','${exp.id}')">Data Files</button>
         <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
@@ -356,7 +359,7 @@ async function refreshDetail(id) {
             <div class="section-body">
             ${metricRows || '<p style="color:var(--muted);font-size:13px">No metrics yet.</p>'}
             ${logResultForm}
-            <div id="charts-container"></div>
+            <div id="overview-chart-preview" style="margin-top:12px"></div>
             </div>
             <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
             <div class="section-body">
@@ -373,6 +376,7 @@ async function refreshDetail(id) {
       </div>
 
       <div id="detail-tab-timeline" style="display:none"></div>
+      <div id="detail-tab-charts" style="display:none"></div>
       <div id="detail-tab-images" style="display:none"></div>
       <div id="detail-tab-logs" style="display:none"></div>
       <div id="detail-tab-compare-within" style="display:none"></div>
@@ -399,58 +403,9 @@ async function refreshDetail(id) {
     studyInputArea.appendChild(sWrapper);
   }
 
-  // Render metric charts (click a point to delete it)
-  Object.values(charts).forEach(c => c.destroy());
-  charts = {};
-  const container = document.getElementById('charts-container');
-  for (const [key, points] of Object.entries(metricsData)) {
-    if (points.length < 1) continue;
-    const div = document.createElement('div');
-    div.className = 'chart-container';
-    const canvas = document.createElement('canvas');
-    div.appendChild(canvas);
-    container.appendChild(div);
-    const chartPoints = points.map((p,i) => ({ x: p.step !== null ? p.step : i, y: p.value, _step: p.step }));
-    charts[key] = new Chart(canvas, {
-      type: 'line',
-      data: {
-        labels: points.map((p,i) => p.step !== null ? p.step : i),
-        datasets: [{
-          label: key,
-          data: points.map(p => p.value),
-          borderColor: '#2c5aa0',
-          backgroundColor: 'rgba(44,90,160,0.1)',
-          fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 7,
-          pointHitRadius: 10,
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } },
-          tooltip: {
-            callbacks: {
-              afterLabel: () => 'Click to delete this point'
-            }
-          }
-        },
-        scales: {
-          x: { title: { display: true, text: 'Step', font: { family: "'IBM Plex Mono'" } } },
-          y: { title: { display: true, text: key, font: { family: "'IBM Plex Mono'" } } }
-        },
-        onClick: (evt, elements) => {
-          if (!elements.length) return;
-          const idx = elements[0].index;
-          const pt = points[idx];
-          const step = pt.step;
-          const val = pt.value;
-          if (confirm('Delete point: ' + key + ' = ' + val + ' (step ' + (step ?? idx) + ')?')) {
-            deleteMetricPoint(currentDetailId, key, step ?? idx);
-          }
-        }
-      }
-    });
-  }
+  // Cache metrics data for Charts tab and render overview preview
+  _chartsMetricsData = metricsData;
+  renderOverviewChartPreview(metricsData);
 
   // Populate result type dropdown
   populateResultTypeDropdown(exp.id);

@@ -50,7 +50,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/experiment/"):
             self._json(read_routes.api_experiment(conn, path.split("/")[-1]))
         elif path.startswith("/api/metrics/"):
-            self._json(read_routes.api_metrics(conn, path.split("/")[-1]))
+            self._json(read_routes.api_metrics(conn, path.split("/")[-1], qs))
         elif path.startswith("/api/diff/"):
             self._json(read_routes.api_diff(conn, path.split("/")[-1]))
         elif path == "/api/compare":
@@ -67,6 +67,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_all_tags(conn))
         elif path == "/api/config/timezone":
             self._json(read_routes.api_get_timezone())
+        elif path == "/api/config/metrics":
+            self._json(read_routes.api_get_metric_settings())
         elif path == "/api/result-types":
             self._json(read_routes.api_result_types())
         elif path == "/api/studies":
@@ -147,6 +149,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/bulk-compact":         lambda: write_routes.api_compact(conn, body),
             "/api/bulk-export":          lambda: write_routes.api_bulk_export(conn, body),
             "/api/config/timezone":      lambda: write_routes.api_set_timezone(body),
+            "/api/config/metrics":       lambda: write_routes.api_set_metric_settings(body),
             "/api/studies/create":       lambda: write_routes.api_create_study(conn, body),
             "/api/studies/add":          lambda: write_routes.api_add_to_study(conn, body),
             "/api/studies/remove":       lambda: write_routes.api_remove_from_study(conn, body),

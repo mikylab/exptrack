@@ -34,6 +34,7 @@ DEFAULTS: dict = {
         "accuracy", "loss", "auroc", "f1", "precision", "recall",
         "mse", "mae", "r2", "perplexity", "bleu",
     ],
+    "metric_keep_every":     1,      # store every Nth metric point (1=all, 10=every 10th)
     "max_cell_source_kb":    50,     # hard cap on cell source in cell_lineage
     "max_source_diff_kb":    20,     # hard cap on source_diff in timeline events
     "max_vars_per_cell":     50,     # max var_set events per cell execution

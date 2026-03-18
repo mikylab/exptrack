@@ -95,6 +95,7 @@ exptrack/
         cards.py              Experiment cards, stats cards, status indicators
         table.py              Experiment table, toolbar, actions, filters
         detail.py             Detail panel, info grid, params/metrics tables
+        charts.py             Chart toolbar, scale controls, chart containers
         code.py               Diff views, code changes, variable displays
         timeline.py           Timeline events, badges, within-compare, source viewer
         compare.py            Compare view, side-by-side diffs, reproduce box
@@ -109,7 +110,8 @@ exptrack/
         table.py              Table rendering, sorting, column resizing
         experiments.py        Experiment list filtering, grouping
         inline_edit.py        Double-click inline editing
-        detail.py             Detail panel, tabs, metric charts, export
+        detail.py             Detail panel, tabs, overview preview, export
+        charts.py             Charts tab: single/all view, scale controls, downsampling
         compare.py            Compare view, diff rendering, metric comparison
         mutations.py          Tag/note/name/delete/pin mutation helpers
         timeline.py           Timeline rendering, cell lineage viewer
@@ -128,7 +130,7 @@ exptrack/
 
 ### Key modules
 
-- **`core/experiment.py`** — `Experiment` class: context manager support, param/metric/artifact logging, timeline events, variable context reconstruction. Properties: id, name, status, git_branch, git_commit, git_diff, created_at, duration_s, tags, notes
+- **`core/experiment.py`** — `Experiment` class: context manager support, param/metric/artifact logging, timeline events, variable context reconstruction. `thin_every` parameter controls write-time metric thinning. Properties: id, name, status, git_branch, git_commit, git_diff, created_at, duration_s, tags, notes
 - **`core/db.py`** — SQLite schema with 7 tables (experiments, params, metrics, artifacts, timeline, cell_lineage, code_baselines). WAL mode, indexed on exp_id/key/created_at. Schema migrations via ALTER TABLE
 - **`capture/argparse_patch.py`** — Patches both `parse_args()` AND `parse_known_args()`, plus raw `sys.argv` fallback for non-argparse scripts (catches single-dash flags, click, manual parsing)
 - **`capture/notebook_hooks.py`** — `post_run_cell` hook: content-addressed cell lineage, diff against parent cells, variable change detection with fingerprinting, assignment expression enrichment, timeline event emission, HP auto-detection, cell snapshot saving
@@ -138,7 +140,7 @@ exptrack/
 - **`notebook.py`** — `%load_ext exptrack` magic + explicit API (`start()`, `metric()`, `metrics()`, `param()`, `tag()`, `note()`, `artifact()`, `out()`, `done()`, `current()`). Deferred experiment creation (skips `%load_ext` cell itself)
 - **`cli/`** — 24 subcommands across 4 modules. ANSI-colored terminal output. Shell pipeline commands (`run-start`/`run-finish`/`run-fail`) print to stdout for `eval $()` capture, everything else to stderr
 - **`plugins/__init__.py`** — `Plugin` base class with 4 lifecycle hooks (`on_start`, `on_finish`, `on_fail`, `on_metric`). `registry` singleton loads plugins dynamically from config
-- **`dashboard/`** — Web UI: stats cards, experiment list with filters, detail view with Chart.js metric plots, timeline view with cell source viewer, compare view (pair + multi), image comparison, git diff viewer. Inline editing (double-click), tag autocomplete, timezone selector, bulk operations, studies/stages, manual experiment creation, export (JSON/Markdown/Plain Text). Fully modularized: 12 CSS modules in `static_parts/css/`, 15 JS modules in `static_parts/js/`, routes split into `routes/read_routes.py` and `routes/write_routes.py`
+- **`dashboard/`** — Web UI: stats cards, experiment list with filters, detail view with overview chart preview, dedicated Charts tab (single/all view with scale controls and configurable downsampling), timeline view with cell source viewer, compare view (pair + multi), image comparison, git diff viewer. Inline editing (double-click), tag autocomplete, timezone selector, bulk operations, studies/stages, manual experiment creation, export (JSON/Markdown/Plain Text). Fully modularized: 13 CSS modules in `static_parts/css/`, 16 JS modules in `static_parts/js/`, routes split into `routes/read_routes.py` and `routes/write_routes.py`
 
 ## Key Design Patterns
 
@@ -155,6 +157,8 @@ exptrack/
 - **Tag autocomplete**: `/api/all-tags` endpoint returns all tags with usage counts; UI shows autocomplete dropdown
 - **Timezone-aware display**: Dashboard timestamps use `Intl.DateTimeFormat` with configurable timezone stored in project config
 - **Timeline-based tracking**: Every event (cell_exec, var_set, artifact, metric, observational) gets a sequence number for full execution order reconstruction
+- **Metric thinning**: Two-layer system for large metric series. Write-time: `thin_every` param on Experiment or `metric_keep_every` in config stores every Nth point. Read-time: min-max bucketing downsamples for chart display. Configurable via dashboard settings or `metric_max_points` in config
+- **Metric source tracking**: Metrics tagged as auto/manual/pipeline via `source` column. Manual metrics cannot overwrite auto points at the same step. Metrics table splits rows by source for clarity
 
 ## Database Schema
 
@@ -162,7 +166,7 @@ SQLite WAL mode with 7 tables:
 
 - **`experiments`** — run metadata (id, name, status, created_at, duration_s, git_branch, git_commit, git_diff, hostname, python_ver, notes, tags, output_dir)
 - **`params`** — key/value pairs (exp_id, key, value as JSON string)
-- **`metrics`** — float values (exp_id, key, value, step, ts)
+- **`metrics`** — float values (exp_id, key, value, step, ts, source). Source is 'auto' (from scripts), 'manual' (dashboard), or 'pipeline' (CLI)
 - **`artifacts`** — output files (exp_id, label, path, content_hash, size_bytes, timeline_seq, created_at)
 - **`timeline`** — execution events (exp_id, seq, event_type, cell_hash, cell_pos, key, value, prev_value, source_diff, ts)
 - **`cell_lineage`** — content-addressed cell history (cell_hash, notebook, source, parent_hash, created_at)
@@ -183,6 +187,8 @@ Indexed on: metrics(exp_id, key), params(exp_id), artifacts(exp_id), timeline(ex
   "artifact_strategy": "reference",
   "hash_max_mb": 500,
   "protect_on_rerun": true,
+  "metric_keep_every": 1,
+  "metric_max_points": 500,
   "timezone": "",
   "auto_capture": { "argparse": true, "argv": true, "notebook": true },
   "naming": { "max_param_keys": 4, "key_max_len": 8 },
@@ -204,8 +210,8 @@ Indexed on: metrics(exp_id, key), params(exp_id), artifacts(exp_id), timeline(ex
 The dashboard has been fully modularized. `static.py` is a thin assembler (~10 lines) that imports parts from `static_parts/` and concatenates into `DASHBOARD_HTML`.
 
 **Current structure:**
-- **`static_parts/css/`** — 12 CSS modules (reset, layout, cards, table, detail, code, timeline, compare, components, studies, images). Each exports a single string constant. `get_all_css()` assembles them
-- **`static_parts/js/`** — 15 JS modules (core, owl, sidebar, table, experiments, inline_edit, detail, compare, mutations, timeline, image_compare, studies, stage, manual, init). `get_all_js()` assembles them
+- **`static_parts/css/`** — 13 CSS modules (reset, layout, cards, table, detail, charts, code, timeline, compare, components, studies, images). Each exports a single string constant. `get_all_css()` assembles them
+- **`static_parts/js/`** — 16 JS modules (core, owl, sidebar, table, experiments, inline_edit, detail, charts, compare, mutations, timeline, image_compare, studies, stage, manual, init). `get_all_js()` assembles them
 - **`static_parts/html.py`** — HTML_HEAD, HTML_BODY, HTML_FOOTER
 - **`static_parts/styles.py`** and **`static_parts/scripts.py`** — thin re-export shims for backward compatibility
 - **`dashboard/js/__init__.py`** — convenience re-exports with short aliases (e.g., `from exptrack.dashboard.js import core`)

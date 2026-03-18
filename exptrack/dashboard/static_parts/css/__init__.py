@@ -6,6 +6,7 @@ The get_all_css() function assembles them in the correct order.
 """
 
 from .cards import CSS_CARDS
+from .charts import CSS_CHARTS
 from .code import CSS_CODE
 from .compare import CSS_COMPARE
 from .components import CSS_COMPONENTS
@@ -21,12 +22,13 @@ from .timeline import CSS_TIMELINE
 def get_all_css() -> str:
     """Concatenate all CSS sections in the correct order."""
     return (CSS_RESET + CSS_LAYOUT + CSS_CARDS + CSS_TABLE +
-            CSS_DETAIL + CSS_CODE + CSS_TIMELINE + CSS_COMPARE +
+            CSS_DETAIL + CSS_CHARTS + CSS_CODE + CSS_TIMELINE + CSS_COMPARE +
             CSS_COMPONENTS + CSS_STUDIES + CSS_IMAGES + CSS_IMAGE_COMPARE)
 
 
 __all__ = [
     "CSS_CARDS",
+    "CSS_CHARTS",
     "CSS_CODE",
     "CSS_COMPARE",
     "CSS_COMPONENTS",

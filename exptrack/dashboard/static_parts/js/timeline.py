@@ -10,13 +10,15 @@ function switchDetailTab(tab, expId) {
   currentDetailTab = tab;
   currentDetailExpId = expId;
   document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
-    const tabs = ['overview','timeline','images','logs','compare-within'];
+    const tabs = ['overview','timeline','charts','images','logs','compare-within'];
     t.classList.toggle('active', tabs[i] === tab);
   });
-  ['overview','timeline','images','logs','compare-within'].forEach(t => {
+  ['overview','timeline','charts','images','logs','compare-within'].forEach(t => {
     const el = document.getElementById('detail-tab-'+t);
     if (el) el.style.display = t === tab ? '' : 'none';
   });
+  if (tab === 'overview') renderOverviewChartPreview(_chartsMetricsData);
+  if (tab === 'charts') loadChartsTab(expId);
   if (tab === 'timeline') loadTimeline(expId);
   if (tab === 'images') loadImages(expId);
   if (tab === 'logs') loadLogs(expId);

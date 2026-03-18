@@ -33,7 +33,6 @@ CSS_DETAIL = """
   .params-table, .metrics-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
   .params-table td, .metrics-table td { padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
   .params-table th, .metrics-table th { padding: 9px 14px; font-size: 13px; text-align: left; border-bottom: 2px solid var(--border); }
-  .chart-container { max-width: 550px; margin: 12px 0; }
   .summary-card { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; border-radius: 4px; margin-bottom: 20px; }
   .summary-card .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
   .summary-card .summary-item { text-align: center; }

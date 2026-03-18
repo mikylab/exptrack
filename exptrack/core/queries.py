@@ -38,13 +38,13 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         (full_id,)
     ).fetchall()
     metrics = conn.execute("""
-        SELECT key,
+        SELECT key, COALESCE(source, 'auto') as src,
                MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n,
+               MIN(step) as step_min, MAX(step) as step_max,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
-                AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v,
-               (SELECT COALESCE(source, 'auto') FROM metrics m3 WHERE m3.exp_id=metrics.exp_id
-                AND m3.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as source
-        FROM metrics WHERE exp_id=? GROUP BY key ORDER BY key
+                AND m2.key=metrics.key AND COALESCE(m2.source, 'auto')=COALESCE(metrics.source, 'auto')
+                ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v
+        FROM metrics WHERE exp_id=? GROUP BY key, COALESCE(source, 'auto') ORDER BY key, src
     """, (full_id,)).fetchall()
     artifacts = conn.execute(
         "SELECT label, path, created_at, timeline_seq FROM artifacts WHERE exp_id=?",
@@ -77,7 +77,8 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "metrics": [{
             "key": m["key"], "last": m["last_v"],
             "min": m["min_v"], "max": m["max_v"], "n": m["n"],
-            "source": m["source"] or "auto",
+            "source": m["src"],
+            "step_min": m["step_min"], "step_max": m["step_max"],
         } for m in metrics],
         "artifacts": [{"label": a["label"], "path": a["path"],
                        "timeline_seq": a["timeline_seq"]} for a in artifacts],
@@ -244,29 +245,77 @@ def get_latest_metrics(conn, exp_id: str) -> dict[str, float]:
 def get_latest_metrics_with_source(conn, exp_id: str) -> dict[str, dict]:
     """Get the last value and source of each metric key for an experiment."""
     rows = conn.execute("""
-        SELECT key, value, COALESCE(source, 'auto') as source FROM metrics m WHERE exp_id=?
+        SELECT key, value, COALESCE(source, 'auto') as source,
+               (SELECT COUNT(DISTINCT COALESCE(source, 'auto')) FROM metrics m3
+                WHERE m3.exp_id=m.exp_id AND m3.key=m.key) as source_count
+        FROM metrics m WHERE exp_id=?
         AND COALESCE(step, 0) = (
             SELECT MAX(COALESCE(step, 0)) FROM metrics m2
             WHERE m2.exp_id=m.exp_id AND m2.key=m.key
         )
     """, (exp_id,)).fetchall()
-    return {r["key"]: {"value": r["value"], "source": r["source"]} for r in rows}
+    return {r["key"]: {
+        "value": r["value"],
+        "source": "mixed" if r["source_count"] > 1 else r["source"],
+    } for r in rows}
 
 
 def get_metrics_sparkline(conn, exp_id: str, max_points: int = 10) -> dict[str, list[float]]:
     """Get last N values per metric key for sparkline rendering."""
-    rows = conn.execute("""
-        SELECT key, value FROM metrics WHERE exp_id=?
-        ORDER BY key, COALESCE(step, 0)
-    """, (exp_id,)).fetchall()
+    # Get distinct keys first, then fetch only the last N points per key
+    keys = conn.execute(
+        "SELECT DISTINCT key FROM metrics WHERE exp_id=?", (exp_id,)
+    ).fetchall()
     by_key: dict[str, list] = {}
-    for r in rows:
-        by_key.setdefault(r["key"], []).append(r["value"])
-    return {k: v[-max_points:] for k, v in by_key.items()}
+    for k_row in keys:
+        key = k_row["key"]
+        rows = conn.execute("""
+            SELECT value FROM metrics WHERE exp_id=? AND key=?
+            ORDER BY COALESCE(step, 0) DESC LIMIT ?
+        """, (exp_id, key, max_points)).fetchall()
+        by_key[key] = [r["value"] for r in reversed(rows)]
+    return by_key
 
 
-def get_metrics_series(conn, exp_id: str) -> dict[str, list[dict]]:
-    """Get all metric points grouped by key."""
+def _downsample_points(points: list[dict], max_points: int = 1500) -> list[dict]:
+    """Downsample a metric series using min-max bucketing to preserve peaks/valleys.
+
+    Splits points into buckets and keeps the min and max value point from each,
+    plus always keeps the first and last points. This preserves the visual shape
+    of the data far better than simple every-Nth sampling.
+    """
+    n = len(points)
+    if n <= max_points:
+        return points
+
+    # Always keep first and last
+    result = [points[0]]
+    # Number of buckets (each contributes up to 2 points: min + max)
+    num_buckets = (max_points - 2) // 2
+    bucket_size = (n - 2) / num_buckets
+
+    for i in range(num_buckets):
+        start = int(1 + i * bucket_size)
+        end = int(1 + (i + 1) * bucket_size)
+        bucket = points[start:end]
+        if not bucket:
+            continue
+        min_pt = min(bucket, key=lambda p: p["value"])
+        max_pt = max(bucket, key=lambda p: p["value"])
+        # Add in step order so chart stays chronological
+        if min_pt is max_pt:
+            result.append(min_pt)
+        else:
+            pair = sorted([min_pt, max_pt],
+                          key=lambda p: p["step"] if p["step"] is not None else 0)
+            result.extend(pair)
+
+    result.append(points[-1])
+    return result
+
+
+def get_metrics_series(conn, exp_id: str, max_points: int = 500) -> dict[str, list[dict]]:
+    """Get metric points grouped by key, downsampled if over max_points."""
     rows = conn.execute("""
         SELECT key, value, step, ts FROM metrics
         WHERE exp_id=? ORDER BY key, COALESCE(step, 0)
@@ -276,25 +325,27 @@ def get_metrics_series(conn, exp_id: str) -> dict[str, list[dict]]:
         by_key.setdefault(r["key"], []).append({
             "value": r["value"], "step": r["step"], "ts": r["ts"]
         })
-    return by_key
+    return {k: _downsample_points(v, max_points) for k, v in by_key.items()}
 
 
 def get_metrics_summary(conn, exp_id: str) -> list[dict]:
-    """Get min/max/count/last for each metric key."""
+    """Get min/max/count/last for each metric key, split by source."""
     rows = conn.execute("""
-        SELECT key,
+        SELECT key, COALESCE(source, 'auto') as src,
                MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
-                AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v,
-               (SELECT COALESCE(source, 'auto') FROM metrics m3 WHERE m3.exp_id=metrics.exp_id
-                AND m3.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as source
-        FROM metrics WHERE exp_id=? GROUP BY key ORDER BY key
+                AND m2.key=metrics.key AND COALESCE(m2.source, 'auto')=COALESCE(metrics.source, 'auto')
+                ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v
+        FROM metrics WHERE exp_id=? GROUP BY key, COALESCE(source, 'auto') ORDER BY key, src
     """, (exp_id,)).fetchall()
-    return [{
-        "key": m["key"], "last": m["last_v"],
-        "min": m["min_v"], "max": m["max_v"], "n": m["n"],
-        "source": m["source"] or "auto",
-    } for m in rows]
+    results = []
+    for m in rows:
+        results.append({
+            "key": m["key"], "last": m["last_v"],
+            "min": m["min_v"], "max": m["max_v"], "n": m["n"],
+            "source": m["src"],
+        })
+    return results
 
 
 def get_all_latest_metrics(conn, limit: int = 50) -> dict[str, dict[str, float]]:
