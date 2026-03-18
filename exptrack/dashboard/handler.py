@@ -18,6 +18,8 @@ def get_db():
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
+    _request_count = 0  # class-level counter for periodic WAL maintenance
+
     def log_message(self, fmt, *args):
         pass  # suppress request logs
 
@@ -34,6 +36,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         path = parsed.path
         qs = dict(urllib.parse.parse_qsl(parsed.query))
         conn = get_db()
+
+        # Periodically checkpoint the WAL so pages written by external CLI
+        # commands (run-start, run-finish, etc.) get folded back into the DB.
+        DashboardHandler._request_count += 1
+        if DashboardHandler._request_count % 10 == 0:
+            self._wal_checkpoint(conn)
 
         if path == "/" or path == "/index.html":
             self._html()
@@ -162,9 +170,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _wal_checkpoint(conn):
-        """Flush WAL after writes. PASSIVE won't block readers."""
+        """Checkpoint and truncate the WAL after writes.
+
+        TRUNCATE flushes all WAL pages back to the DB and then truncates
+        the WAL file to zero bytes.  The dashboard is the only long-lived
+        connection, so this is safe and keeps the WAL from growing unbounded.
+        """
         try:
-            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except Exception:
             pass
 
