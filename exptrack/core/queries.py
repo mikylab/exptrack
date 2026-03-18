@@ -42,8 +42,8 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
                MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
                 AND m2.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v,
-               (SELECT COALESCE(source, 'auto') FROM metrics m3 WHERE m3.exp_id=metrics.exp_id
-                AND m3.key=metrics.key ORDER BY COALESCE(step,0) DESC LIMIT 1) as source
+               COUNT(DISTINCT COALESCE(source, 'auto')) as source_count,
+               MIN(COALESCE(source, 'auto')) as first_source
         FROM metrics WHERE exp_id=? GROUP BY key ORDER BY key
     """, (full_id,)).fetchall()
     artifacts = conn.execute(
@@ -77,7 +77,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "metrics": [{
             "key": m["key"], "last": m["last_v"],
             "min": m["min_v"], "max": m["max_v"], "n": m["n"],
-            "source": m["source"] or "auto",
+            "source": "mixed" if m["source_count"] > 1 else (m["first_source"] or "auto"),
         } for m in metrics],
         "artifacts": [{"label": a["label"], "path": a["path"],
                        "timeline_seq": a["timeline_seq"]} for a in artifacts],
