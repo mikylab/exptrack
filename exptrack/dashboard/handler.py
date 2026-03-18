@@ -35,6 +35,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         qs = dict(urllib.parse.parse_qsl(parsed.query))
         conn = get_db()
 
+        # Checkpoint WAL on every API request.  External CLI commands
+        # (run-start, run-finish, clean --reset) cannot truncate the WAL
+        # while the dashboard holds a connection — only we can do it.
+        # wal_checkpoint(TRUNCATE) is a no-op (<1ms) when the WAL is empty.
+        self._wal_checkpoint(conn)
+
         if path == "/" or path == "/index.html":
             self._html()
         elif path == "/api/stats":
@@ -131,6 +137,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             handler = dispatch.get(action)
             if handler:
                 self._json(handler())
+                self._wal_checkpoint(conn)
                 return
 
         # Global mutations
@@ -148,12 +155,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/bulk-add-to-study":    lambda: write_routes.api_bulk_add_to_study(conn, body),
             "/api/result-types":         lambda: write_routes.api_manage_result_types(body),
             "/api/experiments/create":   lambda: write_routes.api_create_experiment(conn, body),
+            "/api/clean-db":             lambda: write_routes.api_clean_db(conn),
+            "/api/vacuum-db":            lambda: write_routes.api_vacuum_db(conn),
+            "/api/reset-db":             lambda: write_routes.api_reset_db(conn),
+            "/api/storage-info":         lambda: write_routes.api_storage_info(conn),
         }
         handler = global_dispatch.get(path)
         if handler:
             self._json(handler())
+            self._wal_checkpoint(conn)
         else:
             self.send_error(404)
+
+    # ── WAL maintenance ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _wal_checkpoint(conn):
+        """Checkpoint and truncate the WAL after writes.
+
+        TRUNCATE flushes all WAL pages back to the DB and then truncates
+        the WAL file to zero bytes.  The dashboard is the only long-lived
+        connection, so this is safe and keeps the WAL from growing unbounded.
+        """
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
 
     # ── Response helpers ─────────────────────────────────────────────────────
 

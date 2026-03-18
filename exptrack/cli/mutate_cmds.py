@@ -10,7 +10,14 @@ import sys
 from datetime import datetime, timezone
 
 from ..core import delete_experiment, get_db
+from .. import config as cfg
 from .formatting import G, R, Y, col, dim
+
+
+def _fmt_bytes(b):
+    if b < 1024: return f"{b} B"
+    if b < 1024 * 1024: return f"{b / 1024:.1f} KB"
+    return f"{b / (1024 * 1024):.1f} MB"
 
 
 def cmd_tag(args):
@@ -153,6 +160,16 @@ def cmd_clean(args):
     conn = get_db()
     dry_run = getattr(args, "dry_run", False)
 
+    # --reset: delete EVERYTHING and VACUUM
+    if getattr(args, "reset", False):
+        _clean_reset(conn, dry_run)
+        return
+
+    # --orphans: purge rows not linked to any existing experiment
+    if getattr(args, "orphans", False):
+        _clean_orphans(conn, dry_run)
+        return
+
     # --baselines: wipe code_baselines table
     if getattr(args, "baselines", False):
         try:
@@ -186,6 +203,91 @@ def cmd_clean(args):
             delete_experiment(conn, r["id"])
         conn.commit()
         print(col(f"Cleaned {len(rows)} experiments (including output files).", G))
+
+
+def _clean_reset(conn, dry_run: bool = False):
+    """Delete ALL experiments and data, VACUUM to shrink DB to minimum."""
+    n_exp = conn.execute("SELECT COUNT(*) FROM experiments").fetchone()[0]
+    n_params = conn.execute("SELECT COUNT(*) FROM params").fetchone()[0]
+    n_metrics = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
+    n_artifacts = conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
+    n_timeline = conn.execute("SELECT COUNT(*) FROM timeline").fetchone()[0]
+
+    # Count output files/dirs too
+    import shutil
+    n_output_items = 0
+    try:
+        root = cfg.project_root()
+        conf = cfg.load()
+        outputs_dir = root / conf.get("outputs_dir", "outputs")
+        if outputs_dir.is_dir():
+            n_output_items = sum(1 for _ in outputs_dir.iterdir())
+    except Exception:
+        pass
+
+    total = n_exp + n_params + n_metrics + n_artifacts + n_timeline
+    if not total and not n_output_items:
+        print(dim("Database is already empty.")); return
+
+    print(f"This will delete ALL data:")
+    print(f"  experiments: {n_exp}")
+    print(f"  params:      {n_params}")
+    print(f"  metrics:     {n_metrics}")
+    print(f"  artifacts:   {n_artifacts}")
+    print(f"  timeline:    {n_timeline}")
+    if n_output_items:
+        print(f"  output dirs: {n_output_items}")
+
+    if dry_run:
+        print(dim(f"Dry run: would delete {total} row(s) + {n_output_items} output(s) and VACUUM.")); return
+
+    if input(col("Delete everything? This cannot be undone. [y/N] ", R)).lower() != "y":
+        return
+
+    # Delete experiment files first
+    rows = conn.execute("SELECT id FROM experiments").fetchall()
+    for r in rows:
+        delete_experiment(conn, r["id"])
+
+    # Clear remaining tables
+    for table in ("params", "metrics", "artifacts", "timeline",
+                  "cell_lineage", "code_baselines", "git_diffs"):
+        try:
+            conn.execute(f"DELETE FROM {table}")
+        except Exception:
+            pass
+    conn.commit()
+
+    # Clean outputs directory and notebook_history
+    try:
+        root = cfg.project_root()
+        conf = cfg.load()
+        for dirname in (conf.get("outputs_dir", "outputs"),
+                        conf.get("notebook_history_dir", ".exptrack/notebook_history")):
+            target = root / dirname
+            if target.is_dir():
+                for child in target.iterdir():
+                    try:
+                        if child.is_dir():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # VACUUM to reclaim all space
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+    except Exception as e:
+        # VACUUM fails if another process (e.g. dashboard) has the DB open
+        print(dim(f"Note: could not VACUUM ({e}). "
+                  "Close other connections and run `exptrack storage --checkpoint`."),
+              file=sys.stderr)
+
+    print(col("Database reset to empty state.", G))
 
 
 def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = False):
@@ -224,6 +326,166 @@ def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = Fa
             delete_experiment(conn, r["id"])
         conn.commit()
         print(col(f"Cleaned {len(rows)} experiment(s).", G))
+
+
+def _clean_orphans(conn, dry_run: bool = False):
+    """Purge DB rows and files not linked to any existing experiment."""
+
+    orphan_tables = ("params", "metrics", "artifacts", "timeline")
+    total = 0
+    for table in orphan_tables:
+        n = conn.execute(
+            f"SELECT COUNT(*) FROM {table} "
+            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
+        ).fetchone()[0]
+        if n:
+            print(f"  {table}: {n} orphaned row(s)", file=sys.stderr)
+            total += n
+
+    # cell_lineage: cells not referenced by any timeline row
+    n_cells = conn.execute(
+        "SELECT COUNT(*) FROM cell_lineage "
+        "WHERE cell_hash NOT IN ("
+        "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
+        ")"
+    ).fetchone()[0]
+    if n_cells:
+        print(f"  cell_lineage: {n_cells} unreferenced cell(s)", file=sys.stderr)
+        total += n_cells
+
+    # code_baselines: check if any exist
+    try:
+        n_baselines = conn.execute("SELECT COUNT(*) FROM code_baselines").fetchone()[0]
+    except Exception:
+        n_baselines = 0
+    # Only count as orphans if no experiments exist at all
+    exp_count = conn.execute("SELECT COUNT(*) FROM experiments").fetchone()[0]
+    if n_baselines and exp_count == 0:
+        print(f"  code_baselines: {n_baselines} row(s) (no experiments remain)",
+              file=sys.stderr)
+        total += n_baselines
+    else:
+        n_baselines = 0  # don't delete if experiments still exist
+
+    # notebook_history: snapshots referencing non-existent experiments
+    n_snaps = 0
+    snap_files = []
+    try:
+        root = cfg.project_root()
+        hist_dir = root / cfg.load().get("notebook_history_dir",
+                                          ".exptrack/notebook_history")
+        if hist_dir.is_dir():
+            exp_ids = {r[0] for r in conn.execute("SELECT id FROM experiments").fetchall()}
+            for fp in hist_dir.rglob("*.json"):
+                try:
+                    snap = json.loads(fp.read_text())
+                    if snap.get("exp_id") and snap["exp_id"] not in exp_ids:
+                        snap_files.append(fp)
+                        n_snaps += 1
+                except Exception:
+                    continue
+            if n_snaps:
+                print(f"  notebook_history: {n_snaps} orphaned snapshot(s)",
+                      file=sys.stderr)
+                total += n_snaps
+    except Exception:
+        pass
+
+    # outputs: directories not linked to any existing experiment
+    import shutil
+    orphan_dirs = []
+    try:
+        root = cfg.project_root()
+        conf = cfg.load()
+        outputs_dir = root / conf.get("outputs_dir", "outputs")
+        if outputs_dir.is_dir():
+            # Collect output_dir values from all experiments
+            exp_dirs = set()
+            for r in conn.execute("SELECT output_dir FROM experiments WHERE output_dir IS NOT NULL").fetchall():
+                exp_dirs.add(str(Path(r["output_dir"]).resolve()))
+            # Also collect experiment names for name-based matching
+            exp_names = {r[0] for r in conn.execute("SELECT name FROM experiments").fetchall()}
+            for child in outputs_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                resolved = str(child.resolve())
+                if resolved not in exp_dirs and child.name not in exp_names:
+                    orphan_dirs.append(child)
+            if orphan_dirs:
+                dir_size = sum(
+                    f.stat().st_size for d in orphan_dirs
+                    for f in d.rglob("*") if f.is_file()
+                )
+                print(f"  outputs: {len(orphan_dirs)} orphaned dir(s) "
+                      f"({_fmt_bytes(dir_size)})", file=sys.stderr)
+                total += len(orphan_dirs)
+    except Exception:
+        pass
+
+    if not total:
+        print(dim("No orphaned data found."), file=sys.stderr)
+        return
+
+    if dry_run:
+        if orphan_dirs:
+            for d in orphan_dirs:
+                print(f"    {d.name}/", file=sys.stderr)
+        print(dim(f"Dry run: would purge {total} orphaned item(s)."), file=sys.stderr)
+        return
+
+    if input(f"Purge {total} orphaned item(s)? [y/N] ").lower() != "y":
+        return
+
+    for table in orphan_tables:
+        conn.execute(
+            f"DELETE FROM {table} "
+            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
+        )
+    if n_cells:
+        conn.execute(
+            "DELETE FROM cell_lineage "
+            "WHERE cell_hash NOT IN ("
+            "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
+            ")"
+        )
+    if n_baselines:
+        conn.execute("DELETE FROM code_baselines")
+    conn.commit()
+
+    for fp in snap_files:
+        try:
+            fp.unlink()
+        except Exception:
+            pass
+    for d in orphan_dirs:
+        try:
+            shutil.rmtree(d)
+        except Exception:
+            pass
+    # Clean up empty notebook_history dirs
+    try:
+        root = cfg.project_root()
+        hist_dir = root / cfg.load().get("notebook_history_dir",
+                                          ".exptrack/notebook_history")
+        if hist_dir.is_dir():
+            for d in sorted(hist_dir.rglob("*"), reverse=True):
+                if d.is_dir():
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        pass
+    except Exception:
+        pass
+
+    # VACUUM to reclaim space — checkpoint WAL first so VACUUM can shrink it
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+    except Exception:
+        print(dim("Note: could not VACUUM (another connection may be open)."),
+              file=sys.stderr)
+
+    print(col(f"Purged {total} orphaned item(s).", G), file=sys.stderr)
 
 
 def cmd_finish(args):

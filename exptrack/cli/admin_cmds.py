@@ -547,6 +547,14 @@ def cmd_storage(args):
     """Show data storage breakdown for the exptrack database and outputs."""
     conn = get_db()
 
+    # Always try to checkpoint WAL before reporting sizes so the numbers
+    # reflect the real state.  TRUNCATE may fail if another process (e.g.
+    # dashboard) holds a connection — that's fine, we'll show the WAL size.
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        pass
+
     if getattr(args, "checkpoint", False):
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         print(col("WAL checkpoint complete.", G))
@@ -706,6 +714,14 @@ def cmd_storage(args):
     print(f"  WAL file:        {fmt(wal_size)}")
     if wal_size > 10 * 1024 * 1024:
         print(col("    WAL file is large. Run \"exptrack storage --checkpoint\" to reclaim.", Y))
+    elif wal_size > db_size * 2 and wal_size > 100 * 1024:
+        print(col("    WAL file is larger than the database. "
+                  "Run \"exptrack storage --checkpoint\" to reclaim.", Y))
+    # Check for orphaned rows (data not linked to any experiment)
+    if exp_count == 0 and (param_count or metric_count or artifact_count or
+                           timeline_count or cl_count or hist_count):
+        print(col("    Orphaned data detected (no experiments, but rows remain). "
+                  "Run \"exptrack clean --orphans\" to purge.", Y))
     # Check for stale running experiments (potential leaked connections)
     stale_running = conn.execute(
         "SELECT COUNT(*) as n FROM experiments WHERE status='running' "

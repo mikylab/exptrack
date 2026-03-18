@@ -289,4 +289,50 @@ CSS_COMPONENTS = """
   .tz-setting { display: inline-flex; align-items: center; gap: 6px; }
   .tz-setting select { font-family: inherit; font-size: 12px; border: 1px solid var(--border); padding: 5px 10px; border-radius: 4px; background: var(--code-bg); color: var(--muted); cursor: pointer; }
   .tz-setting select:hover { background: var(--border); color: var(--fg); }
+  .settings-wrap { position: relative; }
+  .settings-btn {
+    font-family: inherit; font-size: 18px; background: var(--code-bg);
+    border: 1px solid var(--border); padding: 5px 12px; cursor: pointer;
+    border-radius: 4px; color: var(--muted); line-height: 1;
+  }
+  .settings-btn:hover { background: var(--border); color: var(--fg); }
+  .settings-panel {
+    display: none; position: absolute; top: 100%; right: 0; z-index: 100;
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.15); min-width: 280px;
+    margin-top: 6px;
+  }
+  .settings-panel.visible { display: block; }
+  .settings-section { margin-bottom: 14px; }
+  .settings-section:last-child { margin-bottom: 0; }
+  .settings-section-title {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--muted); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+  }
+  .settings-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 4px 0; font-size: 13px;
+  }
+  .settings-row label { color: var(--fg); }
+  .settings-row select {
+    font-family: inherit; font-size: 12px; border: 1px solid var(--border);
+    padding: 4px 8px; border-radius: 4px; background: var(--code-bg);
+    color: var(--muted); cursor: pointer; max-width: 160px;
+  }
+  .settings-row select:hover { background: var(--border); color: var(--fg); }
+  .settings-storage {
+    font-size: 12px; color: var(--muted); padding: 6px 0;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .settings-storage .storage-row { display: flex; justify-content: space-between; }
+  .settings-storage .storage-val { font-weight: 500; color: var(--fg); }
+  .settings-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .settings-actions button {
+    font-family: inherit; font-size: 12px; width: 100%; padding: 7px 12px;
+    border: 1px solid var(--border); background: var(--code-bg); cursor: pointer;
+    border-radius: 4px; color: var(--muted); text-align: left;
+  }
+  .settings-actions button:hover { background: var(--border); color: var(--fg); }
+  .settings-actions button.danger { color: var(--red, #e55); }
+  .settings-actions button.danger:hover { background: rgba(192,57,43,0.1); border-color: var(--red, #e55); }
 """

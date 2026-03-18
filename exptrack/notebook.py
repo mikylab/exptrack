@@ -210,7 +210,41 @@ def _detect_nb_name() -> str:
     except Exception:
         pass
 
-    # Strategy 4: Parse connection file path — some launchers embed the
+    # Strategy 4: IPython %notebook magic / notebook_name config
+    # Classic Jupyter sometimes stores the notebook name in
+    # NotebookApp.notebook_name or as IPython config metadata.
+    try:
+        ip = get_ipython()  # type: ignore[name-defined]
+        # Some notebook servers store session info accessible via JavaScript
+        # bridge or display metadata — check IPython's db/history for clues.
+        # Also check traitlets config on the running kernel app.
+        from ipykernel.zmqshell import ZMQInteractiveShell
+        if isinstance(ip, ZMQInteractiveShell):
+            # Try parent header — classic Jupyter sends notebook name in
+            # metadata of execute requests (ipykernel >= 6)
+            parent = getattr(ip, "get_parent", lambda: {})()
+            if not parent:
+                parent = getattr(ip, "_parent_header", {})
+            nb_name = (parent.get("metadata", {}).get("cellId", "") or "")
+            # cellId looks like "cell-<hash>" — not useful.
+            # Try the kernel app's session/notebook config instead.
+            try:
+                from ipykernel.kernelapp import IPKernelApp
+                app = IPKernelApp.instance()
+                # On some setups, connection_file encodes the notebook name
+                conn_file = app.connection_file
+                import re as _re
+                m = _re.search(r"kernel-(.+?)-[0-9a-f]+\.json", conn_file)
+                if m:
+                    candidate = m.group(1)
+                    if not _re.match(r"^[0-9a-f-]{32,}$", candidate):
+                        return candidate + ".ipynb"
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Strategy 5: Parse connection file path — some launchers embed the
     # notebook name in the kernel connection filename
     try:
         import ipykernel
@@ -223,6 +257,19 @@ def _detect_nb_name() -> str:
             # Only use if it looks like a notebook name (not a UUID)
             if not _re.match(r"^[0-9a-f-]{32,}$", candidate):
                 return candidate + ".ipynb"
+    except Exception:
+        pass
+
+    # Strategy 6: Walk CWD for .ipynb files — if there's exactly one, use it.
+    # If the user has multiple notebooks open, this won't help, but for the
+    # common single-notebook workflow it's a reliable fallback.
+    try:
+        from pathlib import Path as _Path
+        cwd = _Path.cwd()
+        notebooks = [f for f in cwd.iterdir()
+                     if f.suffix == ".ipynb" and not f.name.startswith(".")]
+        if len(notebooks) == 1:
+            return str(notebooks[0])
     except Exception:
         pass
 

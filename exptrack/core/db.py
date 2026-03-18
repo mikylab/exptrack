@@ -57,6 +57,7 @@ def get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
 
     # Quick integrity check on first open
     try:
@@ -77,19 +78,90 @@ def get_db() -> sqlite3.Connection:
 def close_db() -> None:
     """Close the cached database connection for the current thread.
 
-    Call this to release any lingering connections, e.g. from a notebook
-    cell: `from exptrack.core import close_db; close_db()`
-
-    The next get_db() call will open a fresh connection.
+    Sweeps orphaned rows, checkpoints the WAL, then closes the connection.
+    The next get_db() call will open a fresh one.
     """
     conn = getattr(_local, "conn", None)
     if conn is not None:
+        try:
+            _sweep_orphans(conn)
+        except Exception:
+            pass
+        try:
+            # TRUNCATE mode flushes all WAL pages to the DB and then
+            # truncates the WAL file to zero bytes.  This is safe because
+            # we're about to close the only connection on this thread.
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
         try:
             conn.close()
         except Exception:
             pass
         _local.conn = None
         _local.db_path = None
+
+
+def _sweep_orphans(conn: sqlite3.Connection) -> int:
+    """Silently delete rows in child tables whose exp_id has no experiment.
+
+    Returns the total number of orphaned rows removed.
+    Uses SELECT COUNT checks first to avoid starting implicit transactions
+    with zero-row DELETEs (which would dirty pages after VACUUM).
+    """
+    total = 0
+    for table in ("params", "metrics", "artifacts", "timeline"):
+        n = conn.execute(
+            f"SELECT COUNT(*) FROM {table} "
+            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
+        ).fetchone()[0]
+        if n:
+            conn.execute(
+                f"DELETE FROM {table} "
+                f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
+            )
+            total += n
+    # cell_lineage: remove cells no longer referenced by any timeline row
+    n = conn.execute(
+        "SELECT COUNT(*) FROM cell_lineage "
+        "WHERE cell_hash NOT IN ("
+        "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
+        ")"
+    ).fetchone()[0]
+    if n:
+        conn.execute(
+            "DELETE FROM cell_lineage "
+            "WHERE cell_hash NOT IN ("
+            "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
+            ")"
+        )
+        total += n
+    if total:
+        conn.commit()
+    return total
+
+
+def sweep_orphans(conn: sqlite3.Connection) -> dict:
+    """Public API for orphan cleanup. Returns counts per table."""
+    counts = {}
+    for table in ("params", "metrics", "artifacts", "timeline"):
+        cur = conn.execute(
+            f"DELETE FROM {table} "
+            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
+        )
+        if cur.rowcount:
+            counts[table] = cur.rowcount
+    cur = conn.execute(
+        "DELETE FROM cell_lineage "
+        "WHERE cell_hash NOT IN ("
+        "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
+        ")"
+    )
+    if cur.rowcount:
+        counts["cell_lineage"] = cur.rowcount
+    if counts:
+        conn.commit()
+    return counts
 
 
 def _ensure_schema(conn):
@@ -309,6 +381,17 @@ def delete_experiment(conn: sqlite3.Connection, exp_id: str,
     for table in ("metrics", "params", "artifacts", "timeline"):
         conn.execute(f"DELETE FROM {table} WHERE exp_id=?", (exp_id,))
     conn.execute("DELETE FROM experiments WHERE id=?", (exp_id,))
+    # Remove cell_lineage rows no longer referenced by any remaining timeline.
+    # Always do the general check (not just for this experiment's hashes),
+    # because cell_lineage is content-addressed and may have entries that
+    # were never linked to any timeline row.
+    conn.execute("""
+        DELETE FROM cell_lineage
+        WHERE cell_hash NOT IN (
+            SELECT DISTINCT cell_hash FROM timeline
+            WHERE cell_hash IS NOT NULL
+        )
+    """)
 
 
 def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str):

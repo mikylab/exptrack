@@ -76,7 +76,11 @@ def main():
         p_rs.add_argument("--notes",      default="")
         known, unknown = p_rs.parse_known_args(sys.argv[2:])
         known.params = unknown
-        cmd_run_start(known)
+        try:
+            cmd_run_start(known)
+        finally:
+            from ..core.db import close_db
+            close_db()
         return
 
     p = argparse.ArgumentParser(
@@ -292,6 +296,12 @@ def main():
                          help="Delete experiments older than N days (e.g. 30d, 7d)")
     p_clean.add_argument("--all-statuses", action="store_true",
                          help="Include done experiments (default: only failed)")
+    p_clean.add_argument("--orphans", action="store_true",
+                         help="Purge orphaned rows (params, metrics, timeline, "
+                              "cell_lineage, code_baselines, notebook_history) "
+                              "not linked to any existing experiment")
+    p_clean.add_argument("--reset", action="store_true",
+                         help="Delete ALL experiments and data, reset DB to empty state")
     p_clean.add_argument("--dry-run", action="store_true", dest="dry_run",
                          help="List what would be deleted without deleting")
 
@@ -388,7 +398,12 @@ def main():
         "clean":        cmd_clean,
         "ui":           cmd_ui,
     }
-    dispatch[args.cmd](args)
+    try:
+        dispatch[args.cmd](args)
+    finally:
+        # Checkpoint WAL and close the DB so the WAL file doesn't bloat
+        from ..core.db import close_db
+        close_db()
 
 
 if __name__ == "__main__":

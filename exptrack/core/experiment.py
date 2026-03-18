@@ -236,6 +236,7 @@ class Experiment:
         if self._finished:
             print("[exptrack] warning: logging params after experiment finished",
                   file=sys.stderr)
+            return
         params = _redact_params(params)
         self._params.update(params)
         with get_db() as conn:
@@ -406,6 +407,12 @@ class Experiment:
             plugins.on_finish(self)
         else:
             plugins.on_fail(self, self._params.get("error", ""))
+
+        # Checkpoint and close the DB connection so the WAL doesn't grow
+        # unbounded across runs (especially in notebooks and scripts).
+        # Done after plugin hooks so they can still write to the DB.
+        from .db import close_db
+        close_db()
 
     def fail(self, error: str = ""):
         if error:

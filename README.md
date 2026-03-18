@@ -126,12 +126,19 @@ python -m exptrack train.py --lr 0.01 --data train
 exp = globals().get("__exptrack__")
 
 for epoch in range(epochs):
-    loss = train(...)
+    loss, acc = train(...)
+
     if exp:
+        # Single metric
         exp.log_metric("loss", loss, step=epoch)
+
+        # Multiple metrics at once (same step applied to all)
+        exp.log_metrics({"loss": loss, "accuracy": acc}, step=epoch)
 ```
 
-The `globals().get()` pattern keeps your script portable -- it still runs with plain `python train.py` (metrics are just skipped). See [`examples/basic_script.py`](examples/basic_script.py) for a full example.
+The `globals().get()` pattern keeps your script portable -- it still runs with plain `python train.py` (metrics are just skipped). See [`examples/resnet_exptrack_run.py`](examples/resnet_exptrack_run.py) for a full ResNet example, or [`examples/resnet_python_api.py`](examples/resnet_python_api.py) for the same thing using the explicit Python API.
+
+> **Is `__exptrack__` namespace pollution?** No. It's injected via `runpy.run_path(init_globals=...)`, which creates a fresh, isolated namespace for your script. It doesn't touch `builtins`, `sys.modules`, or any other module's globals. The `__dunder__` naming convention signals it's framework-provided (like `__name__` or `__file__`), and it only exists while your script is running under `exptrack run`.
 
 ---
 
@@ -269,6 +276,112 @@ Filter by study in the dashboard or CLI (`exptrack ls --study <name>`) to see al
 
 ---
 
+## Logging Metrics
+
+Metrics (loss, accuracy, F1, etc.) always need explicit logging -- expTrack can't guess which numbers matter to you. There are two ways to log them: **one at a time** or **multiple at once**. The API is the same regardless of how you run expTrack.
+
+### Single metric: `log_metric(key, value, step=None)`
+
+```python
+exp.log_metric("loss", 0.42, step=epoch)
+```
+
+### Multiple metrics: `log_metrics(dict, step=None)`
+
+Pass a dictionary. The `step` is applied to all values:
+
+```python
+exp.log_metrics({
+    "train_loss": 0.42,
+    "val_loss": 0.38,
+    "accuracy": 0.91,
+}, step=epoch)
+```
+
+### How you get `exp` depends on your mode
+
+| Mode | How to get the experiment object | Metric call |
+|------|----------------------------------|-------------|
+| **`exptrack run`** | `exp = globals().get("__exptrack__")` | `exp.log_metric(...)` / `exp.log_metrics(...)` |
+| **Python API** | `with Experiment() as exp:` or `exp = Experiment()` | `exp.log_metric(...)` / `exp.log_metrics(...)` |
+| **Notebook (explicit)** | `import exptrack.notebook as exp` | `exp.metric(key, val)` / `exp.metrics(step=N, loss=0.5, acc=0.9)` |
+| **Shell / SLURM** | N/A (use CLI commands instead) | `exptrack log-metric $EXP_ID key value --step N` |
+
+### Full examples by mode
+
+**`exptrack run`** -- your script is wrapped, no imports needed:
+```python
+exp = globals().get("__exptrack__")
+for epoch in range(epochs):
+    loss, acc = train(...)
+    if exp:
+        exp.log_metrics({"loss": loss, "accuracy": acc}, step=epoch)
+```
+
+**Python API** -- you create the experiment yourself:
+```python
+from exptrack.core import Experiment
+
+with Experiment(params={"lr": 0.01}) as exp:
+    for epoch in range(epochs):
+        loss, acc = train(...)
+        exp.log_metrics({"loss": loss, "accuracy": acc}, step=epoch)
+```
+
+**Notebook** -- using the explicit API:
+```python
+import exptrack.notebook as exp
+exp.start(lr=0.001)
+
+# Single
+exp.metric("val/loss", 0.23, step=5)
+
+# Multiple (keyword arguments, not a dict)
+exp.metrics(step=10, train_loss=0.5, val_loss=0.3, accuracy=0.91)
+
+exp.done()
+```
+
+**Shell / SLURM** -- from the command line:
+```bash
+eval $(exptrack run-start --lr 0.01)
+
+# Single metric
+exptrack log-metric $EXP_ID loss 0.42 --step 10
+
+# Multiple from a JSON file
+echo '{"loss": 0.42, "accuracy": 0.91}' > metrics.json
+exptrack log-metric $EXP_ID --file metrics.json --step 10
+
+# Or log metrics when finishing
+exptrack run-finish $EXP_ID --metrics results.json
+```
+
+### The `step` parameter
+
+`step` is optional but recommended for time-series data. It enables sparkline charts in the dashboard and proper line plots in the detail view. Typical usage: pass the epoch or batch number.
+
+```python
+# Without step — just logs the final value
+exp.log_metric("final_accuracy", 0.94)
+
+# With step — tracks the metric over time
+for epoch in range(100):
+    exp.log_metric("loss", loss, step=epoch)
+```
+
+### Nested JSON metrics (CLI only)
+
+When logging from a JSON file, nested dicts are flattened with `/` separators:
+
+```json
+{"train": {"loss": 0.5, "acc": 0.9}, "val": {"loss": 0.3, "acc": 0.92}}
+```
+
+Becomes: `train/loss`, `train/acc`, `val/loss`, `val/acc`.
+
+---
+
 ## Web Dashboard
 
 ```bash
@@ -371,6 +484,8 @@ The [`examples/`](examples/) directory contains ready-to-run scripts. Install ex
 | Example | What it shows |
 |---------|---------------|
 | [`basic_script.py`](examples/basic_script.py) | Zero-friction tracking -- no exptrack imports, just wrap with `exptrack run` |
+| [`resnet_exptrack_run.py`](examples/resnet_exptrack_run.py) | ResNet training via `exptrack run` -- `log_metrics()` with multiple metrics per step |
+| [`resnet_python_api.py`](examples/resnet_python_api.py) | Same ResNet training via explicit Python API -- full lifecycle control |
 | [`manual_tracking.py`](examples/manual_tracking.py) | Explicit Python API -- `Experiment` context manager, params, metrics, tags |
 | [`notebook_example.py`](examples/notebook_example.py) | Notebook workflow via `exptrack.notebook` |
 | [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM pipeline with `eval $(exptrack run-start ...)` |

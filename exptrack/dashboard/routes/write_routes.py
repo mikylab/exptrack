@@ -1043,3 +1043,128 @@ def api_image_path(conn, exp_id: str, body: dict) -> dict:
     )
     conn.commit()
     return {"ok": True, "paths": paths}
+
+
+def api_clean_db(conn) -> dict:
+    """Remove orphaned rows from all child tables and orphaned output dirs."""
+    import shutil
+
+    from ... import config as cfg
+    from ...core.db import sweep_orphans
+
+    counts = sweep_orphans(conn)
+    total = sum(counts.values())
+
+    # Clean orphaned output directories
+    n_dirs = 0
+    try:
+        root = cfg.project_root()
+        conf = cfg.load()
+        outputs_dir = root / conf.get("outputs_dir", "outputs")
+        if outputs_dir.is_dir():
+            exp_dirs = set()
+            for r in conn.execute(
+                "SELECT output_dir FROM experiments WHERE output_dir IS NOT NULL"
+            ).fetchall():
+                exp_dirs.add(str(Path(r["output_dir"]).resolve()))
+            exp_names = {r[0] for r in conn.execute("SELECT name FROM experiments").fetchall()}
+            for child in outputs_dir.iterdir():
+                if not child.is_dir():
+                    # Remove orphan files too (e.g. leftover .exptrack_run.env)
+                    resolved = str(child.resolve())
+                    # Check if any experiment output_dir contains this file
+                    if not any(resolved.startswith(d) for d in exp_dirs):
+                        child.unlink()
+                        n_dirs += 1
+                    continue
+                resolved = str(child.resolve())
+                if resolved not in exp_dirs and child.name not in exp_names:
+                    shutil.rmtree(child)
+                    n_dirs += 1
+    except Exception:
+        pass
+    if n_dirs:
+        counts["output_dirs"] = n_dirs
+        total += n_dirs
+
+    return {"ok": True, "removed": total, "details": counts}
+
+
+def api_vacuum_db(conn) -> dict:
+    """Checkpoint WAL and VACUUM the database to reclaim space."""
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True}
+
+
+def api_reset_db(conn) -> dict:
+    """Delete ALL experiments and data, then VACUUM."""
+    import shutil
+
+    from ... import config as cfg
+    from ...core.db import delete_experiment
+
+    rows = conn.execute("SELECT id FROM experiments").fetchall()
+    n_exp = len(rows)
+    for r in rows:
+        delete_experiment(conn, r["id"])
+    # Clear remaining tables
+    for table in ("params", "metrics", "artifacts", "timeline",
+                  "cell_lineage", "code_baselines", "git_diffs"):
+        try:
+            conn.execute(f"DELETE FROM {table}")
+        except Exception:
+            pass
+    conn.commit()
+    # Clean outputs directory
+    try:
+        root = cfg.project_root()
+        conf = cfg.load()
+        outputs_dir = root / conf.get("outputs_dir", "outputs")
+        if outputs_dir.is_dir():
+            for child in outputs_dir.iterdir():
+                try:
+                    if child.is_dir():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+    except Exception:
+        pass
+    return {"ok": True, "deleted_experiments": n_exp}
+
+
+def api_storage_info(conn) -> dict:
+    """Return database size and WAL size info."""
+    from ... import config as cfg
+    root = cfg.project_root()
+    conf = cfg.load()
+    db_path = root / conf.get("db", ".exptrack/experiments.db")
+    wal_path = Path(str(db_path) + "-wal")
+    db_size = db_path.stat().st_size if db_path.exists() else 0
+    wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+    n_exp = conn.execute("SELECT COUNT(*) FROM experiments").fetchone()[0]
+    n_params = conn.execute("SELECT COUNT(*) FROM params").fetchone()[0]
+    n_metrics = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
+    n_artifacts = conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
+    n_timeline = conn.execute("SELECT COUNT(*) FROM timeline").fetchone()[0]
+    return {
+        "ok": True,
+        "db_bytes": db_size,
+        "wal_bytes": wal_size,
+        "total_bytes": db_size + wal_size,
+        "experiments": n_exp,
+        "params": n_params,
+        "metrics": n_metrics,
+        "artifacts": n_artifacts,
+        "timeline": n_timeline,
+    }
