@@ -33,11 +33,24 @@ def cmd_ui(args):
     from ..dashboard.handler import _get_auth_token
     host = getattr(args, "host", "127.0.0.1")
     port = getattr(args, "port", 7331)
+
+    # Handle --token / --clear-token (persist to config)
+    if getattr(args, "clear_token", False):
+        conf = cfg.load()
+        conf.pop("dashboard_token", None)
+        cfg.save(conf)
+        print(col("Dashboard token removed from config.", G), file=sys.stderr)
+    elif getattr(args, "token", None):
+        conf = cfg.load()
+        conf["dashboard_token"] = args.token
+        cfg.save(conf)
+        print(col("Dashboard token saved to .exptrack/config.json", G), file=sys.stderr)
+
     token = _get_auth_token()
     url = f"http://{host}:{port}"
     if token:
-        print(col(f"Launching dashboard -> {url}?token=<your-token>", C), file=sys.stderr)
-        print(col("Auth enabled (EXPTRACK_DASHBOARD_TOKEN or dashboard_token in config)", G), file=sys.stderr)
+        print(col(f"Launching dashboard -> {url}?token={token}", C), file=sys.stderr)
+        print(col("Auth enabled -- use the URL above or add ?token=... to any request", G), file=sys.stderr)
     else:
         print(col(f"Launching dashboard -> {url}", C), file=sys.stderr)
     ui_main(host=host, port=port)

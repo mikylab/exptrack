@@ -308,6 +308,10 @@ def main():
     p_ui = sub.add_parser("ui", help="Launch the web dashboard")
     p_ui.add_argument("--port", type=int, default=7331)
     p_ui.add_argument("--host", type=str, default="127.0.0.1")
+    p_ui.add_argument("--token", type=str, default=None,
+                       help="Set a dashboard auth token (saved to .exptrack/config.json)")
+    p_ui.add_argument("--clear-token", action="store_true",
+                       help="Remove the saved dashboard auth token")
 
     p_storage = sub.add_parser("storage", help="Show data storage breakdown and tips")
     p_storage.add_argument("--checkpoint", action="store_true",
