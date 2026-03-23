@@ -22,15 +22,9 @@ def main(host: str = "127.0.0.1", port: int = 7331):
                 port = int(arg)
     token = _get_auth_token()
     if host not in ("127.0.0.1", "localhost", "::1") and not token:
-        print(f"[exptrack] WARNING: Binding to {host} — the dashboard will be accessible "
+        print(f"[exptrack] WARNING: Binding to {host} -- the dashboard will be accessible "
               f"from the network. There is no authentication.", file=sys.stderr)
     server = HTTPServer((host, port), DashboardHandler)
-    url = f"http://{host}:{port}"
-    if token:
-        print(f"[exptrack] Dashboard running at {url}?token=<your-token>", file=sys.stderr)
-        print(f"[exptrack] Auth enabled — use ?token=... query param or Authorization: Bearer header", file=sys.stderr)
-    else:
-        print(f"[exptrack] Dashboard running at {url}", file=sys.stderr)
     print("[exptrack] Press Ctrl+C to stop", file=sys.stderr)
     try:
         server.serve_forever()

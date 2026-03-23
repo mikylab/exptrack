@@ -30,9 +30,16 @@ def cmd_run(args):
 
 def cmd_ui(args):
     from ..dashboard.app import main as ui_main
+    from ..dashboard.handler import _get_auth_token
     host = getattr(args, "host", "127.0.0.1")
     port = getattr(args, "port", 7331)
-    print(col(f"Launching dashboard -> http://{host}:{port}", C), file=sys.stderr)
+    token = _get_auth_token()
+    url = f"http://{host}:{port}"
+    if token:
+        print(col(f"Launching dashboard -> {url}?token=<your-token>", C), file=sys.stderr)
+        print(col("Auth enabled (EXPTRACK_DASHBOARD_TOKEN or dashboard_token in config)", G), file=sys.stderr)
+    else:
+        print(col(f"Launching dashboard -> {url}", C), file=sys.stderr)
     ui_main(host=host, port=port)
 
 
