@@ -3,7 +3,13 @@ from __future__ import annotations
 
 from .core import Experiment, finish_experiment
 
-__version__ = "2.0.0"
+# Single source of truth: version is defined in pyproject.toml only.
+# importlib.metadata reads it at runtime from the installed package.
+try:
+    from importlib.metadata import version as _get_version
+    __version__ = _get_version("exptrack")
+except Exception:
+    __version__ = "0.0.0"  # fallback for uninstalled/dev usage
 __all__ = ["Experiment", "finish_experiment"]
 
 

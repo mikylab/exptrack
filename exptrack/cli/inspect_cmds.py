@@ -299,8 +299,8 @@ def _print_timeline(conn, exp_id, verbose=True, event_filter=None):
 
 def cmd_diff(args):
     conn = get_db()
-    exp = conn.execute("SELECT name, git_diff, git_commit, git_branch FROM experiments"
-                       " WHERE id LIKE ?", (args.id + "%",)).fetchone()
+    from ..core.queries import find_experiment
+    exp = find_experiment(conn, args.id, "name, git_diff, git_commit, git_branch")
     if not exp:
         print(col(f"Not found: {args.id}", R), file=sys.stderr); return
     from ..core.db import resolve_git_diff
@@ -508,9 +508,8 @@ def _history_from_db(nb, exp_id):
     conn = get_db()
 
     # Find the experiment
-    exp = conn.execute(
-        "SELECT id FROM experiments WHERE id LIKE ?", (exp_id + "%",)
-    ).fetchone()
+    from ..core.queries import find_experiment as _find
+    exp = _find(conn, exp_id, "id")
     if not exp:
         print(col(f"Experiment not found: {exp_id}", R)); return
 

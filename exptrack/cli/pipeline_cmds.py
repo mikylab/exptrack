@@ -22,9 +22,9 @@ def _coerce_str(v: str):
     if v.lower() == "true":  return True
     if v.lower() == "false": return False
     try:    return int(v)
-    except Exception: pass  # not an int, try float
+    except (ValueError, TypeError): pass  # not an int, try float
     try:    return float(v)
-    except Exception: pass  # not a float, return as string
+    except (ValueError, TypeError): pass  # not a float, return as string
     return v
 
 
@@ -217,10 +217,9 @@ def cmd_run_start(args):
 
 def cmd_run_finish(args):
     """Mark an experiment as done from a shell script."""
+    from ..core.queries import find_experiment
     conn = get_db()
-    exp_row = conn.execute(
-        "SELECT id, name FROM experiments WHERE id LIKE ?", (args.id + "%",)
-    ).fetchone()
+    exp_row = find_experiment(conn, args.id, "id, name")
     if not exp_row:
         print(f"[exptrack] run-finish: experiment '{args.id}' not found", file=sys.stderr)
         sys.exit(1)
@@ -335,11 +334,9 @@ def cmd_run_finish(args):
 
 def cmd_run_fail(args):
     """Mark an experiment as failed: exptrack run-fail $EXP_ID "reason" """
+    from ..core.queries import find_experiment
     conn = get_db()
-    exp_row = conn.execute(
-        "SELECT id, name, created_at FROM experiments WHERE id LIKE ?",
-        (args.id + "%",)
-    ).fetchone()
+    exp_row = find_experiment(conn, args.id, "id, name, created_at")
     if not exp_row:
         print(f"[exptrack] run-fail: not found: {args.id}", file=sys.stderr); sys.exit(1)
 
@@ -360,10 +357,9 @@ def cmd_run_fail(args):
 
 def cmd_log_metric(args):
     """Log a metric from shell: exptrack log-metric $EXP_ID loss 0.234 --step 10"""
+    from ..core.queries import find_experiment
     conn = get_db()
-    exp_row = conn.execute(
-        "SELECT id FROM experiments WHERE id LIKE ?", (args.id + "%",)
-    ).fetchone()
+    exp_row = find_experiment(conn, args.id, "id")
     if not exp_row:
         print(f"[exptrack] log-metric: not found: {args.id}", file=sys.stderr); sys.exit(1)
 
@@ -395,10 +391,9 @@ def cmd_log_metric(args):
 
 def cmd_log_artifact(args):
     """Register an output file: exptrack log-artifact $EXP_ID path/to/file.pt --label model"""
+    from ..core.queries import find_experiment
     conn = get_db()
-    exp_row = conn.execute(
-        "SELECT id FROM experiments WHERE id LIKE ?", (args.id + "%",)
-    ).fetchone()
+    exp_row = find_experiment(conn, args.id, "id")
     if not exp_row:
         print(f"[exptrack] log-artifact: not found: {args.id}", file=sys.stderr); sys.exit(1)
 
@@ -425,11 +420,9 @@ def cmd_log_artifact(args):
 
 def cmd_log_output(args):
     """Capture piped stdout as a log: some_command | exptrack log-output $EXP_ID --label training"""
+    from ..core.queries import find_experiment
     conn = get_db()
-    exp_row = conn.execute(
-        "SELECT id, name, output_dir FROM experiments WHERE id LIKE ?",
-        (args.id + "%",)
-    ).fetchone()
+    exp_row = find_experiment(conn, args.id, "id, name, output_dir")
     if not exp_row:
         print(f"[exptrack] log-output: not found: {args.id}", file=sys.stderr); sys.exit(1)
 
@@ -481,10 +474,9 @@ def cmd_log_result(args):
         exptrack log-result $EXP_ID --file results.json
         echo '{"accuracy": 0.95}' | exptrack log-result $EXP_ID --file -
     """
+    from ..core.queries import find_experiment
     conn = get_db()
-    exp_row = conn.execute(
-        "SELECT id FROM experiments WHERE id LIKE ?", (args.id + "%",)
-    ).fetchone()
+    exp_row = find_experiment(conn, args.id, "id")
     if not exp_row:
         print(f"[exptrack] log-result: not found: {args.id}", file=sys.stderr); sys.exit(1)
 
@@ -496,7 +488,13 @@ def cmd_log_result(args):
     if args.file:
         # Read from file or stdin
         if args.file == '-':
-            raw = json.loads(sys.stdin.read())
+            _MAX_STDIN_BYTES = 10 * 1024 * 1024  # 10 MB cap
+            stdin_data = sys.stdin.read(_MAX_STDIN_BYTES + 1)
+            if len(stdin_data) > _MAX_STDIN_BYTES:
+                print(f"[exptrack] log-result: stdin exceeds {_MAX_STDIN_BYTES // (1024*1024)} MB limit",
+                      file=sys.stderr)
+                sys.exit(1)
+            raw = json.loads(stdin_data)
         else:
             fpath = Path(args.file)
             if not fpath.exists():
@@ -549,10 +547,9 @@ def cmd_link_dir(args):
         exptrack link-dir $EXP_ID ./logs/run_42 --label tensorboard
         exptrack link-dir $EXP_ID ./checkpoints --label checkpoints
     """
+    from ..core.queries import find_experiment
     conn = get_db()
-    exp_row = conn.execute(
-        "SELECT id FROM experiments WHERE id LIKE ?", (args.id + "%",)
-    ).fetchone()
+    exp_row = find_experiment(conn, args.id, "id")
     if not exp_row:
         print(f"[exptrack] link-dir: not found: {args.id}", file=sys.stderr); sys.exit(1)
 

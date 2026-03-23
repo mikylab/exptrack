@@ -32,7 +32,7 @@ def make_run_name(script: str = "", params: dict | None = None) -> str:
             else:
                 parts.append(f"{short_k}{str(v)[:12]}")
 
-    uid   = uuid.uuid4().hex[:4]
+    uid   = uuid.uuid4().hex[:8]
     today = datetime.now().strftime("%m%d")
     name  = base
     if parts:

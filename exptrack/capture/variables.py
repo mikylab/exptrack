@@ -121,25 +121,37 @@ def var_fingerprint(val) -> str:
     tname = type(val).__name__
     if tname == "ndarray":
         try:
+            # Guard against OOM: skip .tobytes() for arrays larger than 100MB
+            if hasattr(val, 'nbytes') and val.nbytes > 100 * 1024 * 1024:
+                return f"ndarray:{val.shape}:{val.dtype}:{id(val)}"
             return f"ndarray:{val.shape}:{val.dtype}:{hashlib.md5(val.tobytes()).hexdigest()[:8]}"
-        except Exception:
+        except (MemoryError, TypeError, ValueError):
             return f"ndarray:{id(val)}"
     if tname in ("DataFrame", "Series"):
         try:
+            nbytes = val.values.nbytes if hasattr(val.values, 'nbytes') else 0
+            if nbytes > 100 * 1024 * 1024:
+                return f"{tname}:{val.shape}:{id(val)}"
             return f"{tname}:{val.shape}:{hashlib.md5(val.values.tobytes()).hexdigest()[:8]}"
-        except Exception:
+        except (MemoryError, TypeError, ValueError, AttributeError):
             return f"{tname}:{id(val)}"
     if tname == "Tensor":
         try:
+            numel = val.numel() if hasattr(val, 'numel') else 0
+            if numel > 25_000_000:  # ~100MB for float32
+                return f"Tensor:{list(val.shape)}:{id(val)}"
             return f"Tensor:{list(val.shape)}:{hashlib.md5(val.cpu().numpy().tobytes()).hexdigest()[:8]}"
-        except Exception:
+        except (MemoryError, TypeError, RuntimeError, AttributeError):
             return f"Tensor:{id(val)}"
     if isinstance(val, (list, tuple, set, frozenset, dict)):
+        # Check collection size before attempting JSON serialization to avoid OOM
         try:
+            if len(val) > 10000:
+                return f"{tname}:{len(val)}:{id(val)}"
             j = json.dumps(val, default=str, sort_keys=True)
             if len(j) < 10000:
                 return j
-        except Exception as e:
+        except (TypeError, ValueError, MemoryError, RecursionError) as e:
             print(f"[exptrack] warning: could not fingerprint {tname}: {e}", file=sys.stderr)
         return f"{tname}:{len(val)}:{id(val)}"
     try:

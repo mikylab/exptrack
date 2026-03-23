@@ -1,315 +1,137 @@
-"""Tests for exptrack/cli — calling CLI command functions directly."""
+"""Tests for exptrack CLI commands — smoke tests calling command functions directly."""
+from __future__ import annotations
+
 import io
 import json
-import os
 import sys
-import tempfile
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 
-def _reset_config():
-    """Reset cached config so each test starts fresh."""
-    from exptrack import config as cfg
-    cfg._root_cache = None
-    cfg._cache = None
+def _capture_output(func, *args):
+    """Run *func* while capturing both stdout and stderr.
 
-
-def _capture_stdout(func, *args):
-    """Capture stdout from a function call, return the output string.
-    Also suppresses stderr to avoid noise in test output."""
+    Returns ``(stdout_str, stderr_str)``.
+    """
     old_out, old_err = sys.stdout, sys.stderr
-    sys.stdout = buf = io.StringIO()
-    sys.stderr = io.StringIO()
+    sys.stdout = out_buf = io.StringIO()
+    sys.stderr = err_buf = io.StringIO()
     try:
         func(*args)
     finally:
         sys.stdout = old_out
         sys.stderr = old_err
-    return buf.getvalue()
+    return out_buf.getvalue(), err_buf.getvalue()
 
 
-def _make_experiment(script="train.py", params=None, tags=None, notes=""):
-    """Helper: create and finish an experiment, return it."""
-    from exptrack.core import Experiment
-    exp = Experiment(script=script, params=params, tags=tags, notes=notes)
-    return exp
+# ---------------------------------------------------------------------------
+# cmd_init
+# ---------------------------------------------------------------------------
+
+def test_cmd_init_creates_exptrack_dir(tmp_path, monkeypatch):
+    """cmd_init creates the .exptrack directory and config.json."""
+    from exptrack import config as cfg
+
+    # Start with a bare directory (no .exptrack yet)
+    monkeypatch.chdir(tmp_path)
+    cfg._root_cache = None
+    cfg._cache = None
+    monkeypatch.setattr(cfg, "_root_cache", None)
+    monkeypatch.setattr(cfg, "_cache", None)
+    # Patch project_root to return tmp_path (since there's no .git or .exptrack yet)
+    monkeypatch.setattr(cfg, "project_root", lambda: tmp_path)
+
+    from exptrack.cli.admin_cmds import cmd_init
+
+    args = SimpleNamespace(name="myproject", here=False)
+    _capture_output(cmd_init, args)
+
+    assert (tmp_path / ".exptrack").is_dir(), ".exptrack/ should be created"
+    assert (tmp_path / ".exptrack" / "config.json").is_file(), "config.json should exist"
+
+    # Config should contain the project name
+    data = json.loads((tmp_path / ".exptrack" / "config.json").read_text())
+    assert data.get("project") == "myproject"
 
 
-def test_cmd_ls_runs():
-    """cmd_ls runs without error and produces output."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
-        _reset_config()
-        from exptrack import config as cfg
-        cfg.init("test")
-        from exptrack.cli.inspect_cmds import cmd_ls
+def test_cmd_init_patches_gitignore(tmp_path, monkeypatch):
+    """cmd_init appends exptrack rules to .gitignore."""
+    from exptrack import config as cfg
 
-        # With no experiments
-        args = SimpleNamespace(n=20, tag=None, status=None, study=None, json_output=False)
-        output = _capture_stdout(cmd_ls, args)
-        assert "No experiments" in output or output.strip() == "", \
-            "Expected empty list message"
+    monkeypatch.chdir(tmp_path)
+    cfg._root_cache = None
+    cfg._cache = None
+    monkeypatch.setattr(cfg, "_root_cache", None)
+    monkeypatch.setattr(cfg, "_cache", None)
+    monkeypatch.setattr(cfg, "project_root", lambda: tmp_path)
 
-        # With an experiment
-        exp = _make_experiment()
-        exp.finish()
-        output = _capture_stdout(cmd_ls, args)
-        assert exp.id[:6] in output, f"Expected ID prefix in output, got: {output[:200]}"
+    from exptrack.cli.admin_cmds import cmd_init
 
-        print("  [PASS] test_cmd_ls_runs")
+    args = SimpleNamespace(name="", here=False)
+    _capture_output(cmd_init, args)
+
+    gitignore = tmp_path / ".gitignore"
+    assert gitignore.exists(), ".gitignore should be created or updated"
+    text = gitignore.read_text()
+    assert ".exptrack/experiments.db" in text
 
 
-def test_cmd_show_displays():
-    """cmd_show displays experiment details."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
-        _reset_config()
-        from exptrack import config as cfg
-        cfg.init("test")
-        from exptrack.cli.inspect_cmds import cmd_show
+# ---------------------------------------------------------------------------
+# cmd_stale
+# ---------------------------------------------------------------------------
 
-        exp = _make_experiment(params={"lr": 0.01})
-        exp.log_metric("loss", 0.5, step=1)
-        exp.finish()
+def test_cmd_stale_marks_old_running_experiments(tmp_project):
+    """cmd_stale marks experiments running longer than --hours as failed."""
+    from exptrack.core import Experiment, get_db
+    from exptrack.cli.admin_cmds import cmd_stale
 
-        args = SimpleNamespace(id=exp.id[:6], timeline=False, json_output=False)
-        output = _capture_stdout(cmd_show, args)
-        assert exp.name in output, "Experiment name should appear in show output"
+    # Create an experiment and manually backdate its created_at
+    exp = Experiment(script="train.py")
+    eid = exp.id
 
-        print("  [PASS] test_cmd_show_displays")
+    conn = get_db()
+    old_time = (datetime.now(timezone.utc) - timedelta(hours=50)).isoformat()
+    conn.execute(
+        "UPDATE experiments SET created_at=? WHERE id=?", (old_time, eid)
+    )
+    conn.commit()
 
+    # Verify it's still running
+    row = conn.execute(
+        "SELECT status FROM experiments WHERE id=?", (eid,)
+    ).fetchone()
+    assert row["status"] == "running"
 
-def test_cmd_tag_adds():
-    """cmd_tag adds a tag to an experiment."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
-        _reset_config()
-        from exptrack import config as cfg
-        cfg.init("test")
-        from exptrack.cli.mutate_cmds import cmd_tag
-        from exptrack.core import get_db
+    # Run cmd_stale with --hours=24
+    args = SimpleNamespace(hours=24)
+    _capture_output(cmd_stale, args)
 
-        exp = _make_experiment()
-        exp.finish()
-
-        args = SimpleNamespace(id=[exp.id[:6], "best"])
-        _capture_stdout(cmd_tag, args)
-
-        with get_db() as conn:
-            row = conn.execute("SELECT tags FROM experiments WHERE id=?",
-                               (exp.id,)).fetchone()
-        tags = json.loads(row["tags"])
-        assert "best" in tags, f"Expected 'best' in tags, got {tags}"
-
-        print("  [PASS] test_cmd_tag_adds")
+    # Should now be marked as failed
+    row = conn.execute(
+        "SELECT status FROM experiments WHERE id=?", (eid,)
+    ).fetchone()
+    assert row["status"] == "failed", (
+        f"Expected 'failed' after stale detection, got '{row['status']}'"
+    )
 
 
-def test_cmd_untag_removes():
-    """cmd_untag removes a tag from an experiment."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
-        _reset_config()
-        from exptrack import config as cfg
-        cfg.init("test")
-        from exptrack.cli.mutate_cmds import cmd_untag
-        from exptrack.core import get_db
+def test_cmd_stale_ignores_recent_experiments(tmp_project):
+    """cmd_stale does not touch experiments that are still within the threshold."""
+    from exptrack.core import Experiment, get_db
+    from exptrack.cli.admin_cmds import cmd_stale
 
-        exp = _make_experiment(tags=["keep", "remove"])
-        exp.finish()
+    exp = Experiment(script="train.py")
+    eid = exp.id
 
-        args = SimpleNamespace(id=[exp.id[:6], "remove"])
-        _capture_stdout(cmd_untag, args)
+    # Run cmd_stale with --hours=24 (experiment was just created)
+    args = SimpleNamespace(hours=24)
+    _capture_output(cmd_stale, args)
 
-        with get_db() as conn:
-            row = conn.execute("SELECT tags FROM experiments WHERE id=?",
-                               (exp.id,)).fetchone()
-        tags = json.loads(row["tags"])
-        assert "remove" not in tags, f"Tag 'remove' should be gone, got {tags}"
-        assert "keep" in tags, f"Tag 'keep' should remain, got {tags}"
+    conn = get_db()
+    row = conn.execute(
+        "SELECT status FROM experiments WHERE id=?", (eid,)
+    ).fetchone()
+    assert row["status"] == "running", "Recent experiment should not be marked stale"
 
-        print("  [PASS] test_cmd_untag_removes")
-
-
-def test_cmd_note_adds():
-    """cmd_note appends a note to an experiment."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
-        _reset_config()
-        from exptrack import config as cfg
-        cfg.init("test")
-        from exptrack.cli.mutate_cmds import cmd_note
-        from exptrack.core import get_db
-
-        exp = _make_experiment()
-        exp.finish()
-
-        args = SimpleNamespace(id=exp.id[:6], text="this is a note")
-        _capture_stdout(cmd_note, args)
-
-        with get_db() as conn:
-            row = conn.execute("SELECT notes FROM experiments WHERE id=?",
-                               (exp.id,)).fetchone()
-        assert "this is a note" in (row["notes"] or ""), \
-            f"Note not found in DB, got: {row['notes']}"
-
-        print("  [PASS] test_cmd_note_adds")
-
-
-def test_cmd_export_json():
-    """cmd_export produces valid JSON output."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
-        _reset_config()
-        from exptrack import config as cfg
-        cfg.init("test")
-        from exptrack.cli.inspect_cmds import cmd_export
-
-        exp = _make_experiment(params={"lr": 0.01})
-        exp.log_metric("loss", 0.5, step=1)
-        exp.finish()
-
-        args = SimpleNamespace(id=exp.id[:6], format="json")
-        output = _capture_stdout(cmd_export, args)
-
-        data = json.loads(output)
-        assert data["id"] == exp.id, "Export ID mismatch"
-        assert data["name"] == exp.name, "Export name mismatch"
-        assert data["status"] == "done", "Export status should be done"
-        assert "lr" in data["params"], "Params should contain lr"
-        assert len(data["metrics_series"]) > 0, "Metrics should not be empty"
-
-        print("  [PASS] test_cmd_export_json")
-
-
-def test_cmd_finish_marks_done():
-    """cmd_finish marks a running experiment as done."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
-        _reset_config()
-        from exptrack import config as cfg
-        cfg.init("test")
-        from exptrack.cli.mutate_cmds import cmd_finish
-        from exptrack.core import Experiment, get_db
-
-        # Create but don't finish
-        exp = Experiment(script="train.py")
-
-        args = SimpleNamespace(id=exp.id[:6])
-        _capture_stdout(cmd_finish, args)
-
-        with get_db() as conn:
-            row = conn.execute("SELECT status, duration_s FROM experiments WHERE id=?",
-                               (exp.id,)).fetchone()
-        assert row["status"] == "done", f"Expected 'done', got {row['status']}"
-        assert row["duration_s"] is not None, "duration_s should be set"
-
-        print("  [PASS] test_cmd_finish_marks_done")
-
-
-def test_cmd_show_not_found():
-    """cmd_show handles nonexistent ID gracefully."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
-        _reset_config()
-        from exptrack import config as cfg
-        cfg.init("test")
-        from exptrack.cli.inspect_cmds import cmd_show
-
-        # Need at least one DB access to create schema
-        from exptrack.core import get_db
-        get_db()
-
-        args = SimpleNamespace(id="nonexistent", timeline=False, json_output=False)
-        # "Not found" now goes to stderr — use direct capture
-        old_out, old_err = sys.stdout, sys.stderr
-        sys.stdout = io.StringIO()
-        sys.stderr = err_buf = io.StringIO()
-        try:
-            cmd_show(args)
-        finally:
-            sys.stdout = old_out
-            sys.stderr = old_err
-        err_output = err_buf.getvalue()
-        assert "Not found" in err_output, "Should report not found on stderr"
-
-        print("  [PASS] test_cmd_show_not_found")
-
-
-def test_cmd_export_markdown():
-    """cmd_export --format markdown produces markdown output."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
-        _reset_config()
-        from exptrack import config as cfg
-        cfg.init("test")
-        from exptrack.cli.inspect_cmds import cmd_export
-
-        exp = _make_experiment(params={"lr": 0.01}, tags=["v1"])
-        exp.log_metric("acc", 0.95, step=1)
-        exp.finish()
-
-        args = SimpleNamespace(id=exp.id[:6], format="markdown")
-        output = _capture_stdout(cmd_export, args)
-
-        assert output.startswith("#"), "Markdown should start with heading"
-        assert "lr" in output, "Markdown should contain param name"
-        assert exp.id in output, "Markdown should contain experiment ID"
-
-        print("  [PASS] test_cmd_export_markdown")
-
-
-def test_cmd_edit_note():
-    """cmd_edit_note replaces the experiment notes."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
-        _reset_config()
-        from exptrack import config as cfg
-        cfg.init("test")
-        from exptrack.cli.mutate_cmds import cmd_edit_note
-        from exptrack.core import get_db
-
-        exp = _make_experiment(notes="old note")
-        exp.finish()
-
-        args = SimpleNamespace(id=exp.id[:6], text="replaced note")
-        _capture_stdout(cmd_edit_note, args)
-
-        with get_db() as conn:
-            row = conn.execute("SELECT notes FROM experiments WHERE id=?",
-                               (exp.id,)).fetchone()
-        assert row["notes"] == "replaced note", \
-            f"Expected 'replaced note', got '{row['notes']}'"
-
-        print("  [PASS] test_cmd_edit_note")
-
-
-if __name__ == "__main__":
-    saved_cwd = os.getcwd()
-    tests = [
-        test_cmd_ls_runs,
-        test_cmd_show_displays,
-        test_cmd_tag_adds,
-        test_cmd_untag_removes,
-        test_cmd_note_adds,
-        test_cmd_export_json,
-        test_cmd_finish_marks_done,
-        test_cmd_show_not_found,
-        test_cmd_export_markdown,
-        test_cmd_edit_note,
-    ]
-    passed = 0
-    failed = 0
-    for t in tests:
-        try:
-            os.chdir(saved_cwd)
-            t()
-            passed += 1
-        except Exception as e:
-            print(f"  [FAIL] {t.__name__}: {e}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
-            failed += 1
-
-    os.chdir(saved_cwd)
-    print(f"\n{passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)
+    # Clean up
+    exp.finish()

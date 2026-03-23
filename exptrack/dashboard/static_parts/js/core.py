@@ -1,6 +1,9 @@
 """State variables, API helpers, dark mode, column settings, and formatting utilities."""
 
 JS_CORE = r"""
+// ── Global state variables ──────────────────────────────────────────────────
+// These are kept as top-level `let` declarations for backward compatibility
+// with the 16+ JS modules that reference them directly.
 let currentFilter = '';
 let searchQuery = '';
 let tagFilter = '';
@@ -59,6 +62,53 @@ let visibleCols = (function() {
   return newDefaults.length ? [...cleaned, ...newDefaults] : cleaned;
 })();
 let colWidths = JSON.parse(localStorage.getItem('exptrack-col-widths') || '{}');
+
+// ── Consolidated app state object ───────────────────────────────────────────
+// Provides a single namespace for all dashboard state. Each property is backed
+// by a getter/setter that delegates to the corresponding top-level variable,
+// so existing code that reads/writes the globals continues to work unchanged.
+const app = {};
+Object.defineProperties(app, {
+  currentFilter:   { get() { return currentFilter; },   set(v) { currentFilter = v; } },
+  searchQuery:     { get() { return searchQuery; },     set(v) { searchQuery = v; } },
+  tagFilter:       { get() { return tagFilter; },       set(v) { tagFilter = v; } },
+  studyFilter:     { get() { return studyFilter; },     set(v) { studyFilter = v; } },
+  charts:          { get() { return charts; },          set(v) { charts = v; } },
+  selectedIds:     { get() { return selectedIds; },     set(v) { selectedIds = v; } },
+  pinnedIds:       { get() { return pinnedIds; },       set(v) { pinnedIds = v; } },
+  hiddenIds:       { get() { return hiddenIds; },       set(v) { hiddenIds = v; } },
+  allExperiments:  { get() { return allExperiments; },  set(v) { allExperiments = v; } },
+  currentDetailId: { get() { return currentDetailId; }, set(v) { currentDetailId = v; } },
+  sortCol:         { get() { return sortCol; },         set(v) { sortCol = v; } },
+  sortDir:         { get() { return sortDir; },         set(v) { sortDir = v; } },
+  groupBy:         { get() { return groupBy; },         set(v) { groupBy = v; } },
+  collapsedGroups: { get() { return collapsedGroups; }, set(v) { collapsedGroups = v; } },
+  clickTimer:      { get() { return clickTimer; },      set(v) { clickTimer = v; } },
+  currentTimezone: { get() { return currentTimezone; }, set(v) { currentTimezone = v; } },
+  allKnownTags:    { get() { return allKnownTags; },    set(v) { allKnownTags = v; } },
+  allKnownStudies: { get() { return allKnownStudies; }, set(v) { allKnownStudies = v; } },
+  highlightMode:   { get() { return highlightMode; },   set(v) { highlightMode = v; } },
+  highlightColors: { get() { return highlightColors; }, set(v) { highlightColors = v; } },
+  visibleCols:     { get() { return visibleCols; },     set(v) { visibleCols = v; } },
+  colWidths:       { get() { return colWidths; },       set(v) { colWidths = v; } },
+});
+
+// Reset transient state to prevent memory leaks (e.g. stale chart instances,
+// collapsed-group sets that grow unbounded across navigation).
+function resetAppState() {
+  // Destroy any existing chart instances to free canvas/bindigs
+  if (charts && typeof charts === 'object') {
+    for (const key of Object.keys(charts)) {
+      try { if (charts[key] && typeof charts[key].destroy === 'function') charts[key].destroy(); } catch(_) {}
+    }
+  }
+  charts = {};
+  collapsedGroups = new Set();
+  selectedIds = new Set();
+  clickTimer = null;
+  currentDetailId = '';
+  highlightColors = {};
+}
 
 function saveColPrefs() {
   localStorage.setItem('exptrack-cols', JSON.stringify(visibleCols));

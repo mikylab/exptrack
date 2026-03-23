@@ -85,19 +85,19 @@ def close_db() -> None:
     if conn is not None:
         try:
             _sweep_orphans(conn)
-        except Exception:
-            pass
+        except (sqlite3.Error, OSError):
+            pass  # best-effort cleanup on close
         try:
             # TRUNCATE mode flushes all WAL pages to the DB and then
             # truncates the WAL file to zero bytes.  This is safe because
             # we're about to close the only connection on this thread.
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:
-            pass
+        except sqlite3.Error:
+            pass  # checkpoint may fail if other connections exist
         try:
             conn.close()
-        except Exception:
-            pass
+        except sqlite3.Error:
+            pass  # connection may already be closed
         _local.conn = None
         _local.db_path = None
 
@@ -349,7 +349,7 @@ def store_git_diff(conn: sqlite3.Connection, diff_text: str) -> str:
     """Store diff text in git_diffs table (deduped) and return a reference marker."""
     import hashlib
     from datetime import datetime, timezone
-    diff_hash = hashlib.sha256(diff_text.encode()).hexdigest()[:16]
+    diff_hash = hashlib.sha256(diff_text.encode()).hexdigest()[:32]
     # Extract file list for summary
     files = []
     for line in diff_text.splitlines():
