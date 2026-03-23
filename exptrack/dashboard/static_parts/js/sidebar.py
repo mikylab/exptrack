@@ -32,8 +32,6 @@ function renderExpList() {
   list.innerHTML = filtered.map(e => {
     const active = currentDetailId === e.id ? ' active' : '';
     const statusCls = 'status-' + e.status;
-    const metrics = Object.entries(e.metrics || {}).slice(0, 2)
-      .map(([k,m]) => { const v = typeof m === 'object' && m !== null ? m.value : m; return k.split('/').pop() + '=' + (typeof v === 'number' ? v.toFixed(3) : v); }).join('  ');
     const isSelected = selectedIds.has(e.id);
     const cbHtml = '<label style="display:inline-flex;align-items:center;cursor:pointer;padding:2px" onclick="event.stopPropagation()"><input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
       ' onclick="toggleSelection(\'' + e.id + '\')" title="Select"></label>';
@@ -48,7 +46,6 @@ function renderExpList() {
       '<div class="exp-card-meta">' +
         esc(e.git_branch || '') + ' &middot; ' + fmtDur(e.duration_s) + ' &middot; ' + fmtDt(e.created_at) +
       '</div>' +
-      (metrics ? '<div class="exp-card-metrics">' + esc(metrics) + '</div>' : '') +
       tagsHtml + cardStudiesHtml +
     '</div>';
   }).join('');
