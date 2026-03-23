@@ -393,14 +393,23 @@ function applyFilterFromDropdown(type, name) {
 
 function rerender() { renderExperiments(); renderExpList(); renderFilterBar(); }
 
+// Extract auth token from URL query param once at load time
+const _authToken = new URLSearchParams(window.location.search).get('token') || '';
+
+function _authUrl(path) {
+  if (!_authToken) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return path + sep + 'token=' + encodeURIComponent(_authToken);
+}
+
 async function api(path) {
-  const r = await fetch(path);
+  const r = await fetch(_authUrl(path));
   if (r.status === 401) { _showAuthError(); return {}; }
   return r.json();
 }
 
 async function postApi(path, body = {}) {
-  const r = await fetch(path, {
+  const r = await fetch(_authUrl(path), {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
   });
