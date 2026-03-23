@@ -53,7 +53,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         qs = dict(urllib.parse.parse_qsl(parsed.query))
         if auth_header == f"Bearer {token}" or qs.get("token") == token:
             return True
-        self.send_error(401, "Unauthorized — set Authorization: Bearer <token> header "
+        self.send_error(401, "Unauthorized - set Authorization: Bearer <token> header "
                         "or ?token=<token> query param")
         return False
 
