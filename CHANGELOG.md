@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - Dashboard CSS and JS modularization: `static_parts/css/` (12 modules) and `static_parts/js/` (15 modules)
 - `exptrack compact` command to strip git diffs while keeping experiment results
+- `exptrack backup` and `exptrack restore` commands for database backup/recovery
 - Manual experiment creation modal in dashboard
 - Image comparison features: side-by-side, overlay, and swipe modes
 - Multi-compare bar charts and overlay line charts for 2+ experiments
@@ -27,12 +28,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Global tag deletion and tag management panel in dashboard
 - Compare button for quick experiment comparison from list view
 - Output directory artifact scanning
+- Optional dashboard authentication via `EXPTRACK_DASHBOARD_TOKEN` env var or `dashboard_token` config
+- Consolidated `app` state object in dashboard JS for cleaner state management
+- `resetAppState()` helper to prevent memory leaks from stale chart instances
+- `docs/monkey-patching.md` explaining how argparse/matplotlib capture works
+- Pytest test suite: `test_experiment.py`, `test_db.py`, `test_cli.py` with shared fixtures
 
 ### Changed
 - Dashboard modularized: `static.py` is now a thin assembler, CSS in `static_parts/css/`, JS in `static_parts/js/`, routes in `routes/`
 - `styles.py` and `scripts.py` reduced to re-export shims (~20 lines each, down from 878 and 4354)
 - Metrics and results unified into single metrics table with source badges (auto/manual/pipeline)
 - Export and Copy separated into distinct dropdowns in detail view
+- Non-finite metric values (NaN, Inf, -Inf) are now silently dropped instead of stored in the database
+- `__version__` now reads from `pyproject.toml` via `importlib.metadata` (single source of truth)
+- Run name UIDs increased from 4 to 8 hex characters to reduce collision risk
+- Pipeline commands (`run-finish`, `run-fail`, `log-metric`, etc.) use shared `find_experiment()` helper
+- Bare `except` clauses narrowed to specific exception types throughout the codebase
 
 ### Fixed
 - Database locked errors when rerunning notebooks on same kernel
@@ -45,6 +56,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Variable display losing assignment expression on notebook rerun
 - License field format in pyproject.toml for setuptools compatibility
 - JS syntax errors from inline onclick handlers (replaced with event wiring)
+- Path traversal via symlinks in dashboard file serving (now uses `os.path.realpath`)
+- Thread safety race conditions in argparse and matplotlib monkey-patches (added `threading.Lock`)
+- Matplotlib savefig reentrance guard now uses `try/finally` to prevent deadlocks on exception
 
 ## [2.0.0] - 2026-03-12
 
