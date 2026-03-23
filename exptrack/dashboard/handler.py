@@ -60,10 +60,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ── GET routing ──────────────────────────────────────────────────────────
 
     def do_GET(self):
-        if not self._check_auth():
-            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        # Serve the HTML shell without auth so the browser can show a login prompt
+        if path == "/" or path == "/index.html":
+            self._html()
+            return
+
+        if not self._check_auth():
+            return
         qs = dict(urllib.parse.parse_qsl(parsed.query))
         conn = get_db()
 
@@ -73,8 +79,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # wal_checkpoint(TRUNCATE) is a no-op (<1ms) when the WAL is empty.
         self._wal_checkpoint(conn)
 
-        if path == "/" or path == "/index.html":
-            self._html()
+        if False:
+            pass  # placeholder — removed the duplicate "/" branch above
         elif path == "/api/stats":
             self._json(read_routes.api_stats(conn))
         elif path == "/api/experiments":

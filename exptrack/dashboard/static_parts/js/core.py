@@ -395,6 +395,7 @@ function rerender() { renderExperiments(); renderExpList(); renderFilterBar(); }
 
 async function api(path) {
   const r = await fetch(path);
+  if (r.status === 401) { _showAuthError(); return {}; }
   return r.json();
 }
 
@@ -403,7 +404,23 @@ async function postApi(path, body = {}) {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
   });
+  if (r.status === 401) { _showAuthError(); return {}; }
   return r.json();
+}
+
+function _showAuthError() {
+  // Only show once per page load
+  if (document.getElementById('auth-error-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'auth-error-banner';
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;'
+    + 'background:#dc3545;color:#fff;padding:16px 24px;text-align:center;'
+    + 'font-size:15px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.3)';
+  banner.innerHTML = 'Authentication required — append <code style="background:rgba(0,0,0,.2);'
+    + 'padding:2px 6px;border-radius:3px">?token=YOUR_TOKEN</code> to the URL, '
+    + 'or set <code style="background:rgba(0,0,0,.2);padding:2px 6px;border-radius:3px">'
+    + 'Authorization: Bearer YOUR_TOKEN</code> header.';
+  document.body.prepend(banner);
 }
 
 async function deleteTagGlobal(tag) {
