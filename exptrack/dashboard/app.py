@@ -7,7 +7,7 @@ Usage: python -m exptrack.dashboard.app [port]
 import sys
 from http.server import HTTPServer
 
-from .handler import DashboardHandler
+from .handler import DashboardHandler, _get_auth_token
 
 
 def main(host: str = "127.0.0.1", port: int = 7331):
@@ -20,11 +20,11 @@ def main(host: str = "127.0.0.1", port: int = 7331):
                 port = int(sys.argv[i + 1])
             elif arg.isdigit():
                 port = int(arg)
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        print(f"[exptrack] WARNING: Binding to {host} — the dashboard will be accessible "
+    token = _get_auth_token()
+    if host not in ("127.0.0.1", "localhost", "::1") and not token:
+        print(f"[exptrack] WARNING: Binding to {host} -- the dashboard will be accessible "
               f"from the network. There is no authentication.", file=sys.stderr)
     server = HTTPServer((host, port), DashboardHandler)
-    print(f"[exptrack] Dashboard running at http://{host}:{port}", file=sys.stderr)
     print("[exptrack] Press Ctrl+C to stop", file=sys.stderr)
     try:
         server.serve_forever()

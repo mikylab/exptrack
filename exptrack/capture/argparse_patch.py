@@ -4,6 +4,7 @@ exptrack/capture/argparse_patch.py — Argparse monkey-patching and raw argv cap
 from __future__ import annotations
 
 import sys
+import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
 _patched = False
 _orig_parse = None
 _orig_known = None
+_patch_lock = threading.Lock()
 
 def patch_argparse(exp: Experiment):
     """
@@ -22,9 +24,10 @@ def patch_argparse(exp: Experiment):
     After capture, the run name is refreshed to include real param values.
     """
     global _patched, _orig_parse, _orig_known
-    if _patched:
-        return
-    _patched = True
+    with _patch_lock:
+        if _patched:
+            return
+        _patched = True
 
     import argparse
     # Save originals only if not already saved (avoid capturing hooked versions)
@@ -126,7 +129,7 @@ def _coerce(v: str):
     if v.lower() == "true":  return True
     if v.lower() == "false": return False
     try:    return int(v)
-    except Exception: pass  # not an int, try float
+    except (ValueError, TypeError): pass  # not an int, try float
     try:    return float(v)
-    except Exception: pass  # not a float, return as string
+    except (ValueError, TypeError): pass  # not a float, return as string
     return v

@@ -5,6 +5,7 @@ Route logic is delegated to routes/read_routes.py and routes/write_routes.py.
 This file handles HTTP parsing, routing dispatch, and response formatting.
 """
 import json
+import os
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
@@ -17,6 +18,19 @@ def get_db():
     return _get_db()
 
 
+def _get_auth_token() -> str:
+    """Return the dashboard auth token from config or env, or empty string if none."""
+    token = os.environ.get("EXPTRACK_DASHBOARD_TOKEN", "")
+    if not token:
+        try:
+            from exptrack import config as _cfg
+            conf = _cfg.load()
+            token = conf.get("dashboard_token", "")
+        except Exception:
+            pass
+    return token
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # suppress request logs
@@ -27,11 +41,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass  # browser closed connection early — harmless
 
+    def _check_auth(self) -> bool:
+        """Check Bearer token auth if a dashboard_token is configured.
+        Returns True if authorized, False if rejected (error already sent)."""
+        token = _get_auth_token()
+        if not token:
+            return True  # no auth configured
+        auth_header = self.headers.get("Authorization", "")
+        # Allow token via query param for browser access
+        parsed = urllib.parse.urlparse(self.path)
+        qs = dict(urllib.parse.parse_qsl(parsed.query))
+        if auth_header == f"Bearer {token}" or qs.get("token") == token:
+            return True
+        self.send_error(401, "Unauthorized - set Authorization: Bearer <token> header "
+                        "or ?token=<token> query param")
+        return False
+
     # ── GET routing ──────────────────────────────────────────────────────────
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        # Serve the HTML shell without auth so the browser can show a login prompt
+        if path == "/" or path == "/index.html":
+            self._html()
+            return
+
+        if not self._check_auth():
+            return
         qs = dict(urllib.parse.parse_qsl(parsed.query))
         conn = get_db()
 
@@ -41,8 +79,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # wal_checkpoint(TRUNCATE) is a no-op (<1ms) when the WAL is empty.
         self._wal_checkpoint(conn)
 
-        if path == "/" or path == "/index.html":
-            self._html()
+        if False:
+            pass  # placeholder — removed the duplicate "/" branch above
         elif path == "/api/stats":
             self._json(read_routes.api_stats(conn))
         elif path == "/api/experiments":
@@ -94,6 +132,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ── POST routing ─────────────────────────────────────────────────────────
 
     def do_POST(self):
+        if not self._check_auth():
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         content_len = int(self.headers.get('Content-Length', 0))
@@ -210,9 +250,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not root:
             self.send_error(404, "No project root")
             return
-        abs_path = os.path.normpath(os.path.join(root, rel_path))
-        # Security: ensure path is within project root
-        if not abs_path.startswith(os.path.normpath(root)):
+        abs_path = os.path.realpath(os.path.join(root, rel_path))
+        # Security: ensure path is within project root (realpath resolves symlinks)
+        if not abs_path.startswith(os.path.realpath(root) + os.sep) and abs_path != os.path.realpath(root):
             self.send_error(403, "Access denied")
             return
         if not os.path.isfile(abs_path):

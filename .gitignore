@@ -5,9 +5,11 @@ __pycache__/
 dist/
 build/
 
-# exptrack — local only (db + snapshots); config.json is safe to commit
+# exptrack — local only (db, snapshots, config may contain auth tokens)
 .exptrack/experiments.db
 .exptrack/experiments.db-wal
 .exptrack/experiments.db-shm
 .exptrack/notebook_history/
+.exptrack/config.json
+.exptrack/backups/
 outputs/

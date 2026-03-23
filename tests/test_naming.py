@@ -19,7 +19,7 @@ def test_make_run_name_no_params(tmp_project):
     name = make_run_name("train.py")
     assert name.startswith("train__")
     # Should have date and uid suffix
-    assert re.search(r"\d{4}_[a-f0-9]{4}$", name)
+    assert re.search(r"\d{4}_[a-f0-9]{8}$", name)
 
 
 def test_make_run_name_no_script(tmp_project):

@@ -1,6 +1,9 @@
 """State variables, API helpers, dark mode, column settings, and formatting utilities."""
 
 JS_CORE = r"""
+// ── Global state variables ──────────────────────────────────────────────────
+// These are kept as top-level `let` declarations for backward compatibility
+// with the 16+ JS modules that reference them directly.
 let currentFilter = '';
 let searchQuery = '';
 let tagFilter = '';
@@ -59,6 +62,53 @@ let visibleCols = (function() {
   return newDefaults.length ? [...cleaned, ...newDefaults] : cleaned;
 })();
 let colWidths = JSON.parse(localStorage.getItem('exptrack-col-widths') || '{}');
+
+// ── Consolidated app state object ───────────────────────────────────────────
+// Provides a single namespace for all dashboard state. Each property is backed
+// by a getter/setter that delegates to the corresponding top-level variable,
+// so existing code that reads/writes the globals continues to work unchanged.
+const app = {};
+Object.defineProperties(app, {
+  currentFilter:   { get() { return currentFilter; },   set(v) { currentFilter = v; } },
+  searchQuery:     { get() { return searchQuery; },     set(v) { searchQuery = v; } },
+  tagFilter:       { get() { return tagFilter; },       set(v) { tagFilter = v; } },
+  studyFilter:     { get() { return studyFilter; },     set(v) { studyFilter = v; } },
+  charts:          { get() { return charts; },          set(v) { charts = v; } },
+  selectedIds:     { get() { return selectedIds; },     set(v) { selectedIds = v; } },
+  pinnedIds:       { get() { return pinnedIds; },       set(v) { pinnedIds = v; } },
+  hiddenIds:       { get() { return hiddenIds; },       set(v) { hiddenIds = v; } },
+  allExperiments:  { get() { return allExperiments; },  set(v) { allExperiments = v; } },
+  currentDetailId: { get() { return currentDetailId; }, set(v) { currentDetailId = v; } },
+  sortCol:         { get() { return sortCol; },         set(v) { sortCol = v; } },
+  sortDir:         { get() { return sortDir; },         set(v) { sortDir = v; } },
+  groupBy:         { get() { return groupBy; },         set(v) { groupBy = v; } },
+  collapsedGroups: { get() { return collapsedGroups; }, set(v) { collapsedGroups = v; } },
+  clickTimer:      { get() { return clickTimer; },      set(v) { clickTimer = v; } },
+  currentTimezone: { get() { return currentTimezone; }, set(v) { currentTimezone = v; } },
+  allKnownTags:    { get() { return allKnownTags; },    set(v) { allKnownTags = v; } },
+  allKnownStudies: { get() { return allKnownStudies; }, set(v) { allKnownStudies = v; } },
+  highlightMode:   { get() { return highlightMode; },   set(v) { highlightMode = v; } },
+  highlightColors: { get() { return highlightColors; }, set(v) { highlightColors = v; } },
+  visibleCols:     { get() { return visibleCols; },     set(v) { visibleCols = v; } },
+  colWidths:       { get() { return colWidths; },       set(v) { colWidths = v; } },
+});
+
+// Reset transient state to prevent memory leaks (e.g. stale chart instances,
+// collapsed-group sets that grow unbounded across navigation).
+function resetAppState() {
+  // Destroy any existing chart instances to free canvas/bindigs
+  if (charts && typeof charts === 'object') {
+    for (const key of Object.keys(charts)) {
+      try { if (charts[key] && typeof charts[key].destroy === 'function') charts[key].destroy(); } catch(_) {}
+    }
+  }
+  charts = {};
+  collapsedGroups = new Set();
+  selectedIds = new Set();
+  clickTimer = null;
+  currentDetailId = '';
+  highlightColors = {};
+}
 
 function saveColPrefs() {
   localStorage.setItem('exptrack-cols', JSON.stringify(visibleCols));
@@ -343,17 +393,43 @@ function applyFilterFromDropdown(type, name) {
 
 function rerender() { renderExperiments(); renderExpList(); renderFilterBar(); }
 
+// Extract auth token from URL query param once at load time
+const _authToken = new URLSearchParams(window.location.search).get('token') || '';
+
+function _authUrl(path) {
+  if (!_authToken) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return path + sep + 'token=' + encodeURIComponent(_authToken);
+}
+
 async function api(path) {
-  const r = await fetch(path);
+  const r = await fetch(_authUrl(path));
+  if (r.status === 401) { _showAuthError(); return {}; }
   return r.json();
 }
 
 async function postApi(path, body = {}) {
-  const r = await fetch(path, {
+  const r = await fetch(_authUrl(path), {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
   });
+  if (r.status === 401) { _showAuthError(); return {}; }
   return r.json();
+}
+
+function _showAuthError() {
+  // Only show once per page load
+  if (document.getElementById('auth-error-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'auth-error-banner';
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;'
+    + 'background:#dc3545;color:#fff;padding:16px 24px;text-align:center;'
+    + 'font-size:15px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.3)';
+  banner.innerHTML = 'Authentication required — append <code style="background:rgba(0,0,0,.2);'
+    + 'padding:2px 6px;border-radius:3px">?token=YOUR_TOKEN</code> to the URL, '
+    + 'or set <code style="background:rgba(0,0,0,.2);padding:2px 6px;border-radius:3px">'
+    + 'Authorization: Bearer YOUR_TOKEN</code> header.';
+  document.body.prepend(banner);
 }
 
 async function deleteTagGlobal(tag) {

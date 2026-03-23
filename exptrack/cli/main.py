@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .admin_cmds import cmd_compact, cmd_init, cmd_run, cmd_stale, cmd_storage, cmd_ui, cmd_upgrade
+from .admin_cmds import cmd_backup, cmd_compact, cmd_init, cmd_restore, cmd_run, cmd_stale, cmd_storage, cmd_ui, cmd_upgrade
 from .inspect_cmds import (
     cmd_compare,
     cmd_diff,
@@ -308,10 +308,25 @@ def main():
     p_ui = sub.add_parser("ui", help="Launch the web dashboard")
     p_ui.add_argument("--port", type=int, default=7331)
     p_ui.add_argument("--host", type=str, default="127.0.0.1")
+    p_ui.add_argument("--token", type=str, default=None,
+                       help="Set a dashboard auth token (saved to .exptrack/config.json)")
+    p_ui.add_argument("--clear-token", action="store_true",
+                       help="Remove the saved dashboard auth token")
 
     p_storage = sub.add_parser("storage", help="Show data storage breakdown and tips")
     p_storage.add_argument("--checkpoint", action="store_true",
                            help="Force WAL checkpoint to reclaim space")
+
+    p_backup = sub.add_parser("backup", help="Create a backup of the experiment database")
+    p_backup.add_argument("path", nargs="?", default="",
+                          help="Destination path (default: .exptrack/backups/<timestamp>.db)")
+    p_backup.add_argument("--force", "-f", action="store_true",
+                          help="Overwrite existing backup file")
+
+    p_restore = sub.add_parser("restore", help="Restore the experiment database from a backup")
+    p_restore.add_argument("path", help="Path to backup file")
+    p_restore.add_argument("--yes", "-y", action="store_true",
+                           help="Skip confirmation prompt")
 
     p_compact = sub.add_parser("compact",
         help="Strip git diffs and/or cell data to reclaim space (keeps all results)")
@@ -373,6 +388,8 @@ def main():
         "stale":        cmd_stale,
         "upgrade":      cmd_upgrade,
         "storage":      cmd_storage,
+        "backup":       cmd_backup,
+        "restore":      cmd_restore,
         "compact":      cmd_compact,
         "finish":       cmd_finish,
         "ls":           cmd_ls,

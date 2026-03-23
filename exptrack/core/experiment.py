@@ -49,7 +49,8 @@ def _redact_params(params: dict) -> dict:
             if not redacted:
                 result[k] = v
         return result
-    except Exception:
+    except (KeyError, TypeError, _re.error) as e:
+        print(f"[exptrack] warning: param redaction failed: {e}", file=sys.stderr)
         return params
 
 
@@ -125,8 +126,10 @@ class Experiment:
             ginfo_gpu = gpu_info()
             if ginfo_gpu.get("gpu_count", 0) > 0:
                 self._params["_gpu"] = ginfo_gpu
-        except Exception:
-            pass  # never let GPU detection crash the user's script
+        except (ImportError, OSError, RuntimeError):
+            pass  # GPU libs unavailable or device inaccessible
+        except Exception as e:
+            print(f"[exptrack] warning: GPU detection failed: {e}", file=sys.stderr)
         self._finished  = False
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.project    = conf.get("project", cfg.project_root().name)
@@ -315,8 +318,9 @@ class Experiment:
                   file=sys.stderr)
         fval = float(value)
         if not math.isfinite(fval):
-            print(f"[exptrack] warning: metric '{key}' has non-finite value: {fval}",
+            print(f"[exptrack] warning: metric '{key}' has non-finite value: {fval} — skipping",
                   file=sys.stderr)
+            return
         if not self._should_store_metric(step):
             return
         ts = datetime.now(timezone.utc).isoformat()
@@ -335,18 +339,23 @@ class Experiment:
         if not self._should_store_metric(step):
             return
         ts = datetime.now(timezone.utc).isoformat()
+        finite_metrics = {}
         for k, v in metrics.items():
             fv = float(v)
             if not math.isfinite(fv):
-                print(f"[exptrack] warning: metric '{k}' has non-finite value: {fv}",
+                print(f"[exptrack] warning: metric '{k}' has non-finite value: {fv} — skipping",
                       file=sys.stderr)
+                continue
+            finite_metrics[k] = fv
+        if not finite_metrics:
+            return
         with get_db() as conn:
             conn.executemany(
                 "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-                [(self.id, k, float(v), step, ts) for k, v in metrics.items()]
+                [(self.id, k, v, step, ts) for k, v in finite_metrics.items()]
             )
             conn.commit()
-        for k, v in metrics.items():
+        for k, v in finite_metrics.items():
             plugins.on_metric(self, k, v, step)
 
     def last_metrics(self) -> dict:

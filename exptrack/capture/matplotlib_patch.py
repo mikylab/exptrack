@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import threading
 from typing import TYPE_CHECKING
 
 from .notebook_hooks import _nb_state
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     from ..core import Experiment
 
 _plt_patched = False
+_plt_patch_lock = threading.Lock()
 # Buffer for savefig calls that happen before an experiment is created
 _pending_artifacts: list[dict] = []
 
@@ -31,9 +33,10 @@ def patch_savefig(exp: Experiment | None = None):
     if exp is not None:
         _nb_state["exp"] = exp
         _flush_pending(exp)
-    if _plt_patched:
-        return
-    _plt_patched = True
+    with _plt_patch_lock:
+        if _plt_patched:
+            return
+        _plt_patched = True
 
     try:
         import matplotlib.figure as mfig

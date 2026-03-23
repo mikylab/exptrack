@@ -30,9 +30,29 @@ def cmd_run(args):
 
 def cmd_ui(args):
     from ..dashboard.app import main as ui_main
+    from ..dashboard.handler import _get_auth_token
     host = getattr(args, "host", "127.0.0.1")
     port = getattr(args, "port", 7331)
-    print(col(f"Launching dashboard -> http://{host}:{port}", C), file=sys.stderr)
+
+    # Handle --token / --clear-token (persist to config)
+    if getattr(args, "clear_token", False):
+        conf = cfg.load()
+        conf.pop("dashboard_token", None)
+        cfg.save(conf)
+        print(col("Dashboard token removed from config.", G), file=sys.stderr)
+    elif getattr(args, "token", None):
+        conf = cfg.load()
+        conf["dashboard_token"] = args.token
+        cfg.save(conf)
+        print(col("Dashboard token saved to .exptrack/config.json", G), file=sys.stderr)
+
+    token = _get_auth_token()
+    url = f"http://{host}:{port}"
+    if token:
+        print(col(f"Launching dashboard -> {url}?token={token}", C), file=sys.stderr)
+        print(col("Auth enabled -- use the URL above or add ?token=... to any request", G), file=sys.stderr)
+    else:
+        print(col(f"Launching dashboard -> {url}", C), file=sys.stderr)
     ui_main(host=host, port=port)
 
 
@@ -541,6 +561,83 @@ def _export_one_diff(row, out_path):
         "",
     ]
     (out_path / filename).write_text("\n".join(lines), encoding="utf-8")
+
+
+def cmd_backup(args):
+    """Create a backup of the experiment database using sqlite3.backup()."""
+    import sqlite3
+
+    conn = get_db()
+    conf = cfg.load()
+    root = cfg.project_root()
+
+    if args.path:
+        dest = Path(args.path)
+    else:
+        backup_dir = root / ".exptrack" / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest = backup_dir / f"{timestamp}.db"
+
+    if dest.exists() and not getattr(args, "force", False):
+        print(col(f"Backup file already exists: {dest}", R), file=sys.stderr)
+        print("Use --force to overwrite.", file=sys.stderr)
+        return
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        backup_conn = sqlite3.connect(str(dest))
+        conn.backup(backup_conn)
+        backup_conn.close()
+    except Exception as e:
+        print(col(f"Backup failed: {e}", R), file=sys.stderr)
+        return
+
+    size = dest.stat().st_size
+    print(col(f"Backup saved to {dest} ({_fmt_bytes(size)})", G))
+
+
+def cmd_restore(args):
+    """Restore the experiment database from a backup file using sqlite3.backup()."""
+    import sqlite3
+
+    source = Path(args.path)
+    if not source.exists():
+        print(col(f"Backup file not found: {source}", R), file=sys.stderr)
+        return
+
+    conf = cfg.load()
+    root = cfg.project_root()
+    db_path = root / conf.get("db", ".exptrack/experiments.db")
+
+    if not getattr(args, "yes", False):
+        print(f"This will overwrite the current database at {db_path}")
+        print(f"with the backup from {source}")
+        try:
+            answer = input("Continue? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return
+        if answer not in ("y", "yes"):
+            print("Aborted.")
+            return
+
+    # Close the current connection so we can overwrite the DB
+    from ..core.db import close_db
+    close_db()
+
+    try:
+        backup_conn = sqlite3.connect(str(source))
+        dest_conn = sqlite3.connect(str(db_path))
+        backup_conn.backup(dest_conn)
+        dest_conn.close()
+        backup_conn.close()
+    except Exception as e:
+        print(col(f"Restore failed: {e}", R), file=sys.stderr)
+        return
+
+    print(col(f"Database restored from {source}", G))
 
 
 def cmd_storage(args):

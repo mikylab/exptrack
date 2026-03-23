@@ -211,9 +211,7 @@ def api_compact(conn, body: dict) -> dict:
     # Resolve experiment IDs
     resolved_ids = []
     for eid in ids:
-        row = conn.execute(
-            "SELECT id FROM experiments WHERE id LIKE ?", (eid + "%",)
-        ).fetchone()
+        row = find_experiment(conn, eid, "id")
         if row:
             resolved_ids.append(row["id"])
     if not resolved_ids:
