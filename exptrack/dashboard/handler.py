@@ -113,6 +113,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_studies(conn))
         elif path == "/api/multi-compare":
             self._json(read_routes.api_multi_compare(conn, qs))
+        elif path == "/api/todos":
+            self._json(read_routes.api_get_todos())
+        elif path == "/api/commands":
+            self._json(read_routes.api_get_commands())
         elif path == "/api/all-studies":
             self._json(write_routes.api_all_studies(conn))
         elif path.startswith("/api/logs/"):
@@ -201,6 +205,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/clean-db":             lambda: write_routes.api_clean_db(conn),
             "/api/vacuum-db":            lambda: write_routes.api_vacuum_db(conn),
             "/api/reset-db":             lambda: write_routes.api_reset_db(conn),
+            "/api/todos/add":            lambda: write_routes.api_add_todo(body),
+            "/api/todos/update":         lambda: write_routes.api_update_todo(body),
+            "/api/todos/delete":         lambda: write_routes.api_delete_todo(body),
+            "/api/commands/add":         lambda: write_routes.api_add_command(body),
+            "/api/commands/update":      lambda: write_routes.api_update_command(body),
+            "/api/commands/delete":      lambda: write_routes.api_delete_command(body),
             "/api/storage-info":         lambda: write_routes.api_storage_info(conn),
         }
         handler = global_dispatch.get(path)

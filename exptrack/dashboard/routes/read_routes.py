@@ -233,6 +233,20 @@ def api_list_logs(conn, exp_id: str) -> dict:
     return {"files": files, "paths": paths, "suggested_paths": suggested}
 
 
+def api_get_todos() -> dict:
+    """Return the todo list from project config."""
+    from ...config import load
+    conf = load()
+    return {"todos": conf.get("todos", [])}
+
+
+def api_get_commands() -> dict:
+    """Return saved commands from project config."""
+    from ...config import load
+    conf = load()
+    return {"commands": conf.get("commands", [])}
+
+
 def api_list_images(conn, exp_id: str) -> dict:
     """List images from user-configured paths for this experiment."""
     import json

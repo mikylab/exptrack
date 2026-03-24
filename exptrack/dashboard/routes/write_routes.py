@@ -1184,6 +1184,115 @@ def api_reset_db(conn) -> dict:
     return {"ok": True, "deleted_experiments": n_exp}
 
 
+def api_add_todo(body: dict) -> dict:
+    """Add a todo item to the config."""
+    import hashlib
+    import time
+    from ... import config as cfg
+    conf = cfg.load()
+    todos = conf.get("todos", [])
+    text = (body.get("text") or "").strip()
+    if not text:
+        return {"error": "empty text"}
+    todo = {
+        "id": "t_" + hashlib.sha256((text + str(time.time())).encode()).hexdigest()[:8],
+        "text": text,
+        "done": False,
+        "tags": body.get("tags", []),
+        "study": body.get("study", ""),
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    todos.append(todo)
+    conf["todos"] = todos
+    cfg.save(conf)
+    return {"ok": True, "todo": todo}
+
+
+def api_update_todo(body: dict) -> dict:
+    """Update a todo item (toggle done, edit text, tags, study)."""
+    from ... import config as cfg
+    conf = cfg.load()
+    todos = conf.get("todos", [])
+    tid = body.get("id", "")
+    todo = next((t for t in todos if t["id"] == tid), None)
+    if not todo:
+        return {"error": "not found"}
+    if "done" in body:
+        todo["done"] = bool(body["done"])
+    if "text" in body:
+        todo["text"] = body["text"]
+    if "tags" in body:
+        todo["tags"] = body["tags"]
+    if "study" in body:
+        todo["study"] = body["study"]
+    conf["todos"] = todos
+    cfg.save(conf)
+    return {"ok": True}
+
+
+def api_delete_todo(body: dict) -> dict:
+    """Delete a todo item."""
+    from ... import config as cfg
+    conf = cfg.load()
+    todos = conf.get("todos", [])
+    tid = body.get("id", "")
+    conf["todos"] = [t for t in todos if t["id"] != tid]
+    cfg.save(conf)
+    return {"ok": True}
+
+
+def api_add_command(body: dict) -> dict:
+    """Add a saved command."""
+    import hashlib
+    import time
+    from ... import config as cfg
+    conf = cfg.load()
+    commands = conf.get("commands", [])
+    command = (body.get("command") or "").strip()
+    if not command:
+        return {"error": "empty command"}
+    label = (body.get("label") or "").strip() or command.split()[0]
+    cmd = {
+        "id": "c_" + hashlib.sha256((command + str(time.time())).encode()).hexdigest()[:8],
+        "label": label,
+        "command": command,
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    commands.append(cmd)
+    conf["commands"] = commands
+    cfg.save(conf)
+    return {"ok": True, "command": cmd}
+
+
+def api_update_command(body: dict) -> dict:
+    """Update a saved command."""
+    from ... import config as cfg
+    conf = cfg.load()
+    commands = conf.get("commands", [])
+    cid = body.get("id", "")
+    cmd = next((c for c in commands if c["id"] == cid), None)
+    if not cmd:
+        return {"error": "not found"}
+    if "label" in body:
+        cmd["label"] = body["label"]
+    if "command" in body:
+        cmd["command"] = body["command"]
+    conf["commands"] = commands
+    cfg.save(conf)
+    return {"ok": True}
+
+
+def api_delete_command(body: dict) -> dict:
+    """Delete a saved command."""
+    from ... import config as cfg
+    conf = cfg.load()
+    commands = conf.get("commands", [])
+    cid = body.get("id", "")
+    conf["commands"] = [c for c in commands if c["id"] != cid]
+    cfg.save(conf)
+    return {"ok": True}
+
+
 def api_storage_info(conn) -> dict:
     """Return database size and WAL size info."""
     from ... import config as cfg

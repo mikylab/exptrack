@@ -21,6 +21,8 @@ from .stage import JS_STAGE
 from .studies import JS_STUDIES
 from .table import JS_TABLE
 from .timeline import JS_TIMELINE
+from .todos import JS_TODOS
+from .commands import JS_COMMANDS
 
 
 def get_all_js() -> str:
@@ -28,7 +30,8 @@ def get_all_js() -> str:
     return (JS_CORE + JS_OWL + JS_SIDEBAR + JS_TABLE +
             JS_EXPERIMENTS + JS_INLINE_EDIT + JS_DETAIL + JS_CHARTS +
             JS_COMPARE + JS_MUTATIONS + JS_TIMELINE +
-            JS_IMAGE_COMPARE + JS_STUDIES + JS_STAGE + JS_MANUAL + JS_INIT)
+            JS_IMAGE_COMPARE + JS_STUDIES + JS_STAGE + JS_MANUAL +
+            JS_TODOS + JS_COMMANDS + JS_INIT)
 
 
 __all__ = [
@@ -48,5 +51,7 @@ __all__ = [
     "JS_STUDIES",
     "JS_TABLE",
     "JS_TIMELINE",
+    "JS_TODOS",
+    "JS_COMMANDS",
     "get_all_js",
 ]

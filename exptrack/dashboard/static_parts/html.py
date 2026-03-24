@@ -23,6 +23,8 @@ HTML_BODY = r"""</style>
 <div class="header">
   <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech" onclick="event.stopPropagation();dismissOwl()"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak('click')"><svg width="28" height="28" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
   <div class="header-actions">
+    <button class="toolbox-btn" data-tab="todos" onclick="openToolbox('todos')" title="Todo list">&#9745; Todo</button>
+    <button class="toolbox-btn" data-tab="commands" onclick="openToolbox('commands')" title="Saved commands">&gt;_ Cmds</button>
     <button class="theme-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
     <button class="help-btn" onclick="toggleHelp()">? Docs</button>
     <div class="settings-wrap">
@@ -330,6 +332,50 @@ HTML_BODY = r"""</style>
         <p style="color:var(--muted);font-size:12px;margin:4px 0 12px">Hold Ctrl/Cmd to select multiple experiments. Need at least 2.</p>
         <div id="multi-compare-result"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="toolbox-overlay" id="toolbox-overlay" onclick="closeToolbox()"></div>
+<div class="toolbox-drawer" id="toolbox-drawer">
+  <div class="toolbox-header">
+    <h3 id="toolbox-title">Toolbox</h3>
+    <button class="toolbox-close" onclick="closeToolbox()">&times;</button>
+  </div>
+  <div class="toolbox-tabs">
+    <button class="toolbox-tab active" data-tab="todos" onclick="switchToolboxTab('todos')">&#9745; Todos</button>
+    <button class="toolbox-tab" data-tab="commands" onclick="switchToolboxTab('commands')">&gt;_ Commands</button>
+  </div>
+  <div class="toolbox-body">
+    <div class="toolbox-panel active" id="toolbox-todos">
+      <div class="todo-add-form">
+        <div class="todo-add-row">
+          <input type="text" id="todo-text-input" placeholder="What needs to be done?" onkeydown="todoAddKeydown(event)">
+          <button class="todo-add-btn" onclick="addTodo()">Add</button>
+        </div>
+        <div class="todo-meta-row">
+          <input type="text" id="todo-tags-input" placeholder="Tags (comma-separated)" style="flex:1">
+          <select id="todo-study-select"><option value="">no study</option></select>
+        </div>
+      </div>
+      <div class="todo-filters">
+        <button class="todo-filter-btn active" data-filter="all" onclick="setTodoFilter('all')">All</button>
+        <button class="todo-filter-btn" data-filter="active" onclick="setTodoFilter('active')">Active</button>
+        <button class="todo-filter-btn" data-filter="done" onclick="setTodoFilter('done')">Done</button>
+        <span id="todo-tag-filters"></span>
+        <span class="todo-count" id="todo-count"></span>
+      </div>
+      <div class="todo-list" id="todo-list"></div>
+    </div>
+    <div class="toolbox-panel" id="toolbox-commands">
+      <div class="cmd-add-form">
+        <input type="text" id="cmd-label-input" placeholder="Label (e.g. Train baseline)" onkeydown="cmdAddKeydown(event)">
+        <textarea id="cmd-command-input" rows="2" placeholder="Command (e.g. exptrack run train.py --lr 0.01)" onkeydown="cmdAddKeydown(event)"></textarea>
+        <div class="cmd-add-row">
+          <button class="cmd-add-btn" onclick="addCmd()">Add Command</button>
+        </div>
+      </div>
+      <div class="cmd-list" id="cmd-list"></div>
     </div>
   </div>
 </div>
