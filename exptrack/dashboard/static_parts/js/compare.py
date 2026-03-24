@@ -216,8 +216,15 @@ async function doCompare() {
     api('/api/images/' + id1),
     api('/api/images/' + id2),
   ]);
-  const imgs1 = (imgData1.images || []);
-  const imgs2 = (imgData2.images || []);
+  let imgs1 = (imgData1.images || []);
+  let imgs2 = (imgData2.images || []);
+  // Merge artifact images (from DB) into directory-scanned images
+  for (const ai of (imgData1.artifact_images || [])) {
+    if (!imgs1.some(i => i.path === ai.path)) imgs1.push(ai);
+  }
+  for (const ai of (imgData2.artifact_images || [])) {
+    if (!imgs2.some(i => i.path === ai.path)) imgs2.push(ai);
+  }
 
   if (imgs1.length || imgs2.length) {
     html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Images</summary>';

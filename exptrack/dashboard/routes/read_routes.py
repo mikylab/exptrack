@@ -300,12 +300,19 @@ def api_list_images(conn, exp_id: str) -> dict:
     ).fetchall()
     for r in art_rows:
         if r["path"] and any(r["path"].lower().endswith(ext) for ext in image_exts_tuple):
-            abs_path = os.path.normpath(os.path.join(root, r["path"]))
+            # Artifact paths are stored as absolute — convert to relative
+            art_path = r["path"]
+            if os.path.isabs(art_path):
+                try:
+                    art_path = os.path.relpath(art_path, root)
+                except ValueError:
+                    continue
+            abs_path = os.path.normpath(os.path.join(root, art_path))
             try:
                 stat = os.stat(abs_path)
                 artifact_images.append({
-                    "name": os.path.basename(r["path"]),
-                    "path": r["path"],
+                    "name": os.path.basename(art_path),
+                    "path": art_path,
                     "size": stat.st_size,
                     "modified": stat.st_mtime,
                     "dir": "artifacts",
@@ -314,8 +321,8 @@ def api_list_images(conn, exp_id: str) -> dict:
             except OSError:
                 # File doesn't exist on disk — still list it with placeholder info
                 artifact_images.append({
-                    "name": os.path.basename(r["path"]),
-                    "path": r["path"],
+                    "name": os.path.basename(art_path),
+                    "path": art_path,
                     "size": 0,
                     "modified": 0,
                     "dir": "artifacts",
