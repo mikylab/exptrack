@@ -1,41 +1,49 @@
 # Configuration
 
-expTrack stores config in `.exptrack/config.json`. This file is safe to commit (no secrets).
+expTrack stores config in `.exptrack/config.json`. Safe to commit — no secrets.
 
 ```jsonc
 {
-  // Database and storage paths
-  "db":                    ".exptrack/experiments.db",
-  "outputs_dir":           "outputs",
-  "notebook_history_dir":  ".exptrack/notebook_history",
+  // --- Paths ---
+  "db":                    ".exptrack/experiments.db",   // where the SQLite database lives
+  "outputs_dir":           "outputs",                    // experiment output files go here
+  "notebook_history_dir":  ".exptrack/notebook_history", // notebook cell snapshots
 
-  // Limits
-  "max_git_diff_kb":       256,        // skip diffs larger than this
-  "hash_max_mb":           500,        // partial-hash files larger than this
+  // --- Limits ---
+  "max_git_diff_kb":       256,       // skip diffs larger than this (saves DB space)
+  "hash_max_mb":           500,       // partial-hash files larger than this (speeds up large artifacts)
 
-  // Artifact handling
-  "artifact_strategy":     "reference", // "reference" or "copy"
-  "protect_on_rerun":      true,        // archive old artifacts on path conflict
+  // --- Artifacts ---
+  "artifact_strategy":     "reference",  // "reference" (default) = log path only; "copy" = copy file into outputs
+  "protect_on_rerun":      true,         // archive old artifacts when a rerun would overwrite them
 
-  // Timezone for dashboard display
-  "timezone":              "",          // "" = UTC, or "America/New_York", etc.
+  // --- Metrics ---
+  "metric_keep_every":     1,    // store every Nth metric point (increase to thin large series during training)
+  "metric_max_points":     500,  // max points shown on dashboard charts (server-side downsampling)
 
-  // Auto-capture toggles
+  // --- Display ---
+  "timezone":              "",   // dashboard timezone: "" = UTC, or e.g. "America/New_York"
+
+  // --- Auto-capture toggles ---
+  // Turn off specific capture mechanisms if they interfere with your setup
   "auto_capture": {
-    "argparse":  true,                  // patch ArgumentParser.parse_args()
-    "argv":      true,                  // fallback: parse raw sys.argv
-    "notebook":  true                   // capture notebook cell changes
+    "argparse":  true,     // patch ArgumentParser.parse_args()
+    "argv":      true,     // fallback: parse raw sys.argv flags
+    "notebook":  true      // capture notebook cell changes
   },
 
-  // Run naming
+  // --- Run naming ---
+  // Controls the auto-generated run name: {script}__{params}__{MMDD}_{uid}
   "naming": {
-    "max_param_keys": 4,                // max params included in run name
-    "key_max_len":    8                  // param key length limit in name
+    "max_param_keys": 4,   // max params included in name
+    "key_max_len":    8    // param key length limit in name
   },
 
-  // Plugins
+  // --- Plugins ---
   "plugins": {
-    "enabled": []                       // list of plugin module names
+    "enabled": []          // list of plugin module names, e.g. ["github_sync"]
   }
 }
 ```
+
+All values are optional — expTrack uses sensible defaults. You only need to add the keys you want to change.

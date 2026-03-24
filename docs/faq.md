@@ -1,183 +1,75 @@
 # FAQ
 
-### If I run a script and it prints results, will that be logged?
+### Does expTrack capture print output or stdout?
 
-No. expTrack does **not** capture stdout/stderr output. Only explicitly logged metrics are recorded. If your script prints `accuracy: 0.95` to the terminal, that value is not stored anywhere in expTrack. To capture it, use the `__exptrack__` global:
-
-```python
-exp = globals().get("__exptrack__")
-if exp:
-    exp.log_metric("accuracy", 0.95)
-```
-
-Print statements, progress bars, and terminal output are not tracked — only params, metrics, artifacts, and git state.
-
-### What format does my script need to be in for auto-logging?
-
-Any Python script works. There are no format requirements. Just run it with `exptrack run`:
-
-```bash
-exptrack run train.py --lr 0.01 --epochs 20
-```
-
-If your script uses **argparse**, all arguments are captured automatically as params. If it doesn't use argparse, expTrack falls back to parsing raw `sys.argv` flags (e.g. `--lr 0.01` becomes param `lr=0.01`). Scripts using Click, Fire, or manual `sys.argv` parsing all work — expTrack captures whatever flags it can find.
-
-The only thing that requires explicit logging is **metrics** (loss, accuracy, etc.) — expTrack can't guess which numbers matter to you.
-
-### Can I edit runs after they finish?
-
-Yes. You can edit several fields after a run completes:
-
-- **Name:** `exptrack show <id>` displays the current name; in the dashboard, double-click the name to rename
-- **Tags:** `exptrack tag <id> baseline` / `exptrack untag <id> baseline`, or double-click tags in the dashboard
-- **Notes:** `exptrack note <id> "text"` (appends) / `exptrack edit-note <id> "text"` (replaces), or double-click notes in the dashboard
-- **Artifacts:** Add new ones with `exptrack log-artifact <id> path/to/file`, or manage them in the dashboard detail view
-- **Metrics:** Log additional metrics via `exptrack log-metric <id> key value` or from the dashboard
-
-You **cannot** change params or git state after the fact — those are captured at run time and are intentionally immutable for reproducibility.
-
-### Does expTrack work with scripts that don't use argparse?
-
-Yes. If argparse isn't detected, expTrack parses `sys.argv` directly. It recognizes `--key value` and `--key=value` patterns. Scripts using Click, Fire, Typer, or manual argument parsing will have their CLI flags captured as params. Single-dash flags like `-lr 0.01` are also captured.
-
-### Can I use expTrack with SLURM or multi-step pipelines?
-
-Yes, this is a first-class use case. Use the shell pipeline commands:
-
-```bash
-eval $(exptrack run-start --script train --lr 0.01 --epochs 50)
-python train.py --lr 0.01 --epochs 50
-exptrack log-metric $EXP_ID val_loss 0.234 --step 10
-exptrack run-finish $EXP_ID --metrics results.json
-```
-
-SLURM environment variables (`SLURM_JOB_ID`, `SLURM_NODELIST`, etc.) are captured automatically.
-
-### How do I track a multi-step pipeline (train → test → analyze)?
-
-Each `run-start` creates a **separate experiment**. Call `run-start`/`run-finish` for each step and save `$EXP_ID` before the next step overwrites it. Use `--study` to group them and `--stage` to order them:
-
-```bash
-STUDY="resnet-ablation-$(date +%s)"
-
-# Step 1: Train
-eval $(exptrack run-start --script train.py --study "$STUDY" --stage 1 --stage-name train \
-      --lr 0.01)
-TRAIN_ID=$EXP_ID
-python train.py --train --lr 0.01
-exptrack run-finish $TRAIN_ID
-
-# Step 2: Test
-eval $(exptrack run-start --script train.py --study "$STUDY" --stage 2 --stage-name test)
-TEST_ID=$EXP_ID
-python train.py --test
-exptrack run-finish $TEST_ID
-
-# Step 3: Analyze
-eval $(exptrack run-start --script analyze.py --study "$STUDY" --stage 3 --stage-name analyze)
-python analyze.py
-exptrack run-finish $EXP_ID
-```
-
-Filter by study in the dashboard or CLI (`exptrack ls --study <name>`). You can also add experiments to studies after the fact: `exptrack study <id> <name>`. See [`examples/pipeline_multistep.sh`](../examples/pipeline_multistep.sh) for a full working example.
-
-Note: `exptrack run` cannot wrap multiple scripts as one experiment — it's designed for single-script tracking. For multi-step workflows, use the `run-start`/`run-finish` shell commands as shown above.
-
-### What's the difference between studies and tags?
-
-**Studies** group experiments that belong together — pipeline steps, ablation sweeps, related runs across a phase of work. Use `--study` on `run-start` or `exptrack study <id> <name>` after the fact. Filter with `exptrack ls --study <name>`.
-
-**Tags** are categorical labels — `baseline`, `production`, `needs-review`. Use `--tags` on `run-start` or `exptrack tag <id> <tag>`.
-
-An experiment can have both. Think of studies as "which batch is this part of?" and tags as "what kind of run is this?"
-
-### How are default experiment names generated?
-
-Names follow the pattern `{script}__{params}__{MMDD}_{uid}`, e.g. `train__lr0.01_bs32__0312_a3f2`.
-
-- **Script** — filename without extension (`train.py` → `train`). Falls back to `exp` if no script.
-- **Params** — first N params as `key=value` (floats get 3 sig figs, bools become 0/1, strings truncated to 12 chars).
-- **Date** — month + day (`MMDD`).
-- **UID** — 4 hex chars from a random UUID (guarantees uniqueness).
-
-Customize via `.exptrack/config.json`:
-
-```json
-{
-  "naming": {
-    "max_param_keys": 4,
-    "key_max_len": 8
-  }
-}
-```
-
-Or override entirely with `--name` on `exptrack run` or `run-start`. For pipeline steps, use `--script` to set the script stem (e.g. `--script preprocess` → `preprocess__...`).
-
-### Does expTrack capture plots and figures automatically?
-
-Yes — if you use matplotlib. expTrack monkey-patches `plt.savefig()` and `Figure.savefig()` so any saved figure is automatically copied to the experiment's output directory and registered as an artifact. If you save figures before the experiment starts, they're buffered and linked when it begins.
-
-Other plotting libraries (plotly, seaborn wrapping matplotlib, etc.) work too as long as they ultimately call `plt.savefig()`.
-
-### Does expTrack need an internet connection?
-
-No. Everything is local. The database is a single SQLite file in `.exptrack/experiments.db`. The dashboard uses stdlib `http.server` on localhost. The only network request is the Chart.js CDN script in the dashboard — and the UI still works without it (you just won't see metric charts).
-
-### Can I track experiments across multiple machines?
-
-expTrack is designed for single-machine, local-first use. Each machine has its own `.exptrack/` database. If you need to aggregate results, you can:
-
-- Use `exptrack export <id> --format json` and collect the JSON files
-- Enable the GitHub Sync plugin to append run metadata to a shared JSONL file in a GitHub repo
-- Query the SQLite database directly
-
-### How do I compare two experiments?
-
-**CLI:** `exptrack compare <id1> <id2>` shows a side-by-side diff of params and metrics.
-
-**Dashboard:** Click "Compare" in the toolbar, select two experiments for Pair Compare (params, metrics, charts, images), or select 3+ for Multi Compare (bar charts across all selected runs).
-
-### What happens if I rerun the same script?
-
-A new experiment is created each time. If the new run would overwrite artifact files from a previous run, expTrack archives the old artifacts first (when `protect_on_rerun` is enabled in config). Params and metrics are stored independently per run.
-
-### Can I delete experiments?
-
-Yes. `exptrack rm <id>` deletes a single run (with confirmation). `exptrack clean` bulk-deletes all failed runs. In the dashboard, select experiments and use the Delete bulk action. Deletion removes the database records but does not delete output files on disk — use `rm -rf outputs/<run_name>` for that.
-
-### Does expTrack affect my script's performance?
-
-The overhead is negligible. Argparse patching adds microseconds to `parse_args()`. Git state capture (branch, commit, diff) runs once at startup and takes a few milliseconds. Metric logging is a SQLite insert per call. The only potentially slow operation is capturing very large git diffs, which is capped at 256 KB by default (`max_git_diff_kb` in config).
-
-### Can I use expTrack in a Jupyter notebook?
-
-Yes. Add `%load_ext exptrack` in your first cell. expTrack will automatically track cell executions, variable changes, code diffs, and artifacts. See the [Notebooks](../README.md#notebooks) section for details.
-
-### How do I log metrics from a training loop?
-
-It depends on your setup:
-
-- **`exptrack run`:** Use the injected `__exptrack__` global (see [Scripts](../README.md#scripts))
-- **Notebook (magic):** `import exptrack.notebook as exp; exp.metric("loss", 0.5, step=1)`
-- **Notebook (explicit):** Same as above
-- **Python API:** `exp.log_metric("loss", 0.5, step=1)`
-- **Shell pipeline:** `exptrack log-metric $EXP_ID loss 0.5 --step 1`
-
-### How do I view images in the dashboard?
-
-Image artifacts (PNG, JPG, GIF, SVG, WebP) appear in the **Images** tab of the detail view as a gallery grid — they are not shown as thumbnails in the overview artifacts table. Click a thumbnail in the Images tab to see the full-size image in a lightbox. In Pair Compare, use the image comparison tool with side-by-side, overlay, or swipe modes.
-
-### Can I view CSVs and data files in the dashboard?
-
-Yes. CSV, TSV, JSON, and JSONL artifacts are rendered as interactive tables under the **Data Files** tab. Register them with `exp.out("results.csv")` in notebooks or `exptrack log-artifact <id> results.csv` from the CLI.
-
-### How do I capture training logs?
-
-expTrack does not auto-capture stdout/stderr. Redirect output to a file and register it as an artifact:
+expTrack does not capture stdout or stderr. Only explicitly logged metrics are stored. To capture terminal output, redirect to a file and register it:
 
 ```bash
 exptrack run train.py 2>&1 | tee train.log
 exptrack log-artifact <id> train.log --label "training log"
 ```
 
-In notebooks, use `exp.out("log.txt")` and write to that path.
+### What script format does it need?
+
+Any Python script works. If it uses **argparse**, all arguments are captured automatically. If not, expTrack falls back to parsing `sys.argv` flags (`--lr 0.01` → param `lr=0.01`). Click, Fire, Typer, and manual parsing all work.
+
+### Can I edit runs after they finish?
+
+Yes — **name, tags, notes, artifacts, and metrics** are all editable (CLI or double-click in the dashboard). **Params and git state** are intentionally immutable for reproducibility.
+
+### How do multi-step pipelines work?
+
+Each `run-start` creates a separate experiment. Use `--study` to group steps and `--stage` to number them:
+
+```bash
+eval $(exptrack run-start --script train --study my-run --stage 1 --stage-name train --lr 0.01)
+TRAIN_ID=$EXP_ID; python train.py; exptrack run-finish $TRAIN_ID
+
+eval $(exptrack run-start --script test --study my-run --stage 2 --stage-name test)
+TEST_ID=$EXP_ID; python test.py; exptrack run-finish $TEST_ID
+```
+
+### Studies vs. tags?
+
+**Studies** = "which batch is this part of?" (pipeline steps, ablation sweeps).
+**Tags** = "what kind of run?" (`baseline`, `production`, `needs-review`).
+An experiment can have both.
+
+### How are run names generated?
+
+Pattern: `{script}__{params}__{MMDD}_{uid}` — e.g. `train__lr0.01_bs32__0312_a3f2`.
+
+Override with `--name` on `exptrack run` or `run-start`. Customize param inclusion via `naming` in [config](configuration.md).
+
+### Does it capture plots automatically?
+
+If you use matplotlib, yes. `plt.savefig()` and `Figure.savefig()` are patched so saved figures are copied to the experiment's output directory and registered as artifacts. This also works with libraries that call matplotlib under the hood (seaborn, etc.).
+
+### Does it need internet?
+
+expTrack is fully local. The database is SQLite and the dashboard uses the standard library HTTP server. The dashboard loads Chart.js from a CDN for metric charts, but the rest of the UI works without it.
+
+### What's the performance overhead?
+
+Minimal. Argparse patching adds microseconds to `parse_args()`. Git state capture runs once at startup and takes a few milliseconds. Each metric is a single SQLite insert. Large git diffs are capped at 256 KB by default (`max_git_diff_kb` in config).
+
+### Can I track across multiple machines?
+
+expTrack is single-machine by design. To aggregate results: use `exptrack export <id> --format json`, enable the [GitHub Sync plugin](plugins.md), or query the SQLite database directly.
+
+### How do I compare experiments?
+
+**CLI:** `exptrack compare <id1> <id2>`
+**Dashboard:** Click "Compare" → Pair (side-by-side) or Multi (bar charts across 3+ runs).
+
+### What happens on rerun?
+
+A new experiment is created each time. Old artifacts at conflicting paths are archived automatically (when `protect_on_rerun` is enabled).
+
+### Can I view CSVs and data files in the dashboard?
+
+Yes. CSV, TSV, JSON, and JSONL artifacts appear under the **Data Files** tab as interactive sortable tables.
+
+### How do I view images?
+
+Image artifacts (PNG, JPG, GIF, SVG, WebP) appear in the **Images** tab as a gallery grid. Click to enlarge. Pair Compare supports side-by-side, overlay, and swipe modes.

@@ -693,6 +693,7 @@ async function loadAllStudies() {
 
 function toggleHelp() {
   document.getElementById('help-panel').classList.toggle('visible');
+  document.getElementById('help-overlay').classList.toggle('visible');
 }
 
 // ── Settings panel ─────────────────────────────────────────────────────────
