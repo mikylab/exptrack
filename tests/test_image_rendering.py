@@ -427,13 +427,12 @@ def test_full_pipeline_compare_images_to_serving(tmp_project):
 # ── JS HTML generation checks ────────────────────────────────────────────────
 
 def test_detail_js_generates_img_tags_for_artifacts():
-    """The detail view JS produces <img> tags for image artifacts."""
+    """The detail overview does NOT render image thumbnails (images only in Images tab)."""
     from exptrack.dashboard.static_parts.js.detail import JS_DETAIL
 
-    assert "isImage" in JS_DETAIL, "Detail JS should detect image artifacts"
-    assert "artifact-thumb" in JS_DETAIL, "Detail JS should render artifact thumbnails"
-    assert "openImageModal" in JS_DETAIL, "Detail JS should wire up image modal on click"
-    assert "fileUrl(a.path)" in JS_DETAIL, "Detail JS should use fileUrl() helper"
+    assert "isImage" not in JS_DETAIL, "Detail overview should not detect image artifacts (moved to Images tab)"
+    assert "artifact-thumb" not in JS_DETAIL, "Detail overview should not render artifact thumbnails"
+    assert "artifactTypeBadge" in JS_DETAIL, "Detail JS should still render artifact type badges"
 
 
 def test_images_tab_js_generates_img_tags():

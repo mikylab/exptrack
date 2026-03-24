@@ -18,7 +18,7 @@ CSS_TOOLBOX = """
   .toolbox-overlay.visible { opacity: 1; pointer-events: auto; }
 
   .toolbox-drawer {
-    position: fixed; top: 0; right: -400px; bottom: 0; width: 380px;
+    position: fixed; top: 0; right: -480px; bottom: 0; width: 460px;
     background: var(--card-bg); border-left: 1px solid var(--border);
     box-shadow: -4px 0 20px rgba(0,0,0,0.12); z-index: 1000;
     display: flex; flex-direction: column;
@@ -62,12 +62,12 @@ CSS_TOOLBOX = """
   .todo-add-row, .cmd-add-row { display: flex; gap: 6px; align-items: center; }
   .cmd-add-row { justify-content: flex-end; }
 
-  .todo-add-form input[type="text"], .cmd-add-form input[type="text"] {
+  .todo-add-form input[type="text"], .todo-add-form input[type="date"], .cmd-add-form input[type="text"] {
     flex: 1; font-family: inherit; font-size: 13px;
     border: 1px solid var(--border); padding: 7px 10px; border-radius: 4px;
     background: var(--card-bg); color: var(--fg);
   }
-  .todo-add-form input[type="text"]:focus, .cmd-add-form input[type="text"]:focus {
+  .todo-add-form input[type="text"]:focus, .todo-add-form input[type="date"]:focus, .cmd-add-form input[type="text"]:focus {
     outline: none; border-color: var(--blue);
   }
   .todo-add-form input[type="text"]::placeholder, .cmd-add-form input[type="text"]::placeholder { color: var(--muted); }
@@ -197,7 +197,7 @@ CSS_TOOLBOX = """
 
   .cmd-code-wrap { position: relative; padding: 0; }
   .cmd-code {
-    display: block; padding: 10px 12px; padding-right: 70px;
+    display: block; padding: 10px 12px 24px; padding-right: 70px;
     font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
     font-size: 12px; line-height: 1.5; color: var(--fg);
     white-space: pre-wrap; word-break: break-all;
@@ -216,11 +216,11 @@ CSS_TOOLBOX = """
   .cmd-copy-btn.copied { border-color: var(--green, #059669); color: var(--green, #059669); }
 
   .cmd-modified {
-    position: absolute; bottom: 4px; right: 6px;
-    font-size: 10px; color: var(--blue); cursor: pointer;
-    opacity: 0.7; font-family: inherit;
+    position: absolute; bottom: 5px; left: 12px;
+    font-size: 12px; color: var(--blue); cursor: pointer;
+    font-family: inherit;
   }
-  .cmd-modified:hover { opacity: 1; text-decoration: underline; }
+  .cmd-modified:hover { text-decoration: underline; }
 
   /* Edit mode for commands */
   .cmd-edit-form {

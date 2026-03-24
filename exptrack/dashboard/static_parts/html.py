@@ -78,164 +78,109 @@ HTML_BODY = r"""</style>
 
 <div class="help-panel" id="help-panel">
   <button class="help-close" onclick="toggleHelp()">&times;</button>
-  <h3>What is exptrack?</h3>
-  <p>A zero-friction experiment tracker for ML workflows. It captures parameters, metrics, variables, code changes, and artifacts automatically — no code changes needed.</p>
-
-  <h3>Key Concepts</h3>
+  <h3>Quick Start</h3>
   <div class="help-grid">
     <div class="help-item">
-      <strong>Params</strong>
-      <span>Hyperparameters captured from argparse, CLI flags, or notebook variables (lr, batch_size, etc). These define WHAT you ran.</span>
+      <strong>Track a script</strong>
+      <span><code>exptrack run train.py --lr 0.01</code><br>Params captured automatically from argparse or CLI flags.</span>
     </div>
     <div class="help-item">
-      <strong>Metrics</strong>
-      <span>Numeric values logged during training (loss, accuracy, etc). Tracked per step with min/max/last, visualized as line charts.</span>
+      <strong>Track a notebook</strong>
+      <span><code>%load_ext exptrack</code> in your first cell.<br>Cells, variables, and plots tracked automatically.</span>
     </div>
     <div class="help-item">
-      <strong>Variables</strong>
-      <span>Notebook variable values captured automatically — scalars, arrays, DataFrames, tensors. Grouped by type (Scalars, Arrays &amp; Tensors, Other).</span>
+      <strong>Shell / SLURM pipeline</strong>
+      <span><code>eval $(exptrack run-start --lr 0.01)</code><br>then <code>exptrack run-finish $EXP_ID</code></span>
     </div>
     <div class="help-item">
-      <strong>Artifacts</strong>
-      <span>Output files (plots, models, CSVs) auto-captured via plt.savefig() or manually. Viewable in-dashboard with image galleries and data file previews.</span>
-    </div>
-    <div class="help-item">
-      <strong>Timeline</strong>
-      <span>Ordered log of every cell execution, variable change, and artifact save. Filter by event type. Includes cell lineage viewer and source diffs.</span>
-    </div>
-    <div class="help-item">
-      <strong>Tags &amp; Notes</strong>
-      <span>Labels and annotations to organize experiments. Tags have autocomplete; notes support multi-line text. Both are inline-editable.</span>
-    </div>
-    <div class="help-item">
-      <strong>Studies</strong>
-      <span>Group related experiments into named studies. Create from selected experiments, add/remove members, rename or delete globally. Highlight by study for visual grouping.</span>
-    </div>
-    <div class="help-item">
-      <strong>Stages</strong>
-      <span>Assign a stage number and optional label to experiments (e.g. "1 (preprocessing)", "2 (training)"). Double-click to edit in table or detail view.</span>
+      <strong>Log metrics</strong>
+      <span>In scripts: <code>__exptrack__.log_metric("loss", 0.5, step=i)</code><br>CLI: <code>exptrack log-metric $ID loss 0.5</code></span>
     </div>
   </div>
 
-  <h3>Dashboard Views</h3>
-  <p><strong>Experiment table:</strong> Main view with sortable columns, status chips, search bar, and tag/study filters. Group by git commit, branch, status, or none. Pin experiments (&#9734;) to keep them at the top. Configure visible columns via the &#9881; Columns button.</p>
-  <p><strong>Sidebar:</strong> Collapsible experiment list on the left. Use checkboxes to select experiments for bulk actions (compare, export, add to study, compact, delete). Opens automatically when viewing experiment details.</p>
-  <p><strong>Detail view:</strong> Click an experiment to see its full details. Four tabs:</p>
-  <p style="margin-left:16px"><strong>Overview</strong> — metadata, params, metrics with interactive charts, variables, artifacts, code changes, and reproduce command.<br>
-  <strong>Timeline</strong> — execution events filtered by type (code, variables, artifacts, observational), cell source viewer.<br>
-  <strong>Images</strong> — image gallery with side-by-side, overlay (opacity slider), and swipe comparison modes.<br>
-  <strong>Data Files</strong> — preview CSV, TSV, JSON, and JSONL artifacts as rendered tables.</p>
-  <p><strong>Compare:</strong> Two modes — <em>Pair Compare</em> (side-by-side params, metrics with deltas, overlaid charts, image comparison) and <em>Multi Compare</em> (3+ experiments with bar charts per metric). Use "Show only differences" to hide matching values.</p>
+  <h3>How to Use This Dashboard</h3>
+  <p style="margin-bottom:6px"><strong>Click an experiment</strong> to open its detail view. <strong>Double-click</strong> any field (name, tags, notes, command) to edit it inline. <strong>Checkbox-select</strong> multiple experiments in the sidebar for bulk actions.</p>
+  <div class="help-grid">
+    <div class="help-item">
+      <strong>Overview tab</strong>
+      <span>Params, metrics (with chart preview), artifacts, code changes, and reproduce command.</span>
+    </div>
+    <div class="help-item">
+      <strong>Charts tab</strong>
+      <span>Full metric charts with scale controls (linear/log), zoom, and configurable downsampling.</span>
+    </div>
+    <div class="help-item">
+      <strong>Images tab</strong>
+      <span>Gallery of image artifacts. Click to enlarge. Compare images within the same experiment side-by-side, overlay, or swipe.</span>
+    </div>
+    <div class="help-item">
+      <strong>Data Files tab</strong>
+      <span>CSV, JSON, and JSONL artifacts rendered as interactive tables with sortable columns.</span>
+    </div>
+    <div class="help-item">
+      <strong>Compare (&#x2194;)</strong>
+      <span><em>Pair:</em> side-by-side params, metrics with deltas, overlaid charts, image diff. <em>Multi:</em> bar charts across 3+ runs.</span>
+    </div>
+    <div class="help-item">
+      <strong>Reproduce &amp; Commands</strong>
+      <span>Each experiment stores a reproduce command. Click <strong>&gt;_ Save</strong> to save it (with tags &amp; study) to the Commands notepad for quick reuse.</span>
+    </div>
+  </div>
 
-  <h3>Viewing Images</h3>
-  <p>Image artifacts (PNG, JPG, GIF, SVG, WebP) are displayed in a gallery grid under the <strong>Images</strong> tab. Click any thumbnail to open a full-size lightbox modal. When viewing two experiments in Pair Compare, use the image comparison tool with three modes:</p>
-  <p style="margin-left:16px"><strong>Side by side</strong> — both images shown next to each other for visual comparison.<br>
-  <strong>Overlay</strong> — layer images with an opacity slider to spot subtle differences.<br>
-  <strong>Swipe</strong> — drag a divider across the image to reveal one side vs. the other.</p>
-  <p>Images saved via <code>plt.savefig()</code> are auto-captured as artifacts. Other images can be registered with <code>exptrack log-artifact &lt;id&gt; path/to/image.png</code>.</p>
+  <h3>Key Concepts</h3>
+  <p style="margin-bottom:2px">
+    <strong>Params</strong> &mdash; auto-captured hyperparameters (what you ran). &nbsp;
+    <strong>Metrics</strong> &mdash; logged numeric values tracked per step. &nbsp;
+    <strong>Artifacts</strong> &mdash; output files (plots, models, CSVs). <code>plt.savefig()</code> is auto-captured.
+  </p>
+  <p style="margin-bottom:2px">
+    <strong>Tags</strong> &mdash; categorical labels (<code>baseline</code>, <code>v2</code>). &nbsp;
+    <strong>Studies</strong> &mdash; group related experiments (pipeline steps, sweeps). &nbsp;
+    <strong>Stages</strong> &mdash; numbered steps within a study.
+  </p>
+  <p>
+    <strong>Timeline</strong> &mdash; ordered log of cell executions, variable changes, and artifact saves (notebooks).
+  </p>
 
-  <h3>Viewing Logs &amp; Text Files</h3>
-  <p>Text-based artifacts (log files, plain text, stdout captures) are viewable directly from the artifact list in the Overview tab. Click the artifact path to open it. For scripts run via <code>exptrack run</code>, note that stdout/stderr is <em>not</em> auto-captured &mdash; redirect output to a file and register it as an artifact:</p>
-  <p style="margin-left:16px"><code>exptrack run train.py --lr 0.01 2&gt;&amp;1 | tee $EXP_OUT/train.log</code><br>
-  or after the run: <code>exptrack log-artifact &lt;id&gt; train.log --label "training log"</code></p>
+  <h3>Toolbar &amp; Settings</h3>
+  <p>
+    <strong>&#9790;</strong> dark mode &nbsp;|&nbsp;
+    <strong>&#9881; Columns</strong> show/hide &amp; resize table columns &nbsp;|&nbsp;
+    <strong>&#9881; Settings</strong> timezone, metric thinning, DB maintenance &nbsp;|&nbsp;
+    <strong>&#9745; Todo</strong> &amp; <strong>&gt;_ Cmds</strong> project-level task list and command snippets &nbsp;|&nbsp;
+    <strong>&#10133; New</strong> create experiments manually &nbsp;|&nbsp;
+    <strong>&#9881; Manage</strong> rename/delete tags &amp; studies globally
+  </p>
 
-  <h3>Viewing CSVs &amp; Data Files</h3>
-  <p>CSV, TSV, JSON, and JSONL artifacts are rendered as interactive tables under the <strong>Data Files</strong> tab. The dashboard auto-detects file type by extension and displays columns with sortable headers. Large files are truncated to the first 100 rows with a note showing total row count.</p>
-  <p>To register a CSV as an artifact, either save it via <code>exp.out("results.csv")</code> in notebooks or <code>exptrack log-artifact &lt;id&gt; results.csv --label "predictions"</code> from the CLI. JSON files are displayed as formatted key-value tables; JSONL files show one row per line.</p>
-
-  <h3>Bulk Operations</h3>
-  <p>Select experiments via checkboxes, then use the action bar: <strong>Compare</strong> (2+), <strong>Add to Study</strong>, <strong>Export</strong> (JSON, CSV, TSV, Markdown, Plain Text), <strong>Copy</strong> to clipboard, <strong>Compact</strong> (strip diffs to free storage), or <strong>Delete</strong>.</p>
-
-  <h3>Inline Editing</h3>
-  <p>Double-click to edit: experiment name, tags (with autocomplete), studies (with autocomplete), notes (Ctrl+Enter to save), stage, script path, and reproduce command. Press <strong>Enter</strong> to save, <strong>Escape</strong> to cancel.</p>
-
-  <h3>Settings</h3>
-  <p><strong>Dark mode:</strong> Toggle via the &#9790; button. Preference is saved locally.<br>
-  <strong>Timezone:</strong> Select from the TZ dropdown. Applied to all timestamps and saved to project config.<br>
-  <strong>Columns:</strong> Show/hide and resize table columns via &#9881; Columns. Preferences saved locally.<br>
-  <strong>Highlight mode:</strong> Toggle "Highlight by study" to color-code experiments by study membership.</p>
-
-  <h3>Other Features</h3>
-  <p><strong>Manual experiments:</strong> Click &#10133; New to create an experiment by hand — set name, status, date, params, metrics, tags, and notes.<br>
-  <strong>Manage drawer:</strong> Click &#9881; Manage for global tag and study management (rename, delete across all experiments).<br>
-  <strong>Artifact management:</strong> Add, edit labels/paths, or delete artifacts from the detail view.<br>
-  <strong>Metric logging:</strong> Log new metric values directly from the detail view.<br>
-  <strong>Hidden experiments:</strong> Hide selected experiments from the table; unhide from the hidden panel.<br>
-  <strong>Owl mascot:</strong> Click the owl for tips. Click the speech bubble to dismiss it.</p>
-
-  <h3>Frequently Asked Questions</h3>
+  <h3>FAQ</h3>
   <div class="faq-list">
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">If I run a script and it prints results, will that be logged?</div>
-      <div class="faq-a">No. expTrack does not capture stdout/stderr output. Only explicitly logged metrics are recorded. To capture a value, use the <code>__exptrack__</code> global: <code>exp = globals().get("__exptrack__"); exp.log_metric("accuracy", 0.95)</code></div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does expTrack capture stdout or print output?</div>
+      <div class="faq-a">No. Only explicitly logged metrics are stored. Redirect output to a file and register it: <code>exptrack log-artifact &lt;id&gt; train.log</code></div>
     </div>
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">What format does my script need for auto-logging?</div>
-      <div class="faq-a">Any Python script works &mdash; no format requirements. If your script uses argparse, all arguments are captured automatically. Otherwise, expTrack parses raw sys.argv flags (--key value). The only thing that needs explicit logging is metrics (loss, accuracy, etc.).</div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Can I edit experiments after they finish?</div>
+      <div class="faq-a">Yes &mdash; name, tags, notes, artifacts, and metrics are all editable. Double-click in the dashboard or use the CLI. Params and git state are immutable.</div>
     </div>
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Can I edit runs after they finish?</div>
-      <div class="faq-a">Yes. You can edit name, tags, notes, and add artifacts or metrics after a run completes &mdash; via the CLI or by double-clicking in the dashboard. Params and git state are immutable for reproducibility.</div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How do multi-step pipelines work?</div>
+      <div class="faq-a">Each <code>run-start</code> creates a separate experiment. Use <code>--study</code> to group steps and <code>--stage</code> to number them. Save <code>$EXP_ID</code> before the next step overwrites it.</div>
     </div>
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does expTrack work with scripts that don't use argparse?</div>
-      <div class="faq-a">Yes. If argparse isn't detected, expTrack parses sys.argv directly. It recognizes --key value and --key=value patterns. Click, Fire, Typer, and manual parsing all work.</div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Studies vs. tags?</div>
+      <div class="faq-a"><strong>Studies</strong> = &ldquo;which batch is this part of?&rdquo; (pipeline steps, sweeps). <strong>Tags</strong> = &ldquo;what kind of run?&rdquo; (<code>baseline</code>, <code>production</code>). An experiment can have both.</div>
     </div>
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How do I track a multi-step pipeline (train &rarr; test &rarr; analyze)?</div>
-      <div class="faq-a">Each <code>run-start</code> creates a separate experiment. Call <code>run-start</code>/<code>run-finish</code> per step, saving <code>$EXP_ID</code> before the next step overwrites it. Use <code>--study</code> to group steps and <code>--stage</code> to number them, then filter by study in the dashboard. See <code>examples/pipeline_multistep.sh</code> for a full example.</div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does it work without argparse?</div>
+      <div class="faq-a">Yes. Falls back to parsing <code>sys.argv</code> directly. Click, Fire, Typer, and manual parsing all work.</div>
     </div>
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">What's the difference between studies and tags?</div>
-      <div class="faq-a"><strong>Studies</strong> group experiments that belong together (pipeline steps, ablation sweeps). <strong>Tags</strong> are categorical labels (<code>baseline</code>, <code>production</code>). An experiment can have both. Think of studies as &ldquo;which batch?&rdquo; and tags as &ldquo;what kind?&rdquo;</div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does it need internet?</div>
+      <div class="faq-a">No. Everything is local (SQLite + stdlib HTTP). Chart.js loads from CDN but the dashboard works without it.</div>
     </div>
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How are default experiment names generated?</div>
-      <div class="faq-a">Names follow the pattern <code>{script}__{params}__{MMDD}_{uid}</code>, e.g. <code>train__lr0.01_bs32__0312_a3f2</code>. Script stem + top N params + date + random 4-char hex. Override with <code>--name</code> or adjust <code>naming.max_param_keys</code> / <code>naming.key_max_len</code> in config.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does expTrack capture plots automatically?</div>
-      <div class="faq-a">Yes, if you use matplotlib. plt.savefig() is monkey-patched so saved figures are auto-registered as artifacts. Figures saved before the experiment starts are buffered and linked when it begins.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does expTrack need an internet connection?</div>
-      <div class="faq-a">No. Everything is local &mdash; SQLite database, stdlib HTTP server. The only network request is Chart.js from CDN in the dashboard, and the UI still works without it.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">What happens if I rerun the same script?</div>
-      <div class="faq-a">A new experiment is created each time. If artifact paths conflict, old artifacts are archived automatically (when protect_on_rerun is enabled). Params and metrics are stored independently per run.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Can I delete experiments?</div>
-      <div class="faq-a">Yes. Use <code>exptrack rm &lt;id&gt;</code> for single runs or <code>exptrack clean</code> to bulk-delete failed runs. In the dashboard, select experiments and use the Delete bulk action.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does expTrack affect my script's performance?</div>
-      <div class="faq-a">The overhead is negligible. Argparse patching adds microseconds. Git capture runs once at startup. Metric logging is a single SQLite insert. Large git diffs are capped at 256 KB by default.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Can I use expTrack in Jupyter notebooks?</div>
-      <div class="faq-a">Yes. Add <code>%load_ext exptrack</code> in your first cell. Cell executions, variable changes, code diffs, and artifacts are tracked automatically.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How do I compare experiments?</div>
-      <div class="faq-a">CLI: <code>exptrack compare &lt;id1&gt; &lt;id2&gt;</code>. Dashboard: use the Compare button for Pair Compare (2 experiments) or Multi Compare (3+) with bar charts and overlaid line charts.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Can I track experiments across multiple machines?</div>
-      <div class="faq-a">expTrack is local-first. Each machine has its own database. To aggregate, use <code>exptrack export</code> for JSON, enable the GitHub Sync plugin, or query the SQLite database directly.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How do I view images in the dashboard?</div>
-      <div class="faq-a">Image artifacts appear in the <strong>Images</strong> tab of the detail view as a gallery grid. Click a thumbnail to see the full-size image. Use Pair Compare to compare images between experiments with side-by-side, overlay, or swipe modes. Images saved via <code>plt.savefig()</code> are auto-captured.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Can I view CSVs and data files in the dashboard?</div>
-      <div class="faq-a">Yes. CSV, TSV, JSON, and JSONL artifacts are rendered as interactive tables under the <strong>Data Files</strong> tab. Register them with <code>exp.out("results.csv")</code> or <code>exptrack log-artifact &lt;id&gt; results.csv</code>.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How do I capture training logs?</div>
-      <div class="faq-a">expTrack does not auto-capture stdout/stderr. Redirect output to a file and register it: <code>exptrack run train.py 2&gt;&amp;1 | tee train.log</code>, then <code>exptrack log-artifact &lt;id&gt; train.log</code>. In notebooks, use <code>exp.out("log.txt")</code> and write to that path.</div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Performance overhead?</div>
+      <div class="faq-a">Negligible. Argparse patching adds microseconds; git capture runs once at startup; metrics are single SQLite inserts.</div>
     </div>
   </div>
 </div>
@@ -354,8 +299,8 @@ HTML_BODY = r"""</style>
           <button class="todo-add-btn" onclick="addTodo()">Add</button>
         </div>
         <div class="todo-add-row" style="gap:6px;align-items:center">
-          <label for="todo-due-input" style="font-size:12px;color:var(--muted);white-space:nowrap">Due</label>
-          <input type="date" id="todo-due-input" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg);color:var(--fg);font-family:inherit">
+          <label for="todo-due-input" style="font-size:13px;color:var(--muted);white-space:nowrap">Due</label>
+          <input type="date" id="todo-due-input">
         </div>
         <div class="toolbox-meta-row" id="todo-meta-row"></div>
       </div>

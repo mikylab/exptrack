@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Image thumbnails no longer render inline in the overview artifacts table — images now only appear in the Images tab and Compare view
+- "Modified" indicator in Commands notepad no longer hidden behind the Copy button (moved to left side)
+- Reproduce Save button now reads the current command from the DOM (works after inline edits) and includes experiment tags and study
+
 ### Added
 - Dashboard CSS and JS modularization: `static_parts/css/` (12 modules) and `static_parts/js/` (15 modules)
 - `exptrack compact` command to strip git diffs while keeping experiment results
