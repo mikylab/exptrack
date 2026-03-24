@@ -2,7 +2,7 @@
 
 ### Does expTrack capture print output or stdout?
 
-No. Only explicitly logged metrics are stored. To capture terminal output, redirect to a file and register it:
+expTrack does not capture stdout or stderr. Only explicitly logged metrics are stored. To capture terminal output, redirect to a file and register it:
 
 ```bash
 exptrack run train.py 2>&1 | tee train.log
@@ -43,15 +43,15 @@ Override with `--name` on `exptrack run` or `run-start`. Customize param inclusi
 
 ### Does it capture plots automatically?
 
-Yes — `plt.savefig()` and `Figure.savefig()` are monkey-patched. Saved figures are copied to the experiment's output directory and registered as artifacts. Works with any library that calls matplotlib's savefig under the hood (seaborn, etc.).
+If you use matplotlib, yes. `plt.savefig()` and `Figure.savefig()` are patched so saved figures are copied to the experiment's output directory and registered as artifacts. This also works with libraries that call matplotlib under the hood (seaborn, etc.).
 
 ### Does it need internet?
 
-No. Everything is local — SQLite database + stdlib HTTP server. The dashboard loads Chart.js from a CDN for metric charts, but works without it.
+expTrack is fully local. The database is SQLite and the dashboard uses the standard library HTTP server. The dashboard loads Chart.js from a CDN for metric charts, but the rest of the UI works without it.
 
-### Performance overhead?
+### What's the performance overhead?
 
-Negligible. Argparse patching adds microseconds. Git capture runs once at startup (~ms). Metrics are single SQLite inserts. Large git diffs are capped at 256 KB by default.
+Minimal. Argparse patching adds microseconds to `parse_args()`. Git state capture runs once at startup and takes a few milliseconds. Each metric is a single SQLite insert. Large git diffs are capped at 256 KB by default (`max_git_diff_kb` in config).
 
 ### Can I track across multiple machines?
 

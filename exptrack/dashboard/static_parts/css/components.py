@@ -119,16 +119,54 @@ CSS_COMPONENTS = """
     background: var(--bg); padding: 32px 48px; overflow-y: auto;
   }
   .help-panel.visible { display: block; }
-  .help-panel h3 { font-size: 15px; margin: 16px 0 8px; }
-  .help-panel h3:first-child { margin-top: 0; }
-  .help-panel p { color: var(--muted); font-size: 13px; margin-bottom: 8px; line-height: 1.5; }
-  .help-panel .help-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 12px 0; }
-  .help-panel .help-item { background: var(--code-bg); padding: 12px; border-radius: 4px; }
-  .help-panel .help-item strong { display: block; margin-bottom: 4px; font-size: 13px; }
-  .help-panel .help-item span { font-size: 12px; color: var(--muted); }
   .help-close { position: fixed; top: 12px; right: 20px; cursor: pointer; font-size: 24px; background: var(--bg); border: none; font-family: inherit; color: var(--muted); z-index: 901; padding: 4px 10px; border-radius: 4px; }
   .help-close:hover { color: var(--fg); background: var(--code-bg); }
-  .help-close:hover { color: var(--fg); }
+
+  /* Sections and headings */
+  .help-section { margin-bottom: 32px; max-width: 720px; }
+  .help-section h3 { font-size: 16px; font-weight: 700; margin: 0 0 6px; padding-bottom: 8px; border-bottom: 2px solid var(--border); }
+  .help-section h4 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin: 18px 0 8px; }
+  .help-intro { color: var(--muted); font-size: 13px; margin-bottom: 16px; line-height: 1.5; }
+  .help-section p { font-size: 13px; color: var(--muted); margin: 4px 0 8px; line-height: 1.5; }
+  .help-section strong { color: var(--fg); }
+  .help-section code { background: var(--code-bg); padding: 1px 6px; border-radius: 3px; font-size: 12px; color: var(--fg); }
+
+  /* Command blocks: visually distinct from prose */
+  .help-cmd {
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    font-size: 12px; line-height: 1.6;
+    background: var(--code-bg); color: var(--fg);
+    border: 1px solid var(--border); border-left: 3px solid var(--blue);
+    border-radius: 4px; padding: 10px 14px; margin: 8px 0 12px;
+    white-space: pre-wrap; word-break: break-all;
+    overflow-x: auto;
+  }
+
+  /* Numbered steps */
+  .help-steps { display: flex; flex-direction: column; gap: 16px; margin: 12px 0; }
+  .help-step { display: flex; gap: 14px; align-items: flex-start; }
+  .help-step-num {
+    flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--blue); color: #fff; font-size: 13px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; margin-top: 2px;
+  }
+  .help-step-body { flex: 1; }
+  .help-step-body strong { display: block; font-size: 14px; margin-bottom: 2px; }
+
+  /* How-to list */
+  .help-howto { display: flex; flex-direction: column; gap: 14px; margin: 12px 0; }
+  .help-howto-item { padding: 12px 14px; background: var(--code-bg); border-radius: 6px; }
+  .help-howto-item strong { display: block; font-size: 13px; margin-bottom: 4px; }
+  .help-howto-item p { font-size: 12px; margin: 0; }
+
+  /* Reference tables */
+  .help-ref-table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 13px; }
+  .help-ref-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .help-ref-table tr:last-child td { border-bottom: none; }
+  .help-ref-key { font-weight: 600; white-space: nowrap; width: 110px; color: var(--fg); }
+  .help-ref-table td:last-child { color: var(--muted); }
+
+  /* FAQ accordion */
   .faq-list { margin: 12px 0; }
   .faq-item { border: 1px solid var(--border); border-radius: 4px; margin-bottom: 6px; overflow: hidden; }
   .faq-q {
@@ -138,9 +176,10 @@ CSS_COMPONENTS = """
   .faq-q:hover { background: var(--border); }
   .faq-q::after { content: '+'; position: absolute; right: 12px; top: 50%; transform: translateY(-50%); font-size: 16px; color: var(--muted); font-weight: 400; }
   .faq-item.open .faq-q::after { content: '\2212'; }
-  .faq-a { display: none; padding: 10px 14px; font-size: 12px; color: var(--muted); line-height: 1.5; border-top: 1px solid var(--border); }
+  .faq-a { display: none; padding: 12px 14px; font-size: 13px; color: var(--muted); line-height: 1.6; border-top: 1px solid var(--border); }
   .faq-item.open .faq-a { display: block; }
-  .faq-a code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+  .faq-a code { background: var(--code-bg); padding: 1px 6px; border-radius: 3px; font-size: 12px; color: var(--fg); }
+  .faq-a .help-cmd { margin: 10px 0; }
   .export-panel { background: var(--card-bg); border: 1px solid var(--border); padding: 16px; border-radius: 6px; margin-top: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); position: relative; z-index: 10; }
   .export-panel pre { white-space: pre-wrap; font-size: 12px; max-height: 400px; overflow-y: auto; background: var(--code-bg); padding: 12px; border-radius: 4px; border: 1px solid var(--border); }
   .export-panel .export-actions { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }

@@ -2,22 +2,21 @@
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![No Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](#why-exptrack)
+[![No Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](#why-exptrack)
 [![SQLite](https://img.shields.io/badge/storage-SQLite-003B57.svg)](https://www.sqlite.org/)
 
-**Track every ML experiment automatically. No code changes. No dependencies. No cloud.**
+**A local experiment tracker for ML workflows.** Captures parameters, metrics, git state, and code changes from your training scripts and notebooks automatically. Uses only the Python standard library and stores everything in a single SQLite file.
 
 ```bash
 pip install exptrack && cd my_project && exptrack init
 
-# Just prefix your command — everything else is automatic
+# Prefix your training command. Parameters, git state, and artifacts
+# are captured without any changes to your script.
 exptrack run train.py --lr 0.01 --epochs 20 --data cifar10
 
-exptrack ls        # see your experiments
+exptrack ls        # list experiments
 exptrack ui        # open the web dashboard
 ```
-
-That's it. expTrack captures your argparse params, names the run, snapshots the git diff, and links any saved plots — all without touching your code.
 
 ---
 
@@ -25,7 +24,7 @@ That's it. expTrack captures your argparse params, names the run, snapshots the 
 
 <img width="1393" height="705" alt="expTrack dashboard" src="https://github.com/user-attachments/assets/7e41bf20-a428-40cf-a732-5e9a0cd8123f" />
 
-Filter, compare, tag, and explore experiments from a local web UI. No accounts, no internet required.
+Filter, compare, tag, and explore experiments from a local web UI. Runs on localhost with no accounts or internet needed.
 
 ---
 
@@ -34,11 +33,11 @@ Filter, compare, tag, and explore experiments from a local web UI. No accounts, 
 | | expTrack | Weights & Biases, MLflow, etc. |
 |---|---|---|
 | **Setup** | `pip install exptrack` | Install packages, create account, configure API keys |
-| **Code changes** | None — just `exptrack run` | Add `wandb.init()`, `SummaryWriter`, decorators |
-| **Dependencies** | Zero (stdlib only) | Heavy (protobuf, grpc, cloud SDKs) |
+| **Code changes** | None required | Add `wandb.init()`, `SummaryWriter`, decorators |
+| **Dependencies** | Standard library only | protobuf, grpc, cloud SDKs |
 | **Where data lives** | Your machine, one SQLite file | Their cloud (or self-hosted server) |
-| **Git tracking** | Auto (branch, commit, full diff) | Manual or limited |
-| **Works offline** | Always | Needs sync |
+| **Git tracking** | Automatic (branch, commit, full diff) | Manual or limited |
+| **Works offline** | Always | Requires sync |
 
 ---
 
@@ -50,12 +49,12 @@ Filter, compare, tag, and explore experiments from a local web UI. No accounts, 
 exptrack run train.py --lr 0.01 --epochs 20
 ```
 
-Your script needs **zero modifications**. expTrack automatically captures argparse params, git state, code changes, and `plt.savefig()` artifacts.
+Your script needs no modifications. expTrack captures argparse parameters, git state, code changes, and `plt.savefig()` artifacts automatically.
 
 To log metrics, use the injected `__exptrack__` global:
 
 ```python
-# No imports needed — only works under `exptrack run`
+# Available only under `exptrack run`, no imports needed
 exp = globals().get("__exptrack__")
 for epoch in range(epochs):
     loss, acc = train(...)
@@ -63,15 +62,15 @@ for epoch in range(epochs):
         exp.log_metrics({"loss": loss, "accuracy": acc}, step=epoch)
 ```
 
-Your script still works with plain `python train.py` — the metrics lines are just skipped.
+The script still works with plain `python train.py`. The metrics lines are skipped when `exp` is `None`.
 
 ### 2. Jupyter notebook
 
 ```python
-%load_ext exptrack   # add this to your first cell — that's it
+%load_ext exptrack   # add this to your first cell
 ```
 
-Every cell is tracked: code diffs, variable changes, hyperparameter-like variables (`lr`, `batch_size`, etc.) become params, and `plt.savefig()` calls register artifacts.
+Every cell is tracked: code diffs, variable changes, hyperparameter-like variables (`lr`, `batch_size`, etc.) become parameters, and `plt.savefig()` calls register artifacts.
 
 **Or use the explicit API:**
 
@@ -124,11 +123,11 @@ with Experiment(params={"lr": 0.01, "optimizer": "adam"}) as exp:
 |---|---|---|---|---|
 | **Params** | From argparse / sys.argv | From HP-like variables | You pass them | You log them |
 | **Git state** | Yes | Yes | Yes | Yes |
-| **Code changes** | Script diff vs last commit | Cell diffs + variable changes | — | — |
+| **Code changes** | Script diff vs last commit | Cell diffs + variable changes | | |
 | **Artifacts** | `plt.savefig` + new files | `plt.savefig` | You log them | You log them |
-| **Status** | Auto (done/failed) | You call `done()` | You call `run-finish` | Auto with `with` |
+| **Status** | Automatic (done/failed) | You call `done()` | You call `run-finish` | Automatic with `with` |
 
-**Metrics always need explicit logging** — expTrack can't guess which numbers matter to you.
+Metrics always need explicit logging. expTrack captures what you ran and how your code changed, but it can't decide which numbers matter to you.
 
 ---
 
@@ -162,14 +161,14 @@ exptrack export <id> --format md   # Markdown
 exptrack ui          # opens http://localhost:7331
 ```
 
-- **Experiment list** — filter by status, search by name/tag/param, sparkline charts inline
-- **Detail view** — params, metrics with interactive charts, code changes, git diff, reproduce command with one-click copy
-- **Compare** — pair (side-by-side params + overlay charts) or multi (bar charts across 3+ runs)
-- **Timeline** — chronological cell executions, variable changes, artifact creation (notebooks)
-- **Images** — gallery grid, lightbox, side-by-side/overlay/swipe comparison
-- **Data files** — CSV, JSON, JSONL rendered as interactive sortable tables
-- **Inline editing** — double-click any name, tag, or note to edit directly
-- **Tag autocomplete**, **timezone selector**, **bulk operations**, **export** (JSON/Markdown/Text)
+- **Experiment list** with status filters, search, and sparkline charts inline
+- **Detail view** with parameters, metrics, interactive charts, code changes, git diff, and a reproducible command with one-click copy
+- **Compare** experiments pair-wise (side-by-side with overlay charts) or across 3+ runs (bar charts)
+- **Timeline** showing cell executions, variable changes, and artifact creation (notebooks)
+- **Images** displayed in a gallery grid with lightbox and side-by-side/overlay/swipe comparison
+- **Data files** (CSV, JSON, JSONL) rendered as interactive sortable tables
+- **Inline editing** for names, tags, and notes (double-click to edit)
+- Tag autocomplete, timezone selector, bulk operations, and export (JSON/Markdown/Text)
 
 ---
 
@@ -184,9 +183,9 @@ git clone https://github.com/mikylab/expTrack.git
 cd expTrack && pip install -e .
 ```
 
-Zero external dependencies — stdlib only. Python 3.8+.
+Only standard library dependencies. Requires Python 3.8+.
 
-**Does it affect other packages?** No. Patches only activate when you explicitly use `exptrack run` or `%load_ext exptrack`, and they're removed when the script/session ends.
+**Does it affect other packages?** Patches only activate when you explicitly use `exptrack run` or `%load_ext exptrack`, and they're removed when the script or session ends.
 
 ---
 
@@ -196,13 +195,13 @@ The [`examples/`](examples/) directory has ready-to-run scripts:
 
 | Example | What it shows |
 |---------|---------------|
-| [`basic_script.py`](examples/basic_script.py) | Zero-friction — no imports, just `exptrack run` |
-| [`resnet_exptrack_run.py`](examples/resnet_exptrack_run.py) | Metric logging via `__exptrack__` global |
-| [`resnet_python_api.py`](examples/resnet_python_api.py) | Same thing via explicit Python API |
-| [`manual_tracking.py`](examples/manual_tracking.py) | Full lifecycle: params, metrics, tags, artifacts |
+| [`basic_script.py`](examples/basic_script.py) | Automatic tracking with `exptrack run`, no imports needed |
+| [`resnet_exptrack_run.py`](examples/resnet_exptrack_run.py) | Metric logging via the `__exptrack__` global |
+| [`resnet_python_api.py`](examples/resnet_python_api.py) | Same training using the explicit Python API |
+| [`manual_tracking.py`](examples/manual_tracking.py) | Full lifecycle: parameters, metrics, tags, artifacts |
 | [`notebook_example.py`](examples/notebook_example.py) | Notebook API as a plain script |
 | [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM single-step pipeline |
-| [`pipeline_multistep.sh`](examples/pipeline_multistep.sh) | Multi-step: train → test → analyze |
+| [`pipeline_multistep.sh`](examples/pipeline_multistep.sh) | Multi-step pipeline: train, test, analyze |
 
 ---
 
@@ -210,17 +209,17 @@ The [`examples/`](examples/) directory has ready-to-run scripts:
 
 | Doc | What's in it |
 |-----|-------------|
-| [CLI Reference](docs/cli-reference.md) | All 24 subcommands at a glance |
-| [Configuration](docs/configuration.md) | Every `.exptrack/config.json` option explained |
+| [CLI Reference](docs/cli-reference.md) | All 24 subcommands |
+| [Configuration](docs/configuration.md) | Every `.exptrack/config.json` option |
 | [Python API](docs/python-api.md) | `Experiment` class properties and methods |
 | [Plugins](docs/plugins.md) | Writing plugins, GitHub Sync |
 | [How It Works](docs/how-it-works.md) | Capture mechanisms, storage design, schema |
 | [FAQ](docs/faq.md) | Common questions |
 | [Troubleshooting](docs/troubleshooting.md) | Solutions for common issues |
-| [Contributing](docs/contributing.md) | Dev setup, linting, guidelines |
+| [Contributing](docs/contributing.md) | Development setup, linting, guidelines |
 
 ---
 
 ## License
 
-MIT — see [LICENSE](https://opensource.org/licenses/MIT).
+MIT. See [LICENSE](https://opensource.org/licenses/MIT).
