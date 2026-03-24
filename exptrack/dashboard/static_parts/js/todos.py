@@ -50,11 +50,19 @@ function renderTodos() {
   const sorted = [...items].sort((a, b) => a.done === b.done ? 0 : a.done ? 1 : -1);
 
   list.innerHTML = sorted.map(t => {
+    const dueHtml = t.due ? (function() {
+      const today = new Date().toISOString().slice(0,10);
+      const isOverdue = !t.done && t.due < today;
+      const isToday = t.due === today;
+      const style = isOverdue ? 'color:var(--red)' : isToday ? 'color:var(--yellow)' : 'color:var(--muted)';
+      const label = isOverdue ? 'overdue' : isToday ? 'today' : t.due;
+      return '<span class="todo-due" style="' + style + '" title="Due: ' + t.due + '">' + label + '</span>';
+    })() : '';
     return '<div class="todo-item' + (t.done ? ' done' : '') + '">' +
       '<input type="checkbox" class="todo-check"' + (t.done ? ' checked' : '') +
       ' onchange="toggleTodo(\'' + t.id + '\')">' +
       '<div class="todo-content">' +
-        '<div class="todo-text">' + esc(t.text) + '</div>' +
+        '<div class="todo-text">' + esc(t.text) + dueHtml + '</div>' +
         renderItemMeta(t, 'todo-meta') +
       '</div>' +
       '<button class="todo-delete" onclick="deleteTodo(\'' + t.id + '\')" title="Delete">&times;</button>' +
@@ -71,11 +79,15 @@ async function addTodo() {
   const text = (textEl.value || '').trim();
   if (!text) { textEl.focus(); return; }
 
+  const dueEl = document.getElementById('todo-due-input');
+  const due = dueEl ? dueEl.value : '';
   const meta = _toolboxMeta['todo'];
   await postApi('/api/todos/add', {
-    text, tags: meta ? meta.getTags() : [], study: meta ? meta.getStudy() : ''
+    text, tags: meta ? meta.getTags() : [], study: meta ? meta.getStudy() : '',
+    due: due
   });
   textEl.value = '';
+  if (dueEl) dueEl.value = '';
   if (meta) meta.clear();
   await loadTodos();
   textEl.focus();

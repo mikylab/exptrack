@@ -148,6 +148,11 @@ CSS_TOOLBOX = """
     background: rgba(44,90,160,0.1); color: var(--blue);
   }
 
+  .todo-due {
+    font-size: 11px; margin-left: 6px; padding: 1px 6px;
+    border-radius: 3px; background: var(--code-bg); white-space: nowrap;
+  }
+
   .todo-delete {
     cursor: pointer; color: var(--muted); font-size: 14px;
     padding: 2px 4px; border-radius: 3px; opacity: 0;

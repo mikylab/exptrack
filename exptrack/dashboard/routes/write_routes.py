@@ -1270,6 +1270,7 @@ def _config_list_add(list_key: str, id_prefix: str, body: dict,
 def _config_list_update(list_key: str, body: dict,
                         allowed_fields: list) -> dict:
     """Generic update of an item in a config-stored list."""
+    import time
     from ... import config as cfg
     conf = cfg.load()
     items = conf.get(list_key, [])
@@ -1279,6 +1280,7 @@ def _config_list_update(list_key: str, body: dict,
     for field in allowed_fields:
         if field in body:
             item[field] = body[field]
+    item["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     cfg.save(conf)
     return {"ok": True}
 
@@ -1294,15 +1296,16 @@ def _config_list_delete(list_key: str, body: dict) -> dict:
 
 
 def api_add_todo(body: dict) -> dict:
+    due = body.get("due", "").strip() if body.get("due") else ""
     return _config_list_add("todos", "t_", body, "text",
-                            {"done": False})
+                            {"done": False, "due": due})
 
 
 def api_update_todo(body: dict) -> dict:
     if "done" in body:
         body["done"] = bool(body["done"])
     return _config_list_update("todos", body,
-                               ["done", "text", "tags", "study"])
+                               ["done", "text", "tags", "study", "due"])
 
 
 def api_delete_todo(body: dict) -> dict:

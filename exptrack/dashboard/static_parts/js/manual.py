@@ -38,21 +38,31 @@ function startDetailCommandEdit(id) {
   const codeEl = document.getElementById('detail-command');
   if (!codeEl) return;
   const currentVal = codeEl.textContent.trim();
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'inline-edit-input';
-  input.style.cssText = 'width:100%;font-size:13px;padding:4px 6px;font-family:var(--font-mono,monospace)';
-  input.value = (currentVal === 'no command recorded' || currentVal === 'double-click to add command') ? '' : currentVal;
+  const ta = document.createElement('textarea');
+  ta.className = 'inline-edit-input';
+  ta.style.cssText = 'width:100%;font-size:13px;padding:6px 8px;font-family:var(--font-mono,monospace);resize:vertical;min-height:60px;line-height:1.5;border:1px solid var(--blue);border-radius:4px;background:var(--code-bg);color:var(--fg)';
+  ta.value = (currentVal === 'no command recorded' || currentVal === 'double-click to add command') ? '' : currentVal;
+  // Auto-size rows based on content
+  ta.rows = Math.max(2, (ta.value.match(/\n/g) || []).length + 2);
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:4px';
+  wrap.appendChild(ta);
+  const hint = document.createElement('div');
+  hint.style.cssText = 'font-size:11px;color:var(--muted);text-align:right';
+  hint.textContent = 'Ctrl+Enter to save \u00b7 Escape to cancel';
+  wrap.appendChild(hint);
+
   codeEl.textContent = '';
-  codeEl.appendChild(input);
-  input.focus();
-  input.select();
+  codeEl.appendChild(wrap);
+  ta.focus();
+  ta.select();
 
   let saved = false;
   async function doSave() {
     if (saved) return;
     saved = true;
-    const newVal = input.value.trim();
+    const newVal = ta.value.trim();
     if (newVal !== currentVal) {
       const res = await postApi('/api/experiment/' + id + '/edit-command', {command: newVal});
       if (res.ok) {
@@ -62,11 +72,26 @@ function startDetailCommandEdit(id) {
     }
     refreshDetail(id);
   }
-  input.addEventListener('blur', doSave);
-  input.addEventListener('keydown', function(ev) {
-    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+  ta.addEventListener('blur', doSave);
+  ta.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); ta.blur(); }
     if (ev.key === 'Escape') { saved = true; refreshDetail(id); }
   });
+}
+
+async function saveReproduceToCommands(id) {
+  const exp = allExperiments.find(e => e.id === id);
+  if (!exp || !exp.command) { owlSay('No command to save'); return; }
+  const label = exp.name || exp.script || 'Reproduce';
+  await postApi('/api/commands/add', {
+    label: label,
+    command: exp.command,
+    tags: exp.tags || [],
+    study: (exp.studies && exp.studies[0]) || ''
+  });
+  await loadCommands();
+  owlSay('Saved to Commands!');
+  openToolbox('commands');
 }
 
 // ── Manual experiment creation modal ─────────────────────────────────────────
