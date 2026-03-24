@@ -43,7 +43,7 @@ function startDetailCommandEdit(id) {
   ta.style.cssText = 'width:100%;font-size:13px;padding:6px 8px;font-family:var(--font-mono,monospace);resize:vertical;min-height:60px;line-height:1.5;border:1px solid var(--blue);border-radius:4px;background:var(--code-bg);color:var(--fg)';
   ta.value = (currentVal === 'no command recorded' || currentVal === 'double-click to add command') ? '' : currentVal;
   // Auto-size rows based on content
-  ta.rows = Math.max(2, (ta.value.match(/\n/g) || []).length + 2);
+  ta.rows = Math.max(2, (ta.value.split('\\n').length) + 1);
 
   const wrap = document.createElement('div');
   wrap.style.cssText = 'display:flex;flex-direction:column;gap:4px';
