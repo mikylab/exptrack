@@ -114,7 +114,10 @@ CSS_COMPONENTS = """
   .artifact-thumb img:hover { transform: scale(1.05); border-color: var(--blue); }
   .home-btn { font-family: inherit; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border); padding: 6px 14px; cursor: pointer; border-radius: 4px; color: var(--muted); }
   .home-btn:hover { background: var(--border); color: var(--fg); }
-  .help-panel { display: none; background: var(--card-bg); border: 1px solid var(--border); padding: 24px; border-radius: 4px; margin-bottom: 20px; max-height: 70vh; overflow-y: auto; }
+  .help-panel {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 900;
+    background: var(--bg); padding: 32px 48px; overflow-y: auto;
+  }
   .help-panel.visible { display: block; }
   .help-panel h3 { font-size: 15px; margin: 16px 0 8px; }
   .help-panel h3:first-child { margin-top: 0; }
@@ -123,7 +126,8 @@ CSS_COMPONENTS = """
   .help-panel .help-item { background: var(--code-bg); padding: 12px; border-radius: 4px; }
   .help-panel .help-item strong { display: block; margin-bottom: 4px; font-size: 13px; }
   .help-panel .help-item span { font-size: 12px; color: var(--muted); }
-  .help-close { float: right; cursor: pointer; font-size: 18px; background: none; border: none; font-family: inherit; color: var(--muted); }
+  .help-close { position: fixed; top: 12px; right: 20px; cursor: pointer; font-size: 24px; background: var(--bg); border: none; font-family: inherit; color: var(--muted); z-index: 901; padding: 4px 10px; border-radius: 4px; }
+  .help-close:hover { color: var(--fg); background: var(--code-bg); }
   .help-close:hover { color: var(--fg); }
   .faq-list { margin: 12px 0; }
   .faq-item { border: 1px solid var(--border); border-radius: 4px; margin-bottom: 6px; overflow: hidden; }
