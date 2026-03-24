@@ -145,7 +145,7 @@ CSS_TOOLBOX = """
   }
   .toolbox-study {
     font-size: 11px; padding: 1px 7px; border-radius: 3px;
-    background: rgba(124,58,237,0.12); color: var(--purple);
+    background: rgba(44,90,160,0.1); color: var(--blue);
   }
 
   .todo-delete {

@@ -495,12 +495,68 @@ def api_bulk_export(conn, body: dict) -> dict | list:
         return batch
 
 
+def _propagate_tag_change_to_config(old_tag: str, new_tag: str = ""):
+    """Rename or remove a tag from todos and commands in config.json.
+
+    If new_tag is empty, removes old_tag. Otherwise renames it.
+    """
+    from ... import config as cfg
+    conf = cfg.load()
+    changed = False
+    for list_key in ("todos", "commands"):
+        for item in conf.get(list_key, []):
+            tags = item.get("tags", [])
+            if old_tag in tags:
+                tags.remove(old_tag)
+                if new_tag and new_tag not in tags:
+                    tags.append(new_tag)
+                item["tags"] = tags
+                changed = True
+    if changed:
+        cfg.save(conf)
+
+
+def _propagate_study_change_to_config(old_study: str, new_study: str = ""):
+    """Rename or remove a study from todos and commands in config.json."""
+    from ... import config as cfg
+    conf = cfg.load()
+    changed = False
+    for list_key in ("todos", "commands"):
+        for item in conf.get(list_key, []):
+            if item.get("study") == old_study:
+                item["study"] = new_study
+                changed = True
+    if changed:
+        cfg.save(conf)
+
+
+def api_propagate_tag_rename(body: dict) -> dict:
+    """Propagate a tag rename to todos/commands in config."""
+    old = body.get("old_tag", "").strip()
+    new = body.get("new_tag", "").strip()
+    if not old:
+        return {"error": "missing old_tag"}
+    _propagate_tag_change_to_config(old, new)
+    return {"ok": True}
+
+
+def api_propagate_study_rename(body: dict) -> dict:
+    """Propagate a study rename to todos/commands in config."""
+    old = body.get("old_study", "").strip()
+    new = body.get("new_study", "").strip()
+    if not old:
+        return {"error": "missing old_study"}
+    _propagate_study_change_to_config(old, new)
+    return {"ok": True}
+
+
 def api_delete_tag_global(conn, body: dict) -> dict:
     tag = body.get("tag", "").strip()
     if not tag:
         return {"error": "empty tag"}
     count = remove_tag_global(conn, tag)
     conn.commit()
+    _propagate_tag_change_to_config(tag)
     return {"ok": True, "deleted_from": count}
 
 
@@ -593,6 +649,7 @@ def api_delete_study(conn, body: dict) -> dict:
     from ...core.queries import remove_study_global
     count = remove_study_global(conn, name)
     conn.commit()
+    _propagate_study_change_to_config(name)
     return {"ok": True, "deleted_from": count}
 
 

@@ -454,6 +454,7 @@ async function deleteTagGlobal(tag) {
     if (tagFilter === tag) tagFilter = '';
     await loadAllTags();
     await loadExperiments();
+    loadTodos(); loadCommands();
     renderManagePanel();
   }
 }
@@ -530,13 +531,15 @@ async function startEditGlobalTag(el, oldName) {
     if (saved) return; saved = true;
     const newName = input.value.trim();
     if (newName && newName !== oldName) {
-      // Rename tag across all experiments
+      // Rename tag across all experiments and config (todos/commands)
       for (const e of allExperiments) {
         if ((e.tags||[]).includes(oldName)) {
           await postApi('/api/experiment/' + e.id + '/edit-tag', {old_tag: oldName, new_tag: newName});
         }
       }
+      await postApi('/api/propagate-tag-rename', {old_tag: oldName, new_tag: newName});
       await loadAllTags(); await loadExperiments();
+      loadTodos(); loadCommands();
     }
     renderManagePanel();
   }
@@ -557,15 +560,17 @@ async function startEditGlobalStudy(el, oldName) {
     if (saved) return; saved = true;
     const newName = input.value.trim();
     if (newName && newName !== oldName) {
-      // Rename: add new, remove old for each experiment
+      // Rename study across all experiments and config (todos/commands)
       for (const e of allExperiments) {
         if ((e.studies||[]).includes(oldName)) {
           await postApi('/api/experiment/' + e.id + '/study', {study: newName});
           await postApi('/api/experiment/' + e.id + '/delete-study', {study: oldName});
         }
       }
+      await postApi('/api/propagate-study-rename', {old_study: oldName, new_study: newName});
       if (studyFilter === oldName) studyFilter = newName;
       await loadAllStudies(); await loadExperiments();
+      loadTodos(); loadCommands();
     }
     renderManagePanel();
   }
