@@ -17,12 +17,12 @@ CSS_TIMELINE = """
   .tl-diff .diff-add { color: var(--green); }
   .tl-diff .diff-del { color: var(--red); }
   .tl-badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px; margin-left: 6px; }
-  .tl-badge-new { background: #d4edda; color: #155724; }
-  .tl-badge-edited { background: #fff3cd; color: #856404; }
+  .tl-badge-new { background: rgba(45,125,70,0.12); color: var(--green); }
+  .tl-badge-edited { background: rgba(184,134,11,0.12); color: var(--yellow); }
   .tl-badge-rerun { background: var(--code-bg); color: var(--muted); }
-  .tl-badge-output { background: #cce5ff; color: #004085; }
-  .tl-badge-lineage { background: #e8daef; color: #6c3483; cursor: pointer; }
-  .tl-badge-lineage:hover { background: #d2b4de; }
+  .tl-badge-output { background: rgba(44,90,160,0.12); color: var(--blue); }
+  .tl-badge-lineage { background: rgba(124,58,237,0.12); color: var(--purple); cursor: pointer; }
+  .tl-badge-lineage:hover { background: rgba(124,58,237,0.2); }
   .tl-var-arrow { color: var(--muted); }
   .tl-context { font-size: 11px; color: var(--muted); margin-top: 3px; }
   .tl-filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -38,18 +38,18 @@ CSS_TIMELINE = """
   .cw-point { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 4px; background: var(--card-bg); border: 1px dashed var(--border); min-width: 140px; }
   .cw-point.active { border-style: solid; }
   .cw-point-a.active { border-color: var(--blue); background: rgba(44,90,160,0.08); }
-  .cw-point-b.active { border-color: #7c3aed; background: rgba(124,58,237,0.08); }
+  .cw-point-b.active { border-color: var(--purple); background: rgba(124,58,237,0.08); }
   .cw-point-label { font-weight: 700; font-size: 12px; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
   .cw-point-a .cw-point-label { background: var(--blue); }
-  .cw-point-b .cw-point-label { background: #7c3aed; }
+  .cw-point-b .cw-point-label { background: var(--purple); }
   .cw-point-desc { font-size: 12px; color: var(--fg); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cw-arrow { color: var(--muted); font-size: 18px; }
   .cw-actions { display: flex; gap: 6px; margin-left: auto; }
   .cw-badge { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; font-size: 10px; font-weight: 700; color: #fff; }
   .cw-badge-a { background: var(--blue); }
-  .cw-badge-b { background: #7c3aed; }
+  .cw-badge-b { background: var(--purple); }
   .cw-marker-a { border-left: 3px solid var(--blue) !important; }
-  .cw-marker-b { border-left: 3px solid #7c3aed !important; }
+  .cw-marker-b { border-left: 3px solid var(--purple) !important; }
   .tl-seq-select { cursor: pointer; }
   .tl-seq-select:hover { background: rgba(44,90,160,0.08); }
   .tl-seq-select.selected { background: rgba(44,90,160,0.12); outline: 2px solid var(--blue); }
@@ -63,9 +63,9 @@ CSS_TIMELINE = """
   .cw-filters label { cursor: pointer; display: flex; align-items: center; gap: 4px; }
   .cw-table { font-size: 12px; }
   .cw-delta { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 3px; }
-  .cw-delta-up { color: #059669; background: rgba(5,150,105,0.1); }
-  .cw-delta-down { color: #dc2626; background: rgba(220,38,38,0.1); }
-  .cw-delta-changed { color: #d97706; background: rgba(217,119,6,0.1); }
+  .cw-delta-up { color: var(--green); background: rgba(45,125,70,0.1); }
+  .cw-delta-down { color: var(--red); background: rgba(192,57,43,0.1); }
+  .cw-delta-changed { color: var(--yellow); background: rgba(184,134,11,0.1); }
   .result-type-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; background: var(--code-bg); border: 1px solid var(--border); font-size: 12px; }
   .source-view { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; font-size: 13px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; margin-top: 6px; }
   .source-view .line-num { color: var(--muted); display: inline-block; min-width: 30px; text-align: right; margin-right: 12px; user-select: none; }

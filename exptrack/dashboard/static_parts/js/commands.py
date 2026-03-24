@@ -160,7 +160,7 @@ function _setupEditMeta(container, initTags, initStudy) {
 
   function renderChips() {
     tagArea.innerHTML = tags.map(t =>
-      '<span class="toolbox-tag toolbox-chip">' + esc(t) +
+      '<span class="toolbox-tag toolbox-chip">#' + esc(t) +
       '<span class="toolbox-chip-x" data-tag="' + esc(t) + '">&times;</span></span>'
     ).join('');
     tagArea.querySelectorAll('.toolbox-chip-x').forEach(el => {

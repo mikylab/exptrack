@@ -101,7 +101,7 @@ function todoAddKeydown(e) {
 
 function renderItemMeta(item, className) {
   const tags = (item.tags || []).map(tag =>
-    '<span class="toolbox-tag">' + esc(tag) + '</span>'
+    '<span class="toolbox-tag">#' + esc(tag) + '</span>'
   ).join('');
   const study = item.study ? '<span class="toolbox-study">' + esc(item.study) + '</span>' : '';
   return (tags || study) ? '<div class="' + className + '">' + tags + study + '</div>' : '';
@@ -220,7 +220,7 @@ function setupToolboxMeta(prefix) {
 
   function renderChips() {
     tagArea.innerHTML = tags.map(t =>
-      '<span class="toolbox-tag toolbox-chip">' + esc(t) +
+      '<span class="toolbox-tag toolbox-chip">#' + esc(t) +
       '<span class="toolbox-chip-x" data-tag="' + esc(t) + '">&times;</span></span>'
     ).join('');
     tagArea.querySelectorAll('.toolbox-chip-x').forEach(el => {

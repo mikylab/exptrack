@@ -97,11 +97,11 @@ CSS_COMPONENTS = """
   .tag-manager-row .tm-delete:hover { color: var(--red); background: rgba(192,57,43,0.1); }
   .artifact-row { display: flex; align-items: center; gap: 8px; }
   .artifact-type-badge { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--code-bg); color: var(--muted); }
-  .artifact-type-badge.img { background: #d4edda; color: #155724; }
-  .artifact-type-badge.model { background: #cce5ff; color: #004085; }
-  .artifact-type-badge.data { background: #fff3cd; color: #856404; }
-  .artifact-type-badge.log { background: #e2e3e5; color: #383d41; }
-  .artifact-type-badge.dir { background: #d1ecf1; color: #0c5460; }
+  .artifact-type-badge.img { background: rgba(45,125,70,0.12); color: var(--green); }
+  .artifact-type-badge.model { background: rgba(44,90,160,0.12); color: var(--blue); }
+  .artifact-type-badge.data { background: rgba(184,134,11,0.12); color: var(--yellow); }
+  .artifact-type-badge.log { background: var(--code-bg); color: var(--muted); }
+  .artifact-type-badge.dir { background: rgba(44,90,160,0.08); color: var(--blue); }
   .artifact-add-form { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
   .artifact-add-form input { font-family: inherit; font-size: 14px; border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px; background: var(--card-bg); }
   .artifact-add-form button { font-family: inherit; font-size: 13px; padding: 6px 14px; border: 1px solid var(--border); background: var(--code-bg); cursor: pointer; border-radius: 4px; }
@@ -340,7 +340,7 @@ CSS_COMPONENTS = """
   .settings-actions button.danger:hover { background: rgba(192,57,43,0.1); border-color: var(--red, #e55); }
 
   /* Live badge for auto-refreshing running experiments */
-  .live-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: #059669; padding: 2px 8px; border-radius: 10px; background: rgba(5,150,105,0.1); margin-left: 6px; }
-  .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #059669; animation: livePulse 1.5s ease-in-out infinite; }
+  .live-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--green); padding: 2px 8px; border-radius: 10px; background: rgba(45,125,70,0.1); margin-left: 6px; }
+  .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: livePulse 1.5s ease-in-out infinite; }
   @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 """

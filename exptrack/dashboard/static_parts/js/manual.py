@@ -42,7 +42,7 @@ function startDetailCommandEdit(id) {
   input.type = 'text';
   input.className = 'inline-edit-input';
   input.style.cssText = 'width:100%;font-size:13px;padding:4px 6px;font-family:var(--font-mono,monospace)';
-  input.value = currentVal === 'no command recorded' ? '' : currentVal;
+  input.value = (currentVal === 'no command recorded' || currentVal === 'double-click to add command') ? '' : currentVal;
   codeEl.textContent = '';
   codeEl.appendChild(input);
   input.focus();
