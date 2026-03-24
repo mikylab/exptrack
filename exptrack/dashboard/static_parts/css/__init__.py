@@ -17,13 +17,15 @@ from .reset import CSS_RESET
 from .studies import CSS_STUDIES
 from .table import CSS_TABLE
 from .timeline import CSS_TIMELINE
+from .toolbox import CSS_TOOLBOX
 
 
 def get_all_css() -> str:
     """Concatenate all CSS sections in the correct order."""
     return (CSS_RESET + CSS_LAYOUT + CSS_CARDS + CSS_TABLE +
             CSS_DETAIL + CSS_CHARTS + CSS_CODE + CSS_TIMELINE + CSS_COMPARE +
-            CSS_COMPONENTS + CSS_STUDIES + CSS_IMAGES + CSS_IMAGE_COMPARE)
+            CSS_COMPONENTS + CSS_STUDIES + CSS_IMAGES + CSS_IMAGE_COMPARE +
+            CSS_TOOLBOX)
 
 
 __all__ = [
@@ -40,5 +42,6 @@ __all__ = [
     "CSS_STUDIES",
     "CSS_TABLE",
     "CSS_TIMELINE",
+    "CSS_TOOLBOX",
     "get_all_css",
 ]

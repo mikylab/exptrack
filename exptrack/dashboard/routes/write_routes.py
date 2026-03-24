@@ -1184,6 +1184,91 @@ def api_reset_db(conn) -> dict:
     return {"ok": True, "deleted_experiments": n_exp}
 
 
+def _config_list_add(list_key: str, id_prefix: str, body: dict,
+                     required_field: str, extra_fields: dict) -> dict:
+    """Generic add to a config-stored list (todos, commands)."""
+    import hashlib
+    import time
+    from ... import config as cfg
+    conf = cfg.load()
+    items = conf.get(list_key, [])
+    value = (body.get(required_field) or "").strip()
+    if not value:
+        return {"error": f"empty {required_field}"}
+    item = {
+        "id": id_prefix + hashlib.sha256(
+            (value + str(time.time())).encode()).hexdigest()[:8],
+        required_field: value,
+        "tags": body.get("tags", []),
+        "study": body.get("study", ""),
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        **extra_fields,
+    }
+    items.append(item)
+    conf[list_key] = items
+    cfg.save(conf)
+    return {"ok": True, list_key.rstrip("s"): item}
+
+
+def _config_list_update(list_key: str, body: dict,
+                        allowed_fields: list) -> dict:
+    """Generic update of an item in a config-stored list."""
+    from ... import config as cfg
+    conf = cfg.load()
+    items = conf.get(list_key, [])
+    item = next((i for i in items if i["id"] == body.get("id", "")), None)
+    if not item:
+        return {"error": "not found"}
+    for field in allowed_fields:
+        if field in body:
+            item[field] = body[field]
+    cfg.save(conf)
+    return {"ok": True}
+
+
+def _config_list_delete(list_key: str, body: dict) -> dict:
+    """Generic delete from a config-stored list."""
+    from ... import config as cfg
+    conf = cfg.load()
+    rid = body.get("id", "")
+    conf[list_key] = [i for i in conf.get(list_key, []) if i["id"] != rid]
+    cfg.save(conf)
+    return {"ok": True}
+
+
+def api_add_todo(body: dict) -> dict:
+    return _config_list_add("todos", "t_", body, "text",
+                            {"done": False})
+
+
+def api_update_todo(body: dict) -> dict:
+    if "done" in body:
+        body["done"] = bool(body["done"])
+    return _config_list_update("todos", body,
+                               ["done", "text", "tags", "study"])
+
+
+def api_delete_todo(body: dict) -> dict:
+    return _config_list_delete("todos", body)
+
+
+def api_add_command(body: dict) -> dict:
+    cmd_text = (body.get("command") or "").strip()
+    label = (body.get("label") or "").strip() or (
+        cmd_text.split()[0] if cmd_text else "")
+    return _config_list_add("commands", "c_", body, "command",
+                            {"label": label})
+
+
+def api_update_command(body: dict) -> dict:
+    return _config_list_update("commands", body,
+                               ["label", "command", "tags", "study"])
+
+
+def api_delete_command(body: dict) -> dict:
+    return _config_list_delete("commands", body)
+
+
 def api_storage_info(conn) -> dict:
     """Return database size and WAL size info."""
     from ... import config as cfg
