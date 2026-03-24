@@ -353,6 +353,10 @@ HTML_BODY = r"""</style>
           <input type="text" id="todo-text-input" placeholder="What needs to be done?" onkeydown="todoAddKeydown(event)">
           <button class="todo-add-btn" onclick="addTodo()">Add</button>
         </div>
+        <div class="todo-add-row" style="gap:6px;align-items:center">
+          <label for="todo-due-input" style="font-size:12px;color:var(--muted);white-space:nowrap">Due</label>
+          <input type="date" id="todo-due-input" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg);color:var(--fg);font-family:inherit">
+        </div>
         <div class="toolbox-meta-row" id="todo-meta-row"></div>
       </div>
       <div class="todo-filters">

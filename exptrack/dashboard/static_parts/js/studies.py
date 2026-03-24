@@ -11,6 +11,7 @@ async function deleteStudyGlobal(name) {
     if (studyFilter === name) studyFilter = '';
     await loadAllStudies();
     await loadExperiments();
+    loadTodos(); loadCommands();
     renderManagePanel();
   }
 }

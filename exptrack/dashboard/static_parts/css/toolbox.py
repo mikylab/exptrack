@@ -141,11 +141,16 @@ CSS_TOOLBOX = """
   .cmd-meta { margin-top: 0; }
   .toolbox-tag {
     font-size: 11px; padding: 1px 7px; border-radius: 3px;
-    background: rgba(44,90,160,0.1); color: var(--blue);
+    background: var(--code-bg); color: var(--fg);
   }
   .toolbox-study {
     font-size: 11px; padding: 1px 7px; border-radius: 3px;
-    background: rgba(124,58,237,0.1); color: #7c3aed;
+    background: rgba(44,90,160,0.1); color: var(--blue);
+  }
+
+  .todo-due {
+    font-size: 11px; margin-left: 6px; padding: 1px 6px;
+    border-radius: 3px; background: var(--code-bg); white-space: nowrap;
   }
 
   .todo-delete {

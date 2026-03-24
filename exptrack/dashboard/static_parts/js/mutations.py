@@ -151,7 +151,7 @@ async function deleteTagInline(id, tag) {
     });
   }
   const d = await postApi('/api/experiment/' + id + '/delete-tag', {tag});
-  if (d.ok) { loadAllTags(); loadExperiments().then(() => refreshDetail(id)); }
+  if (d.ok) { loadAllTags(); loadTodos(); loadCommands(); loadExperiments().then(() => refreshDetail(id)); }
 }
 
 function startDetailNoteEdit(id, el) {

@@ -37,6 +37,13 @@ function renderCommands() {
     return;
   }
 
+  // Sort: most recently edited first (updated or created as fallback)
+  items = [...items].sort((a, b) => {
+    const ta = a.updated || a.created || '';
+    const tb = b.updated || b.created || '';
+    return tb.localeCompare(ta);
+  });
+
   list.innerHTML = items.map(c => {
     if (_editingCmdId === c.id) return renderCmdEditForm(c);
 
@@ -45,6 +52,7 @@ function renderCommands() {
         '<span class="cmd-label">' + esc(c.label) + '</span>' +
         renderItemMeta(c, 'cmd-meta') +
         '<div class="cmd-actions">' +
+          '<button class="cmd-action-btn" onclick="duplicateCmd(\'' + c.id + '\')" title="Duplicate">&#x2398;</button>' +
           '<button class="cmd-action-btn" onclick="startEditCmd(\'' + c.id + '\')" title="Edit">&#9998;</button>' +
           '<button class="cmd-action-btn cmd-del" onclick="deleteCmd(\'' + c.id + '\')" title="Delete">&times;</button>' +
         '</div>' +
@@ -106,6 +114,18 @@ async function deleteCmd(id) {
   await loadCommands();
 }
 
+async function duplicateCmd(id) {
+  const c = _commands.find(x => x.id === id);
+  if (!c) return;
+  await postApi('/api/commands/add', {
+    label: c.label + ' (copy)',
+    command: c.command,
+    tags: c.tags || [],
+    study: c.study || ''
+  });
+  await loadCommands();
+}
+
 // ── Inline-adjustable command code ────────────────────────────────────────────
 
 function onCmdCodeEdit(el) {
@@ -160,7 +180,7 @@ function _setupEditMeta(container, initTags, initStudy) {
 
   function renderChips() {
     tagArea.innerHTML = tags.map(t =>
-      '<span class="toolbox-tag toolbox-chip">' + esc(t) +
+      '<span class="toolbox-tag toolbox-chip">#' + esc(t) +
       '<span class="toolbox-chip-x" data-tag="' + esc(t) + '">&times;</span></span>'
     ).join('');
     tagArea.querySelectorAll('.toolbox-chip-x').forEach(el => {
