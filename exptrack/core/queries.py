@@ -12,6 +12,25 @@ from typing import Any
 
 from .db import resolve_git_diff
 
+IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.tiff', '.webp')
+
+
+def _rel_path(path: str) -> str:
+    """Convert an absolute artifact path to relative from project root.
+
+    Artifact paths are stored as absolute in the DB (via Path.resolve()),
+    but the dashboard /api/file/ endpoint expects relative paths.
+    """
+    import os
+
+    if not path or not os.path.isabs(path):
+        return path
+    try:
+        from ..config import project_root
+        return os.path.relpath(path, str(project_root()))
+    except (ValueError, ImportError):
+        return path
+
 
 def _safe_json(s):
     """Parse a JSON string, returning the raw string if parsing fails."""
@@ -90,7 +109,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
             "source": m["src"],
             "step_min": m["step_min"], "step_max": m["step_max"],
         } for m in metrics],
-        "artifacts": [{"label": a["label"], "path": a["path"],
+        "artifacts": [{"label": a["label"], "path": _rel_path(a["path"]),
                        "timeline_seq": a["timeline_seq"]} for a in artifacts],
         "compact_status": _get_compact_status(conn, full_id, exp["git_diff"]),
     }
@@ -373,7 +392,7 @@ def get_all_latest_metrics(conn, limit: int = 50) -> dict[str, dict[str, float]]
 
 
 def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
-    """Get experiment names, latest metrics for multiple experiments."""
+    """Get experiment names, latest metrics, and image artifacts for multiple experiments."""
     results = []
     for eid in exp_ids:
         exp = find_experiment(conn, eid, "id, name, status")
@@ -381,11 +400,20 @@ def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
             continue
         full_id = exp["id"]
         metrics = get_latest_metrics(conn, full_id)
+        art_rows = conn.execute(
+            "SELECT label, path FROM artifacts WHERE exp_id=?", (full_id,)
+        ).fetchall()
+        images = [
+            {"label": r["label"], "path": _rel_path(r["path"])}
+            for r in art_rows
+            if r["path"] and any(r["path"].lower().endswith(ext) for ext in IMAGE_EXTS)
+        ]
         results.append({
             "id": full_id,
             "name": exp["name"],
             "status": exp["status"],
             "metrics": metrics,
+            "images": images,
         })
     return results
 
@@ -503,16 +531,19 @@ def remove_tag_global(conn, tag: str) -> int:
 # ── Timeline ──────────────────────────────────────────────────────────────────
 
 def get_timeline_events(conn, exp_id: str, event_type: str = "") -> list[dict]:
-    """Get timeline events for an experiment."""
-    where = "WHERE exp_id=?"
+    """Get timeline events for an experiment, with cell lineage parent info."""
+    where = "WHERE t.exp_id=?"
     params: list = [exp_id]
     if event_type:
-        where += " AND event_type=?"
+        where += " AND t.event_type=?"
         params.append(event_type)
     rows = conn.execute(
-        f"""SELECT seq, event_type, cell_hash, cell_pos, key, value,
-                   prev_value, source_diff, ts
-            FROM timeline {where} ORDER BY seq""",
+        f"""SELECT t.seq, t.event_type, t.cell_hash, t.cell_pos, t.key,
+                   t.value, t.prev_value, t.source_diff, t.ts,
+                   cl.parent_hash
+            FROM timeline t
+            LEFT JOIN cell_lineage cl ON t.cell_hash = cl.cell_hash
+            {where} ORDER BY t.seq""",
         params
     ).fetchall()
     return [{
@@ -525,6 +556,7 @@ def get_timeline_events(conn, exp_id: str, event_type: str = "") -> list[dict]:
         "prev_value": _safe_json(r["prev_value"]),
         "source_diff": _safe_json(r["source_diff"]),
         "ts": r["ts"],
+        "parent_hash": r["parent_hash"],
     } for r in rows]
 
 

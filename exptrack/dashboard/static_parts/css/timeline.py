@@ -21,6 +21,8 @@ CSS_TIMELINE = """
   .tl-badge-edited { background: #fff3cd; color: #856404; }
   .tl-badge-rerun { background: var(--code-bg); color: var(--muted); }
   .tl-badge-output { background: #cce5ff; color: #004085; }
+  .tl-badge-lineage { background: #e8daef; color: #6c3483; cursor: pointer; }
+  .tl-badge-lineage:hover { background: #d2b4de; }
   .tl-var-arrow { color: var(--muted); }
   .tl-context { font-size: 11px; color: var(--muted); margin-top: 3px; }
   .tl-filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }

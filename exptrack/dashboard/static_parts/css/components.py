@@ -109,6 +109,9 @@ CSS_COMPONENTS = """
   .artifact-actions button { font-family: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; color: var(--muted); }
   .artifact-actions button:hover { color: var(--fg); border-color: var(--fg); }
   .artifact-actions button.art-del:hover { color: var(--red); border-color: var(--red); }
+  .artifact-thumb { margin-top: 6px; }
+  .artifact-thumb img { max-width: 180px; max-height: 120px; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; transition: transform 0.15s; }
+  .artifact-thumb img:hover { transform: scale(1.05); border-color: var(--blue); }
   .home-btn { font-family: inherit; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border); padding: 6px 14px; cursor: pointer; border-radius: 4px; color: var(--muted); }
   .home-btn:hover { background: var(--border); color: var(--fg); }
   .help-panel { display: none; background: var(--card-bg); border: 1px solid var(--border); padding: 24px; border-radius: 4px; margin-bottom: 20px; }
@@ -335,4 +338,9 @@ CSS_COMPONENTS = """
   .settings-actions button:hover { background: var(--border); color: var(--fg); }
   .settings-actions button.danger { color: var(--red, #e55); }
   .settings-actions button.danger:hover { background: rgba(192,57,43,0.1); border-color: var(--red, #e55); }
+
+  /* Live badge for auto-refreshing running experiments */
+  .live-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: #059669; padding: 2px 8px; border-radius: 10px; background: rgba(5,150,105,0.1); margin-left: 6px; }
+  .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #059669; animation: livePulse 1.5s ease-in-out infinite; }
+  @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 """

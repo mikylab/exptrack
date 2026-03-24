@@ -239,7 +239,7 @@ def api_list_images(conn, exp_id: str) -> dict:
     import os
 
     from ...config import project_root
-    from ...core.queries import find_experiment
+    from ...core.queries import IMAGE_EXTS, _rel_path, find_experiment
 
     exp = find_experiment(conn, exp_id, "id, output_dir, image_paths")
     if not exp:
@@ -264,7 +264,7 @@ def api_list_images(conn, exp_id: str) -> dict:
             pass
 
     # Scan images from saved paths
-    image_exts = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.tiff', '.webp'}
+    image_exts_set = set(IMAGE_EXTS)
     images = []
     for scan_path in paths:
         abs_dir = os.path.normpath(os.path.join(root, scan_path))
@@ -275,7 +275,7 @@ def api_list_images(conn, exp_id: str) -> dict:
         for dirpath, _, filenames in os.walk(abs_dir):
             for fn in sorted(filenames):
                 ext = os.path.splitext(fn)[1].lower()
-                if ext in image_exts:
+                if ext in image_exts_set:
                     full = os.path.join(dirpath, fn)
                     rel = os.path.relpath(full, root)
                     try:
@@ -290,6 +290,35 @@ def api_list_images(conn, exp_id: str) -> dict:
                         "dir": os.path.relpath(dirpath, abs_dir) or ".",
                     })
     images.sort(key=lambda x: x["modified"], reverse=True)
-    return {"images": images, "paths": paths, "suggested_paths": suggested}
+
+    # Also include image artifacts from the artifacts table
+    artifact_images = []
+    art_rows = conn.execute(
+        "SELECT label, path, created_at FROM artifacts WHERE exp_id=?",
+        (exp["id"],)
+    ).fetchall()
+    for r in art_rows:
+        if not r["path"] or not any(r["path"].lower().endswith(ext) for ext in IMAGE_EXTS):
+            continue
+        art_path = _rel_path(r["path"])
+        abs_path = os.path.normpath(os.path.join(root, art_path))
+        try:
+            stat = os.stat(abs_path)
+            size, modified = stat.st_size, stat.st_mtime
+        except OSError:
+            size, modified = 0, 0
+        artifact_images.append({
+            "name": os.path.basename(art_path),
+            "path": art_path,
+            "size": size,
+            "modified": modified,
+            "dir": "artifacts",
+            "label": r["label"],
+        })
+
+    return {
+        "images": images, "paths": paths,
+        "suggested_paths": suggested, "artifact_images": artifact_images,
+    }
 
 

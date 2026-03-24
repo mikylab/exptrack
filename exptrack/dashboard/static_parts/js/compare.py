@@ -216,8 +216,10 @@ async function doCompare() {
     api('/api/images/' + id1),
     api('/api/images/' + id2),
   ]);
-  const imgs1 = (imgData1.images || []);
-  const imgs2 = (imgData2.images || []);
+  let imgs1 = (imgData1.images || []);
+  let imgs2 = (imgData2.images || []);
+  mergeArtifactImages(imgs1, imgData1.artifact_images);
+  mergeArtifactImages(imgs2, imgData2.artifact_images);
 
   if (imgs1.length || imgs2.length) {
     html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Images</summary>';
@@ -229,7 +231,7 @@ async function doCompare() {
     if (imgs1.length) {
       html += '<div class="cmp-img-grid">';
       for (const img of imgs1.slice(0, 60)) {
-        const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
+        const src = fileUrl(img.path);
         html += '<div class="cmp-img-thumb" data-side="1" data-src="' + esc(src) + '" onclick="selectCrossImg(\'' + esc(src) + '\',\'' + esc(img.name) + '\',1)">';
         html += '<img src="' + src + '" loading="lazy" alt="' + esc(img.name) + '">';
         html += '<div class="cmp-thumb-name">' + esc(img.name) + '</div>';
@@ -246,7 +248,7 @@ async function doCompare() {
     if (imgs2.length) {
       html += '<div class="cmp-img-grid">';
       for (const img of imgs2.slice(0, 60)) {
-        const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
+        const src = fileUrl(img.path);
         html += '<div class="cmp-img-thumb" data-side="2" data-src="' + esc(src) + '" onclick="selectCrossImg(\'' + esc(src) + '\',\'' + esc(img.name) + '\',2)">';
         html += '<img src="' + src + '" loading="lazy" alt="' + esc(img.name) + '">';
         html += '<div class="cmp-thumb-name">' + esc(img.name) + '</div>';
@@ -365,6 +367,35 @@ async function doMultiCompare(ids) {
       html += '<div class="chart-container"><canvas id="multi-chart-' + k.replace(/[^a-zA-Z0-9]/g,'_') + '"></canvas></div>';
     }
     html += '</div></details>';
+  }
+
+  // Image comparison — group by label across experiments
+  const allImageLabels = new Set();
+  for (const e of exps) {
+    for (const img of (e.images || [])) {
+      allImageLabels.add(img.label || img.path.split('/').pop());
+    }
+  }
+  if (allImageLabels.size > 0) {
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Images</summary>';
+    for (const label of [...allImageLabels].sort()) {
+      html += '<div class="multi-compare-image-group"><h4 style="font-size:13px;color:var(--muted);margin:8px 0 4px">' + esc(label) + '</h4>';
+      html += '<div class="multi-compare-image-row">';
+      for (const e of exps) {
+        const img = (e.images || []).find(i => (i.label || i.path.split('/').pop()) === label);
+        const name = e.name.length > 20 ? e.name.slice(0,17) + '...' : e.name;
+        html += '<div class="multi-compare-image-cell">';
+        html += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + esc(name) + '</div>';
+        if (img) {
+          html += '<img src="' + fileUrl(img.path) + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + esc(label) + '\')">';
+        } else {
+          html += '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">No image</div>';
+        }
+        html += '</div>';
+      }
+      html += '</div></div>';
+    }
+    html += '</details>';
   }
 
   document.getElementById('multi-compare-result').innerHTML = html;

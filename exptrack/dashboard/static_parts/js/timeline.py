@@ -31,15 +31,21 @@ let timelineFilter = '';
 
 async function loadTimeline(expId, filter) {
   if (filter !== undefined) timelineFilter = filter;
-  const url = timelineFilter
-    ? '/api/timeline/' + expId + '?type=' + timelineFilter
+  // 'lineage' is a client-side filter — fetch all cell_exec events then filter
+  const isLineageFilter = timelineFilter === 'lineage';
+  const serverFilter = isLineageFilter ? 'cell_exec' : timelineFilter;
+  const url = serverFilter
+    ? '/api/timeline/' + expId + '?type=' + serverFilter
     : '/api/timeline/' + expId;
-  const events = await api(url);
+  let events = await api(url);
+  if (isLineageFilter) {
+    events = events.filter(ev => ev.parent_hash);
+  }
   const container = document.getElementById('detail-tab-timeline');
 
   let html = '<div class="tl-filters">';
-  const types = ['', 'cell_exec', 'var_set', 'artifact', 'observational'];
-  const labels = ['All', 'Code', 'Variables', 'Artifacts', 'Observational'];
+  const types = ['', 'cell_exec', 'var_set', 'artifact', 'observational', 'lineage'];
+  const labels = ['All', 'Code', 'Variables', 'Artifacts', 'Observational', 'Lineage'];
   types.forEach((t, i) => {
     html += '<button class="' + (timelineFilter===t?'active':'') + '" onclick="loadTimeline(\'' + expId + '\',\'' + t + '\')">' + labels[i] + '</button>';
   });
@@ -74,6 +80,7 @@ async function loadTimeline(expId, filter) {
       if (info.code_changed) badges += '<span class="tl-badge tl-badge-edited">edited</span>';
       if (info.is_rerun) badges += '<span class="tl-badge tl-badge-rerun">rerun</span>';
       if (info.has_output) badges += '<span class="tl-badge tl-badge-output">output</span>';
+      if (ev.parent_hash) badges += '<span class="tl-badge tl-badge-lineage" title="Derived from cell ' + ev.parent_hash + '" onclick="event.stopPropagation();viewCellSource(\'' + ev.parent_hash + '\',this.closest(\'.tl-body\').querySelector(\'.view-source-btn\') || this)">&#8592; ' + ev.parent_hash.slice(0,6) + '</span>';
 
       // View source button - uses cell_hash to fetch from lineage
       const viewSrcBtn = ev.cell_hash ? ' <button class="view-source-btn" onclick="event.stopPropagation();viewCellSource(\'' + ev.cell_hash + '\',this)">view source</button>' : '';
@@ -213,6 +220,8 @@ async function loadImages(expId) {
   const suggestedPaths = data.suggested_paths || [];
   let images = data.images || [];
 
+  mergeArtifactImages(images, data.artifact_images);
+
   let html = '<div class="img-paths-section">';
   html += '<h3 style="font-size:14px;margin-bottom:8px">Image Paths</h3>';
   html += '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">Add folders to scan for images. Paths are relative to project root.</p>';
@@ -321,7 +330,7 @@ async function loadImages(expId) {
 
     html += '<div class="img-gallery">';
     for (const img of limited) {
-      const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
+      const src = fileUrl(img.path);
       const sizeKb = (img.size / 1024).toFixed(1);
       const modDate = img.modified ? new Date(img.modified * 1000).toLocaleString() : '';
       const isSelA = imgCmpMode && imgCmpA && imgCmpA.src === src;

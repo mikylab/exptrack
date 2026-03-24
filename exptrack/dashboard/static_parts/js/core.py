@@ -23,6 +23,7 @@ let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
 let allKnownStudies = []; // {name, count}[]
 let highlightMode = localStorage.getItem('exptrack-highlight') === 'true';
+let autoRefreshTimer = null;
 
 // Display abbreviations for common metric names (config stores full names)
 const METRIC_ABBREV = {
@@ -400,6 +401,19 @@ function _authUrl(path) {
   if (!_authToken) return path;
   const sep = path.includes('?') ? '&' : '?';
   return path + sep + 'token=' + encodeURIComponent(_authToken);
+}
+
+function fileUrl(path) {
+  return _authUrl('/api/file/' + encodeURIComponent(path).replace(/%2F/g, '/'));
+}
+
+function mergeArtifactImages(images, artifactImages) {
+  if (!artifactImages || !artifactImages.length) return images;
+  const existing = new Set(images.map(i => i.path));
+  for (const ai of artifactImages) {
+    if (!existing.has(ai.path)) { images.push(ai); existing.add(ai.path); }
+  }
+  return images;
 }
 
 async function api(path) {
