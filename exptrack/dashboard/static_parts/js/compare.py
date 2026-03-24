@@ -236,7 +236,7 @@ async function doCompare() {
     if (imgs1.length) {
       html += '<div class="cmp-img-grid">';
       for (const img of imgs1.slice(0, 60)) {
-        const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
+        const src = _authUrl('/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/'));
         html += '<div class="cmp-img-thumb" data-side="1" data-src="' + esc(src) + '" onclick="selectCrossImg(\'' + esc(src) + '\',\'' + esc(img.name) + '\',1)">';
         html += '<img src="' + src + '" loading="lazy" alt="' + esc(img.name) + '">';
         html += '<div class="cmp-thumb-name">' + esc(img.name) + '</div>';
@@ -253,7 +253,7 @@ async function doCompare() {
     if (imgs2.length) {
       html += '<div class="cmp-img-grid">';
       for (const img of imgs2.slice(0, 60)) {
-        const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
+        const src = _authUrl('/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/'));
         html += '<div class="cmp-img-thumb" data-side="2" data-src="' + esc(src) + '" onclick="selectCrossImg(\'' + esc(src) + '\',\'' + esc(img.name) + '\',2)">';
         html += '<img src="' + src + '" loading="lazy" alt="' + esc(img.name) + '">';
         html += '<div class="cmp-thumb-name">' + esc(img.name) + '</div>';
@@ -392,7 +392,7 @@ async function doMultiCompare(ids) {
         html += '<div class="multi-compare-image-cell">';
         html += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + esc(name) + '</div>';
         if (img) {
-          html += '<img src="/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/') + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + esc(label) + '\')">';
+          html += '<img src="' + _authUrl('/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/')) + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + esc(label) + '\')">';
         } else {
           html += '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">No image</div>';
         }

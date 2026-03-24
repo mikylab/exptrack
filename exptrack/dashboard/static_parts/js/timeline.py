@@ -339,7 +339,7 @@ async function loadImages(expId) {
 
     html += '<div class="img-gallery">';
     for (const img of limited) {
-      const src = '/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/');
+      const src = _authUrl('/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/'));
       const sizeKb = (img.size / 1024).toFixed(1);
       const modDate = img.modified ? new Date(img.modified * 1000).toLocaleString() : '';
       const isSelA = imgCmpMode && imgCmpA && imgCmpA.src === src;

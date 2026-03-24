@@ -466,6 +466,68 @@ def test_compare_js_generates_img_tags():
     )
 
 
+# ── Auth token forwarding for image URLs ─────────────────────────────────────
+
+def test_detail_js_uses_auth_url_for_images():
+    """Detail view wraps image src URLs with _authUrl for auth token forwarding."""
+    from exptrack.dashboard.static_parts.js.detail import JS_DETAIL
+
+    assert "_authUrl('/api/file/'" in JS_DETAIL, (
+        "Detail JS must wrap /api/file/ URLs with _authUrl() so images load when auth is enabled"
+    )
+
+
+def test_images_tab_js_uses_auth_url_for_images():
+    """Images tab wraps image src URLs with _authUrl for auth token forwarding."""
+    from exptrack.dashboard.static_parts.js.timeline import JS_TIMELINE
+
+    assert "_authUrl('/api/file/'" in JS_TIMELINE, (
+        "Images tab JS must wrap /api/file/ URLs with _authUrl() so images load when auth is enabled"
+    )
+
+
+def test_compare_js_uses_auth_url_for_images():
+    """Compare view wraps image src URLs with _authUrl for auth token forwarding."""
+    from exptrack.dashboard.static_parts.js.compare import JS_COMPARE
+
+    assert "_authUrl('/api/file/'" in JS_COMPARE, (
+        "Compare JS must wrap /api/file/ URLs with _authUrl() so images load when auth is enabled"
+    )
+
+
+def test_mutations_js_uses_auth_url_for_file_fetch():
+    """Log file viewer wraps fetch URL with _authUrl for auth token forwarding."""
+    from exptrack.dashboard.static_parts.js.mutations import JS_MUTATIONS
+
+    assert "_authUrl('/api/file/'" in JS_MUTATIONS, (
+        "Mutations JS must wrap /api/file/ URLs with _authUrl() so log files load when auth is enabled"
+    )
+
+
+def test_no_bare_api_file_urls_in_js():
+    """No JS module should have bare /api/file/ URLs without _authUrl wrapping."""
+    from exptrack.dashboard.static_parts.scripts import get_all_js
+    import re
+
+    all_js = get_all_js()
+    # Find all /api/file/ URL constructions that are NOT wrapped in _authUrl
+    # Pattern: '/api/file/' NOT preceded by _authUrl(
+    lines = all_js.split('\n')
+    bare_urls = []
+    for i, line in enumerate(lines, 1):
+        if '/api/file/' in line and '_authUrl' not in line:
+            # Skip comment lines
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('*'):
+                continue
+            bare_urls.append(f"  line {i}: {stripped[:100]}")
+
+    assert not bare_urls, (
+        "Found bare /api/file/ URLs without _authUrl() wrapping — "
+        "these will fail when dashboard auth is enabled:\n" + "\n".join(bare_urls)
+    )
+
+
 def test_compare_js_merges_artifact_images():
     """The compare view JS merges artifact_images into the image list."""
     from exptrack.dashboard.static_parts.js.compare import JS_COMPARE

@@ -155,7 +155,7 @@ async function refreshDetail(id) {
     const viewBtn = (isLog || isData)
       ? `<button onclick="viewLogFile('${esc(a.path)}','${esc(a.label)}')" title="View contents">view</button>`
       : '';
-    const imgSrc = '/api/file/' + encodeURIComponent(a.path).replace(/%2F/g, '/');
+    const imgSrc = _authUrl('/api/file/' + encodeURIComponent(a.path).replace(/%2F/g, '/'));
     const thumbHtml = isImage
       ? `<div class="artifact-thumb"><img src="${imgSrc}" alt="${esc(a.label)}" onclick="openImageModal('${imgSrc}','${esc(a.label)}')" title="Click to enlarge"></div>`
       : '';
