@@ -218,13 +218,8 @@ async function doCompare() {
   ]);
   let imgs1 = (imgData1.images || []);
   let imgs2 = (imgData2.images || []);
-  // Merge artifact images (from DB) into directory-scanned images
-  for (const ai of (imgData1.artifact_images || [])) {
-    if (!imgs1.some(i => i.path === ai.path)) imgs1.push(ai);
-  }
-  for (const ai of (imgData2.artifact_images || [])) {
-    if (!imgs2.some(i => i.path === ai.path)) imgs2.push(ai);
-  }
+  mergeArtifactImages(imgs1, imgData1.artifact_images);
+  mergeArtifactImages(imgs2, imgData2.artifact_images);
 
   if (imgs1.length || imgs2.length) {
     html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Images</summary>';
@@ -236,7 +231,7 @@ async function doCompare() {
     if (imgs1.length) {
       html += '<div class="cmp-img-grid">';
       for (const img of imgs1.slice(0, 60)) {
-        const src = _authUrl('/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/'));
+        const src = fileUrl(img.path);
         html += '<div class="cmp-img-thumb" data-side="1" data-src="' + esc(src) + '" onclick="selectCrossImg(\'' + esc(src) + '\',\'' + esc(img.name) + '\',1)">';
         html += '<img src="' + src + '" loading="lazy" alt="' + esc(img.name) + '">';
         html += '<div class="cmp-thumb-name">' + esc(img.name) + '</div>';
@@ -253,7 +248,7 @@ async function doCompare() {
     if (imgs2.length) {
       html += '<div class="cmp-img-grid">';
       for (const img of imgs2.slice(0, 60)) {
-        const src = _authUrl('/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/'));
+        const src = fileUrl(img.path);
         html += '<div class="cmp-img-thumb" data-side="2" data-src="' + esc(src) + '" onclick="selectCrossImg(\'' + esc(src) + '\',\'' + esc(img.name) + '\',2)">';
         html += '<img src="' + src + '" loading="lazy" alt="' + esc(img.name) + '">';
         html += '<div class="cmp-thumb-name">' + esc(img.name) + '</div>';
@@ -392,7 +387,7 @@ async function doMultiCompare(ids) {
         html += '<div class="multi-compare-image-cell">';
         html += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + esc(name) + '</div>';
         if (img) {
-          html += '<img src="' + _authUrl('/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/')) + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + esc(label) + '\')">';
+          html += '<img src="' + fileUrl(img.path) + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + esc(label) + '\')">';
         } else {
           html += '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">No image</div>';
         }

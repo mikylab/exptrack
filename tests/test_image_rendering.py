@@ -430,28 +430,19 @@ def test_detail_js_generates_img_tags_for_artifacts():
     """The detail view JS produces <img> tags for image artifacts."""
     from exptrack.dashboard.static_parts.js.detail import JS_DETAIL
 
-    # Verify the JS code checks for image extensions and creates img tags
     assert "isImage" in JS_DETAIL, "Detail JS should detect image artifacts"
     assert "artifact-thumb" in JS_DETAIL, "Detail JS should render artifact thumbnails"
     assert "openImageModal" in JS_DETAIL, "Detail JS should wire up image modal on click"
-    assert "/api/file/" in JS_DETAIL, "Detail JS should use /api/file/ endpoint"
-    # Verify the URL encoding pattern is correct
-    assert "encodeURIComponent(a.path).replace(/%2F/g, '/')" in JS_DETAIL, (
-        "Detail JS should encode paths but preserve forward slashes"
-    )
+    assert "fileUrl(a.path)" in JS_DETAIL, "Detail JS should use fileUrl() helper"
 
 
 def test_images_tab_js_generates_img_tags():
     """The images tab JS produces <img> tags with correct src attributes."""
     from exptrack.dashboard.static_parts.js.timeline import JS_TIMELINE
 
-    # loadImages function should render img tags
     assert "img-gallery" in JS_TIMELINE, "Images tab should render gallery"
     assert "img-thumb" in JS_TIMELINE, "Images tab should render thumbnails"
-    assert "/api/file/" in JS_TIMELINE, "Images tab should use /api/file/ endpoint"
-    assert "encodeURIComponent(img.path).replace(/%2F/g, '/')" in JS_TIMELINE, (
-        "Images tab should encode paths but preserve forward slashes"
-    )
+    assert "fileUrl(img.path)" in JS_TIMELINE, "Images tab should use fileUrl() helper"
 
 
 def test_compare_js_generates_img_tags():
@@ -460,89 +451,65 @@ def test_compare_js_generates_img_tags():
 
     assert "cmp-img-grid" in JS_COMPARE, "Compare should render image grid"
     assert "cmp-img-thumb" in JS_COMPARE, "Compare should render thumbnails"
-    assert "/api/file/" in JS_COMPARE, "Compare should use /api/file/ endpoint"
-    assert "encodeURIComponent(img.path).replace(/%2F/g, '/')" in JS_COMPARE, (
-        "Compare should encode paths but preserve forward slashes"
-    )
+    assert "fileUrl(img.path)" in JS_COMPARE, "Compare should use fileUrl() helper"
 
 
 # ── Auth token forwarding for image URLs ─────────────────────────────────────
 
-def test_detail_js_uses_auth_url_for_images():
-    """Detail view wraps image src URLs with _authUrl for auth token forwarding."""
-    from exptrack.dashboard.static_parts.js.detail import JS_DETAIL
+def test_fileurl_helper_exists():
+    """fileUrl() helper is defined in core JS and handles auth + encoding."""
+    from exptrack.dashboard.static_parts.js.core import JS_CORE
 
-    assert "_authUrl('/api/file/'" in JS_DETAIL, (
-        "Detail JS must wrap /api/file/ URLs with _authUrl() so images load when auth is enabled"
+    assert "function fileUrl(path)" in JS_CORE, "Core JS should define fileUrl() helper"
+    assert "_authUrl" in JS_CORE.split("function fileUrl")[1].split("\n")[0:3].__repr__(), (
+        "fileUrl() should use _authUrl internally"
     )
 
 
-def test_images_tab_js_uses_auth_url_for_images():
-    """Images tab wraps image src URLs with _authUrl for auth token forwarding."""
-    from exptrack.dashboard.static_parts.js.timeline import JS_TIMELINE
+def test_merge_artifact_images_helper_exists():
+    """mergeArtifactImages() helper is defined in core JS."""
+    from exptrack.dashboard.static_parts.js.core import JS_CORE
 
-    assert "_authUrl('/api/file/'" in JS_TIMELINE, (
-        "Images tab JS must wrap /api/file/ URLs with _authUrl() so images load when auth is enabled"
-    )
+    assert "function mergeArtifactImages(" in JS_CORE
 
 
-def test_compare_js_uses_auth_url_for_images():
-    """Compare view wraps image src URLs with _authUrl for auth token forwarding."""
-    from exptrack.dashboard.static_parts.js.compare import JS_COMPARE
-
-    assert "_authUrl('/api/file/'" in JS_COMPARE, (
-        "Compare JS must wrap /api/file/ URLs with _authUrl() so images load when auth is enabled"
-    )
-
-
-def test_mutations_js_uses_auth_url_for_file_fetch():
-    """Log file viewer wraps fetch URL with _authUrl for auth token forwarding."""
-    from exptrack.dashboard.static_parts.js.mutations import JS_MUTATIONS
-
-    assert "_authUrl('/api/file/'" in JS_MUTATIONS, (
-        "Mutations JS must wrap /api/file/ URLs with _authUrl() so log files load when auth is enabled"
-    )
-
-
-def test_no_bare_api_file_urls_in_js():
-    """No JS module should have bare /api/file/ URLs without _authUrl wrapping."""
+def test_all_file_urls_use_helper():
+    """All /api/file/ references should go through fileUrl() or its definition."""
     from exptrack.dashboard.static_parts.scripts import get_all_js
-    import re
 
     all_js = get_all_js()
-    # Find all /api/file/ URL constructions that are NOT wrapped in _authUrl
-    # Pattern: '/api/file/' NOT preceded by _authUrl(
     lines = all_js.split('\n')
     bare_urls = []
     for i, line in enumerate(lines, 1):
-        if '/api/file/' in line and '_authUrl' not in line:
-            # Skip comment lines
+        if '/api/file/' in line:
             stripped = line.strip()
             if stripped.startswith('//') or stripped.startswith('*'):
+                continue
+            # Allow the fileUrl definition itself
+            if 'function fileUrl' in stripped or "return _authUrl('/api/file/'" in stripped:
                 continue
             bare_urls.append(f"  line {i}: {stripped[:100]}")
 
     assert not bare_urls, (
-        "Found bare /api/file/ URLs without _authUrl() wrapping — "
-        "these will fail when dashboard auth is enabled:\n" + "\n".join(bare_urls)
+        "Found /api/file/ URLs not going through fileUrl() helper:\n" + "\n".join(bare_urls)
     )
 
 
 def test_compare_js_merges_artifact_images():
-    """The compare view JS merges artifact_images into the image list."""
+    """The compare view JS uses mergeArtifactImages helper."""
     from exptrack.dashboard.static_parts.js.compare import JS_COMPARE
 
-    assert "artifact_images" in JS_COMPARE, (
-        "Compare should reference artifact_images from API response"
+    assert "mergeArtifactImages(" in JS_COMPARE, (
+        "Compare should use mergeArtifactImages() helper"
     )
 
 
 def test_images_tab_js_merges_artifact_images():
-    """The images tab JS merges artifact_images from API into the gallery."""
+    """The images tab JS uses mergeArtifactImages helper."""
     from exptrack.dashboard.static_parts.js.timeline import JS_TIMELINE
 
-    assert "artifact_images" in JS_TIMELINE, (
-        "Images tab should reference artifact_images from API response"
+    assert "mergeArtifactImages(" in JS_TIMELINE, (
+        "Images tab should use mergeArtifactImages() helper"
     )
 
 

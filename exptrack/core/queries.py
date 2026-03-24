@@ -12,6 +12,8 @@ from typing import Any
 
 from .db import resolve_git_diff
 
+IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.tiff', '.webp')
+
 
 def _rel_path(path: str) -> str:
     """Convert an absolute artifact path to relative from project root.
@@ -26,7 +28,7 @@ def _rel_path(path: str) -> str:
     try:
         from ..config import project_root
         return os.path.relpath(path, str(project_root()))
-    except (ValueError, Exception):
+    except (ValueError, ImportError):
         return path
 
 
@@ -392,7 +394,6 @@ def get_all_latest_metrics(conn, limit: int = 50) -> dict[str, dict[str, float]]
 def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
     """Get experiment names, latest metrics, and image artifacts for multiple experiments."""
     results = []
-    image_exts = ('.png', '.jpg', '.jpeg', '.svg', '.gif', '.bmp', '.tiff')
     for eid in exp_ids:
         exp = find_experiment(conn, eid, "id, name, status")
         if not exp:
@@ -405,7 +406,7 @@ def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
         images = [
             {"label": r["label"], "path": _rel_path(r["path"])}
             for r in art_rows
-            if r["path"] and any(r["path"].lower().endswith(ext) for ext in image_exts)
+            if r["path"] and any(r["path"].lower().endswith(ext) for ext in IMAGE_EXTS)
         ]
         results.append({
             "id": full_id,

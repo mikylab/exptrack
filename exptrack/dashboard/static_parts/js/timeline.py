@@ -220,16 +220,7 @@ async function loadImages(expId) {
   const suggestedPaths = data.suggested_paths || [];
   let images = data.images || [];
 
-  // Also include image artifacts from the experiment's artifact table
-  const artImages = data.artifact_images || [];
-  if (artImages.length) {
-    const existingPaths = new Set(images.map(img => img.path));
-    for (const ai of artImages) {
-      if (!existingPaths.has(ai.path)) {
-        images.push(ai);
-      }
-    }
-  }
+  mergeArtifactImages(images, data.artifact_images);
 
   let html = '<div class="img-paths-section">';
   html += '<h3 style="font-size:14px;margin-bottom:8px">Image Paths</h3>';
@@ -339,7 +330,7 @@ async function loadImages(expId) {
 
     html += '<div class="img-gallery">';
     for (const img of limited) {
-      const src = _authUrl('/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/'));
+      const src = fileUrl(img.path);
       const sizeKb = (img.size / 1024).toFixed(1);
       const modDate = img.modified ? new Date(img.modified * 1000).toLocaleString() : '';
       const isSelA = imgCmpMode && imgCmpA && imgCmpA.src === src;

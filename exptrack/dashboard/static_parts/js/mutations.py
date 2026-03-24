@@ -223,7 +223,7 @@ function parseCSV(text, delimiter) {
 
 async function viewLogFile(path, label) {
   try {
-    const resp = await fetch(_authUrl('/api/file/' + encodeURIComponent(path).replace(/%2F/g, '/')));
+    const resp = await fetch(fileUrl(path));
     if (!resp.ok) { alert('Could not load file: ' + resp.statusText); return; }
     const text = await resp.text();
 
