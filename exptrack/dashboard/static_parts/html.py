@@ -76,8 +76,13 @@ HTML_BODY = r"""</style>
   </div>
 </div>
 
-<div class="help-panel" id="help-panel">
-  <button class="help-close" onclick="toggleHelp()">&times;</button>
+<div class="help-overlay" id="help-overlay" onclick="toggleHelp()"></div>
+<div class="help-drawer" id="help-panel">
+  <div class="help-drawer-header">
+    <h3>Docs</h3>
+    <button class="help-drawer-close" onclick="toggleHelp()">&times;</button>
+  </div>
+  <div class="help-drawer-body">
 
   <div class="help-section">
     <h3>Getting Started</h3>
@@ -257,6 +262,8 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
         </div>
       </div>
     </div>
+  </div>
+
   </div>
 </div>
 

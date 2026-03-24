@@ -114,17 +114,39 @@ CSS_COMPONENTS = """
   .artifact-thumb img:hover { transform: scale(1.05); border-color: var(--blue); }
   .home-btn { font-family: inherit; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border); padding: 6px 14px; cursor: pointer; border-radius: 4px; color: var(--muted); }
   .home-btn:hover { background: var(--border); color: var(--fg); }
-  .help-panel {
-    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 900;
-    background: var(--bg); padding: 32px 48px; overflow-y: auto;
+  /* Help drawer (right-side panel, matches toolbox pattern) */
+  .help-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.3); z-index: 999;
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
   }
-  .help-panel.visible { display: block; }
-  .help-close { position: fixed; top: 12px; right: 20px; cursor: pointer; font-size: 24px; background: var(--bg); border: none; font-family: inherit; color: var(--muted); z-index: 901; padding: 4px 10px; border-radius: 4px; }
-  .help-close:hover { color: var(--fg); background: var(--code-bg); }
+  .help-overlay.visible { opacity: 1; pointer-events: auto; }
+
+  .help-drawer {
+    position: fixed; top: 0; right: -520px; bottom: 0; width: 500px;
+    background: var(--card-bg); border-left: 1px solid var(--border);
+    box-shadow: -4px 0 20px rgba(0,0,0,0.12); z-index: 1000;
+    display: flex; flex-direction: column;
+    transition: right 0.25s ease;
+  }
+  .help-drawer.visible { right: 0; }
+
+  .help-drawer-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .help-drawer-header h3 { font-size: 15px; font-weight: 600; margin: 0; }
+  .help-drawer-close {
+    background: none; border: none; font-size: 20px; cursor: pointer;
+    color: var(--muted); padding: 4px 8px; border-radius: 3px; font-family: inherit;
+  }
+  .help-drawer-close:hover { background: var(--code-bg); color: var(--fg); }
+
+  .help-drawer-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
 
   /* Sections and headings */
-  .help-section { margin-bottom: 32px; max-width: 720px; }
-  .help-section h3 { font-size: 16px; font-weight: 700; margin: 0 0 6px; padding-bottom: 8px; border-bottom: 2px solid var(--border); }
+  .help-section { margin-bottom: 24px; }
+  .help-section h3 { font-size: 14px; font-weight: 700; margin: 0 0 6px; padding-bottom: 6px; border-bottom: 2px solid var(--border); }
   .help-section h4 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin: 18px 0 8px; }
   .help-intro { color: var(--muted); font-size: 13px; margin-bottom: 16px; line-height: 1.5; }
   .help-section p { font-size: 13px; color: var(--muted); margin: 4px 0 8px; line-height: 1.5; }
@@ -137,7 +159,7 @@ CSS_COMPONENTS = """
     font-size: 12px; line-height: 1.6;
     background: var(--code-bg); color: var(--fg);
     border: 1px solid var(--border); border-left: 3px solid var(--blue);
-    border-radius: 4px; padding: 10px 14px; margin: 8px 0 12px;
+    border-radius: 4px; padding: 8px 12px; margin: 6px 0 10px;
     white-space: pre-wrap; word-break: break-all;
     overflow-x: auto;
   }
@@ -151,7 +173,7 @@ CSS_COMPONENTS = """
     display: flex; align-items: center; justify-content: center; margin-top: 2px;
   }
   .help-step-body { flex: 1; }
-  .help-step-body strong { display: block; font-size: 14px; margin-bottom: 2px; }
+  .help-step-body strong { display: block; font-size: 13px; margin-bottom: 2px; }
 
   /* How-to list */
   .help-howto { display: flex; flex-direction: column; gap: 14px; margin: 12px 0; }

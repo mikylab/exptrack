@@ -2,7 +2,7 @@
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![No Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](#why-exptrack)
+[![stdlib only](https://img.shields.io/badge/stdlib-only-brightgreen.svg)](#what-it-does)
 [![SQLite](https://img.shields.io/badge/storage-SQLite-003B57.svg)](https://www.sqlite.org/)
 
 **A local experiment tracker for ML workflows.** Captures parameters, metrics, git state, and code changes from your training scripts and notebooks automatically. Uses only the Python standard library and stores everything in a single SQLite file.
@@ -28,16 +28,21 @@ Filter, compare, tag, and explore experiments from a local web UI. Runs on local
 
 ---
 
-## Why expTrack?
+## What It Does
 
-| | expTrack | Weights & Biases, MLflow, etc. |
-|---|---|---|
-| **Setup** | `pip install exptrack` | Install packages, create account, configure API keys |
-| **Code changes** | None required | Add `wandb.init()`, `SummaryWriter`, decorators |
-| **Dependencies** | Standard library only | protobuf, grpc, cloud SDKs |
-| **Where data lives** | Your machine, one SQLite file | Their cloud (or self-hosted server) |
-| **Git tracking** | Automatic (branch, commit, full diff) | Manual or limited |
-| **Works offline** | Always | Requires sync |
+**Organize experiments with studies, tags, and stages.** Group related runs into studies (e.g., a train → eval → analyze pipeline), label them with tags (`baseline`, `v2`, `ablation`), and define numbered stages within each study.
+
+**Track Jupyter notebooks in detail.** Every cell execution is recorded: code diffs between runs, variable changes with fingerprinting, and hyperparameter-like variables (`lr`, `batch_size`) are captured as parameters automatically.
+
+**Compare experiments visually.** Side-by-side parameter diffs with overlay metric charts for pairs. Bar charts across three or more runs. Image artifacts support swipe and overlay comparison.
+
+**Chart metrics over time.** Interactive charts with linear/log scale, zoom, and configurable downsampling. Write-time thinning for long training runs. Sparkline previews in the experiment list.
+
+**Capture git state automatically.** Branch, commit hash, and full diff against HEAD are stored with every run. See exactly what code produced each result.
+
+**Log and compare image artifacts.** `plt.savefig()` calls are captured automatically. View images in a gallery grid, lightbox, or side-by-side/overlay comparison between experiments.
+
+**Run entirely on your machine.** One SQLite file, standard library only, no accounts or internet. Data stays local.
 
 ---
 
