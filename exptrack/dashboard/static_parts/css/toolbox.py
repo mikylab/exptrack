@@ -54,40 +54,37 @@ CSS_TOOLBOX = """
   .toolbox-panel { display: none; padding: 16px 20px; }
   .toolbox-panel.active { display: block; }
 
-  /* ── Todos ───────────────────────────────────────────────────────────── */
-  .todo-filters {
-    display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap;
+  .toolbox-new-study {
+    width: 65px; font-family: inherit; font-size: 12px;
+    border: 1px dashed var(--border); padding: 4px 8px; border-radius: 4px;
+    background: transparent; color: var(--muted);
   }
-  .todo-filter-btn {
-    font-family: inherit; font-size: 12px; background: var(--code-bg);
-    border: 1px solid var(--border); padding: 4px 10px; cursor: pointer;
-    border-radius: 3px; color: var(--muted);
-  }
-  .todo-filter-btn:hover { background: var(--border); color: var(--fg); }
-  .todo-filter-btn.active { background: var(--fg); color: var(--bg); }
+  .toolbox-new-study:focus { outline: none; border-color: var(--blue); border-style: solid; color: var(--fg); }
 
-  .todo-add-form {
+  /* ── Shared add-form inputs ──────────────────────────────────────────── */
+  .todo-add-form, .cmd-add-form {
     display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;
     padding-bottom: 14px; border-bottom: 1px solid var(--border);
   }
-  .todo-add-row {
-    display: flex; gap: 6px; align-items: center;
-  }
-  .todo-add-form input[type="text"] {
+  .todo-add-row, .cmd-add-row { display: flex; gap: 6px; align-items: center; }
+  .cmd-add-row { justify-content: flex-end; }
+
+  .todo-add-form input[type="text"], .cmd-add-form input[type="text"] {
     flex: 1; font-family: inherit; font-size: 13px;
     border: 1px solid var(--border); padding: 7px 10px; border-radius: 4px;
     background: var(--card-bg); color: var(--fg);
   }
-  .todo-add-form input[type="text"]:focus {
+  .todo-add-form input[type="text"]:focus, .cmd-add-form input[type="text"]:focus {
     outline: none; border-color: var(--blue);
   }
-  .todo-add-form input[type="text"]::placeholder { color: var(--muted); }
-  .todo-add-btn {
+  .todo-add-form input[type="text"]::placeholder, .cmd-add-form input[type="text"]::placeholder { color: var(--muted); }
+
+  .todo-add-btn, .cmd-add-btn {
     font-family: inherit; font-size: 13px; padding: 7px 14px;
     border: 1px solid var(--blue); background: var(--blue); color: #fff;
     cursor: pointer; border-radius: 4px; white-space: nowrap;
   }
-  .todo-add-btn:hover { opacity: 0.9; }
+  .todo-add-btn:hover, .cmd-add-btn:hover { opacity: 0.9; }
 
   .todo-meta-row {
     display: flex; gap: 6px; align-items: center;
@@ -100,12 +97,35 @@ CSS_TOOLBOX = """
   .todo-meta-row input { flex: 1; }
   .todo-meta-row select { max-width: 140px; }
 
+  .cmd-add-form textarea {
+    font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+    font-size: 12px; border: 1px solid var(--border); padding: 8px 10px;
+    border-radius: 4px; background: var(--code-bg); color: var(--fg);
+    resize: vertical; min-height: 40px; line-height: 1.5;
+  }
+  .cmd-add-form textarea:focus { outline: none; border-color: var(--blue); }
+  .cmd-add-form textarea::placeholder { color: var(--muted); }
+
+  /* ── Filters (shared) ────────────────────────────────────────────────── */
+  .todo-filters, .cmd-filters {
+    display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;
+  }
+  .todo-filter-btn {
+    font-family: inherit; font-size: 12px; background: var(--code-bg);
+    border: 1px solid var(--border); padding: 4px 10px; cursor: pointer;
+    border-radius: 3px; color: var(--muted);
+  }
+  .todo-filter-btn:hover { background: var(--border); color: var(--fg); }
+  .todo-filter-btn.active { background: var(--fg); color: var(--bg); }
+
+  .todo-count { font-size: 11px; color: var(--muted); margin-left: auto; }
+
+  /* ── Todos ───────────────────────────────────────────────────────────── */
   .todo-list { display: flex; flex-direction: column; gap: 2px; }
 
   .todo-item {
     display: flex; align-items: flex-start; gap: 8px;
-    padding: 8px 10px; border-radius: 4px;
-    transition: background 0.1s;
+    padding: 8px 10px; border-radius: 4px; transition: background 0.1s;
   }
   .todo-item:hover { background: var(--code-bg); }
   .todo-item.done .todo-text { text-decoration: line-through; color: var(--muted); }
@@ -117,14 +137,15 @@ CSS_TOOLBOX = """
 
   .todo-content { flex: 1; min-width: 0; }
   .todo-text { font-size: 13px; line-height: 1.4; word-break: break-word; }
-  .todo-meta {
+  .todo-meta, .cmd-meta {
     display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; align-items: center;
   }
-  .todo-tag {
+  .cmd-meta { margin-top: 0; }
+  .toolbox-tag {
     font-size: 11px; padding: 1px 7px; border-radius: 3px;
     background: rgba(44,90,160,0.1); color: var(--blue);
   }
-  .todo-study {
+  .toolbox-study {
     font-size: 11px; padding: 1px 7px; border-radius: 3px;
     background: rgba(124,58,237,0.1); color: #7c3aed;
   }
@@ -138,45 +159,12 @@ CSS_TOOLBOX = """
   .todo-item:hover .todo-delete { opacity: 0.6; }
   .todo-delete:hover { opacity: 1 !important; color: var(--red, #e55); }
 
-  .todo-empty {
+  .todo-empty, .cmd-empty {
     text-align: center; color: var(--muted); font-size: 13px;
     padding: 24px 16px; line-height: 1.5;
   }
 
-  .todo-count {
-    font-size: 11px; color: var(--muted); margin-left: auto;
-  }
-
   /* ── Commands Notepad ────────────────────────────────────────────────── */
-  .cmd-add-form {
-    display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;
-    padding-bottom: 14px; border-bottom: 1px solid var(--border);
-  }
-  .cmd-add-form input[type="text"] {
-    font-family: inherit; font-size: 13px;
-    border: 1px solid var(--border); padding: 7px 10px; border-radius: 4px;
-    background: var(--card-bg); color: var(--fg);
-  }
-  .cmd-add-form input[type="text"]:focus { outline: none; border-color: var(--blue); }
-  .cmd-add-form input[type="text"]::placeholder { color: var(--muted); }
-  .cmd-add-form textarea {
-    font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
-    font-size: 12px; border: 1px solid var(--border); padding: 8px 10px;
-    border-radius: 4px; background: var(--code-bg); color: var(--fg);
-    resize: vertical; min-height: 40px; line-height: 1.5;
-  }
-  .cmd-add-form textarea:focus { outline: none; border-color: var(--blue); }
-  .cmd-add-form textarea::placeholder { color: var(--muted); }
-  .cmd-add-row {
-    display: flex; gap: 6px; justify-content: flex-end;
-  }
-  .cmd-add-btn {
-    font-family: inherit; font-size: 13px; padding: 7px 14px;
-    border: 1px solid var(--blue); background: var(--blue); color: #fff;
-    cursor: pointer; border-radius: 4px;
-  }
-  .cmd-add-btn:hover { opacity: 0.9; }
-
   .cmd-list { display: flex; flex-direction: column; gap: 8px; }
 
   .cmd-item {
@@ -187,14 +175,14 @@ CSS_TOOLBOX = """
 
   .cmd-item-header {
     display: flex; align-items: center; gap: 8px;
-    padding: 8px 12px; background: var(--code-bg);
+    padding: 8px 12px; background: var(--code-bg); flex-wrap: wrap;
   }
   .cmd-label {
-    font-size: 13px; font-weight: 600; flex: 1;
+    font-size: 13px; font-weight: 600;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .cmd-actions {
-    display: flex; gap: 2px; opacity: 0; transition: opacity 0.1s;
+    display: flex; gap: 2px; opacity: 0; transition: opacity 0.1s; margin-left: auto;
   }
   .cmd-item:hover .cmd-actions { opacity: 1; }
   .cmd-action-btn {
@@ -204,16 +192,16 @@ CSS_TOOLBOX = """
   .cmd-action-btn:hover { color: var(--fg); background: var(--card-bg); }
   .cmd-action-btn.cmd-del:hover { color: var(--red, #e55); }
 
-  .cmd-code-wrap {
-    position: relative; padding: 0;
-  }
+  .cmd-code-wrap { position: relative; padding: 0; }
   .cmd-code {
     display: block; padding: 10px 12px; padding-right: 70px;
     font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
     font-size: 12px; line-height: 1.5; color: var(--fg);
     white-space: pre-wrap; word-break: break-all;
-    margin: 0; background: transparent;
+    margin: 0; background: transparent; outline: none;
+    border-top: 1px solid transparent; transition: border-color 0.15s;
   }
+  .cmd-code:focus { border-top-color: var(--blue); background: rgba(44,90,160,0.03); }
   .cmd-copy-btn {
     position: absolute; top: 6px; right: 6px;
     font-family: inherit; font-size: 11px; padding: 4px 10px;
@@ -224,10 +212,12 @@ CSS_TOOLBOX = """
   .cmd-copy-btn:hover { border-color: var(--blue); color: var(--blue); }
   .cmd-copy-btn.copied { border-color: var(--green, #059669); color: var(--green, #059669); }
 
-  .cmd-empty {
-    text-align: center; color: var(--muted); font-size: 13px;
-    padding: 24px 16px; line-height: 1.5;
+  .cmd-modified {
+    position: absolute; bottom: 4px; right: 6px;
+    font-size: 10px; color: var(--blue); cursor: pointer;
+    opacity: 0.7; font-family: inherit;
   }
+  .cmd-modified:hover { opacity: 1; text-decoration: underline; }
 
   /* Edit mode for commands */
   .cmd-edit-form {

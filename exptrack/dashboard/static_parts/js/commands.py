@@ -1,10 +1,12 @@
-"""Commands notepad: save, copy, edit, delete terminal commands."""
+"""Commands notepad: save, copy, edit, delete terminal commands with inline adjustable text."""
 
 JS_COMMANDS = r"""
 
 // ── Commands state ────────────────────────────────────────────────────────────
 let _commands = [];
 let _editingCmdId = null;
+let _cmdTagFilter = '';
+let _cmdStudyFilter = '';
 
 async function loadCommands() {
   try {
@@ -18,51 +20,83 @@ function renderCommands() {
   const list = document.getElementById('cmd-list');
   if (!list) return;
 
-  if (_commands.length === 0) {
-    list.innerHTML = '<div class="cmd-empty">No saved commands yet.<br>Add your frequently used terminal commands above.</div>';
+  renderFilterChips('cmd-tag-filters', _commands.flatMap(c => c.tags || []),
+    _cmdTagFilter, 'setCmdTagFilter');
+  renderFilterChips('cmd-study-filters',
+    _commands.map(c => c.study).filter(Boolean), _cmdStudyFilter, 'setCmdStudyFilter');
+
+  let items = _commands;
+  if (_cmdTagFilter) items = items.filter(c => (c.tags || []).includes(_cmdTagFilter));
+  if (_cmdStudyFilter) items = items.filter(c => c.study === _cmdStudyFilter);
+
+  if (items.length === 0) {
+    const msg = _commands.length === 0
+      ? 'No saved commands yet.<br>Add your frequently used terminal commands above.'
+      : 'No commands match the current filter.';
+    list.innerHTML = '<div class="cmd-empty">' + msg + '</div>';
     return;
   }
 
-  list.innerHTML = _commands.map(c => {
-    if (_editingCmdId === c.id) {
-      return '<div class="cmd-item">' +
-        '<div class="cmd-edit-form">' +
-          '<input type="text" id="cmd-edit-label" value="' + esc(c.label).replace(/"/g, '&quot;') + '" placeholder="Label">' +
-          '<textarea id="cmd-edit-command" rows="2" placeholder="Command">' + esc(c.command) + '</textarea>' +
-          '<div class="cmd-edit-actions">' +
-            '<button onclick="cancelEditCmd()">Cancel</button>' +
-            '<button class="primary" onclick="saveEditCmd(\'' + c.id + '\')">Save</button>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
-    }
+  list.innerHTML = items.map(c => {
+    if (_editingCmdId === c.id) return renderCmdEditForm(c);
 
     return '<div class="cmd-item">' +
       '<div class="cmd-item-header">' +
         '<span class="cmd-label">' + esc(c.label) + '</span>' +
+        renderItemMeta(c, 'cmd-meta') +
         '<div class="cmd-actions">' +
           '<button class="cmd-action-btn" onclick="startEditCmd(\'' + c.id + '\')" title="Edit">&#9998;</button>' +
           '<button class="cmd-action-btn cmd-del" onclick="deleteCmd(\'' + c.id + '\')" title="Delete">&times;</button>' +
         '</div>' +
       '</div>' +
       '<div class="cmd-code-wrap">' +
-        '<code class="cmd-code">' + esc(c.command) + '</code>' +
-        '<button class="cmd-copy-btn" onclick="copyCmd(this, \'' + c.id + '\')" title="Copy to clipboard">Copy</button>' +
+        '<code class="cmd-code" contenteditable="true" spellcheck="false" ' +
+          'data-id="' + c.id + '" data-original="' + esc(c.command).replace(/"/g, '&quot;') + '" ' +
+          'oninput="onCmdCodeEdit(this)" onpaste="onCmdCodePaste(event)">' +
+          esc(c.command) +
+        '</code>' +
+        '<span class="cmd-modified" id="cmd-mod-' + c.id + '" style="display:none" ' +
+          'onclick="resetCmdCode(\'' + c.id + '\')" title="Reset to saved version">modified &middot; reset</span>' +
+        '<button class="cmd-copy-btn" onclick="copyCmdFromDom(this, \'' + c.id + '\')" title="Copy to clipboard">Copy</button>' +
       '</div>' +
     '</div>';
   }).join('');
 }
 
+function renderCmdEditForm(c) {
+  return '<div class="cmd-item">' +
+    '<div class="cmd-edit-form">' +
+      '<input type="text" id="cmd-edit-label" value="' + esc(c.label).replace(/"/g, '&quot;') + '" placeholder="Label">' +
+      '<textarea id="cmd-edit-command" rows="2" placeholder="Command">' + esc(c.command) + '</textarea>' +
+      '<div class="todo-meta-row">' +
+        '<input type="text" id="cmd-edit-tags" value="' + esc((c.tags || []).join(', ')) + '" placeholder="Tags (comma-separated)" style="flex:1">' +
+        '<select id="cmd-edit-study"><option value="">no study</option></select>' +
+      '</div>' +
+      '<div class="cmd-edit-actions">' +
+        '<button onclick="cancelEditCmd()">Cancel</button>' +
+        '<button class="primary" onclick="saveEditCmd(\'' + c.id + '\')">Save</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function setCmdTagFilter(tag) { _cmdTagFilter = _cmdTagFilter === tag ? '' : tag; renderCommands(); }
+function setCmdStudyFilter(s) { _cmdStudyFilter = _cmdStudyFilter === s ? '' : s; renderCommands(); }
+
 async function addCmd() {
   const labelEl = document.getElementById('cmd-label-input');
   const cmdEl = document.getElementById('cmd-command-input');
+  const tagsEl = document.getElementById('cmd-tags-input');
+  const studyEl = document.getElementById('cmd-study-select');
   const command = (cmdEl.value || '').trim();
   if (!command) { cmdEl.focus(); return; }
-  const label = (labelEl.value || '').trim() || command.split(' ').slice(0, 3).join(' ');
 
-  await postApi('/api/commands/add', { label, command });
-  labelEl.value = '';
-  cmdEl.value = '';
+  await postApi('/api/commands/add', {
+    label: (labelEl.value || '').trim(),
+    command, tags: parseTags(tagsEl), study: studyEl ? studyEl.value : ''
+  });
+  labelEl.value = ''; cmdEl.value = ''; tagsEl.value = '';
+  if (studyEl) studyEl.value = '';
   await loadCommands();
   labelEl.focus();
 }
@@ -76,33 +110,59 @@ async function deleteCmd(id) {
   await loadCommands();
 }
 
-function copyCmd(btn, id) {
-  const cmd = _commands.find(c => c.id === id);
-  if (!cmd) return;
-  navigator.clipboard.writeText(cmd.command).then(() => {
+// ── Inline-adjustable command code ────────────────────────────────────────────
+
+function onCmdCodeEdit(el) {
+  const modEl = document.getElementById('cmd-mod-' + el.dataset.id);
+  if (modEl) modEl.style.display = el.textContent !== el.dataset.original ? 'inline' : 'none';
+}
+
+function onCmdCodePaste(e) {
+  e.preventDefault();
+  const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+  document.execCommand('insertText', false, text);
+}
+
+function resetCmdCode(id) {
+  const el = document.querySelector('.cmd-code[data-id="' + id + '"]');
+  if (!el) return;
+  el.textContent = el.dataset.original;
+  const modEl = document.getElementById('cmd-mod-' + id);
+  if (modEl) modEl.style.display = 'none';
+}
+
+function copyCmdFromDom(btn, id) {
+  const el = document.querySelector('.cmd-code[data-id="' + id + '"]');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).then(() => {
     btn.textContent = 'Copied!';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
   });
 }
 
+// ── Full edit mode (label, command, tags, study) ──────────────────────────────
+
 function startEditCmd(id) {
   _editingCmdId = id;
   renderCommands();
-  const labelInput = document.getElementById('cmd-edit-label');
-  if (labelInput) labelInput.focus();
+  populateToolboxStudies();
+  const c = _commands.find(x => x.id === id);
+  const sel = document.getElementById('cmd-edit-study');
+  if (sel && c) sel.value = c.study || '';
 }
 
-function cancelEditCmd() {
-  _editingCmdId = null;
-  renderCommands();
-}
+function cancelEditCmd() { _editingCmdId = null; renderCommands(); }
 
 async function saveEditCmd(id) {
   const label = (document.getElementById('cmd-edit-label').value || '').trim();
   const command = (document.getElementById('cmd-edit-command').value || '').trim();
   if (!command) return;
-  await postApi('/api/commands/update', { id, label: label || command.split(' ').slice(0, 3).join(' '), command });
+  await postApi('/api/commands/update', {
+    id, label, command,
+    tags: parseTags(document.getElementById('cmd-edit-tags')),
+    study: document.getElementById('cmd-edit-study').value || ''
+  });
   _editingCmdId = null;
   await loadCommands();
 }
@@ -113,40 +173,15 @@ let _toolboxTab = 'todos';
 function openToolbox(tab) {
   const drawer = document.getElementById('toolbox-drawer');
   const overlay = document.getElementById('toolbox-overlay');
-  const isOpen = drawer.classList.contains('visible');
-  const sameTab = _toolboxTab === tab;
 
-  if (isOpen && sameTab) {
-    closeToolbox();
-    return;
+  if (drawer.classList.contains('visible') && _toolboxTab === tab) {
+    closeToolbox(); return;
   }
 
   _toolboxTab = tab || 'todos';
   drawer.classList.add('visible');
   overlay.classList.add('visible');
-
-  // Update tab buttons
-  document.querySelectorAll('.toolbox-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.tab === _toolboxTab);
-  });
-
-  // Show active panel
-  document.querySelectorAll('.toolbox-panel').forEach(p => {
-    p.classList.toggle('active', p.id === 'toolbox-' + _toolboxTab);
-  });
-
-  // Update header buttons
-  document.querySelectorAll('.toolbox-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.tab === _toolboxTab);
-  });
-
-  // Load data
-  if (_toolboxTab === 'todos') {
-    loadTodos();
-    populateTodoStudies();
-  } else {
-    loadCommands();
-  }
+  _syncToolboxUI();
 }
 
 function closeToolbox() {
@@ -157,19 +192,20 @@ function closeToolbox() {
 
 function switchToolboxTab(tab) {
   _toolboxTab = tab;
+  _syncToolboxUI();
+}
 
-  document.querySelectorAll('.toolbox-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.tab === tab);
-  });
-  document.querySelectorAll('.toolbox-panel').forEach(p => {
-    p.classList.toggle('active', p.id === 'toolbox-' + tab);
-  });
-  document.querySelectorAll('.toolbox-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.tab === tab);
-  });
+function _syncToolboxUI() {
+  document.querySelectorAll('.toolbox-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === _toolboxTab));
+  document.querySelectorAll('.toolbox-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'toolbox-' + _toolboxTab));
+  document.querySelectorAll('.toolbox-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === _toolboxTab));
 
-  if (tab === 'todos') { loadTodos(); populateTodoStudies(); }
-  else { loadCommands(); }
+  populateToolboxStudies();
+  if (_toolboxTab === 'todos') loadTodos();
+  else loadCommands();
 }
 
 """

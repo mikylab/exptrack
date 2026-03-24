@@ -1184,113 +1184,89 @@ def api_reset_db(conn) -> dict:
     return {"ok": True, "deleted_experiments": n_exp}
 
 
-def api_add_todo(body: dict) -> dict:
-    """Add a todo item to the config."""
+def _config_list_add(list_key: str, id_prefix: str, body: dict,
+                     required_field: str, extra_fields: dict) -> dict:
+    """Generic add to a config-stored list (todos, commands)."""
     import hashlib
     import time
     from ... import config as cfg
     conf = cfg.load()
-    todos = conf.get("todos", [])
-    text = (body.get("text") or "").strip()
-    if not text:
-        return {"error": "empty text"}
-    todo = {
-        "id": "t_" + hashlib.sha256((text + str(time.time())).encode()).hexdigest()[:8],
-        "text": text,
-        "done": False,
+    items = conf.get(list_key, [])
+    value = (body.get(required_field) or "").strip()
+    if not value:
+        return {"error": f"empty {required_field}"}
+    item = {
+        "id": id_prefix + hashlib.sha256(
+            (value + str(time.time())).encode()).hexdigest()[:8],
+        required_field: value,
         "tags": body.get("tags", []),
         "study": body.get("study", ""),
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        **extra_fields,
     }
-    todos.append(todo)
-    conf["todos"] = todos
+    items.append(item)
+    conf[list_key] = items
     cfg.save(conf)
-    return {"ok": True, "todo": todo}
+    return {"ok": True, list_key.rstrip("s"): item}
+
+
+def _config_list_update(list_key: str, body: dict,
+                        allowed_fields: list) -> dict:
+    """Generic update of an item in a config-stored list."""
+    from ... import config as cfg
+    conf = cfg.load()
+    items = conf.get(list_key, [])
+    item = next((i for i in items if i["id"] == body.get("id", "")), None)
+    if not item:
+        return {"error": "not found"}
+    for field in allowed_fields:
+        if field in body:
+            item[field] = body[field]
+    cfg.save(conf)
+    return {"ok": True}
+
+
+def _config_list_delete(list_key: str, body: dict) -> dict:
+    """Generic delete from a config-stored list."""
+    from ... import config as cfg
+    conf = cfg.load()
+    rid = body.get("id", "")
+    conf[list_key] = [i for i in conf.get(list_key, []) if i["id"] != rid]
+    cfg.save(conf)
+    return {"ok": True}
+
+
+def api_add_todo(body: dict) -> dict:
+    return _config_list_add("todos", "t_", body, "text",
+                            {"done": False})
 
 
 def api_update_todo(body: dict) -> dict:
-    """Update a todo item (toggle done, edit text, tags, study)."""
-    from ... import config as cfg
-    conf = cfg.load()
-    todos = conf.get("todos", [])
-    tid = body.get("id", "")
-    todo = next((t for t in todos if t["id"] == tid), None)
-    if not todo:
-        return {"error": "not found"}
     if "done" in body:
-        todo["done"] = bool(body["done"])
-    if "text" in body:
-        todo["text"] = body["text"]
-    if "tags" in body:
-        todo["tags"] = body["tags"]
-    if "study" in body:
-        todo["study"] = body["study"]
-    conf["todos"] = todos
-    cfg.save(conf)
-    return {"ok": True}
+        body["done"] = bool(body["done"])
+    return _config_list_update("todos", body,
+                               ["done", "text", "tags", "study"])
 
 
 def api_delete_todo(body: dict) -> dict:
-    """Delete a todo item."""
-    from ... import config as cfg
-    conf = cfg.load()
-    todos = conf.get("todos", [])
-    tid = body.get("id", "")
-    conf["todos"] = [t for t in todos if t["id"] != tid]
-    cfg.save(conf)
-    return {"ok": True}
+    return _config_list_delete("todos", body)
 
 
 def api_add_command(body: dict) -> dict:
-    """Add a saved command."""
-    import hashlib
-    import time
-    from ... import config as cfg
-    conf = cfg.load()
-    commands = conf.get("commands", [])
-    command = (body.get("command") or "").strip()
-    if not command:
-        return {"error": "empty command"}
-    label = (body.get("label") or "").strip() or command.split()[0]
-    cmd = {
-        "id": "c_" + hashlib.sha256((command + str(time.time())).encode()).hexdigest()[:8],
-        "label": label,
-        "command": command,
-        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }
-    commands.append(cmd)
-    conf["commands"] = commands
-    cfg.save(conf)
-    return {"ok": True, "command": cmd}
+    cmd_text = (body.get("command") or "").strip()
+    label = (body.get("label") or "").strip() or (
+        cmd_text.split()[0] if cmd_text else "")
+    return _config_list_add("commands", "c_", body, "command",
+                            {"label": label})
 
 
 def api_update_command(body: dict) -> dict:
-    """Update a saved command."""
-    from ... import config as cfg
-    conf = cfg.load()
-    commands = conf.get("commands", [])
-    cid = body.get("id", "")
-    cmd = next((c for c in commands if c["id"] == cid), None)
-    if not cmd:
-        return {"error": "not found"}
-    if "label" in body:
-        cmd["label"] = body["label"]
-    if "command" in body:
-        cmd["command"] = body["command"]
-    conf["commands"] = commands
-    cfg.save(conf)
-    return {"ok": True}
+    return _config_list_update("commands", body,
+                               ["label", "command", "tags", "study"])
 
 
 def api_delete_command(body: dict) -> dict:
-    """Delete a saved command."""
-    from ... import config as cfg
-    conf = cfg.load()
-    commands = conf.get("commands", [])
-    cid = body.get("id", "")
-    conf["commands"] = [c for c in commands if c["id"] != cid]
-    cfg.save(conf)
-    return {"ok": True}
+    return _config_list_delete("commands", body)
 
 
 def api_storage_info(conn) -> dict:

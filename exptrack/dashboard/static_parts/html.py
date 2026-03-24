@@ -356,13 +356,17 @@ HTML_BODY = r"""</style>
         <div class="todo-meta-row">
           <input type="text" id="todo-tags-input" placeholder="Tags (comma-separated)" style="flex:1">
           <select id="todo-study-select"><option value="">no study</option></select>
+          <input type="text" id="todo-new-study" class="toolbox-new-study" placeholder="+ new" onkeydown="if(event.key==='Enter'){event.preventDefault();createToolboxStudy('todo')}">
         </div>
       </div>
       <div class="todo-filters">
-        <button class="todo-filter-btn active" data-filter="all" onclick="setTodoFilter('all')">All</button>
-        <button class="todo-filter-btn" data-filter="active" onclick="setTodoFilter('active')">Active</button>
-        <button class="todo-filter-btn" data-filter="done" onclick="setTodoFilter('done')">Done</button>
+        <span id="todo-status-filters">
+          <button class="todo-filter-btn active" data-filter="all" onclick="setTodoFilter('all')">All</button>
+          <button class="todo-filter-btn" data-filter="active" onclick="setTodoFilter('active')">Active</button>
+          <button class="todo-filter-btn" data-filter="done" onclick="setTodoFilter('done')">Done</button>
+        </span>
         <span id="todo-tag-filters"></span>
+        <span id="todo-study-filters"></span>
         <span class="todo-count" id="todo-count"></span>
       </div>
       <div class="todo-list" id="todo-list"></div>
@@ -371,9 +375,18 @@ HTML_BODY = r"""</style>
       <div class="cmd-add-form">
         <input type="text" id="cmd-label-input" placeholder="Label (e.g. Train baseline)" onkeydown="cmdAddKeydown(event)">
         <textarea id="cmd-command-input" rows="2" placeholder="Command (e.g. exptrack run train.py --lr 0.01)" onkeydown="cmdAddKeydown(event)"></textarea>
+        <div class="todo-meta-row">
+          <input type="text" id="cmd-tags-input" placeholder="Tags (comma-separated)" style="flex:1">
+          <select id="cmd-study-select"><option value="">no study</option></select>
+          <input type="text" id="cmd-new-study" class="toolbox-new-study" placeholder="+ new" onkeydown="if(event.key==='Enter'){event.preventDefault();createToolboxStudy('cmd')}">
+        </div>
         <div class="cmd-add-row">
           <button class="cmd-add-btn" onclick="addCmd()">Add Command</button>
         </div>
+      </div>
+      <div class="cmd-filters">
+        <span id="cmd-tag-filters"></span>
+        <span id="cmd-study-filters"></span>
       </div>
       <div class="cmd-list" id="cmd-list"></div>
     </div>
