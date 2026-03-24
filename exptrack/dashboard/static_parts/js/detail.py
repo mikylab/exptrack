@@ -151,10 +151,15 @@ async function refreshDetail(id) {
     const ext = (a.path || '').split('.').pop().toLowerCase();
     const isLog = ['log', 'txt', 'out', 'err'].includes(ext);
     const isData = ['csv', 'json', 'jsonl'].includes(ext);
+    const isImage = ['png','jpg','jpeg','svg','gif','bmp','tiff','webp'].includes(ext);
     const viewBtn = (isLog || isData)
       ? `<button onclick="viewLogFile('${esc(a.path)}','${esc(a.label)}')" title="View contents">view</button>`
       : '';
-    return `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td class="artifact-path-cell" title="${esc(a.path)}">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`;
+    const imgSrc = '/api/file/' + encodeURIComponent(a.path).replace(/%2F/g, '/');
+    const thumbHtml = isImage
+      ? `<div class="artifact-thumb"><img src="${imgSrc}" alt="${esc(a.label)}" onclick="openImageModal('${imgSrc}','${esc(a.label)}')" title="Click to enlarge"></div>`
+      : '';
+    return `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div>${thumbHtml}</td><td class="artifact-path-cell" title="${esc(a.path)}">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`;
   }).join('');
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">

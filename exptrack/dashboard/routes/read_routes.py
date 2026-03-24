@@ -290,6 +290,41 @@ def api_list_images(conn, exp_id: str) -> dict:
                         "dir": os.path.relpath(dirpath, abs_dir) or ".",
                     })
     images.sort(key=lambda x: x["modified"], reverse=True)
-    return {"images": images, "paths": paths, "suggested_paths": suggested}
+
+    # Also include image artifacts from the artifacts table
+    artifact_images = []
+    image_exts_tuple = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.tiff', '.webp')
+    art_rows = conn.execute(
+        "SELECT label, path, created_at FROM artifacts WHERE exp_id=?",
+        (exp["id"],)
+    ).fetchall()
+    for r in art_rows:
+        if r["path"] and any(r["path"].lower().endswith(ext) for ext in image_exts_tuple):
+            abs_path = os.path.normpath(os.path.join(root, r["path"]))
+            try:
+                stat = os.stat(abs_path)
+                artifact_images.append({
+                    "name": os.path.basename(r["path"]),
+                    "path": r["path"],
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                    "dir": "artifacts",
+                    "label": r["label"],
+                })
+            except OSError:
+                # File doesn't exist on disk — still list it with placeholder info
+                artifact_images.append({
+                    "name": os.path.basename(r["path"]),
+                    "path": r["path"],
+                    "size": 0,
+                    "modified": 0,
+                    "dir": "artifacts",
+                    "label": r["label"],
+                })
+
+    return {
+        "images": images, "paths": paths,
+        "suggested_paths": suggested, "artifact_images": artifact_images,
+    }
 
 

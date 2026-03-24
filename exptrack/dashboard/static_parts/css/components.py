@@ -109,6 +109,9 @@ CSS_COMPONENTS = """
   .artifact-actions button { font-family: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; color: var(--muted); }
   .artifact-actions button:hover { color: var(--fg); border-color: var(--fg); }
   .artifact-actions button.art-del:hover { color: var(--red); border-color: var(--red); }
+  .artifact-thumb { margin-top: 6px; }
+  .artifact-thumb img { max-width: 180px; max-height: 120px; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; transition: transform 0.15s; }
+  .artifact-thumb img:hover { transform: scale(1.05); border-color: var(--blue); }
   .home-btn { font-family: inherit; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border); padding: 6px 14px; cursor: pointer; border-radius: 4px; color: var(--muted); }
   .home-btn:hover { background: var(--border); color: var(--fg); }
   .help-panel { display: none; background: var(--card-bg); border: 1px solid var(--border); padding: 24px; border-radius: 4px; margin-bottom: 20px; }

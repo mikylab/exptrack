@@ -385,7 +385,7 @@ async function doMultiCompare(ids) {
         html += '<div class="multi-compare-image-cell">';
         html += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + esc(name) + '</div>';
         if (img) {
-          html += '<img src="/api/file/' + encodeURIComponent(img.path) + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + esc(label) + '\')">';
+          html += '<img src="/api/file/' + encodeURIComponent(img.path).replace(/%2F/g, '/') + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + esc(label) + '\')">';
         } else {
           html += '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">No image</div>';
         }
