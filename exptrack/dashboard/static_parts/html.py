@@ -299,8 +299,8 @@ HTML_BODY = r"""</style>
           <button class="todo-add-btn" onclick="addTodo()">Add</button>
         </div>
         <div class="todo-add-row" style="gap:6px;align-items:center">
-          <label for="todo-due-input" style="font-size:12px;color:var(--muted);white-space:nowrap">Due</label>
-          <input type="date" id="todo-due-input" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg);color:var(--fg);font-family:inherit">
+          <label for="todo-due-input" style="font-size:13px;color:var(--muted);white-space:nowrap">Due</label>
+          <input type="date" id="todo-due-input">
         </div>
         <div class="toolbox-meta-row" id="todo-meta-row"></div>
       </div>

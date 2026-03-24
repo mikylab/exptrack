@@ -62,12 +62,12 @@ CSS_TOOLBOX = """
   .todo-add-row, .cmd-add-row { display: flex; gap: 6px; align-items: center; }
   .cmd-add-row { justify-content: flex-end; }
 
-  .todo-add-form input[type="text"], .cmd-add-form input[type="text"] {
+  .todo-add-form input[type="text"], .todo-add-form input[type="date"], .cmd-add-form input[type="text"] {
     flex: 1; font-family: inherit; font-size: 13px;
     border: 1px solid var(--border); padding: 7px 10px; border-radius: 4px;
     background: var(--card-bg); color: var(--fg);
   }
-  .todo-add-form input[type="text"]:focus, .cmd-add-form input[type="text"]:focus {
+  .todo-add-form input[type="text"]:focus, .todo-add-form input[type="date"]:focus, .cmd-add-form input[type="text"]:focus {
     outline: none; border-color: var(--blue);
   }
   .todo-add-form input[type="text"]::placeholder, .cmd-add-form input[type="text"]::placeholder { color: var(--muted); }

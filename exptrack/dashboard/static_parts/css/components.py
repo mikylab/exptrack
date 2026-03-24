@@ -114,7 +114,7 @@ CSS_COMPONENTS = """
   .artifact-thumb img:hover { transform: scale(1.05); border-color: var(--blue); }
   .home-btn { font-family: inherit; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border); padding: 6px 14px; cursor: pointer; border-radius: 4px; color: var(--muted); }
   .home-btn:hover { background: var(--border); color: var(--fg); }
-  .help-panel { display: none; background: var(--card-bg); border: 1px solid var(--border); padding: 24px; border-radius: 4px; margin-bottom: 20px; }
+  .help-panel { display: none; background: var(--card-bg); border: 1px solid var(--border); padding: 24px; border-radius: 4px; margin-bottom: 20px; max-height: 70vh; overflow-y: auto; }
   .help-panel.visible { display: block; }
   .help-panel h3 { font-size: 15px; margin: 16px 0 8px; }
   .help-panel h3:first-child { margin-top: 0; }

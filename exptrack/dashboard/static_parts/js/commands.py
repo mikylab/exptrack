@@ -64,7 +64,7 @@ function renderCommands() {
           esc(c.command) +
         '</code>' +
         '<span class="cmd-modified" id="cmd-mod-' + c.id + '" style="display:none" ' +
-          'onclick="resetCmdCode(\'' + c.id + '\')" title="Reset to saved version">modified &middot; reset</span>' +
+          'onclick="resetCmdCode(\'' + c.id + '\')" title="Reset to saved version">&#x21ba; reset</span>' +
         '<button class="cmd-copy-btn" onclick="copyCmdFromDom(this, \'' + c.id + '\')" title="Copy to clipboard">Copy</button>' +
       '</div>' +
     '</div>';
