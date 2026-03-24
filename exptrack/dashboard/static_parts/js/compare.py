@@ -367,6 +367,35 @@ async function doMultiCompare(ids) {
     html += '</div></details>';
   }
 
+  // Image comparison — group by label across experiments
+  const allImageLabels = new Set();
+  for (const e of exps) {
+    for (const img of (e.images || [])) {
+      allImageLabels.add(img.label || img.path.split('/').pop());
+    }
+  }
+  if (allImageLabels.size > 0) {
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Images</summary>';
+    for (const label of [...allImageLabels].sort()) {
+      html += '<div class="multi-compare-image-group"><h4 style="font-size:13px;color:var(--muted);margin:8px 0 4px">' + esc(label) + '</h4>';
+      html += '<div class="multi-compare-image-row">';
+      for (const e of exps) {
+        const img = (e.images || []).find(i => (i.label || i.path.split('/').pop()) === label);
+        const name = e.name.length > 20 ? e.name.slice(0,17) + '...' : e.name;
+        html += '<div class="multi-compare-image-cell">';
+        html += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + esc(name) + '</div>';
+        if (img) {
+          html += '<img src="/api/file/' + encodeURIComponent(img.path) + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + esc(label) + '\')">';
+        } else {
+          html += '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">No image</div>';
+        }
+        html += '</div>';
+      }
+      html += '</div></div>';
+    }
+    html += '</details>';
+  }
+
   document.getElementById('multi-compare-result').innerHTML = html;
 
   // Create bar charts

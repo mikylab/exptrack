@@ -86,6 +86,7 @@ function renderSidebarActionsBar() {
 // ── View switching ───────────────────────────────────────────────────────────
 function showWelcome() {
   currentDetailId = '';
+  stopAutoRefresh();
   document.getElementById('welcome-state').style.display = '';
   document.getElementById('detail-view').style.display = 'none';
   document.getElementById('compare-view').style.display = 'none';
@@ -95,6 +96,7 @@ function showWelcome() {
 }
 
 function showCompareView() {
+  stopAutoRefresh();
   document.getElementById('welcome-state').style.display = 'none';
   document.getElementById('detail-view').style.display = 'none';
   document.getElementById('compare-view').style.display = '';

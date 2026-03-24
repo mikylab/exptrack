@@ -281,7 +281,7 @@ async function refreshDetail(id) {
     <div class="detail" style="border:none;padding:4px 16px;margin:0">
       <!-- Summary bar -->
       <div class="detail-summary">
-        <span class="sum-item"><strong class="status-${exp.status}">${exp.status}</strong></span>
+        <span class="sum-item"><strong class="status-${exp.status}">${exp.status}</strong>${exp.status === 'running' ? ' <span class="live-badge" id="live-badge"><span class="live-dot"></span>live</span>' : ''}</span>
         <span class="sum-sep">|</span>
         <span class="sum-item">Branch: <strong>${esc(exp.git_branch||'--')}</strong></span>
         <span class="sum-item">Commit: <strong>${esc((exp.git_commit||'--').slice(0,7))}</strong></span>
@@ -409,6 +409,67 @@ async function refreshDetail(id) {
 
   // Populate result type dropdown
   populateResultTypeDropdown(exp.id);
+
+  // Start auto-refresh if experiment is running
+  if (exp.status === 'running') {
+    startAutoRefresh(exp.id);
+  } else {
+    stopAutoRefresh();
+  }
+}
+
+// ── Auto-refresh for running experiments ────────────────────────────────────
+
+let _autoRefreshExpId = null;
+let _autoRefreshMetricCount = 0;
+
+function startAutoRefresh(expId) {
+  stopAutoRefresh();
+  _autoRefreshExpId = expId;
+  _autoRefreshMetricCount = 0;
+  autoRefreshTimer = setInterval(() => _autoRefreshPoll(), 5000);
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+  _autoRefreshExpId = null;
+  const badge = document.getElementById('live-badge');
+  if (badge) badge.remove();
+}
+
+async function _autoRefreshPoll() {
+  if (!_autoRefreshExpId || currentDetailId !== _autoRefreshExpId) {
+    stopAutoRefresh();
+    return;
+  }
+  try {
+    const exp = await api('/api/experiment/' + _autoRefreshExpId);
+    if (exp.error) return;
+
+    // Check if experiment finished
+    if (exp.status !== 'running') {
+      stopAutoRefresh();
+      refreshDetail(_autoRefreshExpId);
+      return;
+    }
+
+    // Check if metrics or timeline changed — refresh relevant tabs
+    const newMetricCount = exp.metrics.reduce((s, m) => s + (m.n || 1), 0);
+    const metricsChanged = newMetricCount !== _autoRefreshMetricCount;
+    _autoRefreshMetricCount = newMetricCount;
+
+    if (metricsChanged) {
+      // Refresh the active tab if it shows metrics
+      if (currentDetailTab === 'overview' || currentDetailTab === 'charts') {
+        refreshDetail(_autoRefreshExpId);
+      }
+    }
+  } catch (e) {
+    // Silently ignore poll errors
+  }
 }
 """
 

@@ -39,4 +39,9 @@ CSS_COMPARE = """
   .copy-btn { font-family: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; color: var(--fg); }
   .copy-btn:hover { background: var(--blue); color: #fff; }
   .multi-compare-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 16px; margin: 12px 0; }
+  .multi-compare-image-group { margin-bottom: 16px; }
+  .multi-compare-image-row { display: flex; gap: 12px; overflow-x: auto; padding: 4px 0 8px; }
+  .multi-compare-image-cell { flex: 0 0 auto; min-width: 160px; max-width: 280px; }
+  .multi-compare-image-cell img { width: 100%; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; transition: transform 0.15s; }
+  .multi-compare-image-cell img:hover { transform: scale(1.03); border-color: var(--blue); }
 """

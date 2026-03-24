@@ -23,6 +23,7 @@ let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
 let allKnownStudies = []; // {name, count}[]
 let highlightMode = localStorage.getItem('exptrack-highlight') === 'true';
+let autoRefreshTimer = null;
 
 // Display abbreviations for common metric names (config stores full names)
 const METRIC_ABBREV = {
