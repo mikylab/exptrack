@@ -1,59 +1,38 @@
-# Monkey-Patching in expTrack
+# Monkey-Patching
 
-expTrack uses monkey-patching to automatically capture parameters and artifacts without requiring changes to user scripts. This document describes how it works, its limitations, and known edge cases.
+expTrack patches argparse and matplotlib to capture params and artifacts automatically. Here's how it works and what to watch out for.
 
 ## What Gets Patched
 
-### argparse (`capture/argparse_patch.py`)
+### argparse
 
-- **What:** `ArgumentParser.parse_args()` and `ArgumentParser.parse_known_args()`
-- **When:** Called once when `Experiment()` is created or when `exptrack run` wraps a script
-- **Effect:** After the user's script calls `parse_args()`, all parsed arguments are logged as experiment parameters
-- **Thread safety:** Protected by `threading.Lock()` — only one thread can apply the patch
+- **What:** `ArgumentParser.parse_args()` and `parse_known_args()`
+- **When:** Before your script runs (via `exptrack run` or `Experiment()`)
+- **Effect:** Parsed arguments are logged as experiment parameters
+- **Cleanup:** Patch is removed when the script exits
+- **Thread-safe:** Yes (protected by `threading.Lock`)
 
-### matplotlib (`capture/matplotlib_patch.py`)
+### matplotlib
 
 - **What:** `plt.savefig()` and `Figure.savefig()`
-- **When:** Called when a notebook experiment starts (including deferred start)
-- **Effect:** Every saved plot is automatically registered as an artifact. Plots saved before the experiment is created are buffered and flushed later
-- **Thread safety:** Protected by `threading.Lock()`. A reentrance guard (`_savefig_in_progress`) prevents infinite recursion when the hooked function calls the original
+- **When:** When a notebook experiment starts
+- **Effect:** Saved plots are auto-registered as artifacts
+- **Buffering:** Plots saved before the experiment starts are queued and linked later
+- **Thread-safe:** Yes (with reentrance guard to prevent infinite recursion)
 
-## Limitations
+## Known Limitations
 
-### Import Order Sensitivity
+**Import order:** If your code caches a reference to `parse_args` before expTrack patches it, params won't be captured. Fix: use `exptrack run script.py` (patches before your code runs).
 
-If user code imports and caches a reference to `argparse.ArgumentParser.parse_args` **before** expTrack patches it, the cached reference points to the original (unpatched) function. Parameters will not be captured.
+**One experiment per process:** The argparse patch captures into a single `Experiment`. For multiple experiments in one process, use `exp.log_params()` directly.
 
-**Workaround:** Import expTrack before your argument parsing code, or use `exptrack run script.py` which patches before the script runs.
+**Non-argparse parsers:** Click, Fire, Typer, and manual `sys.argv` parsing won't trigger the argparse hook. expTrack falls back to `sys.argv` parsing, which handles `--key value` and `--key=value` but may miss framework-specific formats.
 
-### Single Experiment Per Process
+**Notebook deferred start:** `%load_ext exptrack` installs hooks but defers experiment creation until the first real cell runs. The `%load_ext` cell itself is never tracked.
 
-The argparse patch captures into a single `Experiment` object. If you create multiple experiments in one process, only the first one gets argparse parameters. Subsequent experiments should use `exp.log_params()` directly.
+## Debugging Missing Params
 
-### No Automatic Cleanup on Exception
-
-If a script crashes between patch installation and experiment finish, the monkey-patches remain active for the rest of the process lifetime. This is by design — patches are idempotent and the "patch once" guard prevents re-patching.
-
-### Non-argparse Argument Parsers
-
-Scripts using `click`, `fire`, `typer`, or manual `sys.argv` parsing won't trigger the argparse hook. For these, expTrack falls back to raw `sys.argv` parsing (`capture_argv()`), which handles `--key value` and `--key=value` patterns but may miss framework-specific argument formats.
-
-### Matplotlib Version Compatibility
-
-The patch assumes matplotlib's `Figure.savefig` signature. Non-standard matplotlib forks or very old versions may behave unexpectedly. The patch is wrapped in try/except to avoid crashing the user's script if matplotlib is not installed.
-
-### Notebook Deferred Start
-
-In Jupyter notebooks, `%load_ext exptrack` installs the `post_run_cell` hook but defers experiment creation until the first real (non-magic) cell executes. This means:
-- The `%load_ext` cell itself is never counted as part of the experiment
-- `plt.savefig()` calls in the first cell are buffered and registered once the experiment starts
-- If no non-magic cell ever runs, no experiment is created
-
-## Debugging
-
-If parameters aren't being captured:
-
-1. Check that expTrack is imported/initialized before `parse_args()` is called
-2. Verify with `exptrack show <id>` that params are empty (not just unlisted)
-3. For non-argparse scripts, check that arguments follow `--key value` format
-4. Check stderr for `[exptrack]` warning messages
+1. Check that `exptrack run` wraps your script (not `python script.py`)
+2. Run `exptrack show <id>` to verify params are truly empty
+3. For non-argparse scripts, ensure arguments use `--key value` format
+4. Check stderr for `[exptrack]` warnings

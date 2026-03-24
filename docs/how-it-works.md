@@ -1,48 +1,57 @@
 # How It Works
 
-## Capture mechanisms
+## Capture Mechanisms
 
-**Argparse patching** -- expTrack monkey-patches `ArgumentParser.parse_args()` and `parse_known_args()` before your script runs. When your script calls `parser.parse_args()`, expTrack intercepts the result and logs all arguments as params. The patch is removed when the script exits. If your script doesn't use argparse, expTrack falls back to parsing raw `sys.argv`.
+### Scripts: argparse patching
 
-**Notebook hooks** -- `%load_ext exptrack` registers an IPython `post_run_cell` hook. After every cell execution, the hook:
-1. Computes a content-addressed hash of the cell source
-2. Diffs the cell against its parent version (30% similarity threshold)
-3. Scans the namespace for new/changed variables
-4. Enriches variable displays with assignment expressions from the cell source
-5. Logs timeline events for code changes, variable changes, and observational cells
+When you run `exptrack run train.py --lr 0.01`, expTrack patches `ArgumentParser.parse_args()` *before* your script starts. When your script calls `parse_args()`, the parsed arguments are logged as params. The patch is removed when the script exits.
 
-**Matplotlib patching** -- `plt.savefig()` and `Figure.savefig()` are patched to copy saved figures into the experiment's output directory and register them as artifacts. Figures saved before the experiment starts are buffered and flushed when it begins.
+If your script doesn't use argparse, expTrack falls back to parsing raw `sys.argv` (handles `--key value` and `--key=value`).
 
-## Storage design
+### Notebooks: IPython hooks
 
-- **Diff-only** -- script changes are diffed against `git HEAD`; notebook snapshots store only cell diffs and variable change hashes. No full-source copies.
-- **Per-project** -- database and notebook history live in `.exptrack/` (gitignored). Config is committable.
-- **SQLite WAL mode** -- safe for concurrent reads. Single file, queryable, portable.
-- **Content-addressed cell lineage** -- notebook cells are identified by SHA-256 of their source content, enabling accurate tracking across cell reordering and splits.
+`%load_ext exptrack` registers a `post_run_cell` hook. After every cell:
 
-## Database schema
+1. The cell source is hashed (SHA-256) for content-addressed tracking
+2. Changes are diffed against the previous version of that cell (30% similarity match)
+3. New/changed variables are detected and fingerprinted
+4. HP-like variables (`lr`, `batch_size`, etc.) are logged as params
+5. Everything is recorded as timeline events
+
+### Plots: matplotlib patching
+
+`plt.savefig()` and `Figure.savefig()` are patched so saved figures are automatically copied to the experiment's output directory and registered as artifacts. Figures saved before the experiment starts are buffered and linked later.
+
+## Storage Design
+
+- **Diff-only** — script changes are diffed against `git HEAD`; notebooks store only cell diffs and variable change hashes. No full-source copies.
+- **Single SQLite file** — WAL mode for safe concurrent reads. Portable, queryable, no server needed.
+- **Per-project** — database lives in `.exptrack/` (gitignored). Config is safe to commit.
+- **Content-addressed cells** — notebook cells identified by SHA-256 of source, so reordering and splitting cells doesn't break tracking.
+
+## Database Schema
+
+7 tables, all indexed for fast lookups:
 
 | Table | Purpose |
 |-------|---------|
 | `experiments` | Run metadata, git state, status, timestamps |
 | `params` | Key-value parameters (JSON-stringified values) |
 | `metrics` | Float values with optional step and timestamp |
-| `artifacts` | Output file paths with content hashes and size |
-| `timeline` | Execution events (cell_exec, var_set, artifact, metric, observational) |
+| `artifacts` | Output file paths with content hashes and sizes |
+| `timeline` | Execution events (cell_exec, var_set, artifact, metric) |
 | `cell_lineage` | Content-addressed notebook cell history |
-| `code_baselines` | Position-based cell baselines (legacy) |
+| `code_baselines` | Position-based cell baselines |
 
 ## expTrack vs. TensorBoard
 
 | | expTrack | TensorBoard |
 |---|---|---|
-| **Dependencies** | Zero (stdlib only) | TensorFlow/tensorboard + protobuf |
-| **Code changes** | None required | Must add `SummaryWriter` calls everywhere |
-| **Auto-captures** | Params, git state, full diff, cell diffs, variable changes | Nothing automatic |
-| **Storage** | SQLite (one file, queryable, portable) | Protobuf event files (need TB to read) |
-| **Experiment management** | Built-in: `ls`, `show`, `diff`, `compare`, `tag`, `note`, `rm`, `clean` | None -- TB is a viewer only |
-| **Reproducibility** | Full `git diff` at run time | No git integration |
-| **Shell/SLURM** | First-class: `eval $(exptrack run-start ...)` | Not designed for non-Python workflows |
-| **Rich media** | No (metrics, params, artifacts only) | Yes (images, audio, histograms, graphs) |
+| **Dependencies** | Zero | TensorFlow + protobuf |
+| **Code changes** | None | Must add `SummaryWriter` calls |
+| **Auto-captures** | Params, git state, diffs, variables | Nothing |
+| **Storage** | SQLite (one queryable file) | Protobuf event files |
+| **Experiment mgmt** | Built-in CLI: ls, compare, tag, rm | Viewer only |
+| **Shell/SLURM** | First-class | Not designed for it |
 
-**They work together** -- use expTrack for "what params and code produced this run" and TensorBoard for rich media visualization. They don't conflict.
+They're complementary — use expTrack for "what code/params produced this run" and TensorBoard for rich visualizations.

@@ -1,20 +1,12 @@
 # Plugins
 
-Plugins run your code automatically when experiments start, finish, fail, or log metrics. You never call them directly.
+Plugins run automatically when experiments start, finish, fail, or log metrics.
 
-## Use cases
-
-- **Slack/email alerts** -- get notified when a run finishes or crashes
-- **Cloud upload** -- auto-upload checkpoints to S3/GCS on completion
-- **Shared experiment log** -- sync metadata to a shared database or GitHub repo
-- **Auto-cleanup** -- delete old checkpoints when a new best model is found
-
-## Writing a plugin
+## Writing a Plugin
 
 ```python
 # exptrack/plugins/slack_notify.py
-import json
-import urllib.request
+import json, urllib.request
 from exptrack.plugins import Plugin
 
 class SlackNotify(Plugin):
@@ -30,29 +22,27 @@ class SlackNotify(Plugin):
         self._post(f"Run *{exp.name}* FAILED: {error}")
 
     def _post(self, text):
-        if not self.webhook:
-            return
+        if not self.webhook: return
         data = json.dumps({"text": text}).encode()
         urllib.request.urlopen(
-            urllib.request.Request(self.webhook, data,
-                                  {"Content-Type": "application/json"})
+            urllib.request.Request(self.webhook, data, {"Content-Type": "application/json"})
         )
 
 plugin_class = SlackNotify
 ```
 
-## Plugin lifecycle hooks
+## Lifecycle Hooks
 
-| Hook | When it runs |
-|------|-------------|
+| Hook | When |
+|------|------|
 | `on_start(self, exp)` | Experiment created |
-| `on_finish(self, exp)` | Experiment completed successfully |
-| `on_fail(self, exp, error)` | Experiment failed |
+| `on_finish(self, exp)` | Completed successfully |
+| `on_fail(self, exp, error)` | Failed |
 | `on_metric(self, exp, key, value, step)` | Metric logged |
 
 Override only the hooks you need.
 
-## Enabling a plugin
+## Enabling
 
 Add to `.exptrack/config.json`:
 
@@ -69,16 +59,16 @@ Add to `.exptrack/config.json`:
 
 ## Built-in: GitHub Sync
 
-Appends one JSON line per run to a file in your GitHub repo -- params, metrics, run name, commit hash.
+Appends one JSON line per run to a file in your GitHub repo:
 
 ```json
 {
   "plugins": {
     "enabled": ["github_sync"],
     "github_sync": {
-      "repo":      "yourname/yourrepo",
-      "file":      "experiment_log/runs.jsonl",
-      "branch":    "main",
+      "repo": "yourname/yourrepo",
+      "file": "experiment_log/runs.jsonl",
+      "branch": "main",
       "token_env": "GITHUB_TOKEN"
     }
   }

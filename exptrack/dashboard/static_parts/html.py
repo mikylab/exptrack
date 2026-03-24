@@ -82,105 +82,100 @@ HTML_BODY = r"""</style>
   <div class="help-grid">
     <div class="help-item">
       <strong>Track a script</strong>
-      <span><code>exptrack run train.py --lr 0.01</code><br>Params captured automatically from argparse or CLI flags.</span>
+      <span><code>exptrack run train.py --lr 0.01</code> &mdash; params captured automatically.</span>
     </div>
     <div class="help-item">
       <strong>Track a notebook</strong>
-      <span><code>%load_ext exptrack</code> in your first cell.<br>Cells, variables, and plots tracked automatically.</span>
+      <span><code>%load_ext exptrack</code> in first cell &mdash; cells, variables, plots tracked.</span>
     </div>
     <div class="help-item">
-      <strong>Shell / SLURM pipeline</strong>
-      <span><code>eval $(exptrack run-start --lr 0.01)</code><br>then <code>exptrack run-finish $EXP_ID</code></span>
+      <strong>Shell / SLURM</strong>
+      <span><code>eval $(exptrack run-start --lr 0.01)</code> then <code>exptrack run-finish $EXP_ID</code></span>
     </div>
     <div class="help-item">
       <strong>Log metrics</strong>
-      <span>In scripts: <code>__exptrack__.log_metric("loss", 0.5, step=i)</code><br>CLI: <code>exptrack log-metric $ID loss 0.5</code></span>
+      <span><code>exp.log_metric("loss", 0.5, step=i)</code> or <code>exptrack log-metric $ID loss 0.5</code></span>
     </div>
   </div>
 
-  <h3>How to Use This Dashboard</h3>
-  <p style="margin-bottom:6px"><strong>Click an experiment</strong> to open its detail view. <strong>Double-click</strong> any field (name, tags, notes, command) to edit it inline. <strong>Checkbox-select</strong> multiple experiments in the sidebar for bulk actions.</p>
+  <h3>Dashboard Guide</h3>
+  <p style="margin-bottom:6px"><strong>Click</strong> an experiment to open it. <strong>Double-click</strong> any name, tag, or note to edit inline. <strong>Checkbox-select</strong> in the sidebar for bulk actions.</p>
   <div class="help-grid">
     <div class="help-item">
-      <strong>Overview tab</strong>
-      <span>Params, metrics (with chart preview), artifacts, code changes, and reproduce command.</span>
+      <strong>Overview</strong>
+      <span>Params, metrics with chart preview, artifacts, code changes, reproduce command.</span>
     </div>
     <div class="help-item">
-      <strong>Charts tab</strong>
-      <span>Full metric charts with scale controls (linear/log), zoom, and configurable downsampling.</span>
+      <strong>Charts</strong>
+      <span>Interactive metric charts with linear/log scale, zoom, and downsampling.</span>
     </div>
     <div class="help-item">
-      <strong>Images tab</strong>
-      <span>Gallery of image artifacts. Click to enlarge. Compare images within the same experiment side-by-side, overlay, or swipe.</span>
+      <strong>Images</strong>
+      <span>Gallery grid with lightbox. Compare: side-by-side, overlay, or swipe.</span>
     </div>
     <div class="help-item">
-      <strong>Data Files tab</strong>
-      <span>CSV, JSON, and JSONL artifacts rendered as interactive tables with sortable columns.</span>
+      <strong>Data Files</strong>
+      <span>CSV, JSON, JSONL rendered as sortable interactive tables.</span>
     </div>
     <div class="help-item">
-      <strong>Compare (&#x2194;)</strong>
-      <span><em>Pair:</em> side-by-side params, metrics with deltas, overlaid charts, image diff. <em>Multi:</em> bar charts across 3+ runs.</span>
+      <strong>Compare</strong>
+      <span><em>Pair:</em> side-by-side with overlay charts. <em>Multi:</em> bar charts across 3+ runs.</span>
     </div>
     <div class="help-item">
-      <strong>Reproduce &amp; Commands</strong>
-      <span>Each experiment stores a reproduce command. Click <strong>&gt;_ Save</strong> to save it (with tags &amp; study) to the Commands notepad for quick reuse.</span>
+      <strong>Reproduce</strong>
+      <span>One-click copy of the run command. Save to Commands notepad for reuse.</span>
     </div>
   </div>
 
   <h3>Key Concepts</h3>
   <p style="margin-bottom:2px">
-    <strong>Params</strong> &mdash; auto-captured hyperparameters (what you ran). &nbsp;
-    <strong>Metrics</strong> &mdash; logged numeric values tracked per step. &nbsp;
-    <strong>Artifacts</strong> &mdash; output files (plots, models, CSVs). <code>plt.savefig()</code> is auto-captured.
+    <strong>Params</strong> &mdash; captured hyperparameters.
+    <strong>Metrics</strong> &mdash; logged values tracked per step.
+    <strong>Artifacts</strong> &mdash; output files (<code>plt.savefig()</code> auto-captured).
   </p>
   <p style="margin-bottom:2px">
-    <strong>Tags</strong> &mdash; categorical labels (<code>baseline</code>, <code>v2</code>). &nbsp;
-    <strong>Studies</strong> &mdash; group related experiments (pipeline steps, sweeps). &nbsp;
+    <strong>Tags</strong> &mdash; labels (<code>baseline</code>, <code>v2</code>).
+    <strong>Studies</strong> &mdash; groups of related runs.
     <strong>Stages</strong> &mdash; numbered steps within a study.
   </p>
   <p>
-    <strong>Timeline</strong> &mdash; ordered log of cell executions, variable changes, and artifact saves (notebooks).
+    <strong>Timeline</strong> &mdash; ordered log of cell executions and variable changes (notebooks).
   </p>
 
-  <h3>Toolbar &amp; Settings</h3>
+  <h3>Toolbar</h3>
   <p>
     <strong>&#9790;</strong> dark mode &nbsp;|&nbsp;
-    <strong>&#9881; Columns</strong> show/hide &amp; resize table columns &nbsp;|&nbsp;
-    <strong>&#9881; Settings</strong> timezone, metric thinning, DB maintenance &nbsp;|&nbsp;
-    <strong>&#9745; Todo</strong> &amp; <strong>&gt;_ Cmds</strong> project-level task list and command snippets &nbsp;|&nbsp;
-    <strong>&#10133; New</strong> create experiments manually &nbsp;|&nbsp;
-    <strong>&#9881; Manage</strong> rename/delete tags &amp; studies globally
+    <strong>&#9881;</strong> columns &amp; settings &nbsp;|&nbsp;
+    <strong>&#9745; Todo</strong> &amp; <strong>&gt;_ Cmds</strong> task list and saved commands &nbsp;|&nbsp;
+    <strong>&#10133; New</strong> manual experiment &nbsp;|&nbsp;
+    <strong>&#9881; Manage</strong> tags &amp; studies
   </p>
 
   <h3>FAQ</h3>
   <div class="faq-list">
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does expTrack capture stdout or print output?</div>
-      <div class="faq-a">No. Only explicitly logged metrics are stored. Redirect output to a file and register it: <code>exptrack log-artifact &lt;id&gt; train.log</code></div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does it capture stdout?</div>
+      <div class="faq-a">No. Only explicitly logged metrics. Redirect output to a file and register it: <code>exptrack log-artifact &lt;id&gt; train.log</code></div>
     </div>
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Can I edit experiments after they finish?</div>
-      <div class="faq-a">Yes &mdash; name, tags, notes, artifacts, and metrics are all editable. Double-click in the dashboard or use the CLI. Params and git state are immutable.</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">How do multi-step pipelines work?</div>
-      <div class="faq-a">Each <code>run-start</code> creates a separate experiment. Use <code>--study</code> to group steps and <code>--stage</code> to number them. Save <code>$EXP_ID</code> before the next step overwrites it.</div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Can I edit runs after they finish?</div>
+      <div class="faq-a">Yes &mdash; name, tags, notes, artifacts, and metrics. Double-click in the dashboard or use the CLI. Params and git state are immutable.</div>
     </div>
     <div class="faq-item">
       <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Studies vs. tags?</div>
-      <div class="faq-a"><strong>Studies</strong> = &ldquo;which batch is this part of?&rdquo; (pipeline steps, sweeps). <strong>Tags</strong> = &ldquo;what kind of run?&rdquo; (<code>baseline</code>, <code>production</code>). An experiment can have both.</div>
+      <div class="faq-a"><strong>Studies</strong> group related runs (pipeline steps, sweeps). <strong>Tags</strong> are labels (<code>baseline</code>, <code>production</code>). An experiment can have both.</div>
     </div>
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does it work without argparse?</div>
-      <div class="faq-a">Yes. Falls back to parsing <code>sys.argv</code> directly. Click, Fire, Typer, and manual parsing all work.</div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Works without argparse?</div>
+      <div class="faq-a">Yes. Falls back to <code>sys.argv</code> parsing. Click, Fire, Typer all work.</div>
     </div>
     <div class="faq-item">
-      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Does it need internet?</div>
-      <div class="faq-a">No. Everything is local (SQLite + stdlib HTTP). Chart.js loads from CDN but the dashboard works without it.</div>
+      <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Needs internet?</div>
+      <div class="faq-a">No. Everything is local. Chart.js loads from CDN but the dashboard works without it.</div>
     </div>
     <div class="faq-item">
       <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Performance overhead?</div>
-      <div class="faq-a">Negligible. Argparse patching adds microseconds; git capture runs once at startup; metrics are single SQLite inserts.</div>
+      <div class="faq-a">Negligible. Microseconds for patching, milliseconds for git capture, single SQLite insert per metric.</div>
     </div>
   </div>
 </div>

@@ -2,9 +2,9 @@
 
 ### `ModuleNotFoundError: No module named 'exptrack'`
 
-expTrack is not installed in the Python environment you're using.
+expTrack isn't installed in the Python environment you're using.
 
-**In Jupyter notebooks**, the kernel's Python is often different from your shell's Python:
+**Jupyter notebooks** often use a different Python than your shell:
 
 ```python
 import sys
@@ -13,20 +13,27 @@ import sys
 
 Then **restart the kernel**.
 
-**In scripts**, use the same Python you run scripts with:
+**Scripts** — make sure you install with the same Python you run scripts with:
 
 ```bash
 python -m pip install -e /path/to/exptrack
 ```
 
-### `exptrack init` created `.exptrack/` in the wrong place
+### `.exptrack/` created in the wrong place
 
-`exptrack init` walks up from your current directory looking for `.git/`. If you're inside a larger git repo, `.exptrack/` ends up at the git root. Force creation in the current directory:
+`exptrack init` walks up to find `.git/` and creates `.exptrack/` there. If you're inside a larger repo, use:
 
 ```bash
-exptrack init --here
+exptrack init --here    # force current directory
 ```
 
 ### Experiments not showing up
 
-expTrack stores data in `.exptrack/experiments.db` relative to the project root. If you run scripts from a different directory than where you initialized, expTrack may create a new `.exptrack/` elsewhere. Always run from within your project directory.
+expTrack looks for `.exptrack/experiments.db` relative to the project root. If you run scripts from a different directory, it may create a separate `.exptrack/` elsewhere. Always run from within your project directory (where you ran `exptrack init`).
+
+### Params not captured
+
+1. Make sure `exptrack run` wraps your script (patches are applied before your code runs)
+2. Check `exptrack show <id>` — params might be captured but just not visible in `ls`
+3. For non-argparse scripts, arguments must follow `--key value` or `--key=value` format
+4. Look for `[exptrack]` warnings on stderr
