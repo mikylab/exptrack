@@ -216,7 +216,7 @@ CSS_TOOLBOX = """
   .cmd-copy-btn.copied { border-color: var(--green, #059669); color: var(--green, #059669); }
 
   .cmd-modified {
-    position: absolute; bottom: 4px; right: 6px;
+    position: absolute; bottom: 4px; left: 12px;
     font-size: 10px; color: var(--blue); cursor: pointer;
     opacity: 0.7; font-family: inherit;
   }

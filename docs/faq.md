@@ -165,7 +165,7 @@ It depends on your setup:
 
 ### How do I view images in the dashboard?
 
-Image artifacts (PNG, JPG, GIF, SVG, WebP) appear in the **Images** tab of the detail view as a gallery grid. Click a thumbnail to see the full-size image in a lightbox. In Pair Compare, use the image comparison tool with side-by-side, overlay, or swipe modes.
+Image artifacts (PNG, JPG, GIF, SVG, WebP) appear in the **Images** tab of the detail view as a gallery grid — they are not shown as thumbnails in the overview artifacts table. Click a thumbnail in the Images tab to see the full-size image in a lightbox. In Pair Compare, use the image comparison tool with side-by-side, overlay, or swipe modes.
 
 ### Can I view CSVs and data files in the dashboard?
 

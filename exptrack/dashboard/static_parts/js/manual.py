@@ -81,11 +81,18 @@ function startDetailCommandEdit(id) {
 
 async function saveReproduceToCommands(id) {
   const exp = allExperiments.find(e => e.id === id);
-  if (!exp || !exp.command) { owlSay('No command to save'); return; }
+  if (!exp) { owlSay('Experiment not found'); return; }
+  // Read command from the DOM element (may have been edited inline)
+  const cmdEl = document.getElementById('detail-command');
+  const command = (cmdEl ? cmdEl.textContent.trim() : '') || (exp.command || '');
+  if (!command || command === 'double-click to add command' || command === 'no command recorded') {
+    owlSay('No command to save — double-click the reproduce box to add one');
+    return;
+  }
   const label = exp.name || exp.script || 'Reproduce';
   await postApi('/api/commands/add', {
     label: label,
-    command: exp.command,
+    command: command,
     tags: exp.tags || [],
     study: (exp.studies && exp.studies[0]) || ''
   });
