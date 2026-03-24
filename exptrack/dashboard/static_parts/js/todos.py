@@ -1,4 +1,4 @@
-"""Todos panel: add, toggle, tag, filter, delete todos."""
+"""Todos panel and shared toolbox helpers (autocomplete, filters, meta rendering)."""
 
 JS_TODOS = r"""
 
@@ -68,16 +68,15 @@ function setTodoStudyFilter(s) { _todoStudyFilter = _todoStudyFilter === s ? '' 
 
 async function addTodo() {
   const textEl = document.getElementById('todo-text-input');
-  const tagsEl = document.getElementById('todo-tags-input');
-  const studyEl = document.getElementById('todo-study-select');
   const text = (textEl.value || '').trim();
   if (!text) { textEl.focus(); return; }
 
+  const meta = _toolboxMeta['todo'];
   await postApi('/api/todos/add', {
-    text, tags: parseTags(tagsEl), study: studyEl ? studyEl.value : ''
+    text, tags: meta ? meta.getTags() : [], study: meta ? meta.getStudy() : ''
   });
-  textEl.value = ''; tagsEl.value = '';
-  if (studyEl) studyEl.value = '';
+  textEl.value = '';
+  if (meta) meta.clear();
   await loadTodos();
   textEl.focus();
 }
@@ -99,10 +98,6 @@ function todoAddKeydown(e) {
 }
 
 // ── Shared toolbox helpers ────────────────────────────────────────────────────
-
-function parseTags(inputEl) {
-  return (inputEl.value || '').split(',').map(s => s.trim()).filter(Boolean);
-}
 
 function renderItemMeta(item, className) {
   const tags = (item.tags || []).map(tag =>
@@ -126,31 +121,164 @@ function renderFilterChips(containerId, values, activeFilter, setterName) {
   }
 }
 
-function populateToolboxStudies() {
-  ['todo-study-select', 'cmd-study-select', 'cmd-edit-study'].forEach(id => {
-    const sel = document.getElementById(id);
-    if (!sel) return;
-    const current = sel.value;
-    let html = '<option value="">no study</option>';
-    (allKnownStudies || []).forEach(s => {
-      const name = typeof s === 'string' ? s : s.name;
-      html += '<option value="' + esc(name) + '">' + esc(name) + '</option>';
+// ── Toolbox autocomplete (reuses dashboard's .tag-autocomplete CSS) ───────────
+
+// Builds an autocomplete input that works locally — no API calls, just callbacks.
+// Returns { wrapper, input } using the same CSS classes as createItemInput().
+function _createAutocomplete(getKnown, opts) {
+  const prefix = opts.prefix || '';
+  const wrapper = document.createElement('div');
+  wrapper.className = 'tag-autocomplete';
+  wrapper.style.cssText = 'display:inline-block;position:relative';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = opts.placeholder || '+ add';
+  input.className = 'name-edit-input';
+  input.style.cssText = opts.style || 'width:100px;font-size:12px;padding:4px 6px';
+  const dropdown = document.createElement('div');
+  dropdown.className = 'tag-autocomplete-list';
+  dropdown.style.display = 'none';
+  wrapper.appendChild(input);
+  wrapper.appendChild(dropdown);
+  let activeIdx = -1;
+
+  function showSuggestions() {
+    const val = input.value.trim().toLowerCase();
+    const exclude = new Set((opts.getExcluded ? opts.getExcluded() : []).map(s => s.toLowerCase()));
+    let suggestions = getKnown().filter(t => !exclude.has(t.name.toLowerCase()));
+    if (val) suggestions = suggestions.filter(t => t.name.toLowerCase().includes(val));
+    suggestions = suggestions.slice(0, 8);
+    if (val && !suggestions.some(t => t.name.toLowerCase() === val) && !exclude.has(val)) {
+      suggestions.unshift({ name: val, count: 0, isNew: true });
+    }
+    if (!suggestions.length) { dropdown.style.display = 'none'; return; }
+    dropdown.innerHTML = suggestions.map((t, i) =>
+      '<div class="tag-autocomplete-item' + (i === activeIdx ? ' active' : '') +
+      '" data-val="' + esc(t.name) + '">' +
+      (t.isNew ? '<span class="tag-autocomplete-new">create "' + esc(t.name) + '"</span>'
+               : '<span>' + prefix + esc(t.name) + '</span>') +
+      '<span class="tag-count">' + (t.count || '') + '</span></div>'
+    ).join('');
+    dropdown.style.display = 'block';
+    dropdown.querySelectorAll('.tag-autocomplete-item').forEach(item => {
+      item.onmousedown = (ev) => { ev.preventDefault(); select(item.dataset.val); };
     });
-    sel.innerHTML = html;
-    sel.value = current;
+  }
+
+  function select(val) {
+    if (!val) return;
+    input.value = '';
+    dropdown.style.display = 'none';
+    activeIdx = -1;
+    if (opts.onSelect) opts.onSelect(val);
+  }
+
+  input.addEventListener('input', () => { activeIdx = -1; showSuggestions(); });
+  input.addEventListener('focus', showSuggestions);
+  input.addEventListener('blur', () => { setTimeout(() => dropdown.style.display = 'none', 150); });
+  input.addEventListener('keydown', (ev) => {
+    const items_el = dropdown.querySelectorAll('.tag-autocomplete-item');
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); activeIdx = Math.min(activeIdx + 1, items_el.length - 1); showSuggestions(); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); activeIdx = Math.max(activeIdx - 1, -1); showSuggestions(); }
+    else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      if (activeIdx >= 0 && items_el[activeIdx]) select(items_el[activeIdx].dataset.val);
+      else if (input.value.trim()) select(input.value.trim());
+    }
+    else if (ev.key === 'Escape') { dropdown.style.display = 'none'; }
   });
+  return { wrapper, input };
 }
 
-async function createToolboxStudy(prefix) {
-  const input = document.getElementById(prefix + '-new-study');
-  const name = (input.value || '').trim();
-  if (!name) { input.focus(); return; }
-  await postApi('/api/studies/create', { name });
-  input.value = '';
-  await loadAllStudies();
-  populateToolboxStudies();
-  const sel = document.getElementById(prefix + '-study-select');
-  if (sel) sel.value = name;
+// Merge experiment-known + toolbox-local values into {name, count}[] for suggestions
+function _mergeKnown(globalKnown, localValues) {
+  const map = new Map();
+  (globalKnown || []).forEach(t => {
+    const name = typeof t === 'string' ? t : t.name;
+    map.set(name, (map.get(name) || 0) + (t.count || 1));
+  });
+  localValues.forEach(v => { if (v) map.set(v, (map.get(v) || 0) + 1); });
+  return [...map.entries()].map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+// Storage for each form's meta state: { getTags(), getStudy(), clear() }
+let _toolboxMeta = {};
+
+function setupToolboxMeta(prefix) {
+  const container = document.getElementById(prefix + '-meta-row');
+  if (!container || container.dataset.init) return;
+  container.dataset.init = '1';
+
+  let tags = [];
+  let study = '';
+
+  // Tag chips area
+  const tagArea = document.createElement('div');
+  tagArea.className = 'toolbox-chip-area';
+  container.appendChild(tagArea);
+
+  function renderChips() {
+    tagArea.innerHTML = tags.map(t =>
+      '<span class="toolbox-tag toolbox-chip">' + esc(t) +
+      '<span class="toolbox-chip-x" data-tag="' + esc(t) + '">&times;</span></span>'
+    ).join('');
+    tagArea.querySelectorAll('.toolbox-chip-x').forEach(el => {
+      el.onmousedown = (ev) => {
+        ev.preventDefault();
+        tags = tags.filter(t => t !== el.dataset.tag);
+        renderChips();
+      };
+    });
+  }
+
+  // Tag autocomplete
+  function getTagKnown() {
+    const local = _todos.flatMap(t => t.tags || []).concat(_commands.flatMap(c => c.tags || []));
+    return _mergeKnown(allKnownTags, local);
+  }
+  const tagAc = _createAutocomplete(getTagKnown, {
+    prefix: '#', placeholder: '+ tag',
+    style: 'width:80px;font-size:12px;padding:4px 6px',
+    getExcluded: () => tags,
+    onSelect: (val) => { if (!tags.includes(val)) tags.push(val); renderChips(); }
+  });
+  container.appendChild(tagAc.wrapper);
+
+  // Study autocomplete
+  const studyLabel = document.createElement('span');
+  studyLabel.className = 'toolbox-study-display';
+  container.appendChild(studyLabel);
+
+  function renderStudy() {
+    if (study) {
+      studyLabel.innerHTML = '<span class="toolbox-study toolbox-chip">' + esc(study) +
+        '<span class="toolbox-chip-x" id="' + prefix + '-study-clear">&times;</span></span>';
+      studyLabel.querySelector('.toolbox-chip-x').onmousedown = (ev) => {
+        ev.preventDefault(); study = ''; renderStudy();
+      };
+    } else {
+      studyLabel.innerHTML = '';
+    }
+  }
+
+  function getStudyKnown() {
+    const local = _todos.map(t => t.study).concat(_commands.map(c => c.study)).filter(Boolean);
+    return _mergeKnown(allKnownStudies, local);
+  }
+  const studyAc = _createAutocomplete(getStudyKnown, {
+    prefix: '', placeholder: '+ study',
+    style: 'width:80px;font-size:12px;padding:4px 6px',
+    getExcluded: () => study ? [study] : [],
+    onSelect: (val) => { study = val; renderStudy(); }
+  });
+  container.appendChild(studyAc.wrapper);
+
+  _toolboxMeta[prefix] = {
+    getTags: () => [...tags],
+    getStudy: () => study,
+    clear: () => { tags = []; study = ''; renderChips(); renderStudy(); }
+  };
 }
 
 """

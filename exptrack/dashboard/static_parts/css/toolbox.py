@@ -54,13 +54,6 @@ CSS_TOOLBOX = """
   .toolbox-panel { display: none; padding: 16px 20px; }
   .toolbox-panel.active { display: block; }
 
-  .toolbox-new-study {
-    width: 65px; font-family: inherit; font-size: 12px;
-    border: 1px dashed var(--border); padding: 4px 8px; border-radius: 4px;
-    background: transparent; color: var(--muted);
-  }
-  .toolbox-new-study:focus { outline: none; border-color: var(--blue); border-style: solid; color: var(--fg); }
-
   /* ── Shared add-form inputs ──────────────────────────────────────────── */
   .todo-add-form, .cmd-add-form {
     display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;
@@ -86,16 +79,21 @@ CSS_TOOLBOX = """
   }
   .todo-add-btn:hover, .cmd-add-btn:hover { opacity: 0.9; }
 
-  .todo-meta-row {
-    display: flex; gap: 6px; align-items: center;
+  .toolbox-meta-row {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-height: 28px;
   }
-  .todo-meta-row input, .todo-meta-row select {
-    font-family: inherit; font-size: 12px;
-    border: 1px solid var(--border); padding: 4px 8px; border-radius: 4px;
-    background: var(--code-bg); color: var(--muted);
+  .toolbox-chip-area {
+    display: flex; gap: 4px; flex-wrap: wrap; align-items: center;
   }
-  .todo-meta-row input { flex: 1; }
-  .todo-meta-row select { max-width: 140px; }
+  .toolbox-chip {
+    display: inline-flex; align-items: center; gap: 3px; cursor: default;
+  }
+  .toolbox-chip-x {
+    cursor: pointer; font-size: 13px; line-height: 1; opacity: 0.6;
+    margin-left: 2px;
+  }
+  .toolbox-chip-x:hover { opacity: 1; color: var(--red, #e55); }
+  .toolbox-study-display { display: inline-flex; align-items: center; }
 
   .cmd-add-form textarea {
     font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;

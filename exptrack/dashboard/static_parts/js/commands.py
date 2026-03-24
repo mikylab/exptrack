@@ -68,10 +68,7 @@ function renderCmdEditForm(c) {
     '<div class="cmd-edit-form">' +
       '<input type="text" id="cmd-edit-label" value="' + esc(c.label).replace(/"/g, '&quot;') + '" placeholder="Label">' +
       '<textarea id="cmd-edit-command" rows="2" placeholder="Command">' + esc(c.command) + '</textarea>' +
-      '<div class="todo-meta-row">' +
-        '<input type="text" id="cmd-edit-tags" value="' + esc((c.tags || []).join(', ')) + '" placeholder="Tags (comma-separated)" style="flex:1">' +
-        '<select id="cmd-edit-study"><option value="">no study</option></select>' +
-      '</div>' +
+      '<div class="toolbox-meta-row" id="cmd-edit-meta-row"></div>' +
       '<div class="cmd-edit-actions">' +
         '<button onclick="cancelEditCmd()">Cancel</button>' +
         '<button class="primary" onclick="saveEditCmd(\'' + c.id + '\')">Save</button>' +
@@ -86,17 +83,16 @@ function setCmdStudyFilter(s) { _cmdStudyFilter = _cmdStudyFilter === s ? '' : s
 async function addCmd() {
   const labelEl = document.getElementById('cmd-label-input');
   const cmdEl = document.getElementById('cmd-command-input');
-  const tagsEl = document.getElementById('cmd-tags-input');
-  const studyEl = document.getElementById('cmd-study-select');
   const command = (cmdEl.value || '').trim();
   if (!command) { cmdEl.focus(); return; }
 
+  const meta = _toolboxMeta['cmd'];
   await postApi('/api/commands/add', {
     label: (labelEl.value || '').trim(),
-    command, tags: parseTags(tagsEl), study: studyEl ? studyEl.value : ''
+    command, tags: meta ? meta.getTags() : [], study: meta ? meta.getStudy() : ''
   });
-  labelEl.value = ''; cmdEl.value = ''; tagsEl.value = '';
-  if (studyEl) studyEl.value = '';
+  labelEl.value = ''; cmdEl.value = '';
+  if (meta) meta.clear();
   await loadCommands();
   labelEl.focus();
 }
@@ -146,10 +142,83 @@ function copyCmdFromDom(btn, id) {
 function startEditCmd(id) {
   _editingCmdId = id;
   renderCommands();
-  populateToolboxStudies();
+  // Set up autocomplete meta for the edit form, pre-populated with current values
   const c = _commands.find(x => x.id === id);
-  const sel = document.getElementById('cmd-edit-study');
-  if (sel && c) sel.value = c.study || '';
+  if (!c) return;
+  const container = document.getElementById('cmd-edit-meta-row');
+  if (!container) return;
+  _setupEditMeta(container, c.tags || [], c.study || '');
+}
+
+function _setupEditMeta(container, initTags, initStudy) {
+  let tags = [...initTags];
+  let study = initStudy;
+
+  const tagArea = document.createElement('div');
+  tagArea.className = 'toolbox-chip-area';
+  container.appendChild(tagArea);
+
+  function renderChips() {
+    tagArea.innerHTML = tags.map(t =>
+      '<span class="toolbox-tag toolbox-chip">' + esc(t) +
+      '<span class="toolbox-chip-x" data-tag="' + esc(t) + '">&times;</span></span>'
+    ).join('');
+    tagArea.querySelectorAll('.toolbox-chip-x').forEach(el => {
+      el.onmousedown = (ev) => {
+        ev.preventDefault();
+        tags = tags.filter(t => t !== el.dataset.tag);
+        renderChips();
+      };
+    });
+  }
+  renderChips();
+
+  function getTagKnown() {
+    const local = _todos.flatMap(t => t.tags || []).concat(_commands.flatMap(c => c.tags || []));
+    return _mergeKnown(allKnownTags, local);
+  }
+  const tagAc = _createAutocomplete(getTagKnown, {
+    prefix: '#', placeholder: '+ tag',
+    style: 'width:80px;font-size:12px;padding:4px 6px',
+    getExcluded: () => tags,
+    onSelect: (val) => { if (!tags.includes(val)) tags.push(val); renderChips(); }
+  });
+  container.appendChild(tagAc.wrapper);
+
+  // Study
+  const studyLabel = document.createElement('span');
+  studyLabel.className = 'toolbox-study-display';
+  container.appendChild(studyLabel);
+
+  function renderStudy() {
+    if (study) {
+      studyLabel.innerHTML = '<span class="toolbox-study toolbox-chip">' + esc(study) +
+        '<span class="toolbox-chip-x">&times;</span></span>';
+      studyLabel.querySelector('.toolbox-chip-x').onmousedown = (ev) => {
+        ev.preventDefault(); study = ''; renderStudy();
+      };
+    } else { studyLabel.innerHTML = ''; }
+  }
+  renderStudy();
+
+  function getStudyKnown() {
+    const local = _todos.map(t => t.study).concat(_commands.map(c => c.study)).filter(Boolean);
+    return _mergeKnown(allKnownStudies, local);
+  }
+  const studyAc = _createAutocomplete(getStudyKnown, {
+    prefix: '', placeholder: '+ study',
+    style: 'width:80px;font-size:12px;padding:4px 6px',
+    getExcluded: () => study ? [study] : [],
+    onSelect: (val) => { study = val; renderStudy(); }
+  });
+  container.appendChild(studyAc.wrapper);
+
+  // Expose getters for saveEditCmd
+  _toolboxMeta['cmd-edit'] = {
+    getTags: () => [...tags],
+    getStudy: () => study,
+    clear: () => { tags = []; study = ''; renderChips(); renderStudy(); }
+  };
 }
 
 function cancelEditCmd() { _editingCmdId = null; renderCommands(); }
@@ -158,10 +227,11 @@ async function saveEditCmd(id) {
   const label = (document.getElementById('cmd-edit-label').value || '').trim();
   const command = (document.getElementById('cmd-edit-command').value || '').trim();
   if (!command) return;
+  const meta = _toolboxMeta['cmd-edit'];
   await postApi('/api/commands/update', {
     id, label, command,
-    tags: parseTags(document.getElementById('cmd-edit-tags')),
-    study: document.getElementById('cmd-edit-study').value || ''
+    tags: meta ? meta.getTags() : [],
+    study: meta ? meta.getStudy() : ''
   });
   _editingCmdId = null;
   await loadCommands();
@@ -203,7 +273,8 @@ function _syncToolboxUI() {
   document.querySelectorAll('.toolbox-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === _toolboxTab));
 
-  populateToolboxStudies();
+  setupToolboxMeta('todo');
+  setupToolboxMeta('cmd');
   if (_toolboxTab === 'todos') loadTodos();
   else loadCommands();
 }

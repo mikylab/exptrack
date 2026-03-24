@@ -353,11 +353,7 @@ HTML_BODY = r"""</style>
           <input type="text" id="todo-text-input" placeholder="What needs to be done?" onkeydown="todoAddKeydown(event)">
           <button class="todo-add-btn" onclick="addTodo()">Add</button>
         </div>
-        <div class="todo-meta-row">
-          <input type="text" id="todo-tags-input" placeholder="Tags (comma-separated)" style="flex:1">
-          <select id="todo-study-select"><option value="">no study</option></select>
-          <input type="text" id="todo-new-study" class="toolbox-new-study" placeholder="+ new" onkeydown="if(event.key==='Enter'){event.preventDefault();createToolboxStudy('todo')}">
-        </div>
+        <div class="toolbox-meta-row" id="todo-meta-row"></div>
       </div>
       <div class="todo-filters">
         <span id="todo-status-filters">
@@ -375,11 +371,7 @@ HTML_BODY = r"""</style>
       <div class="cmd-add-form">
         <input type="text" id="cmd-label-input" placeholder="Label (e.g. Train baseline)" onkeydown="cmdAddKeydown(event)">
         <textarea id="cmd-command-input" rows="2" placeholder="Command (e.g. exptrack run train.py --lr 0.01)" onkeydown="cmdAddKeydown(event)"></textarea>
-        <div class="todo-meta-row">
-          <input type="text" id="cmd-tags-input" placeholder="Tags (comma-separated)" style="flex:1">
-          <select id="cmd-study-select"><option value="">no study</option></select>
-          <input type="text" id="cmd-new-study" class="toolbox-new-study" placeholder="+ new" onkeydown="if(event.key==='Enter'){event.preventDefault();createToolboxStudy('cmd')}">
-        </div>
+        <div class="toolbox-meta-row" id="cmd-meta-row"></div>
         <div class="cmd-add-row">
           <button class="cmd-add-btn" onclick="addCmd()">Add Command</button>
         </div>
