@@ -89,23 +89,55 @@ exp.done()
 
 ### 3. Shell / SLURM pipeline
 
+Works with **any language or binary** — Python, C++, Julia, R, Fortran, or plain shell commands. Only the `exptrack` CLI calls need Python installed; your actual workload can be anything.
+
 ```bash
-eval $(exptrack run-start --script train.py --lr 0.01 --epochs 50)
+eval $(exptrack run-start --script my_simulation --lr 0.01 --epochs 50)
 # $EXP_ID, $EXP_NAME, $EXP_OUT are now set
 
-python train.py --lr 0.01 --epochs 50
+# Run ANY command — not limited to Python
+./build/simulate --lr 0.01 --epochs 50 --output "$EXP_OUT"
+
+# Log metrics from shell
 exptrack log-metric $EXP_ID val_loss 0.234 --step 10
-exptrack run-finish $EXP_ID --metrics results.json
+
+# Finish (auto-discovers files in $EXP_OUT, loads metrics from JSON)
+exptrack run-finish $EXP_ID --metrics "$EXP_OUT/results.json"
 ```
 
-Group pipeline steps with `--study` and `--stage`:
+**SLURM jobs** — SLURM environment variables (`SLURM_JOB_ID`, `SLURM_NODELIST`, etc.) are captured automatically:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=train_resnet
+#SBATCH --gpus=1
+
+eval $(exptrack run-start --script train --lr 0.001 --batch-size 256)
+
+# Use trap to report failures if the job crashes or is killed
+trap 'exptrack run-fail "$EXP_ID" "Exit code $?"' ERR
+
+python train.py --lr 0.001 --output "$EXP_OUT"
+exptrack run-finish "$EXP_ID" --metrics "$EXP_OUT/results.json"
+```
+
+**Multi-step pipelines** — group steps with `--study` and `--stage`:
 
 ```bash
 eval $(exptrack run-start --script train --study my-ablation --stage 1 --stage-name train --lr 0.01)
 TRAIN_ID=$EXP_ID; python train.py; exptrack run-finish $TRAIN_ID
 
-eval $(exptrack run-start --script test --study my-ablation --stage 2 --stage-name test)
-TEST_ID=$EXP_ID; python test.py; exptrack run-finish $TEST_ID
+eval $(exptrack run-start --script eval --study my-ablation --stage 2 --stage-name eval)
+TEST_ID=$EXP_ID; ./evaluate --model "$TRAIN_OUT/model.pt"; exptrack run-finish $TEST_ID
+```
+
+**Additional pipeline commands:**
+
+```bash
+exptrack log-artifact $EXP_ID path/to/file.pt --label model    # register output files
+exptrack log-result $EXP_ID accuracy 0.95                       # log final results
+exptrack link-dir $EXP_ID ./logs/tensorboard --label tb         # link directories
+command | exptrack log-output $EXP_ID --label training           # capture stdout as log
 ```
 
 ### 4. Python API (full control)
@@ -205,8 +237,10 @@ The [`examples/`](examples/) directory has ready-to-run scripts:
 | [`resnet_python_api.py`](examples/resnet_python_api.py) | Same training using the explicit Python API |
 | [`manual_tracking.py`](examples/manual_tracking.py) | Full lifecycle: parameters, metrics, tags, artifacts |
 | [`notebook_example.py`](examples/notebook_example.py) | Notebook API as a plain script |
+| [`shell_script_example.sh`](examples/shell_script_example.sh) | Pure shell workflow (no Python in the workload) |
 | [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM single-step pipeline |
 | [`pipeline_multistep.sh`](examples/pipeline_multistep.sh) | Multi-step pipeline: train, test, analyze |
+| [`slurm_job.sh`](examples/slurm_job.sh) | SLURM sbatch script with error trapping |
 
 ---
 

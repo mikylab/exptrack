@@ -40,6 +40,41 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
     return out
 
 
+_SCRIPT_EXTENSIONS = {
+    ".sh", ".bash", ".zsh", ".fish",     # shell scripts
+    ".slurm", ".sbatch", ".srun",        # SLURM job scripts
+    ".pbs", ".sge", ".lsf",             # other HPC schedulers
+    ".py",                                # Python scripts
+}
+
+_DATA_EXTENSIONS = {
+    ".json", ".yaml", ".yml", ".toml", ".xml", ".csv", ".tsv",
+    ".txt", ".log", ".cfg", ".ini", ".conf", ".env",
+}
+
+
+def _looks_like_script(p: Path) -> bool:
+    """Return True if the path looks like a runnable script (not a data file)."""
+    if not p.is_file():
+        return False
+    ext = p.suffix.lower()
+    # Reject known data/config extensions
+    if ext in _DATA_EXTENSIONS:
+        return False
+    # Accept known script extensions
+    if ext in _SCRIPT_EXTENSIONS:
+        return True
+    # No extension: check for a shebang line
+    if not ext:
+        try:
+            with open(p, "rb") as f:
+                head = f.read(2)
+            return head == b"#!"
+        except Exception:
+            return False
+    return False
+
+
 def _detect_calling_script() -> str:
     """Detect the shell script that invoked 'exptrack run-start'.
 
@@ -60,7 +95,7 @@ def _detect_calling_script() -> str:
                 if not arg or arg.startswith("-"):
                     continue
                 p = Path(arg)
-                if p.is_file():
+                if _looks_like_script(p):
                     return str(p.resolve())
             pid = ppid
     except Exception:
