@@ -21,6 +21,7 @@ exptrack init          # initialize in your project
 | `shell_script_example.sh` | `bash shell_script_example.sh` | Pure shell workflow (no Python in the workload) |
 | `pipeline_example.sh` | `bash pipeline_example.sh` | Shell/SLURM single-step pipeline |
 | `pipeline_multistep.sh` | `bash pipeline_multistep.sh` | Multi-step: train → test → analyze |
+| `pipeline_wrapper.sh` | `bash pipeline_wrapper.sh` | Wrapper: auto-inherited study + stage |
 | `slurm_job.sh` | `sbatch slurm_job.sh` | SLURM job script with error trapping |
 
 ## View Results

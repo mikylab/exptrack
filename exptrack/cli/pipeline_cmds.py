@@ -224,30 +224,52 @@ def cmd_run_start(args):
 
     exp.log_artifact(str(out_dir), label="output_dir")
 
-    # Add to study if specified
-    if getattr(args, "study", ""):
+    # ── Study & stage inheritance from environment ─────────────────────────
+    # If --study is not given, inherit from EXP_STUDY env var (set by a
+    # previous run-start in the same wrapper script).
+    study = getattr(args, "study", "") or os.environ.get("EXP_STUDY", "")
+    stage = getattr(args, "stage", None)
+    stage_name = getattr(args, "stage_name", None)
+
+    # Auto-increment stage: if EXP_STAGE is set from a prior run-start
+    # and --stage was not explicitly provided, bump by 1.
+    if stage is None and os.environ.get("EXP_STAGE"):
+        try:
+            stage = int(os.environ["EXP_STAGE"]) + 1
+        except (ValueError, TypeError):
+            pass
+
+    if study:
         from ..core.queries import add_to_study
-        add_to_study(conn, exp.id, args.study)
+        add_to_study(conn, exp.id, study)
         conn.commit()
 
-    # Set stage if specified
-    if getattr(args, "stage", None) is not None:
+    if stage is not None:
         from ..core.queries import update_experiment_stage
-        update_experiment_stage(conn, exp.id, args.stage,
-                               getattr(args, "stage_name", None))
+        update_experiment_stage(conn, exp.id, stage, stage_name)
         conn.commit()
 
+    # ── Export env vars (captured by eval $()) ────────────────────────────
     print(f'export EXP_ID="{exp.id}"')
     print(f'export EXP_NAME="{exp.name}"')
     print(f'export EXP_OUT="{out_dir}"')
+    if study:
+        print(f'export EXP_STUDY="{study}"')
+    if stage is not None:
+        print(f'export EXP_STAGE="{stage}"')
 
     env_file = out_dir / ".exptrack_run.env"
-    env_file.write_text(
-        f"EXP_ID={exp.id}\n"
-        f"EXP_NAME={exp.name}\n"
-        f"EXP_OUT={out_dir}\n"
-        f"EXP_CREATED={exp.created_at}\n"
-    )
+    env_lines = [
+        f"EXP_ID={exp.id}",
+        f"EXP_NAME={exp.name}",
+        f"EXP_OUT={out_dir}",
+        f"EXP_CREATED={exp.created_at}",
+    ]
+    if study:
+        env_lines.append(f"EXP_STUDY={study}")
+    if stage is not None:
+        env_lines.append(f"EXP_STAGE={stage}")
+    env_file.write_text("\n".join(env_lines) + "\n")
 
 
 def cmd_run_finish(args):

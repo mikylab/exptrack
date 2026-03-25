@@ -289,6 +289,160 @@ class TestRunStart:
         assert row["stage"] == 1
         assert row["stage_name"] == "train"
 
+    def test_run_start_exports_study_and_stage(self, tmp_project):
+        """run-start exports EXP_STUDY and EXP_STAGE for subsequent calls."""
+        from exptrack.cli.pipeline_cmds import cmd_run_start
+
+        args = SimpleNamespace(
+            name="", script="train.sh", tags=None,
+            study="my-study", stage=1, stage_name="train",
+            notes="", params=[]
+        )
+        stdout, _ = _capture(cmd_run_start, args)
+
+        assert 'export EXP_STUDY="my-study"' in stdout
+        assert 'export EXP_STAGE="1"' in stdout
+
+    def test_run_start_inherits_study_from_env(self, tmp_project, monkeypatch):
+        """run-start reads EXP_STUDY from env when --study is not given."""
+        from exptrack.cli.pipeline_cmds import cmd_run_start
+        from exptrack.core.db import get_db
+
+        monkeypatch.setenv("EXP_STUDY", "inherited-study")
+
+        args = SimpleNamespace(
+            name="", script="eval.sh", tags=None,
+            study="", stage=2, stage_name="eval",
+            notes="", params=[]
+        )
+        stdout, _ = _capture(cmd_run_start, args)
+
+        # Should export the inherited study
+        assert 'export EXP_STUDY="inherited-study"' in stdout
+
+        exp_id = None
+        for line in stdout.strip().split("\n"):
+            if "EXP_ID" in line:
+                exp_id = line.split('"')[1]
+                break
+
+        conn = get_db()
+        row = conn.execute(
+            "SELECT studies FROM experiments WHERE id=?", (exp_id,)
+        ).fetchone()
+        studies = json.loads(row["studies"] or "[]")
+        assert "inherited-study" in studies
+
+    def test_run_start_auto_increments_stage(self, tmp_project, monkeypatch):
+        """run-start auto-increments EXP_STAGE when --stage is not given."""
+        from exptrack.cli.pipeline_cmds import cmd_run_start
+        from exptrack.core.db import get_db
+
+        monkeypatch.setenv("EXP_STUDY", "auto-stage-study")
+        monkeypatch.setenv("EXP_STAGE", "3")
+
+        args = SimpleNamespace(
+            name="", script="next.sh", tags=None,
+            study="", stage=None, stage_name="postprocess",
+            notes="", params=[]
+        )
+        stdout, _ = _capture(cmd_run_start, args)
+
+        # Stage should be 4 (auto-incremented from 3)
+        assert 'export EXP_STAGE="4"' in stdout
+
+        exp_id = None
+        for line in stdout.strip().split("\n"):
+            if "EXP_ID" in line:
+                exp_id = line.split('"')[1]
+                break
+
+        conn = get_db()
+        row = conn.execute(
+            "SELECT stage, stage_name FROM experiments WHERE id=?", (exp_id,)
+        ).fetchone()
+        assert row["stage"] == 4
+        assert row["stage_name"] == "postprocess"
+
+    def test_run_start_explicit_study_overrides_env(self, tmp_project, monkeypatch):
+        """--study flag takes precedence over EXP_STUDY env var."""
+        from exptrack.cli.pipeline_cmds import cmd_run_start
+
+        monkeypatch.setenv("EXP_STUDY", "env-study")
+
+        args = SimpleNamespace(
+            name="", script="", tags=None,
+            study="explicit-study", stage=1, stage_name=None,
+            notes="", params=[]
+        )
+        stdout, _ = _capture(cmd_run_start, args)
+        assert 'export EXP_STUDY="explicit-study"' in stdout
+
+    def test_run_start_no_study_no_env(self, tmp_project):
+        """Without --study or EXP_STUDY, no study/stage env vars are exported."""
+        from exptrack.cli.pipeline_cmds import cmd_run_start
+
+        args = SimpleNamespace(
+            name="", script="solo.sh", tags=None,
+            study="", stage=None, stage_name=None,
+            notes="", params=[]
+        )
+        stdout, _ = _capture(cmd_run_start, args)
+        assert "EXP_STUDY" not in stdout
+        assert "EXP_STAGE" not in stdout
+
+    def test_multi_stage_wrapper_pattern(self, tmp_project, monkeypatch):
+        """Simulate a wrapper script: stage 1 sets study, stage 2 inherits."""
+        from exptrack.cli.pipeline_cmds import cmd_run_start, cmd_run_finish
+        from exptrack.core.db import get_db
+
+        # Stage 1: explicit --study and --stage
+        args = SimpleNamespace(
+            name="", script="train.sh", tags=None,
+            study="wrapper-test", stage=1, stage_name="train",
+            notes="", params=["--lr", "0.01"]
+        )
+        stdout1, _ = _capture(cmd_run_start, args)
+        id1 = [l.split('"')[1] for l in stdout1.strip().split("\n")
+               if "EXP_ID" in l][0]
+        _capture(cmd_run_finish, SimpleNamespace(
+            id=id1, metrics=None, step=None, params=None
+        ))
+
+        # Simulate eval $() setting env vars for the next call
+        for line in stdout1.strip().split("\n"):
+            if line.startswith("export EXP_STUDY="):
+                monkeypatch.setenv("EXP_STUDY", line.split('"')[1])
+            elif line.startswith("export EXP_STAGE="):
+                monkeypatch.setenv("EXP_STAGE", line.split('"')[1])
+
+        # Stage 2: no --study or --stage, should inherit and auto-increment
+        args = SimpleNamespace(
+            name="", script="eval.sh", tags=None,
+            study="", stage=None, stage_name="eval",
+            notes="", params=[]
+        )
+        stdout2, _ = _capture(cmd_run_start, args)
+        id2 = [l.split('"')[1] for l in stdout2.strip().split("\n")
+               if "EXP_ID" in l][0]
+        _capture(cmd_run_finish, SimpleNamespace(
+            id=id2, metrics=None, step=None, params=None
+        ))
+
+        # Verify both are in the same study with correct stages
+        conn = get_db()
+        for eid, expected_stage, expected_name in [
+            (id1, 1, "train"), (id2, 2, "eval")
+        ]:
+            row = conn.execute(
+                "SELECT studies, stage, stage_name FROM experiments WHERE id=?",
+                (eid,)
+            ).fetchone()
+            studies = json.loads(row["studies"] or "[]")
+            assert "wrapper-test" in studies, f"exp {eid} not in study"
+            assert row["stage"] == expected_stage, f"exp {eid} stage={row['stage']}"
+            assert row["stage_name"] == expected_name
+
 
 # ---------------------------------------------------------------------------
 # run-finish

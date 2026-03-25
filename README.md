@@ -121,14 +121,19 @@ python train.py --lr 0.001 --output "$EXP_OUT"
 exptrack run-finish "$EXP_ID" --metrics "$EXP_OUT/results.json"
 ```
 
-**Multi-step pipelines** — group steps with `--study` and `--stage`:
+**Multi-step pipelines** — group steps with `--study` and `--stage`. The study name and stage number are exported as `$EXP_STUDY` and `$EXP_STAGE`, so subsequent calls inherit them automatically (stages auto-increment):
 
 ```bash
-eval $(exptrack run-start --script train --study my-ablation --stage 1 --stage-name train --lr 0.01)
-TRAIN_ID=$EXP_ID; python train.py; exptrack run-finish $TRAIN_ID
+#!/bin/bash
+# run.sh — wrapper that runs multiple scripts as stages in one study
+eval $(exptrack run-start --study my-ablation --stage 1 --stage-name train --lr 0.01)
+python train.py --lr 0.01 --output "$EXP_OUT"
+exptrack run-finish $EXP_ID
 
-eval $(exptrack run-start --script eval --study my-ablation --stage 2 --stage-name eval)
-TEST_ID=$EXP_ID; ./evaluate --model "$TRAIN_OUT/model.pt"; exptrack run-finish $TEST_ID
+# $EXP_STUDY inherited, $EXP_STAGE auto-increments to 2
+eval $(exptrack run-start --stage-name eval)
+./evaluate --model "$EXP_OUT/model.pt"
+exptrack run-finish $EXP_ID
 ```
 
 **Additional pipeline commands:**
@@ -240,6 +245,7 @@ The [`examples/`](examples/) directory has ready-to-run scripts:
 | [`shell_script_example.sh`](examples/shell_script_example.sh) | Pure shell workflow (no Python in the workload) |
 | [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM single-step pipeline |
 | [`pipeline_multistep.sh`](examples/pipeline_multistep.sh) | Multi-step pipeline: train, test, analyze |
+| [`pipeline_wrapper.sh`](examples/pipeline_wrapper.sh) | Wrapper script with auto-inherited study and stages |
 | [`slurm_job.sh`](examples/slurm_job.sh) | SLURM sbatch script with error trapping |
 
 ---
