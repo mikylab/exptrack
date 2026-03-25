@@ -89,37 +89,46 @@ exp.done()
 
 ### 3. Shell / SLURM pipeline
 
-For shell scripts, SLURM jobs, or multi-step workflows. Add `run-start` at the top and `run-finish` at the bottom:
+For shell scripts, SLURM jobs, or multi-step workflows.
+
+**Your script (`run.sh`):**
 
 ```bash
 #!/bin/bash
-# run.sh — add two lines to track any script
-eval $(exptrack run-start --name "$1" --lr 0.01 --epochs 50)
+eval $(exptrack run-start --lr 0.01 --epochs 50)
 
 python train.py --lr 0.01 --output "$EXP_OUT"
 
 exptrack run-finish $EXP_ID --metrics "$EXP_OUT/results.json"
 ```
 
-`eval $(...)` sets `$EXP_ID`, `$EXP_NAME`, and `$EXP_OUT` in your shell. You can also `source` the env file instead: `exptrack run-start ... > env.sh 2>/dev/null && source env.sh`.
+**In your terminal:**
 
-**SLURM** — job environment variables are captured automatically:
+```bash
+bash run.sh                       # run it
+exptrack show $EXP_ID             # see what was captured
+```
+
+`eval $(exptrack run-start ...)` sets `$EXP_ID`, `$EXP_NAME`, and `$EXP_OUT` inside your script. Files written to `$EXP_OUT` are auto-discovered as artifacts. On failure, call `exptrack run-fail $EXP_ID "reason"`.
+
+**SLURM** — submit with `sbatch run.sh`. SLURM env vars are captured automatically:
 
 ```bash
 #!/bin/bash
 #SBATCH --job-name=train_resnet
 #SBATCH --gpus=1
 
-eval $(exptrack run-start --script train --lr 0.001 --batch-size 256)
+eval $(exptrack run-start --lr 0.001 --batch-size 256)
 trap 'exptrack run-fail "$EXP_ID" "Exit code $?"' ERR
 
 python train.py --lr 0.001 --output "$EXP_OUT"
 exptrack run-finish "$EXP_ID" --metrics "$EXP_OUT/results.json"
 ```
 
-**Multi-step** — set `--study` once, subsequent calls inherit it (stages auto-increment):
+**Multi-step** — set `--study` on the first step, subsequent steps inherit it:
 
 ```bash
+#!/bin/bash
 eval $(exptrack run-start --study my-ablation --stage 1 --stage-name train --lr 0.01)
 python train.py; exptrack run-finish $EXP_ID
 
