@@ -95,9 +95,10 @@ For shell scripts, SLURM jobs, or multi-step workflows.
 
 ```bash
 #!/bin/bash
-# Pass any params — they become the experiment's tracked parameters.
-# Use your own variables, env vars, or script arguments freely.
-eval $(exptrack run-start --name "$RUN_NAME" --lr $LR --epochs $EPOCHS)
+LR=$1
+EPOCHS=$2
+
+eval $(exptrack run-start --name "$3" --lr $LR --epochs $EPOCHS)
 
 python train.py --lr $LR --epochs $EPOCHS --output "$EXP_OUT"
 
@@ -107,8 +108,8 @@ exptrack run-finish $EXP_ID --metrics "$EXP_OUT/results.json"
 **In your terminal:**
 
 ```bash
-LR=0.01 EPOCHS=50 RUN_NAME=baseline bash run.sh
-LR=0.1  EPOCHS=100 RUN_NAME=higher-lr bash run.sh
+bash run.sh 0.01 50  baseline
+bash run.sh 0.1  100 higher-lr
 
 exptrack ls                       # see both runs
 ```
