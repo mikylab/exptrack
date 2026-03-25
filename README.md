@@ -91,18 +91,44 @@ exp.done()
 
 Works with **any language or binary** — Python, C++, Julia, R, Fortran, or plain shell commands. Only the `exptrack` CLI calls need Python installed; your actual workload can be anything.
 
+Add two lines to any existing script — `run-start` at the top, `run-finish` at the bottom:
+
 ```bash
-eval $(exptrack run-start --script my_simulation --lr 0.01 --epochs 50)
-# $EXP_ID, $EXP_NAME, $EXP_OUT are now set
+#!/bin/bash
+# run.sh todayRun — your existing script, now tracked
+set -e
 
-# Run ANY command — not limited to Python
-./build/simulate --lr 0.01 --epochs 50 --output "$EXP_OUT"
+eval $(exptrack run-start --name "$1" --lr 0.01 --epochs 50)
+#  └── sets $EXP_ID, $EXP_NAME, $EXP_OUT in your shell
 
-# Log metrics from shell
-exptrack log-metric $EXP_ID val_loss 0.234 --step 10
+# Your actual work (unchanged) — any language, any binary
+python train.py --lr 0.01 --output "$EXP_OUT"
+./postprocess --input "$EXP_OUT"
 
-# Finish (auto-discovers files in $EXP_OUT, loads metrics from JSON)
+# Done — auto-discovers output files, loads metrics from JSON
 exptrack run-finish $EXP_ID --metrics "$EXP_OUT/results.json"
+```
+
+```bash
+bash run.sh todayRun              # run it the same way as before
+exptrack show $EXP_ID             # see what was captured
+```
+
+> **How `eval $(...)` works:** `exptrack run-start` prints `export EXP_ID=...` lines to stdout. `eval $(...)` executes them in your shell, setting the variables. If you prefer, you can source the env file instead:
+> ```bash
+> exptrack run-start --lr 0.01 > /tmp/exp.env 2>/dev/null
+> source /tmp/exp.env
+> ```
+
+**Log metrics and artifacts mid-run:**
+
+```bash
+exptrack log-metric $EXP_ID val_loss 0.234 --step 10       # single metric
+exptrack log-metric $EXP_ID --file metrics.json --step 10   # bulk from JSON
+exptrack log-artifact $EXP_ID path/to/model.pt --label model
+exptrack log-result $EXP_ID accuracy 0.95                    # final results
+exptrack link-dir $EXP_ID ./logs/tensorboard --label tb      # link directories
+command | exptrack log-output $EXP_ID --label training        # capture stdout
 ```
 
 **SLURM jobs** — SLURM environment variables (`SLURM_JOB_ID`, `SLURM_NODELIST`, etc.) are captured automatically:
@@ -113,19 +139,17 @@ exptrack run-finish $EXP_ID --metrics "$EXP_OUT/results.json"
 #SBATCH --gpus=1
 
 eval $(exptrack run-start --script train --lr 0.001 --batch-size 256)
-
-# Use trap to report failures if the job crashes or is killed
 trap 'exptrack run-fail "$EXP_ID" "Exit code $?"' ERR
 
 python train.py --lr 0.001 --output "$EXP_OUT"
 exptrack run-finish "$EXP_ID" --metrics "$EXP_OUT/results.json"
 ```
 
-**Multi-step pipelines** — group steps with `--study` and `--stage`. The study name and stage number are exported as `$EXP_STUDY` and `$EXP_STAGE`, so subsequent calls inherit them automatically (stages auto-increment):
+**Multi-step wrappers** — set `--study` once, subsequent calls inherit automatically (stages auto-increment):
 
 ```bash
 #!/bin/bash
-# run.sh — wrapper that runs multiple scripts as stages in one study
+# run.sh — wrapper that tracks each script as a separate stage
 eval $(exptrack run-start --study my-ablation --stage 1 --stage-name train --lr 0.01)
 python train.py --lr 0.01 --output "$EXP_OUT"
 exptrack run-finish $EXP_ID
@@ -134,15 +158,6 @@ exptrack run-finish $EXP_ID
 eval $(exptrack run-start --stage-name eval)
 ./evaluate --model "$EXP_OUT/model.pt"
 exptrack run-finish $EXP_ID
-```
-
-**Additional pipeline commands:**
-
-```bash
-exptrack log-artifact $EXP_ID path/to/file.pt --label model    # register output files
-exptrack log-result $EXP_ID accuracy 0.95                       # log final results
-exptrack link-dir $EXP_ID ./logs/tensorboard --label tb         # link directories
-command | exptrack log-output $EXP_ID --label training           # capture stdout as log
 ```
 
 ### 4. Python API (full control)
