@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +24,40 @@ def _capture(func, *args):
     return out.getvalue(), err.getvalue()
 
 
+def _extract_env(stdout, key="EXP_ID"):
+    """Extract an env var value from run-start stdout (export KEY="VALUE")."""
+    for line in stdout.strip().split("\n"):
+        if line.startswith(f"export {key}="):
+            return line.split('"')[1]
+    return None
+
+
+def _start_exp(script="test.sh", **kwargs):
+    """Start an experiment and return (exp_id, stdout).
+
+    Pass extra SimpleNamespace fields as keyword args (e.g. study="x").
+    """
+    from exptrack.cli.pipeline_cmds import cmd_run_start
+
+    defaults = dict(
+        name="", script=script, tags=None, study="",
+        stage=None, stage_name=None, notes="", params=[]
+    )
+    defaults.update(kwargs)
+    args = SimpleNamespace(**defaults)
+    stdout, _ = _capture(cmd_run_start, args)
+    return _extract_env(stdout, "EXP_ID"), stdout
+
+
+def _finish_exp(exp_id, **kwargs):
+    """Finish an experiment. Pass metrics=, step=, params= as needed."""
+    from exptrack.cli.pipeline_cmds import cmd_run_finish
+
+    defaults = dict(id=exp_id, metrics=None, step=None, params=None)
+    defaults.update(kwargs)
+    return _capture(cmd_run_finish, SimpleNamespace(**defaults))
+
+
 # ---------------------------------------------------------------------------
 # run-start
 # ---------------------------------------------------------------------------
@@ -35,37 +68,20 @@ class TestRunStart:
 
     def test_basic_run_start(self, tmp_project):
         """run-start creates an experiment and prints export statements."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-
-        args = SimpleNamespace(
-            name="", script="train.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=["--lr", "0.01"]
-        )
-        stdout, stderr = _capture(cmd_run_start, args)
+        _, stdout = _start_exp("train.sh", params=["--lr", "0.01"])
 
         assert 'export EXP_ID=' in stdout
         assert 'export EXP_NAME=' in stdout
         assert 'export EXP_OUT=' in stdout
-        assert "train" in stdout  # naming hint used
+        assert "train" in stdout
 
     def test_run_start_captures_params(self, tmp_project):
         """run-start parses --key value pairs from the params list."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
         from exptrack.core.db import get_db
 
-        args = SimpleNamespace(
-            name="", script="run.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="",
-            params=["--lr", "0.01", "--epochs", "100", "--model", "resnet"]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-
-        # Extract EXP_ID from stdout
-        exp_id = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-                break
+        exp_id, _ = _start_exp("run.sh", params=[
+            "--lr", "0.01", "--epochs", "100", "--model", "resnet"
+        ])
         assert exp_id
 
         conn = get_db()
@@ -79,21 +95,9 @@ class TestRunStart:
 
     def test_run_start_with_equals_syntax(self, tmp_project):
         """run-start handles --key=value syntax."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
         from exptrack.core.db import get_db
 
-        args = SimpleNamespace(
-            name="", script="", tags=None, study="",
-            stage=None, stage_name=None, notes="",
-            params=["--lr=0.001", "--batch-size=32"]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-
-        exp_id = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-                break
+        exp_id, _ = _start_exp(params=["--lr=0.001", "--batch-size=32"])
 
         conn = get_db()
         rows = conn.execute(
@@ -105,21 +109,9 @@ class TestRunStart:
 
     def test_run_start_boolean_flags(self, tmp_project):
         """run-start treats lone --flag as True."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
         from exptrack.core.db import get_db
 
-        args = SimpleNamespace(
-            name="", script="", tags=None, study="",
-            stage=None, stage_name=None, notes="",
-            params=["--use-gpu", "--lr", "0.01"]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-
-        exp_id = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-                break
+        exp_id, _ = _start_exp(params=["--use-gpu", "--lr", "0.01"])
 
         conn = get_db()
         rows = conn.execute(
@@ -131,31 +123,14 @@ class TestRunStart:
 
     def test_run_start_with_custom_name(self, tmp_project):
         """run-start respects --name override."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-
-        args = SimpleNamespace(
-            name="my-custom-run", script="", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
+        _, stdout = _start_exp(name="my-custom-run")
         assert 'my-custom-run' in stdout
 
     def test_run_start_with_tags(self, tmp_project):
         """run-start stores tags."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
         from exptrack.core.db import get_db
 
-        args = SimpleNamespace(
-            name="", script="train.sh", tags=["baseline", "gpu"],
-            study="", stage=None, stage_name=None, notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-
-        exp_id = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-                break
+        exp_id, _ = _start_exp("train.sh", tags=["baseline", "gpu"])
 
         conn = get_db()
         row = conn.execute(
@@ -167,22 +142,12 @@ class TestRunStart:
 
     def test_run_start_with_notes(self, tmp_project):
         """run-start stores notes."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
         from exptrack.core.db import get_db
 
-        args = SimpleNamespace(
-            name="", script="", tags=None, study="",
-            stage=None, stage_name=None,
+        exp_id, _ = _start_exp(
             notes="Testing with larger batch size",
             params=["--batch", "128"]
         )
-        stdout, _ = _capture(cmd_run_start, args)
-
-        exp_id = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-                break
 
         conn = get_db()
         row = conn.execute(
@@ -192,44 +157,22 @@ class TestRunStart:
 
     def test_run_start_creates_output_dir(self, tmp_project):
         """run-start creates the output directory and writes .exptrack_run.env."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
+        _, stdout = _start_exp("train.sh", params=["--lr", "0.01"])
 
-        args = SimpleNamespace(
-            name="", script="train.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=["--lr", "0.01"]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-
-        # Extract EXP_OUT
-        exp_out = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_OUT" in line:
-                exp_out = line.split('"')[1]
-                break
+        exp_out = _extract_env(stdout, "EXP_OUT")
         assert exp_out
         assert Path(exp_out).is_dir()
         assert (Path(exp_out) / ".exptrack_run.env").is_file()
 
     def test_run_start_slurm_env(self, tmp_project, monkeypatch):
         """run-start captures SLURM environment variables as params."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
         from exptrack.core.db import get_db
 
         monkeypatch.setenv("SLURM_JOB_ID", "12345")
         monkeypatch.setenv("SLURM_JOB_NAME", "train_v2")
         monkeypatch.setenv("SLURM_NODELIST", "node[001-004]")
 
-        args = SimpleNamespace(
-            name="", script="", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=["--lr", "0.01"]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-
-        exp_id = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-                break
+        exp_id, _ = _start_exp(params=["--lr", "0.01"])
 
         conn = get_db()
         rows = conn.execute(
@@ -244,40 +187,20 @@ class TestRunStart:
 
     def test_run_start_slurm_naming_fallback(self, tmp_project, monkeypatch):
         """Without --script, run-start uses SLURM_JOB_NAME for naming."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-
         monkeypatch.setenv("SLURM_JOB_ID", "99999")
         monkeypatch.setenv("SLURM_JOB_NAME", "my_slurm_job")
 
-        args = SimpleNamespace(
-            name="", script="", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=["--lr", "0.1"]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-
-        # The name should include the SLURM job name
-        for line in stdout.strip().split("\n"):
-            if "EXP_NAME" in line:
-                assert "my_slurm_job" in line
-                break
+        _, stdout = _start_exp(script="", params=["--lr", "0.1"])
+        assert "my_slurm_job" in _extract_env(stdout, "EXP_NAME")
 
     def test_run_start_study_and_stage(self, tmp_project):
         """run-start with --study and --stage groups experiments."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
         from exptrack.core.db import get_db
 
-        args = SimpleNamespace(
-            name="", script="train.sh", tags=None,
-            study="ablation-v1", stage=1, stage_name="train",
-            notes="", params=["--lr", "0.01"]
+        exp_id, _ = _start_exp(
+            "train.sh", study="ablation-v1", stage=1, stage_name="train",
+            params=["--lr", "0.01"]
         )
-        stdout, _ = _capture(cmd_run_start, args)
-
-        exp_id = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-                break
 
         conn = get_db()
         row = conn.execute(
@@ -291,40 +214,21 @@ class TestRunStart:
 
     def test_run_start_exports_study_and_stage(self, tmp_project):
         """run-start exports EXP_STUDY and EXP_STAGE for subsequent calls."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-
-        args = SimpleNamespace(
-            name="", script="train.sh", tags=None,
-            study="my-study", stage=1, stage_name="train",
-            notes="", params=[]
+        _, stdout = _start_exp(
+            "train.sh", study="my-study", stage=1, stage_name="train"
         )
-        stdout, _ = _capture(cmd_run_start, args)
-
-        assert 'export EXP_STUDY="my-study"' in stdout
-        assert 'export EXP_STAGE="1"' in stdout
+        assert _extract_env(stdout, "EXP_STUDY") == "my-study"
+        assert _extract_env(stdout, "EXP_STAGE") == "1"
 
     def test_run_start_inherits_study_from_env(self, tmp_project, monkeypatch):
         """run-start reads EXP_STUDY from env when --study is not given."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
         from exptrack.core.db import get_db
 
         monkeypatch.setenv("EXP_STUDY", "inherited-study")
 
-        args = SimpleNamespace(
-            name="", script="eval.sh", tags=None,
-            study="", stage=2, stage_name="eval",
-            notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
+        exp_id, stdout = _start_exp("eval.sh", stage=2, stage_name="eval")
 
-        # Should export the inherited study
-        assert 'export EXP_STUDY="inherited-study"' in stdout
-
-        exp_id = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-                break
+        assert _extract_env(stdout, "EXP_STUDY") == "inherited-study"
 
         conn = get_db()
         row = conn.execute(
@@ -335,27 +239,14 @@ class TestRunStart:
 
     def test_run_start_auto_increments_stage(self, tmp_project, monkeypatch):
         """run-start auto-increments EXP_STAGE when --stage is not given."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
         from exptrack.core.db import get_db
 
         monkeypatch.setenv("EXP_STUDY", "auto-stage-study")
         monkeypatch.setenv("EXP_STAGE", "3")
 
-        args = SimpleNamespace(
-            name="", script="next.sh", tags=None,
-            study="", stage=None, stage_name="postprocess",
-            notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
+        exp_id, stdout = _start_exp("next.sh", stage_name="postprocess")
 
-        # Stage should be 4 (auto-incremented from 3)
-        assert 'export EXP_STAGE="4"' in stdout
-
-        exp_id = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-                break
+        assert _extract_env(stdout, "EXP_STAGE") == "4"
 
         conn = get_db()
         row = conn.execute(
@@ -366,68 +257,35 @@ class TestRunStart:
 
     def test_run_start_explicit_study_overrides_env(self, tmp_project, monkeypatch):
         """--study flag takes precedence over EXP_STUDY env var."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-
         monkeypatch.setenv("EXP_STUDY", "env-study")
 
-        args = SimpleNamespace(
-            name="", script="", tags=None,
-            study="explicit-study", stage=1, stage_name=None,
-            notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-        assert 'export EXP_STUDY="explicit-study"' in stdout
+        _, stdout = _start_exp(study="explicit-study", stage=1)
+        assert _extract_env(stdout, "EXP_STUDY") == "explicit-study"
 
     def test_run_start_no_study_no_env(self, tmp_project):
         """Without --study or EXP_STUDY, no study/stage env vars are exported."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-
-        args = SimpleNamespace(
-            name="", script="solo.sh", tags=None,
-            study="", stage=None, stage_name=None,
-            notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-        assert "EXP_STUDY" not in stdout
-        assert "EXP_STAGE" not in stdout
+        _, stdout = _start_exp("solo.sh")
+        assert _extract_env(stdout, "EXP_STUDY") is None
+        assert _extract_env(stdout, "EXP_STAGE") is None
 
     def test_multi_stage_wrapper_pattern(self, tmp_project, monkeypatch):
         """Simulate a wrapper script: stage 1 sets study, stage 2 inherits."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start, cmd_run_finish
         from exptrack.core.db import get_db
 
         # Stage 1: explicit --study and --stage
-        args = SimpleNamespace(
-            name="", script="train.sh", tags=None,
-            study="wrapper-test", stage=1, stage_name="train",
-            notes="", params=["--lr", "0.01"]
+        id1, stdout1 = _start_exp(
+            "train.sh", study="wrapper-test", stage=1, stage_name="train",
+            params=["--lr", "0.01"]
         )
-        stdout1, _ = _capture(cmd_run_start, args)
-        id1 = [l.split('"')[1] for l in stdout1.strip().split("\n")
-               if "EXP_ID" in l][0]
-        _capture(cmd_run_finish, SimpleNamespace(
-            id=id1, metrics=None, step=None, params=None
-        ))
+        _finish_exp(id1)
 
         # Simulate eval $() setting env vars for the next call
-        for line in stdout1.strip().split("\n"):
-            if line.startswith("export EXP_STUDY="):
-                monkeypatch.setenv("EXP_STUDY", line.split('"')[1])
-            elif line.startswith("export EXP_STAGE="):
-                monkeypatch.setenv("EXP_STAGE", line.split('"')[1])
+        monkeypatch.setenv("EXP_STUDY", _extract_env(stdout1, "EXP_STUDY"))
+        monkeypatch.setenv("EXP_STAGE", _extract_env(stdout1, "EXP_STAGE"))
 
         # Stage 2: no --study or --stage, should inherit and auto-increment
-        args = SimpleNamespace(
-            name="", script="eval.sh", tags=None,
-            study="", stage=None, stage_name="eval",
-            notes="", params=[]
-        )
-        stdout2, _ = _capture(cmd_run_start, args)
-        id2 = [l.split('"')[1] for l in stdout2.strip().split("\n")
-               if "EXP_ID" in l][0]
-        _capture(cmd_run_finish, SimpleNamespace(
-            id=id2, metrics=None, step=None, params=None
-        ))
+        id2, _ = _start_exp("eval.sh", stage_name="eval")
+        _finish_exp(id2)
 
         # Verify both are in the same study with correct stages
         conn = get_db()
@@ -452,31 +310,12 @@ class TestRunStart:
 class TestRunFinish:
     """Test exptrack run-finish — completing experiments from shell."""
 
-    def _start_experiment(self, tmp_project):
-        """Helper: start an experiment and return its ID."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-
-        args = SimpleNamespace(
-            name="", script="test.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="",
-            params=["--lr", "0.01"]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                return line.split('"')[1]
-
     def test_basic_finish(self, tmp_project):
         """run-finish marks the experiment as done."""
-        from exptrack.cli.pipeline_cmds import cmd_run_finish
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
-
-        args = SimpleNamespace(
-            id=exp_id, metrics=None, step=None, params=None
-        )
-        _capture(cmd_run_finish, args)
+        exp_id, _ = _start_exp()
+        _finish_exp(exp_id)
 
         conn = get_db()
         row = conn.execute(
@@ -488,12 +327,10 @@ class TestRunFinish:
 
     def test_finish_with_metrics_file(self, tmp_project):
         """run-finish loads metrics from a JSON file."""
-        from exptrack.cli.pipeline_cmds import cmd_run_finish
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
+        exp_id, _ = _start_exp()
 
-        # Write a metrics file
         metrics_file = tmp_project / "results.json"
         metrics_file.write_text(json.dumps({
             "accuracy": 0.95,
@@ -501,10 +338,7 @@ class TestRunFinish:
             "nested": {"val_loss": 0.08, "val_acc": 0.93}
         }))
 
-        args = SimpleNamespace(
-            id=exp_id, metrics=str(metrics_file), step=None, params=None
-        )
-        _, stderr = _capture(cmd_run_finish, args)
+        _, stderr = _finish_exp(exp_id, metrics=str(metrics_file))
         assert "Logged 4 metrics" in stderr
 
         conn = get_db()
@@ -519,16 +353,10 @@ class TestRunFinish:
 
     def test_finish_with_extra_params(self, tmp_project):
         """run-finish can log extra params via --params KEY=VALUE."""
-        from exptrack.cli.pipeline_cmds import cmd_run_finish
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
-
-        args = SimpleNamespace(
-            id=exp_id, metrics=None, step=None,
-            params=["best_epoch=42", "converged=true"]
-        )
-        _capture(cmd_run_finish, args)
+        exp_id, _ = _start_exp()
+        _finish_exp(exp_id, params=["best_epoch=42", "converged=true"])
 
         conn = get_db()
         rows = conn.execute(
@@ -540,29 +368,16 @@ class TestRunFinish:
 
     def test_finish_scans_output_dir(self, tmp_project):
         """run-finish auto-discovers files in the output directory."""
-        from exptrack.cli.pipeline_cmds import cmd_run_start, cmd_run_finish
         from exptrack.core.db import get_db
 
-        args = SimpleNamespace(
-            name="", script="sim.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
+        exp_id, stdout = _start_exp("sim.sh")
+        exp_out = _extract_env(stdout, "EXP_OUT")
 
-        exp_id = exp_out = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-            elif "EXP_OUT" in line:
-                exp_out = line.split('"')[1]
-
-        # Create files in the output directory (simulating shell script output)
         Path(exp_out).mkdir(parents=True, exist_ok=True)
         (Path(exp_out) / "model.pt").write_bytes(b"fake model")
         (Path(exp_out) / "log.txt").write_text("training log")
 
-        args = SimpleNamespace(id=exp_id, metrics=None, step=None, params=None)
-        _capture(cmd_run_finish, args)
+        _finish_exp(exp_id)
 
         conn = get_db()
         rows = conn.execute(
@@ -574,14 +389,10 @@ class TestRunFinish:
 
     def test_finish_missing_experiment(self, tmp_project):
         """run-finish exits with error for non-existent experiment."""
-        from exptrack.cli.pipeline_cmds import cmd_run_finish
         import pytest
 
-        args = SimpleNamespace(
-            id="nonexistent123", metrics=None, step=None, params=None
-        )
         with pytest.raises(SystemExit):
-            _capture(cmd_run_finish, args)
+            _finish_exp("nonexistent123")
 
 
 # ---------------------------------------------------------------------------
@@ -592,23 +403,12 @@ class TestRunFinish:
 class TestRunFail:
     """Test exptrack run-fail — marking experiments as failed."""
 
-    def _start_experiment(self, tmp_project):
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-        args = SimpleNamespace(
-            name="", script="failing.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                return line.split('"')[1]
-
     def test_basic_fail(self, tmp_project):
         """run-fail marks experiment as failed with reason."""
         from exptrack.cli.pipeline_cmds import cmd_run_fail
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
+        exp_id, _ = _start_exp("failing.sh")
 
         args = SimpleNamespace(id=exp_id, reason="OOM killed")
         _, stderr = _capture(cmd_run_fail, args)
@@ -621,7 +421,6 @@ class TestRunFail:
         assert row["status"] == "failed"
         assert row["duration_s"] is not None
 
-        # Check error param
         err_row = conn.execute(
             "SELECT value FROM params WHERE exp_id=? AND key='error'", (exp_id,)
         ).fetchone()
@@ -632,10 +431,9 @@ class TestRunFail:
         from exptrack.cli.pipeline_cmds import cmd_run_fail
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
+        exp_id, _ = _start_exp("failing.sh")
 
-        args = SimpleNamespace(id=exp_id, reason="")
-        _capture(cmd_run_fail, args)
+        _capture(cmd_run_fail, SimpleNamespace(id=exp_id, reason=""))
 
         conn = get_db()
         err_row = conn.execute(
@@ -648,9 +446,8 @@ class TestRunFail:
         from exptrack.cli.pipeline_cmds import cmd_run_fail
         import pytest
 
-        args = SimpleNamespace(id="nonexistent", reason="")
         with pytest.raises(SystemExit):
-            _capture(cmd_run_fail, args)
+            _capture(cmd_run_fail, SimpleNamespace(id="nonexistent", reason=""))
 
 
 # ---------------------------------------------------------------------------
@@ -661,28 +458,16 @@ class TestRunFail:
 class TestLogMetric:
     """Test exptrack log-metric — logging metrics mid-pipeline."""
 
-    def _start_experiment(self, tmp_project):
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-        args = SimpleNamespace(
-            name="", script="run.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                return line.split('"')[1]
-
     def test_log_single_metric(self, tmp_project):
         """log-metric stores a single metric with optional step."""
         from exptrack.cli.pipeline_cmds import cmd_log_metric
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
+        exp_id, _ = _start_exp()
 
-        args = SimpleNamespace(
+        _capture(cmd_log_metric, SimpleNamespace(
             id=exp_id, key="loss", value=0.234, step=10, file=None
-        )
-        _capture(cmd_log_metric, args)
+        ))
 
         conn = get_db()
         row = conn.execute(
@@ -697,12 +482,11 @@ class TestLogMetric:
         from exptrack.cli.pipeline_cmds import cmd_log_metric
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
+        exp_id, _ = _start_exp()
 
-        args = SimpleNamespace(
+        _capture(cmd_log_metric, SimpleNamespace(
             id=exp_id, key="accuracy", value=0.95, step=None, file=None
-        )
-        _capture(cmd_log_metric, args)
+        ))
 
         conn = get_db()
         row = conn.execute(
@@ -716,18 +500,17 @@ class TestLogMetric:
         from exptrack.cli.pipeline_cmds import cmd_log_metric
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
+        exp_id, _ = _start_exp()
 
         metrics_file = tmp_project / "metrics.json"
         metrics_file.write_text(json.dumps({
             "loss": 0.1, "acc": 0.9, "f1": 0.88,
-            "note": "not a number"  # should be skipped
+            "note": "not a number"
         }))
 
-        args = SimpleNamespace(
+        _capture(cmd_log_metric, SimpleNamespace(
             id=exp_id, key=None, value=None, step=5, file=str(metrics_file)
-        )
-        _capture(cmd_log_metric, args)
+        ))
 
         conn = get_db()
         rows = conn.execute(
@@ -747,31 +530,19 @@ class TestLogMetric:
 class TestLogArtifact:
     """Test exptrack log-artifact — registering output files."""
 
-    def _start_experiment(self, tmp_project):
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-        args = SimpleNamespace(
-            name="", script="run.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                return line.split('"')[1]
-
     def test_log_artifact(self, tmp_project):
         """log-artifact registers a file path."""
         from exptrack.cli.pipeline_cmds import cmd_log_artifact
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
+        exp_id, _ = _start_exp()
 
         artifact = tmp_project / "model.pt"
         artifact.write_bytes(b"model data")
 
-        args = SimpleNamespace(
+        _capture(cmd_log_artifact, SimpleNamespace(
             id=exp_id, path=str(artifact), label="checkpoint", stdin=False
-        )
-        _capture(cmd_log_artifact, args)
+        ))
 
         conn = get_db()
         row = conn.execute(
@@ -790,29 +561,17 @@ class TestLogArtifact:
 class TestLogResult:
     """Test exptrack log-result — logging final results."""
 
-    def _start_experiment(self, tmp_project):
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-        args = SimpleNamespace(
-            name="", script="eval.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                return line.split('"')[1]
-
     def test_log_result_key_value(self, tmp_project):
         """log-result stores a key=value result as a metric."""
         from exptrack.cli.pipeline_cmds import cmd_log_result
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
+        exp_id, _ = _start_exp()
 
-        args = SimpleNamespace(
+        _capture(cmd_log_result, SimpleNamespace(
             id=exp_id, key="accuracy", value="0.95",
             file=None, source="manual"
-        )
-        _capture(cmd_log_result, args)
+        ))
 
         conn = get_db()
         row = conn.execute(
@@ -827,18 +586,17 @@ class TestLogResult:
         from exptrack.cli.pipeline_cmds import cmd_log_result
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
+        exp_id, _ = _start_exp()
 
         results_file = tmp_project / "results.json"
         results_file.write_text(json.dumps({
             "accuracy": 0.95, "f1": 0.91, "precision": 0.93
         }))
 
-        args = SimpleNamespace(
+        _capture(cmd_log_result, SimpleNamespace(
             id=exp_id, key=None, value=None,
             file=str(results_file), source="pipeline"
-        )
-        _capture(cmd_log_result, args)
+        ))
 
         conn = get_db()
         rows = conn.execute(
@@ -858,33 +616,21 @@ class TestLogResult:
 class TestLinkDir:
     """Test exptrack link-dir — linking output directories."""
 
-    def _start_experiment(self, tmp_project):
-        from exptrack.cli.pipeline_cmds import cmd_run_start
-        args = SimpleNamespace(
-            name="", script="train.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="", params=[]
-        )
-        stdout, _ = _capture(cmd_run_start, args)
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                return line.split('"')[1]
-
     def test_link_dir_registers_files(self, tmp_project):
         """link-dir scans a directory and registers all files as artifacts."""
         from exptrack.cli.pipeline_cmds import cmd_link_dir
         from exptrack.core.db import get_db
 
-        exp_id = self._start_experiment(tmp_project)
+        exp_id, _ = _start_exp()
 
         log_dir = tmp_project / "logs" / "run1"
         log_dir.mkdir(parents=True)
         (log_dir / "train.log").write_text("training output")
         (log_dir / "events.out").write_text("tensorboard data")
 
-        args = SimpleNamespace(
+        _capture(cmd_link_dir, SimpleNamespace(
             id=exp_id, path=str(log_dir), label="tensorboard"
-        )
-        _capture(cmd_link_dir, args)
+        ))
 
         conn = get_db()
         rows = conn.execute(
@@ -905,48 +651,28 @@ class TestFullPipeline:
     """End-to-end pipeline tests simulating real shell/SLURM workflows."""
 
     def test_single_step_shell_pipeline(self, tmp_project):
-        """Complete single-step pipeline: start → log metrics → finish."""
-        from exptrack.cli.pipeline_cmds import (
-            cmd_log_metric, cmd_run_finish, cmd_run_start,
-        )
+        """Complete single-step pipeline: start -> log metrics -> finish."""
+        from exptrack.cli.pipeline_cmds import cmd_log_metric
         from exptrack.core.db import get_db
 
-        # 1. Start
-        args = SimpleNamespace(
-            name="", script="simulate.sh", tags=["shell-test"],
-            study="", stage=None, stage_name=None, notes="",
+        exp_id, stdout = _start_exp(
+            "simulate.sh", tags=["shell-test"],
             params=["--iterations", "1000", "--seed", "42"]
         )
-        stdout, _ = _capture(cmd_run_start, args)
+        exp_out = _extract_env(stdout, "EXP_OUT")
 
-        exp_id = exp_out = None
-        for line in stdout.strip().split("\n"):
-            if "EXP_ID" in line:
-                exp_id = line.split('"')[1]
-            elif "EXP_OUT" in line:
-                exp_out = line.split('"')[1]
-
-        # 2. Log metrics (simulating what a shell loop would do)
         for step in range(1, 4):
-            args = SimpleNamespace(
+            _capture(cmd_log_metric, SimpleNamespace(
                 id=exp_id, key="error", value=1.0 / step,
                 step=step, file=None
-            )
-            _capture(cmd_log_metric, args)
+            ))
 
-        # 3. Write results to output dir
         Path(exp_out).mkdir(parents=True, exist_ok=True)
-        results = {"final_error": 0.33, "converged": True}
         results_file = Path(exp_out) / "results.json"
-        results_file.write_text(json.dumps(results))
+        results_file.write_text(json.dumps({"final_error": 0.33, "converged": True}))
 
-        # 4. Finish
-        args = SimpleNamespace(
-            id=exp_id, metrics=str(results_file), step=None, params=None
-        )
-        _capture(cmd_run_finish, args)
+        _finish_exp(exp_id, metrics=str(results_file))
 
-        # Verify everything was stored
         conn = get_db()
         row = conn.execute(
             "SELECT status, duration_s FROM experiments WHERE id=?", (exp_id,)
@@ -954,12 +680,9 @@ class TestFullPipeline:
         assert row["status"] == "done"
         assert row["duration_s"] >= 0
 
-        metrics = conn.execute(
-            "SELECT key, value, step FROM metrics WHERE exp_id=? ORDER BY step",
-            (exp_id,)
+        error_metrics = conn.execute(
+            "SELECT * FROM metrics WHERE exp_id=? AND key='error'", (exp_id,)
         ).fetchall()
-        # 3 error metrics + 1 final_error from JSON
-        error_metrics = [m for m in metrics if m["key"] == "error"]
         assert len(error_metrics) == 3
 
         params = {r["key"]: json.loads(r["value"]) for r in
@@ -970,60 +693,38 @@ class TestFullPipeline:
 
     def test_multi_step_pipeline_with_study(self, tmp_project):
         """Multi-step pipeline grouped in a study with stages."""
-        from exptrack.cli.pipeline_cmds import (
-            cmd_log_metric, cmd_run_finish, cmd_run_start,
-        )
+        from exptrack.cli.pipeline_cmds import cmd_log_metric
         from exptrack.core.db import get_db
 
         study_name = "full-pipeline-test"
         exp_ids = []
 
         # Stage 1: Preprocess
-        args = SimpleNamespace(
-            name="", script="preprocess.sh", tags=None,
-            study=study_name, stage=1, stage_name="preprocess",
-            notes="", params=["--input", "data.csv"]
+        eid, _ = _start_exp(
+            "preprocess.sh", study=study_name, stage=1, stage_name="preprocess",
+            params=["--input", "data.csv"]
         )
-        stdout, _ = _capture(cmd_run_start, args)
-        eid = [l.split('"')[1] for l in stdout.strip().split("\n")
-               if "EXP_ID" in l][0]
         exp_ids.append(eid)
-        _capture(cmd_run_finish, SimpleNamespace(
-            id=eid, metrics=None, step=None, params=None
-        ))
+        _finish_exp(eid)
 
         # Stage 2: Train
-        args = SimpleNamespace(
-            name="", script="train.sh", tags=None,
-            study=study_name, stage=2, stage_name="train",
-            notes="", params=["--lr", "0.01", "--epochs", "50"]
+        eid, _ = _start_exp(
+            "train.sh", study=study_name, stage=2, stage_name="train",
+            params=["--lr", "0.01", "--epochs", "50"]
         )
-        stdout, _ = _capture(cmd_run_start, args)
-        eid = [l.split('"')[1] for l in stdout.strip().split("\n")
-               if "EXP_ID" in l][0]
         exp_ids.append(eid)
         _capture(cmd_log_metric, SimpleNamespace(
             id=eid, key="loss", value=0.1, step=50, file=None
         ))
-        _capture(cmd_run_finish, SimpleNamespace(
-            id=eid, metrics=None, step=None, params=None
-        ))
+        _finish_exp(eid)
 
         # Stage 3: Evaluate
-        args = SimpleNamespace(
-            name="", script="eval.sh", tags=None,
-            study=study_name, stage=3, stage_name="evaluate",
-            notes="", params=[]
+        eid, _ = _start_exp(
+            "eval.sh", study=study_name, stage=3, stage_name="evaluate"
         )
-        stdout, _ = _capture(cmd_run_start, args)
-        eid = [l.split('"')[1] for l in stdout.strip().split("\n")
-               if "EXP_ID" in l][0]
         exp_ids.append(eid)
-        _capture(cmd_run_finish, SimpleNamespace(
-            id=eid, metrics=None, step=None, params=None
-        ))
+        _finish_exp(eid)
 
-        # Verify all 3 experiments are in the study
         conn = get_db()
         for eid in exp_ids:
             row = conn.execute(
@@ -1033,7 +734,6 @@ class TestFullPipeline:
             assert study_name in studies
             assert row["status"] == "done"
 
-        # Verify stages
         stages = {}
         for eid in exp_ids:
             row = conn.execute(
@@ -1044,29 +744,20 @@ class TestFullPipeline:
 
     def test_pipeline_with_failure_and_trap(self, tmp_project):
         """Simulates a shell script with trap that calls run-fail on error."""
-        from exptrack.cli.pipeline_cmds import (
-            cmd_log_metric, cmd_run_fail, cmd_run_start,
-        )
+        from exptrack.cli.pipeline_cmds import cmd_log_metric, cmd_run_fail
         from exptrack.core.db import get_db
 
-        # Start
-        args = SimpleNamespace(
-            name="", script="risky.sh", tags=None, study="",
-            stage=None, stage_name=None, notes="",
-            params=["--config", "experimental"]
+        exp_id, _ = _start_exp(
+            "risky.sh", params=["--config", "experimental"]
         )
-        stdout, _ = _capture(cmd_run_start, args)
-        exp_id = [l.split('"')[1] for l in stdout.strip().split("\n")
-                  if "EXP_ID" in l][0]
 
-        # Log some metrics before failure
         _capture(cmd_log_metric, SimpleNamespace(
             id=exp_id, key="step", value=1, step=1, file=None
         ))
 
-        # Fail (simulating trap handler)
-        args = SimpleNamespace(id=exp_id, reason="Segfault in libcuda.so")
-        _capture(cmd_run_fail, args)
+        _capture(cmd_run_fail, SimpleNamespace(
+            id=exp_id, reason="Segfault in libcuda.so"
+        ))
 
         conn = get_db()
         row = conn.execute(
@@ -1074,7 +765,6 @@ class TestFullPipeline:
         ).fetchone()
         assert row["status"] == "failed"
 
-        # Metrics logged before failure should still be there
         metric = conn.execute(
             "SELECT value FROM metrics WHERE exp_id=? AND key='step'",
             (exp_id,)
@@ -1091,7 +781,6 @@ class TestDetectCallingScript:
     """Test the script detection helper."""
 
     def test_looks_like_script_sh(self, tmp_path):
-        """Shell scripts are recognized."""
         from exptrack.cli.pipeline_cmds import _looks_like_script
 
         sh_file = tmp_path / "run.sh"
@@ -1099,7 +788,6 @@ class TestDetectCallingScript:
         assert _looks_like_script(sh_file) is True
 
     def test_looks_like_script_slurm(self, tmp_path):
-        """SLURM scripts are recognized."""
         from exptrack.cli.pipeline_cmds import _looks_like_script
 
         slurm_file = tmp_path / "job.slurm"
@@ -1107,7 +795,6 @@ class TestDetectCallingScript:
         assert _looks_like_script(slurm_file) is True
 
     def test_looks_like_script_sbatch(self, tmp_path):
-        """sbatch scripts are recognized."""
         from exptrack.cli.pipeline_cmds import _looks_like_script
 
         sbatch_file = tmp_path / "submit.sbatch"
@@ -1115,7 +802,6 @@ class TestDetectCallingScript:
         assert _looks_like_script(sbatch_file) is True
 
     def test_rejects_json(self, tmp_path):
-        """JSON config files are not scripts."""
         from exptrack.cli.pipeline_cmds import _looks_like_script
 
         json_file = tmp_path / "config.json"
@@ -1123,7 +809,6 @@ class TestDetectCallingScript:
         assert _looks_like_script(json_file) is False
 
     def test_rejects_yaml(self, tmp_path):
-        """YAML config files are not scripts."""
         from exptrack.cli.pipeline_cmds import _looks_like_script
 
         yaml_file = tmp_path / "config.yaml"
@@ -1131,7 +816,6 @@ class TestDetectCallingScript:
         assert _looks_like_script(yaml_file) is False
 
     def test_extensionless_with_shebang(self, tmp_path):
-        """Files with no extension but a shebang are scripts."""
         from exptrack.cli.pipeline_cmds import _looks_like_script
 
         script = tmp_path / "run_job"
@@ -1139,7 +823,6 @@ class TestDetectCallingScript:
         assert _looks_like_script(script) is True
 
     def test_extensionless_without_shebang(self, tmp_path):
-        """Files with no extension and no shebang are not scripts."""
         from exptrack.cli.pipeline_cmds import _looks_like_script
 
         data_file = tmp_path / "data"
@@ -1147,13 +830,11 @@ class TestDetectCallingScript:
         assert _looks_like_script(data_file) is False
 
     def test_nonexistent_file(self, tmp_path):
-        """Non-existent files return False."""
         from exptrack.cli.pipeline_cmds import _looks_like_script
 
         assert _looks_like_script(tmp_path / "nope.sh") is False
 
     def test_python_scripts_accepted(self, tmp_path):
-        """.py files are accepted as scripts."""
         from exptrack.cli.pipeline_cmds import _looks_like_script
 
         py_file = tmp_path / "train.py"
@@ -1161,7 +842,6 @@ class TestDetectCallingScript:
         assert _looks_like_script(py_file) is True
 
     def test_pbs_sge_lsf_scripts(self, tmp_path):
-        """Other HPC scheduler scripts are recognized."""
         from exptrack.cli.pipeline_cmds import _looks_like_script
 
         for ext in [".pbs", ".sge", ".lsf"]:

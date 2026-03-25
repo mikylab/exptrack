@@ -41,10 +41,10 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
 
 
 _SCRIPT_EXTENSIONS = {
-    ".sh", ".bash", ".zsh", ".fish",     # shell scripts
-    ".slurm", ".sbatch", ".srun",        # SLURM job scripts
-    ".pbs", ".sge", ".lsf",             # other HPC schedulers
-    ".py",                                # Python scripts
+    ".sh", ".bash", ".zsh", ".fish",
+    ".slurm", ".sbatch", ".srun",
+    ".pbs", ".sge", ".lsf",
+    ".py",
 }
 
 _DATA_EXTENSIONS = {
@@ -54,22 +54,22 @@ _DATA_EXTENSIONS = {
 
 
 def _looks_like_script(p: Path) -> bool:
-    """Return True if the path looks like a runnable script (not a data file)."""
+    """Return True if the path looks like a runnable script (not a data file).
+
+    Uses allowlists for known script/data extensions, and falls back to
+    shebang detection for extensionless files. Unknown extensions return False.
+    """
     if not p.is_file():
         return False
     ext = p.suffix.lower()
-    # Reject known data/config extensions
     if ext in _DATA_EXTENSIONS:
         return False
-    # Accept known script extensions
     if ext in _SCRIPT_EXTENSIONS:
         return True
-    # No extension: check for a shebang line
     if not ext:
         try:
             with open(p, "rb") as f:
-                head = f.read(2)
-            return head == b"#!"
+                return f.read(2) == b"#!"
         except Exception:
             return False
     return False
@@ -215,24 +215,18 @@ def cmd_run_start(args):
     out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Track the output directory in both the experiments table and as an artifact
-    from ..core import get_db as _get_db
-    conn = _get_db()
+    conn = get_db()
     conn.execute("UPDATE experiments SET output_dir=? WHERE id=?",
                  (str(out_dir), exp.id))
-    conn.commit()
 
     exp.log_artifact(str(out_dir), label="output_dir")
 
-    # ── Study & stage inheritance from environment ─────────────────────────
-    # If --study is not given, inherit from EXP_STUDY env var (set by a
-    # previous run-start in the same wrapper script).
+    # Inherit study/stage from env vars set by a previous run-start
     study = getattr(args, "study", "") or os.environ.get("EXP_STUDY", "")
     stage = getattr(args, "stage", None)
     stage_name = getattr(args, "stage_name", None)
 
-    # Auto-increment stage: if EXP_STAGE is set from a prior run-start
-    # and --stage was not explicitly provided, bump by 1.
+    # Auto-increment stage from prior run-start's EXP_STAGE
     if stage is None and os.environ.get("EXP_STAGE"):
         try:
             stage = int(os.environ["EXP_STAGE"]) + 1
@@ -242,33 +236,28 @@ def cmd_run_start(args):
     if study:
         from ..core.queries import add_to_study
         add_to_study(conn, exp.id, study)
-        conn.commit()
-
     if stage is not None:
         from ..core.queries import update_experiment_stage
         update_experiment_stage(conn, exp.id, stage, stage_name)
-        conn.commit()
+    conn.commit()
 
-    # ── Export env vars (captured by eval $()) ────────────────────────────
-    print(f'export EXP_ID="{exp.id}"')
-    print(f'export EXP_NAME="{exp.name}"')
-    print(f'export EXP_OUT="{out_dir}"')
-    if study:
-        print(f'export EXP_STUDY="{study}"')
-    if stage is not None:
-        print(f'export EXP_STAGE="{stage}"')
-
-    env_file = out_dir / ".exptrack_run.env"
-    env_lines = [
-        f"EXP_ID={exp.id}",
-        f"EXP_NAME={exp.name}",
-        f"EXP_OUT={out_dir}",
-        f"EXP_CREATED={exp.created_at}",
+    # Build env vars — printed for eval $() and written to .env file
+    env_vars = [
+        ("EXP_ID", exp.id),
+        ("EXP_NAME", exp.name),
+        ("EXP_OUT", str(out_dir)),
     ]
     if study:
-        env_lines.append(f"EXP_STUDY={study}")
+        env_vars.append(("EXP_STUDY", study))
     if stage is not None:
-        env_lines.append(f"EXP_STAGE={stage}")
+        env_vars.append(("EXP_STAGE", str(stage)))
+
+    for k, v in env_vars:
+        print(f'export {k}="{v}"')
+
+    env_file = out_dir / ".exptrack_run.env"
+    env_lines = [f"{k}={v}" for k, v in env_vars]
+    env_lines.append(f"EXP_CREATED={exp.created_at}")
     env_file.write_text("\n".join(env_lines) + "\n")
 
 
