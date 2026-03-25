@@ -32,10 +32,12 @@ exptrack run-finish $EXP_ID --metrics results.json
 exptrack run-fail $EXP_ID "reason"
 
 # Multi-step pipeline (group steps in a study with numbered stages)
-eval $(exptrack run-start --script train --study my-run --stage 1 --stage-name train --lr 0.01)
-TRAIN_ID=$EXP_ID; python train.py; exptrack run-finish $TRAIN_ID
-eval $(exptrack run-start --script test --study my-run --stage 2 --stage-name test)
-TEST_ID=$EXP_ID; python test.py; exptrack run-finish $TEST_ID
+# First call sets EXP_STUDY and EXP_STAGE; subsequent calls inherit automatically
+eval $(exptrack run-start --study my-run --stage 1 --stage-name train --lr 0.01)
+python train.py; exptrack run-finish $EXP_ID
+# EXP_STUDY inherited, EXP_STAGE auto-increments to 2
+eval $(exptrack run-start --stage-name eval)
+./evaluate; exptrack run-finish $EXP_ID
 
 # CLI commands: ls, show, diff, compare, history, timeline, tag, untag, note,
 #   edit-note, rm, clean, finish, delete-tag, study, unstudy, stage, stale,
@@ -44,7 +46,13 @@ TEST_ID=$EXP_ID; python test.py; exptrack run-finish $TEST_ID
 
 ## Testing & Linting
 
-No test suite or linting configuration exists in the repo yet.
+```bash
+pip install pytest
+python -m pytest tests/ -x -q
+```
+
+Key test files: `test_pipeline_shell.py` (53 tests for shell/SLURM pipeline commands),
+`test_experiment.py`, `test_cli.py`, `test_db.py`, `test_capture_argparse.py`, etc.
 
 ## Architecture
 

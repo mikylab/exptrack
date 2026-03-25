@@ -89,23 +89,57 @@ exp.done()
 
 ### 3. Shell / SLURM pipeline
 
-```bash
-eval $(exptrack run-start --script train.py --lr 0.01 --epochs 50)
-# $EXP_ID, $EXP_NAME, $EXP_OUT are now set
+For shell scripts, SLURM jobs, or multi-step workflows.
 
-python train.py --lr 0.01 --epochs 50
-exptrack log-metric $EXP_ID val_loss 0.234 --step 10
-exptrack run-finish $EXP_ID --metrics results.json
+**Your script (`run.sh`):**
+
+```bash
+#!/bin/bash
+LR=$1
+EPOCHS=$2
+
+eval $(exptrack run-start --name "$3" --lr $LR --epochs $EPOCHS)
+
+python train.py --lr $LR --epochs $EPOCHS --output "$EXP_OUT"
+
+exptrack run-finish $EXP_ID --metrics "$EXP_OUT/results.json"
 ```
 
-Group pipeline steps with `--study` and `--stage`:
+**In your terminal:**
 
 ```bash
-eval $(exptrack run-start --script train --study my-ablation --stage 1 --stage-name train --lr 0.01)
-TRAIN_ID=$EXP_ID; python train.py; exptrack run-finish $TRAIN_ID
+bash run.sh 0.01 50  baseline
+bash run.sh 0.1  100 higher-lr
 
-eval $(exptrack run-start --script test --study my-ablation --stage 2 --stage-name test)
-TEST_ID=$EXP_ID; python test.py; exptrack run-finish $TEST_ID
+exptrack ls                       # see both runs
+```
+
+`eval $(exptrack run-start ...)` creates a new experiment and sets three variables inside your script: `$EXP_ID` (experiment ID), `$EXP_NAME` (run name), and `$EXP_OUT` (output directory — files written here are auto-discovered as artifacts). Each run of the script creates a separate experiment. On failure, call `exptrack run-fail $EXP_ID "reason"`.
+
+**SLURM** — submit with `sbatch run.sh`. SLURM env vars are captured automatically:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=train_resnet
+#SBATCH --gpus=1
+
+eval $(exptrack run-start --lr 0.001 --batch-size 256)
+trap 'exptrack run-fail "$EXP_ID" "Exit code $?"' ERR
+
+python train.py --lr 0.001 --output "$EXP_OUT"
+exptrack run-finish "$EXP_ID" --metrics "$EXP_OUT/results.json"
+```
+
+**Multi-step** — set `--study` on the first step, subsequent steps inherit it:
+
+```bash
+#!/bin/bash
+eval $(exptrack run-start --study my-ablation --stage 1 --stage-name train --lr 0.01)
+python train.py; exptrack run-finish $EXP_ID
+
+# EXP_STUDY inherited, EXP_STAGE auto-increments to 2
+eval $(exptrack run-start --stage-name eval)
+python eval.py; exptrack run-finish $EXP_ID
 ```
 
 ### 4. Python API (full control)
@@ -205,8 +239,11 @@ The [`examples/`](examples/) directory has ready-to-run scripts:
 | [`resnet_python_api.py`](examples/resnet_python_api.py) | Same training using the explicit Python API |
 | [`manual_tracking.py`](examples/manual_tracking.py) | Full lifecycle: parameters, metrics, tags, artifacts |
 | [`notebook_example.py`](examples/notebook_example.py) | Notebook API as a plain script |
+| [`shell_script_example.sh`](examples/shell_script_example.sh) | Pure shell workflow (no Python in the workload) |
 | [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM single-step pipeline |
 | [`pipeline_multistep.sh`](examples/pipeline_multistep.sh) | Multi-step pipeline: train, test, analyze |
+| [`pipeline_wrapper.sh`](examples/pipeline_wrapper.sh) | Wrapper script with auto-inherited study and stages |
+| [`slurm_job.sh`](examples/slurm_job.sh) | SLURM sbatch script with error trapping |
 
 ---
 

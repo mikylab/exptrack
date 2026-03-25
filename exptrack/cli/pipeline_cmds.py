@@ -40,6 +40,41 @@ def _flatten_dict(d: dict, prefix: str = "") -> dict:
     return out
 
 
+_SCRIPT_EXTENSIONS = {
+    ".sh", ".bash", ".zsh", ".fish",
+    ".slurm", ".sbatch", ".srun",
+    ".pbs", ".sge", ".lsf",
+    ".py",
+}
+
+_DATA_EXTENSIONS = {
+    ".json", ".yaml", ".yml", ".toml", ".xml", ".csv", ".tsv",
+    ".txt", ".log", ".cfg", ".ini", ".conf", ".env",
+}
+
+
+def _looks_like_script(p: Path) -> bool:
+    """Return True if the path looks like a runnable script (not a data file).
+
+    Uses allowlists for known script/data extensions, and falls back to
+    shebang detection for extensionless files. Unknown extensions return False.
+    """
+    if not p.is_file():
+        return False
+    ext = p.suffix.lower()
+    if ext in _DATA_EXTENSIONS:
+        return False
+    if ext in _SCRIPT_EXTENSIONS:
+        return True
+    if not ext:
+        try:
+            with open(p, "rb") as f:
+                return f.read(2) == b"#!"
+        except Exception:
+            return False
+    return False
+
+
 def _detect_calling_script() -> str:
     """Detect the shell script that invoked 'exptrack run-start'.
 
@@ -60,7 +95,7 @@ def _detect_calling_script() -> str:
                 if not arg or arg.startswith("-"):
                     continue
                 p = Path(arg)
-                if p.is_file():
+                if _looks_like_script(p):
                     return str(p.resolve())
             pid = ppid
     except Exception:
@@ -180,39 +215,50 @@ def cmd_run_start(args):
     out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Track the output directory in both the experiments table and as an artifact
-    from ..core import get_db as _get_db
-    conn = _get_db()
+    conn = get_db()
     conn.execute("UPDATE experiments SET output_dir=? WHERE id=?",
                  (str(out_dir), exp.id))
-    conn.commit()
 
     exp.log_artifact(str(out_dir), label="output_dir")
 
-    # Add to study if specified
-    if getattr(args, "study", ""):
+    # Inherit study/stage from env vars set by a previous run-start
+    study = getattr(args, "study", "") or os.environ.get("EXP_STUDY", "")
+    stage = getattr(args, "stage", None)
+    stage_name = getattr(args, "stage_name", None)
+
+    # Auto-increment stage from prior run-start's EXP_STAGE
+    if stage is None and os.environ.get("EXP_STAGE"):
+        try:
+            stage = int(os.environ["EXP_STAGE"]) + 1
+        except (ValueError, TypeError):
+            pass
+
+    if study:
         from ..core.queries import add_to_study
-        add_to_study(conn, exp.id, args.study)
-        conn.commit()
-
-    # Set stage if specified
-    if getattr(args, "stage", None) is not None:
+        add_to_study(conn, exp.id, study)
+    if stage is not None:
         from ..core.queries import update_experiment_stage
-        update_experiment_stage(conn, exp.id, args.stage,
-                               getattr(args, "stage_name", None))
-        conn.commit()
+        update_experiment_stage(conn, exp.id, stage, stage_name)
+    conn.commit()
 
-    print(f'export EXP_ID="{exp.id}"')
-    print(f'export EXP_NAME="{exp.name}"')
-    print(f'export EXP_OUT="{out_dir}"')
+    # Build env vars — printed for eval $() and written to .env file
+    env_vars = [
+        ("EXP_ID", exp.id),
+        ("EXP_NAME", exp.name),
+        ("EXP_OUT", str(out_dir)),
+    ]
+    if study:
+        env_vars.append(("EXP_STUDY", study))
+    if stage is not None:
+        env_vars.append(("EXP_STAGE", str(stage)))
+
+    for k, v in env_vars:
+        print(f'export {k}="{v}"')
 
     env_file = out_dir / ".exptrack_run.env"
-    env_file.write_text(
-        f"EXP_ID={exp.id}\n"
-        f"EXP_NAME={exp.name}\n"
-        f"EXP_OUT={out_dir}\n"
-        f"EXP_CREATED={exp.created_at}\n"
-    )
+    env_lines = [f"{k}={v}" for k, v in env_vars]
+    env_lines.append(f"EXP_CREATED={exp.created_at}")
+    env_file.write_text("\n".join(env_lines) + "\n")
 
 
 def cmd_run_finish(args):

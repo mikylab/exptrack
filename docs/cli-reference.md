@@ -10,15 +10,23 @@ Setup
 Script Tracking
   exptrack run script.py [args]     Run script with automatic param/artifact capture
 
-Shell / SLURM Pipeline
+Shell / SLURM Pipeline (works with any language — Python, C++, Julia, R, shell)
   exptrack run-start [--key val]    Start experiment, print env vars for eval $()
+                     [--script name] Naming hint (label or filename)
                      [--study name] Group into a study
                      [--stage N]    Set stage number
                      [--stage-name] Stage label (train, eval, etc.)
+                     [--tags t1 t2] Add tags
+                     [--notes text] Add notes
   exptrack run-finish <id>          Mark done (--metrics file.json to log from JSON)
+                      [--params K=V] Add extra params at finish time
   exptrack run-fail <id> [reason]   Mark failed
   exptrack log-metric <id> <k> <v>  Log metric (--step N, --file f.json)
-  exptrack log-artifact <id> <path> Register output file (--label name)
+  exptrack log-artifact <id> <path> Register output file (--label name, --stdin)
+  exptrack log-output <id>          Capture piped stdout (cmd | exptrack log-output $ID)
+  exptrack log-result <id> <k> <v>  Log final result (--file f.json, --source label)
+  exptrack link-dir <id> <path>     Link a directory and scan its files (--label name)
+  exptrack create --name <name>     Create manual experiment entry (--params, --metrics)
 
 Inspect
   exptrack ls [-n 50]               List experiments (--tag, --study to filter)
