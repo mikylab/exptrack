@@ -95,9 +95,11 @@ For shell scripts, SLURM jobs, or multi-step workflows.
 
 ```bash
 #!/bin/bash
-eval $(exptrack run-start --lr 0.01 --epochs 50)
+# Pass any params — they become the experiment's tracked parameters.
+# Use your own variables, env vars, or script arguments freely.
+eval $(exptrack run-start --name "$RUN_NAME" --lr $LR --epochs $EPOCHS)
 
-python train.py --lr 0.01 --output "$EXP_OUT"
+python train.py --lr $LR --epochs $EPOCHS --output "$EXP_OUT"
 
 exptrack run-finish $EXP_ID --metrics "$EXP_OUT/results.json"
 ```
@@ -105,11 +107,13 @@ exptrack run-finish $EXP_ID --metrics "$EXP_OUT/results.json"
 **In your terminal:**
 
 ```bash
-bash run.sh                       # run it
-exptrack show $EXP_ID             # see what was captured
+LR=0.01 EPOCHS=50 RUN_NAME=baseline bash run.sh
+LR=0.1  EPOCHS=100 RUN_NAME=higher-lr bash run.sh
+
+exptrack ls                       # see both runs
 ```
 
-`eval $(exptrack run-start ...)` sets `$EXP_ID`, `$EXP_NAME`, and `$EXP_OUT` inside your script. Files written to `$EXP_OUT` are auto-discovered as artifacts. On failure, call `exptrack run-fail $EXP_ID "reason"`.
+`eval $(exptrack run-start ...)` creates a new experiment and sets three variables inside your script: `$EXP_ID` (experiment ID), `$EXP_NAME` (run name), and `$EXP_OUT` (output directory — files written here are auto-discovered as artifacts). Each run of the script creates a separate experiment. On failure, call `exptrack run-fail $EXP_ID "reason"`.
 
 **SLURM** — submit with `sbatch run.sh`. SLURM env vars are captured automatically:
 
