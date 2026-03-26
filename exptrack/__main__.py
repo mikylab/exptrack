@@ -192,23 +192,10 @@ _SKIP_DIRS = {'.exptrack', '.git', '__pycache__', 'node_modules', '.venv', 'venv
 def _auto_detect_outputs(exp, start_ts):
     """Scan working directory for files created during the run and log them.
 
-    Skips the outputs directory (managed by savefig patch / save_output) and
-    deduplicates against artifacts already registered on this experiment so
-    the same file is never logged twice.
+    Deduplicates against artifacts already registered on this experiment
+    (e.g. by the savefig patch) so the same file is never logged twice.
     """
-    from . import config as _cfg
-
-    # Determine the outputs directory name so we can skip it — files there
-    # are copies managed by the savefig patch or save_output() and were
-    # already registered as artifacts when they were created.
-    try:
-        conf = _cfg.load()
-        outputs_dir = conf.get("outputs_dir", "outputs")
-    except Exception as e:
-        print(f"[exptrack] warning: could not load config for outputs dir: {e}", file=sys.stderr)
-        outputs_dir = "outputs"
-
-    skip_dirs = _SKIP_DIRS | {outputs_dir}
+    skip_dirs = _SKIP_DIRS
 
     # Collect paths already registered so we don't double-log
     already_registered: set[str] = set()
