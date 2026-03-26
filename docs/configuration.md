@@ -1,6 +1,6 @@
 # Configuration
 
-expTrack stores config in `.exptrack/config.json`. Safe to commit — no secrets.
+exptrack stores config in `.exptrack/config.json`. Safe to commit — no secrets.
 
 ```jsonc
 {
@@ -46,4 +46,4 @@ expTrack stores config in `.exptrack/config.json`. Safe to commit — no secrets
 }
 ```
 
-All values are optional — expTrack uses sensible defaults. You only need to add the keys you want to change.
+All values are optional — exptrack uses sensible defaults. You only need to add the keys you want to change.
