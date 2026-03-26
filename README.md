@@ -1,4 +1,4 @@
-# expTrack
+# exptrack
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
@@ -22,7 +22,7 @@ exptrack ui        # open the web dashboard
 
 ## Dashboard
 
-<img width="1393" height="705" alt="expTrack dashboard" src="https://github.com/user-attachments/assets/7e41bf20-a428-40cf-a732-5e9a0cd8123f" />
+<img width="1392" height="678" alt="exptrack dashboard" src="https://github.com/user-attachments/assets/5e388fec-a884-4bcc-a2ec-7f24ed2ff89b" />
 
 Filter, compare, tag, and explore experiments from a local web UI. Runs on localhost with no accounts or internet needed.
 
@@ -54,7 +54,7 @@ Filter, compare, tag, and explore experiments from a local web UI. Runs on local
 exptrack run train.py --lr 0.01 --epochs 20
 ```
 
-Your script needs no modifications. expTrack captures argparse parameters, git state, code changes, and `plt.savefig()` artifacts automatically.
+Your script needs no modifications. exptrack captures argparse parameters, git state, code changes, and `plt.savefig()` artifacts automatically.
 
 To log metrics, use the injected `__exptrack__` global:
 
