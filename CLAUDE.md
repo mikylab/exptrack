@@ -69,7 +69,7 @@ exptrack/
     naming.py                 Run name generation ({script}__{params}__{date}_{uid})
     hashing.py                File integrity hashing (SHA-256, partial for large files)
     git.py                    Git branch/commit/diff capture
-    artifact_protection.py    Copy old artifacts to outputs/ on path conflict (preserves originals)
+
   capture/
     __init__.py               Re-exports capture modules
     argparse_patch.py         Patches parse_args() and parse_known_args()
@@ -159,7 +159,7 @@ exptrack/
 - **stdout/stderr separation**: Shell pipeline commands (`run-start`) output `export` statements to stdout so `eval $()` works; all status messages go to stderr
 - **Auto artifact linking**: `plt.savefig()` is monkey-patched so saved plots auto-register as artifacts. Figures saved before experiment creation are buffered and flushed
 - **Auto output detection**: After a script finishes, `_auto_detect_outputs` scans the working directory for new files (images, models, data) created during the run and registers them as artifacts. Deduplicates against already-registered artifacts. Recognizes `.pt`, `.pth`, `.ckpt`, `.safetensors`, `.h5`, `.onnx`, `.pkl`, and other common ML file types
-- **Artifact protection**: On rerun, old artifacts at conflicting paths are **copied** (not moved) to `outputs/<run_name>/` to prevent data loss. Originals are preserved so resume workflows can find their checkpoints
+- **No-copy artifact tracking**: Artifacts are tracked by reference (path + hash in DB) — exptrack never copies or moves user files. Resume workflows and large checkpoint directories are unaffected
 - **Plugin system**: Plugins loaded dynamically from `exptrack.plugins.<name>`, each module exports `plugin_class`. 4 lifecycle hooks
 - **Per-project storage**: DB + notebook history in `.exptrack/` (gitignored), config.json is committable
 - **Inline editing**: All editable fields (name, tags, notes) support double-click inline editing in dashboard — no modal prompts
@@ -195,7 +195,6 @@ Indexed on: metrics(exp_id, key), params(exp_id), artifacts(exp_id), timeline(ex
   "max_git_diff_kb": 256,
   "artifact_strategy": "reference",
   "hash_max_mb": 500,
-  "protect_on_rerun": true,
   "metric_keep_every": 1,
   "metric_max_points": 500,
   "timezone": "",
