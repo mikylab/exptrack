@@ -44,6 +44,15 @@ If your script uses a different flag (e.g. `--continue`, `--load-checkpoint`), a
 { "resume_flags": ["--resume", "--continue", "--load-checkpoint"] }
 ```
 
+Your output directory flag name doesn't matter (`--output_dir`, `--results_directory`, etc.) — exptrack doesn't look at it. It finds new files by scanning the working directory after the run finishes, regardless of where they were saved.
+
+**What's visible after a resume:**
+
+- A `resume` event in the timeline (visible in `exptrack timeline <id>` and the dashboard Timeline tab) showing the command that triggered it
+- Metrics from all runs plotted on a single chart — step numbers continue seamlessly
+- Artifacts from all runs listed together
+- Updated params if the resumed run changed any values (e.g. `--epochs 100` overwrites the original `--epochs 50`)
+
 ## Storage Design
 
 - **Diff-only** — script changes are diffed against `git HEAD`; notebooks store only cell diffs and variable change hashes. No full-source copies.

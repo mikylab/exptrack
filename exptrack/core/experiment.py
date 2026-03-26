@@ -173,6 +173,10 @@ class Experiment:
         conn.execute("UPDATE experiments SET status='running', updated_at=? WHERE id=?",
                      (datetime.now(timezone.utc).isoformat(), exp.id))
         conn.commit()
+
+        # Log a timeline event so the dashboard shows when/why this was resumed
+        exp.log_event("resume", key="command", value=exp._build_command())
+
         print(f"[exptrack] resumed: {exp.name}  ({exp.id[:6]})", file=sys.stderr)
         return exp
 
