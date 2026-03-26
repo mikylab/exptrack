@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**expTrack** is a local-first, zero-friction Python experiment tracker for ML workflows. It automatically captures parameters, metrics, and git state by monkey-patching argparse and IPython hooks — no code changes required in user scripts. Uses SQLite (WAL mode) for storage with no external dependencies (stdlib only).
+**exptrack** is a local-first, zero-friction Python experiment tracker for ML workflows. It automatically captures parameters, metrics, and git state by monkey-patching argparse and IPython hooks — no code changes required in user scripts. Uses SQLite (WAL mode) for storage with no external dependencies (stdlib only).
 
 ## Installation
 
