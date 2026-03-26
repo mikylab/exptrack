@@ -51,10 +51,11 @@ class _TeeWriter:
     def __getattr__(self, name):
         return getattr(self._original, name)
 
-def main():
+def main(resume=None):
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print("Usage: python -m exptrack <script.py> [args...]")
         print("       exptrack run <script.py> [args...]")
+        print("       exptrack run <script.py> --resume [EXP_ID]")
         print()
         print("Wraps script.py with full experiment tracking.")
         print("No changes to your script needed.")
@@ -77,8 +78,14 @@ def main():
 
     conf = cfg.load()
 
-    # Start the experiment before anything in the script runs
-    exp = Experiment(script=str(script_path), _caller_depth=0)
+    # Resume an existing experiment or start a new one
+    if resume:
+        if resume == "latest":
+            exp = _find_latest_experiment(str(script_path))
+        else:
+            exp = Experiment.resume(resume)
+    else:
+        exp = Experiment(script=str(script_path), _caller_depth=0)
 
     # Snapshot the script source and diff against previous runs
     capture_script_snapshot(exp, str(script_path))
@@ -109,8 +116,9 @@ def main():
             else:
                 out_dir = Path(out_dir)
                 out_dir.mkdir(parents=True, exist_ok=True)
-            stdout_log = open(out_dir / "stdout.log", "w")
-            stderr_log = open(out_dir / "stderr.log", "w")
+            log_mode = "a" if resume else "w"
+            stdout_log = open(out_dir / "stdout.log", log_mode)
+            stderr_log = open(out_dir / "stderr.log", log_mode)
             log_files = [stdout_log, stderr_log]
             sys.stdout = _TeeWriter(sys.stdout, stdout_log)
             sys.stderr = _TeeWriter(sys.stderr, stderr_log)
@@ -156,6 +164,26 @@ def main():
         # Restore sys.path[0] so exptrack's own imports aren't affected
         if original_path0 is not None and sys.path:
             sys.path[0] = original_path0
+
+
+def _find_latest_experiment(script_path: str):
+    """Find and resume the most recent experiment for this script."""
+    from .core import Experiment
+    from .core.db import get_db
+
+    resolved = str(Path(script_path).resolve())
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT id FROM experiments
+               WHERE script=?
+               ORDER BY created_at DESC LIMIT 1""",
+            (resolved,)
+        ).fetchone()
+    if not row:
+        print(f"[exptrack] No previous experiment found for {Path(script_path).name}, starting new",
+              file=sys.stderr)
+        return Experiment(script=script_path, _caller_depth=0)
+    return Experiment.resume(row["id"])
 
 
 def _restore_streams(log_files):

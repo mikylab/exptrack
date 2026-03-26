@@ -143,6 +143,66 @@ class Experiment:
 
         print(f"[exptrack] {self.name}  ({self.id[:6]})", file=sys.stderr)
 
+    @classmethod
+    def resume(cls, exp_id: str) -> "Experiment":
+        """Resume a previously finished or failed experiment.
+
+        Reopens the experiment by setting status back to 'running' and
+        returns an Experiment object that appends to the same timeline,
+        metrics, and artifacts.  The original created_at, params, and
+        git state are preserved.
+        """
+        from .queries import find_experiment
+        conn = get_db()
+        row = find_experiment(conn, exp_id,
+            "id, name, status, script, git_branch, git_commit, git_diff, "
+            "hostname, python_ver, notes, tags, created_at, output_dir, project")
+        if not row:
+            raise ValueError(f"Experiment '{exp_id}' not found")
+
+        exp = object.__new__(cls)
+        exp.id = row["id"]
+        exp.name = row["name"]
+        exp.script = row["script"] or ""
+        exp.git_branch = row["git_branch"] or ""
+        exp.git_commit = row["git_commit"] or ""
+        exp.git_diff = row["git_diff"] or ""
+        exp.hostname = row["hostname"] or ""
+        exp.python_ver = row["python_ver"] or ""
+        exp.notes = row["notes"] or ""
+        exp.tags = json.loads(row["tags"] or "[]")
+        exp.created_at = row["created_at"]
+        exp.project = row["project"] or ""
+        exp.status = "running"
+        exp._start = time.time()
+        exp._finished = False
+        exp._output_dir = row["output_dir"] or ""
+        exp._thin_every = None
+        exp._snapshot_hash = ""
+
+        # Load existing params
+        params_rows = conn.execute(
+            "SELECT key, value FROM params WHERE exp_id=?", (exp.id,)
+        ).fetchall()
+        exp._params = {r["key"]: json.loads(r["value"]) for r in params_rows}
+
+        # Resume timeline seq from where we left off
+        max_seq = conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM timeline WHERE exp_id=?",
+            (exp.id,)
+        ).fetchone()[0]
+        exp._timeline_seq = max_seq
+
+        # Mark as running again
+        conn.execute(
+            "UPDATE experiments SET status='running', updated_at=? WHERE id=?",
+            (datetime.now(timezone.utc).isoformat(), exp.id)
+        )
+        conn.commit()
+
+        print(f"[exptrack] resumed: {exp.name}  ({exp.id[:6]})", file=sys.stderr)
+        return exp
+
     @staticmethod
     def _build_command() -> str:
         """Build a clean command string from sys.argv.

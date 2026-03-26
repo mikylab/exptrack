@@ -25,7 +25,7 @@ def cmd_run(args):
     script = args.script
     sys.argv = ["exptrack", script, *args.script_args]
     from .. import __main__ as m
-    m.main()
+    m.main(resume=getattr(args, "resume", None))
 
 
 def cmd_ui(args):
