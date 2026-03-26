@@ -5,8 +5,8 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) in the project root for full guideline
 ## Quick Setup
 
 ```bash
-git clone https://github.com/mikylab/expTrack.git
-cd expTrack
+git clone https://github.com/mikylab/expTfrack.git
+cd exptrack
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
