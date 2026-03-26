@@ -82,11 +82,11 @@ def protect_previous_artifacts(new_exp_id: str) -> list[str]:
                     counter += 1
 
             try:
-                shutil.move(str(fp), str(dest))
+                shutil.copy2(str(fp), str(dest))
             except OSError:
                 continue
 
-            # Update the artifact record to point to the new location
+            # Update the artifact record to point to the archived copy
             conn.execute(
                 "UPDATE artifacts SET path=? WHERE id=?",
                 (str(dest.resolve()), row["id"])

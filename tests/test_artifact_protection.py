@@ -105,7 +105,7 @@ def test_protection_archives_on_rerun():
         archived = protect_previous_artifacts(exp2.id)
 
         assert len(archived) == 1, f"Expected 1 archived, got {len(archived)}"
-        assert not ckpt_file.exists(), "Original file should have been moved"
+        assert ckpt_file.exists(), "Original file should be preserved (copied, not moved)"
 
         # Check DB: run 1's artifact path updated to archived location
         with get_db() as conn:
@@ -162,7 +162,7 @@ def test_cross_script_protection():
         archived = protect_previous_artifacts(exp_b.id)
 
         assert len(archived) == 1, f"Expected 1 archived, got {len(archived)}"
-        assert not results.exists(), "Original should be moved"
+        assert results.exists(), "Original should be preserved (copied, not moved)"
 
         # Verify DB updated
         with get_db() as conn:
