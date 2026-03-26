@@ -132,23 +132,15 @@ def _register_and_protect(exp, orig_path, fig_title=""):
     except Exception as e:
         print(f"[exptrack] warning: could not log artifact event: {e}", file=sys.stderr)
 
-    # Copy the file to the experiment's output directory so it's protected
-    # from being overwritten by subsequent saves to the same path.
-    # Each save gets a unique name so re-running a notebook cell preserves
-    # every version (e.g. loss.png, loss_1.png, loss_2.png).
+    # Copy the file to the experiment's output directory so it survives
+    # across experiments (each exp gets its own outputs/<name>/ folder).
+    # Within a single experiment, re-running a cell overwrites the copy —
+    # the timeline already tracks every cell execution.
     protected_path = orig_path
     try:
         from ..core.naming import output_path as _output_path
         dest = _output_path(orig_path.name, exp.name)
         if dest.resolve() != orig_path.resolve():
-            # Pick a unique name if dest already exists
-            if dest.exists():
-                stem = dest.stem
-                suffix = dest.suffix
-                counter = 1
-                while dest.exists():
-                    dest = dest.with_name(f"{stem}_{counter}{suffix}")
-                    counter += 1
             shutil.copy2(str(orig_path), str(dest))
             protected_path = dest
     except Exception as _e:
