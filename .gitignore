@@ -13,3 +13,6 @@ build/
 .exptrack/config.json
 .exptrack/backups/
 outputs/
+
+# other
+.DS_Store
