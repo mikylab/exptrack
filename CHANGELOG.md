@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [2.0.0] - 2026-03-26
+## [1.0.0] - 2026-03-26
 
 Initial public release.
 
@@ -69,5 +69,5 @@ Initial public release.
 - Artifact strategy, git diff size limits, naming conventions, auto-capture toggles
 - Non-finite metric values (NaN, Inf) silently dropped
 
-[Unreleased]: https://github.com/mikylab/exptrack/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/mikylab/exptrack/releases/tag/v2.0.0
+[Unreleased]: https://github.com/mikylab/exptrack/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/mikylab/exptrack/releases/tag/v1.0.0
