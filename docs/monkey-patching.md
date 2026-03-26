@@ -1,6 +1,6 @@
 # Monkey-Patching
 
-expTrack patches argparse and matplotlib to capture params and artifacts automatically. Here's how it works and what to watch out for.
+exptrack patches argparse and matplotlib to capture params and artifacts automatically. Here's how it works and what to watch out for.
 
 ## What Gets Patched
 
@@ -22,11 +22,11 @@ expTrack patches argparse and matplotlib to capture params and artifacts automat
 
 ## Known Limitations
 
-**Import order:** If your code caches a reference to `parse_args` before expTrack patches it, params won't be captured. Fix: use `exptrack run script.py` (patches before your code runs).
+**Import order:** If your code caches a reference to `parse_args` before exptrack patches it, params won't be captured. Fix: use `exptrack run script.py` (patches before your code runs).
 
 **One experiment per process:** The argparse patch captures into a single `Experiment`. For multiple experiments in one process, use `exp.log_params()` directly.
 
-**Non-argparse parsers:** Click, Fire, Typer, and manual `sys.argv` parsing won't trigger the argparse hook. expTrack falls back to `sys.argv` parsing, which handles `--key value` and `--key=value` but may miss framework-specific formats.
+**Non-argparse parsers:** Click, Fire, Typer, and manual `sys.argv` parsing won't trigger the argparse hook. exptrack falls back to `sys.argv` parsing, which handles `--key value` and `--key=value` but may miss framework-specific formats.
 
 **Notebook deferred start:** `%load_ext exptrack` installs hooks but defers experiment creation until the first real cell runs. The `%load_ext` cell itself is never tracked.
 
