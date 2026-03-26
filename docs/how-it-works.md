@@ -22,6 +22,28 @@ If your script doesn't use argparse, exptrack falls back to parsing raw `sys.arg
 
 `plt.savefig()` and `Figure.savefig()` are patched so saved figures are automatically copied to the experiment's output directory and registered as artifacts. Figures saved before the experiment starts are buffered and linked later.
 
+### Output files: auto-detection
+
+After a script finishes, exptrack scans the working directory for new files created during the run. Model checkpoints (`.pt`, `.pth`, `.ckpt`, `.safetensors`, `.h5`, `.onnx`), images, data files, and logs are registered as artifacts automatically. Files already registered (e.g. by the matplotlib patch) are not duplicated.
+
+Artifacts are tracked by reference — exptrack never copies or moves your files. Large checkpoint directories are unaffected.
+
+### Resume: auto-detection
+
+When `exptrack run` sees `--resume` (or any flag listed in `resume_flags` config) in the script's argv, it resumes the **latest experiment for that script** instead of creating a new one. All metrics, artifacts, and params aggregate into the same experiment ID. The timeline continues from where it left off, and stdout/stderr logs append.
+
+```bash
+# These two commands produce a single experiment with metrics from both runs
+exptrack run train.py --lr 0.01 --epochs 50
+exptrack run train.py --lr 0.01 --epochs 100 --resume --ckpt model.pt
+```
+
+If your script uses a different flag (e.g. `--continue`, `--load-checkpoint`), add it to `resume_flags` in `.exptrack/config.json`:
+
+```json
+{ "resume_flags": ["--resume", "--continue", "--load-checkpoint"] }
+```
+
 ## Storage Design
 
 - **Diff-only** — script changes are diffed against `git HEAD`; notebooks store only cell diffs and variable change hashes. No full-source copies.
