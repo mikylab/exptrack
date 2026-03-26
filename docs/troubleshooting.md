@@ -2,7 +2,7 @@
 
 ### `ModuleNotFoundError: No module named 'exptrack'`
 
-expTrack isn't installed in the Python environment you're using.
+exptrack isn't installed in the Python environment you're using.
 
 **Jupyter notebooks** often use a different Python than your shell:
 
@@ -29,7 +29,7 @@ exptrack init --here    # force current directory
 
 ### Experiments not showing up
 
-expTrack looks for `.exptrack/experiments.db` relative to the project root. If you run scripts from a different directory, it may create a separate `.exptrack/` elsewhere. Always run from within your project directory (where you ran `exptrack init`).
+exptrack looks for `.exptrack/experiments.db` relative to the project root. If you run scripts from a different directory, it may create a separate `.exptrack/` elsewhere. Always run from within your project directory (where you ran `exptrack init`).
 
 ### Params not captured
 
