@@ -2,9 +2,10 @@
 exptrack/core/artifact_protection.py — Pre-run conflict detection and archival
 
 Before a new run starts, checks if any artifacts from previous completed runs
-sit at paths that could be overwritten.  If so, moves the old file into
-``outputs/<old_run_name>/`` and updates the DB record, so the original is
-never silently lost.
+sit at paths that could be overwritten.  If so, copies the old file into
+``outputs/<old_run_name>/`` and updates the DB record to point there.
+The original file is preserved so resume workflows (e.g. loading a checkpoint)
+continue to work.
 
 Protection is project-wide (not per-script) so it catches cross-script
 conflicts and default-parameter saves regardless of which script created
@@ -22,7 +23,7 @@ from .naming import output_path
 
 
 def protect_previous_artifacts(new_exp_id: str) -> list[str]:
-    """Archive artifacts from earlier runs that would be overwritten.
+    """Copy artifacts from earlier runs to archival locations.
 
     Checks ALL completed/failed experiments in the project — not just runs
     of the same script — so that default-parameter saves and cross-script
@@ -30,6 +31,9 @@ def protect_previous_artifacts(new_exp_id: str) -> list[str]:
 
     Only considers artifacts whose paths are NOT already inside the managed
     ``outputs/`` directory (those are already run-namespaced).
+
+    Originals are preserved (copied, not moved) so that resume workflows
+    can still find checkpoint files at their expected paths.
 
     Returns a list of original paths that were archived.
     """
