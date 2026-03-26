@@ -166,7 +166,7 @@ with Experiment(params={"lr": 0.01, "optimizer": "adam"}) as exp:
 | **Artifacts** | `plt.savefig` + new files | `plt.savefig` | You log them | You log them |
 | **Status** | Automatic (done/failed) | You call `done()` | You call `run-finish` | Automatic with `with` |
 
-Metrics always need explicit logging. expTrack captures what you ran and how your code changed, but it can't decide which numbers matter to you.
+Metrics always need explicit logging. exptrack captures what you ran and how your code changed, but it can't decide which numbers matter to you.
 
 ---
 
@@ -178,18 +178,27 @@ exptrack ls                        # last 20 experiments
 exptrack show <id>                 # full details
 exptrack diff <id>                 # colorized git diff
 exptrack compare <id1> <id2>       # side-by-side comparison
+exptrack history <id>              # param/metric change history
+exptrack timeline <id>             # chronological event log
 
-# Tag and annotate
+# Tag, annotate, and organize
 exptrack tag <id> baseline
 exptrack note <id> "tried higher dropout, worse results"
+exptrack study <id> ablation-v2    # group into a study
+exptrack stage <id> 1 train        # assign a numbered stage
 
-# Clean up
+# Export (JSON, Markdown, CSV, TSV)
+exptrack export <id>               # JSON to stdout
+exptrack export <id> --format csv  # CSV
+exptrack export --all --format md  # bulk export
+
+# Clean up and maintenance
 exptrack rm <id>                   # delete one run
 exptrack clean                     # bulk-delete all failed runs
-
-# Export
-exptrack export <id>               # JSON to stdout
-exptrack export <id> --format md   # Markdown
+exptrack compact                   # strip git diffs to save space
+exptrack backup                    # backup the database
+exptrack restore <path>            # restore from backup
+exptrack storage                   # show DB size and stats
 ```
 
 ---
@@ -198,16 +207,20 @@ exptrack export <id> --format md   # Markdown
 
 ```bash
 exptrack ui          # opens http://localhost:7331
+exptrack ui --token secret   # with optional authentication
 ```
 
-- **Experiment list** with status filters, search, and sparkline charts inline
+- **Experiment list** with status filters, search, sparkline charts, and customizable columns (resize, show/hide)
 - **Detail view** with parameters, metrics, interactive charts, code changes, git diff, and a reproducible command with one-click copy
 - **Compare** experiments pair-wise (side-by-side with overlay charts) or across 3+ runs (bar charts)
 - **Timeline** showing cell executions, variable changes, and artifact creation (notebooks)
 - **Images** displayed in a gallery grid with lightbox and side-by-side/overlay/swipe comparison
-- **Data files** (CSV, JSON, JSONL) rendered as interactive sortable tables
-- **Inline editing** for names, tags, and notes (double-click to edit)
-- Tag autocomplete, timezone selector, bulk operations, and export (JSON/Markdown/Text)
+- **Data files** (CSV, JSON, JSONL, TSV) rendered as interactive sortable tables
+- **Toolbox** with a commands notepad (save and edit shell commands) and a todo list with due dates
+- **Manual experiment creation** for logging runs that weren't tracked automatically
+- **Inline editing** for names, tags, notes, studies, and stages (double-click to edit)
+- **Studies and stages** to organize multi-step pipelines, with highlight mode and filtering
+- Tag autocomplete, searchable filter dropdowns, timezone selector, bulk operations, and export (JSON/Markdown/CSV/TSV/Text)
 
 ---
 
@@ -215,11 +228,11 @@ exptrack ui          # opens http://localhost:7331
 
 ```bash
 # From GitHub
-pip install git+https://github.com/mikylab/expTrack.git
+pip install git+https://github.com/mikylab/exptrack.git
 
 # Local / development
-git clone https://github.com/mikylab/expTrack.git
-cd expTrack && pip install -e .
+git clone https://github.com/mikylab/exptrack.git
+cd exptrack && pip install -e .
 ```
 
 Only standard library dependencies. Requires Python 3.8+.

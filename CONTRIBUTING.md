@@ -43,7 +43,7 @@ ruff check exptrack/ tests/ --fix      # auto-fix
 
 ## Reporting Issues
 
-Open an issue at https://github.com/mikylab/expTrack/issues with:
+Open an issue at https://github.com/mikylab/exptrack/issues with:
 - What you expected vs. what happened
 - Steps to reproduce
 - Python version and OS
