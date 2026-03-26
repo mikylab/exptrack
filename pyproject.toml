@@ -28,9 +28,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mikylab/expTrack"
-Repository = "https://github.com/mikylab/expTrack"
-Issues = "https://github.com/mikylab/expTrack/issues"
+Homepage = "https://github.com/mikylab/exptrack"
+Repository = "https://github.com/mikylab/exptrack"
+Issues = "https://github.com/mikylab/exptrack/issues"
 
 [project.scripts]
 exptrack = "exptrack.cli:main"
