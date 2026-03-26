@@ -166,7 +166,7 @@ with Experiment(params={"lr": 0.01, "optimizer": "adam"}) as exp:
 | **Artifacts** | `plt.savefig` + new files | `plt.savefig` | You log them | You log them |
 | **Status** | Automatic (done/failed) | You call `done()` | You call `run-finish` | Automatic with `with` |
 
-Metrics always need explicit logging. expTrack captures what you ran and how your code changed, but it can't decide which numbers matter to you.
+Metrics always need explicit logging. exptrack captures what you ran and how your code changed, but it can't decide which numbers matter to you.
 
 ---
 
@@ -228,11 +228,11 @@ exptrack ui --token secret   # with optional authentication
 
 ```bash
 # From GitHub
-pip install git+https://github.com/mikylab/expTrack.git
+pip install git+https://github.com/mikylab/exptrack.git
 
 # Local / development
-git clone https://github.com/mikylab/expTrack.git
-cd expTrack && pip install -e .
+git clone https://github.com/mikylab/exptrack.git
+cd exptrack && pip install -e .
 ```
 
 Only standard library dependencies. Requires Python 3.8+.

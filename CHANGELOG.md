@@ -169,7 +169,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - exptrack import in Jupyter environments
 - `exptrack init` directory resolution
 
-[Unreleased]: https://github.com/mikylab/expTrack/compare/HEAD
-[2.0.0]: https://github.com/mikylab/expTrack/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/mikylab/expTrack/compare/v0.1.0...v1.0.0
-[0.1.0]: https://github.com/mikylab/expTrack/releases/tag/v0.1.0
+[Unreleased]: https://github.com/mikylab/exptrack/compare/HEAD
+[2.0.0]: https://github.com/mikylab/exptrack/compare/v1.0.0...v2.0.0
+[1.0.0]: https://github.com/mikylab/exptrack/compare/v0.1.0...v1.0.0
+[0.1.0]: https://github.com/mikylab/exptrack/releases/tag/v0.1.0
