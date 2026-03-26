@@ -59,7 +59,10 @@ def _capture_namespace(exp: Experiment, ns):
          if not k.startswith("_") and v is not None}
     if d:
         exp.log_params(d)
-        exp._rename(make_run_name(exp.script, exp._params))
+        # Don't rename resumed experiments — their name and output dir
+        # are already established and the script may depend on them.
+        if not getattr(exp, '_resumed', False):
+            exp._rename(make_run_name(exp.script, exp._params))
 
 
 def _capture_remaining(exp: Experiment, args: list[str]):

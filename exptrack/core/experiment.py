@@ -162,6 +162,7 @@ class Experiment:
         exp.tags = json.loads(row["tags"] or "[]")
         exp._output_dir = row["output_dir"] or ""
         exp.status, exp._finished, exp._start = "running", False, time.time()
+        exp._resumed = True
         exp._thin_every = exp._snapshot_hash = None
 
         exp._params = {r["key"]: json.loads(r["value"]) for r in conn.execute(
