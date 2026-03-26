@@ -1,12 +1,12 @@
-# Contributing to expTrack
+# Contributing to exptrack
 
 Thanks for your interest in contributing!
 
 ## Setup
 
 ```bash
-git clone https://github.com/mikylab/expTrack.git
-cd expTrack
+git clone https://github.com/mikylab/exptrack.git
+cd exptrack
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
