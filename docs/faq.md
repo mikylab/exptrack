@@ -1,8 +1,8 @@
 # FAQ
 
-### Does expTrack capture print output or stdout?
+### Does exptrack capture print output or stdout?
 
-expTrack does not capture stdout or stderr. Only explicitly logged metrics are stored. To capture terminal output, redirect to a file and register it:
+exptrack does not capture stdout or stderr. Only explicitly logged metrics are stored. To capture terminal output, redirect to a file and register it:
 
 ```bash
 exptrack run train.py 2>&1 | tee train.log
@@ -11,7 +11,7 @@ exptrack log-artifact <id> train.log --label "training log"
 
 ### What script format does it need?
 
-Any Python script works. If it uses **argparse**, all arguments are captured automatically. If not, expTrack falls back to parsing `sys.argv` flags (`--lr 0.01` → param `lr=0.01`). Click, Fire, Typer, and manual parsing all work.
+Any Python script works. If it uses **argparse**, all arguments are captured automatically. If not, exptrack falls back to parsing `sys.argv` flags (`--lr 0.01` → param `lr=0.01`). Click, Fire, Typer, and manual parsing all work.
 
 ### Can I edit runs after they finish?
 
@@ -47,7 +47,7 @@ If you use matplotlib, yes. `plt.savefig()` and `Figure.savefig()` are patched s
 
 ### Does it need internet?
 
-expTrack is fully local. The database is SQLite and the dashboard uses the standard library HTTP server. The dashboard loads Chart.js from a CDN for metric charts, but the rest of the UI works without it.
+exptrack is fully local. The database is SQLite and the dashboard uses the standard library HTTP server. The dashboard loads Chart.js from a CDN for metric charts, but the rest of the UI works without it.
 
 ### What's the performance overhead?
 
@@ -55,7 +55,7 @@ Minimal. Argparse patching adds microseconds to `parse_args()`. Git state captur
 
 ### Can I track across multiple machines?
 
-expTrack is single-machine by design. To aggregate results: use `exptrack export <id> --format json`, enable the [GitHub Sync plugin](plugins.md), or query the SQLite database directly.
+exptrack is single-machine by design. To aggregate results: use `exptrack export <id> --format json`, enable the [GitHub Sync plugin](plugins.md), or query the SQLite database directly.
 
 ### How do I compare experiments?
 
