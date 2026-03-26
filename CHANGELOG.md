@@ -12,13 +12,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Reproduce Save button now reads the current command from the DOM (works after inline edits) and includes experiment tags and study
 
 ### Added
-- Dashboard CSS and JS modularization: `static_parts/css/` (12 modules) and `static_parts/js/` (15 modules)
-- `exptrack compact` command to strip git diffs while keeping experiment results
+- Dashboard CSS and JS modularization: `static_parts/css/` (13 modules) and `static_parts/js/` (18 modules)
+- Toolbox panel with commands notepad (save, edit, copy shell commands) and todo list with due dates and filtering
+- In-app help/docs panel with full-page overlay
+- `exptrack compact` command to strip git diffs, cell sources, and timeline diffs (supports `--deep`, `--dry-run`, `--older-than`)
 - `exptrack backup` and `exptrack restore` commands for database backup/recovery
+- `exptrack storage` command showing DB size, output size, and row counts
+- `exptrack study`, `exptrack unstudy`, `exptrack stage`, and `exptrack delete-study` CLI commands
+- `exptrack create` command for manual experiment creation from the CLI
 - Manual experiment creation modal in dashboard
 - Image comparison features: side-by-side, overlay, and swipe modes
 - Multi-compare bar charts and overlay line charts for 2+ experiments
-- Reproduce command box with one-click copy in experiment detail
+- Reproduce command box with one-click copy and Save-to-Commands in experiment detail
+- Data file rendering: CSV, TSV, JSON, and JSONL files displayed as interactive sortable tables
+- CSV and TSV export formats for CLI (`exptrack export --format csv`) and dashboard
+- Searchable filter dropdowns for tags, studies, and image/log file types
+- Study/stage inheritance via environment variables for multi-script wrappers
 - Unified metrics storage: manual results and auto-captured metrics in one table
 - Metric namespace prefixes, abbreviations, and group collapse
 - Click-to-delete chart points and double-click metric rename
@@ -34,10 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Compare button for quick experiment comparison from list view
 - Output directory artifact scanning
 - Optional dashboard authentication via `EXPTRACK_DASHBOARD_TOKEN` env var or `dashboard_token` config
+- Shell pipeline examples: `shell_script_example.sh`, `pipeline_example.sh`, `pipeline_multistep.sh`, `pipeline_wrapper.sh`, `slurm_job.sh`
 - Consolidated `app` state object in dashboard JS for cleaner state management
 - `resetAppState()` helper to prevent memory leaks from stale chart instances
 - `docs/monkey-patching.md` explaining how argparse/matplotlib capture works
-- Pytest test suite: `test_experiment.py`, `test_db.py`, `test_cli.py` with shared fixtures
+- Pytest test suite: `test_experiment.py`, `test_db.py`, `test_cli.py`, `test_pipeline_shell.py` with shared fixtures
 
 ### Changed
 - Dashboard modularized: `static.py` is now a thin assembler, CSS in `static_parts/css/`, JS in `static_parts/js/`, routes in `routes/`
@@ -159,7 +169,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - exptrack import in Jupyter environments
 - `exptrack init` directory resolution
 
-[Unreleased]: https://github.com/mikylab/expTrack/compare/HEAD
-[2.0.0]: https://github.com/mikylab/expTrack/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/mikylab/expTrack/compare/v0.1.0...v1.0.0
-[0.1.0]: https://github.com/mikylab/expTrack/releases/tag/v0.1.0
+[Unreleased]: https://github.com/mikylab/exptrack-dev/compare/HEAD
+[2.0.0]: https://github.com/mikylab/exptrack-dev/compare/v1.0.0...v2.0.0
+[1.0.0]: https://github.com/mikylab/exptrack-dev/compare/v0.1.0...v1.0.0
+[0.1.0]: https://github.com/mikylab/exptrack-dev/releases/tag/v0.1.0
