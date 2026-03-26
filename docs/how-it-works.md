@@ -4,9 +4,9 @@
 
 ### Scripts: argparse patching
 
-When you run `exptrack run train.py --lr 0.01`, expTrack patches `ArgumentParser.parse_args()` *before* your script starts. When your script calls `parse_args()`, the parsed arguments are logged as params. The patch is removed when the script exits.
+When you run `exptrack run train.py --lr 0.01`, exptrack patches `ArgumentParser.parse_args()` *before* your script starts. When your script calls `parse_args()`, the parsed arguments are logged as params. The patch is removed when the script exits.
 
-If your script doesn't use argparse, expTrack falls back to parsing raw `sys.argv` (handles `--key value` and `--key=value`).
+If your script doesn't use argparse, exptrack falls back to parsing raw `sys.argv` (handles `--key value` and `--key=value`).
 
 ### Notebooks: IPython hooks
 
@@ -43,9 +43,9 @@ If your script doesn't use argparse, expTrack falls back to parsing raw `sys.arg
 | `cell_lineage` | Content-addressed notebook cell history |
 | `code_baselines` | Position-based cell baselines |
 
-## expTrack vs. TensorBoard
+## exptrack vs. TensorBoard
 
-| | expTrack | TensorBoard |
+| | exptrack | TensorBoard |
 |---|---|---|
 | **Dependencies** | Zero | TensorFlow + protobuf |
 | **Code changes** | None | Must add `SummaryWriter` calls |
@@ -54,4 +54,4 @@ If your script doesn't use argparse, expTrack falls back to parsing raw `sys.arg
 | **Experiment mgmt** | Built-in CLI: ls, compare, tag, rm | Viewer only |
 | **Shell/SLURM** | First-class | Not designed for it |
 
-They're complementary — use expTrack for "what code/params produced this run" and TensorBoard for rich visualizations.
+They're complementary — use exptrack for "what code/params produced this run" and TensorBoard for rich visualizations.
