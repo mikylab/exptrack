@@ -134,11 +134,21 @@ def _register_and_protect(exp, orig_path, fig_title=""):
 
     # Copy the file to the experiment's output directory so it's protected
     # from being overwritten by subsequent saves to the same path.
+    # Each save gets a unique name so re-running a notebook cell preserves
+    # every version (e.g. loss.png, loss_1.png, loss_2.png).
     protected_path = orig_path
     try:
         from ..core.naming import output_path as _output_path
         dest = _output_path(orig_path.name, exp.name)
         if dest.resolve() != orig_path.resolve():
+            # Pick a unique name if dest already exists
+            if dest.exists():
+                stem = dest.stem
+                suffix = dest.suffix
+                counter = 1
+                while dest.exists():
+                    dest = dest.with_name(f"{stem}_{counter}{suffix}")
+                    counter += 1
             shutil.copy2(str(orig_path), str(dest))
             protected_path = dest
     except Exception as _e:
