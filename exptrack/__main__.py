@@ -55,10 +55,10 @@ def main(resume=None):
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print("Usage: python -m exptrack <script.py> [args...]")
         print("       exptrack run <script.py> [args...]")
-        print("       exptrack run <script.py> --resume [EXP_ID]")
         print()
         print("Wraps script.py with full experiment tracking.")
         print("No changes to your script needed.")
+        print("Auto-resumes when --resume is in the script's args.")
         sys.exit(0)
 
     script_path = Path(sys.argv[1]).resolve()
@@ -78,7 +78,16 @@ def main(resume=None):
 
     conf = cfg.load()
 
-    # Resume an existing experiment or start a new one
+    # Auto-detect resume: check if the script's args contain --resume
+    # (or a configurable set of flags), and if so resume the latest
+    # experiment for this script instead of creating a new one.
+    # The resume flag can also be passed explicitly from the CLI layer.
+    if not resume:
+        resume_flags = set(conf.get("resume_flags", ["--resume"]))
+        script_args = sys.argv[1:]  # everything after the script path
+        if any(arg in resume_flags for arg in script_args):
+            resume = "latest"
+
     if resume:
         if resume == "latest":
             exp = _find_latest_experiment(str(script_path))

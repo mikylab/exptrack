@@ -106,9 +106,6 @@ def main():
     # ── Python script wrapping ────────────────────────────────────────────────
     p_run = sub.add_parser("run", help="Run a Python script with tracking")
     p_run.add_argument("script")
-    p_run.add_argument("--resume", nargs="?", const="latest", default=None,
-                        metavar="EXP_ID",
-                        help="Resume a previous experiment (default: latest for this script)")
     p_run.add_argument("script_args", nargs=argparse.REMAINDER)
 
     # ── Shell / SLURM pipeline commands ──────────────────────────────────────
