@@ -1,6 +1,6 @@
 # Examples
 
-Ready-to-run scripts showing different ways to use expTrack.
+Ready-to-run scripts showing different ways to use exptrack.
 
 ## Setup
 
