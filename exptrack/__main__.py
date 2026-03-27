@@ -51,13 +51,14 @@ class _TeeWriter:
     def __getattr__(self, name):
         return getattr(self._original, name)
 
-def main():
+def main(resume=None):
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print("Usage: python -m exptrack <script.py> [args...]")
         print("       exptrack run <script.py> [args...]")
         print()
         print("Wraps script.py with full experiment tracking.")
         print("No changes to your script needed.")
+        print("Auto-resumes when --resume is in the script's args.")
         sys.exit(0)
 
     script_path = Path(sys.argv[1]).resolve()
@@ -77,8 +78,23 @@ def main():
 
     conf = cfg.load()
 
-    # Start the experiment before anything in the script runs
-    exp = Experiment(script=str(script_path), _caller_depth=0)
+    # Auto-detect resume: check if the script's args contain --resume
+    # (or a configurable set of flags), and if so resume the latest
+    # experiment for this script instead of creating a new one.
+    # The resume flag can also be passed explicitly from the CLI layer.
+    if not resume:
+        resume_flags = set(conf.get("resume_flags", ["--resume"]))
+        script_args = sys.argv[1:]  # everything after the script path
+        if any(arg in resume_flags for arg in script_args):
+            resume = "latest"
+
+    if resume:
+        if resume == "latest":
+            exp = _find_latest_experiment(str(script_path))
+        else:
+            exp = Experiment.resume(resume)
+    else:
+        exp = Experiment(script=str(script_path), _caller_depth=0)
 
     # Snapshot the script source and diff against previous runs
     capture_script_snapshot(exp, str(script_path))
@@ -93,14 +109,6 @@ def main():
 
     # Patch matplotlib.savefig so saved plots auto-register as artifacts
     patch_savefig(exp)
-
-    # Protect artifacts from previous runs that might be overwritten
-    if conf.get("protect_on_rerun", True):
-        from .core.artifact_protection import protect_previous_artifacts
-        protected = protect_previous_artifacts(exp.id)
-        if protected:
-            print(f"[exptrack] Archived {len(protected)} artifact(s) from previous runs",
-                  file=sys.stderr)
 
     # Record start time for auto-detecting new output files
     start_ts = exp._start
@@ -117,8 +125,9 @@ def main():
             else:
                 out_dir = Path(out_dir)
                 out_dir.mkdir(parents=True, exist_ok=True)
-            stdout_log = open(out_dir / "stdout.log", "w")
-            stderr_log = open(out_dir / "stderr.log", "w")
+            log_mode = "a" if resume else "w"
+            stdout_log = open(out_dir / "stdout.log", log_mode)
+            stderr_log = open(out_dir / "stderr.log", log_mode)
             log_files = [stdout_log, stderr_log]
             sys.stdout = _TeeWriter(sys.stdout, stdout_log)
             sys.stderr = _TeeWriter(sys.stderr, stderr_log)
@@ -166,6 +175,26 @@ def main():
             sys.path[0] = original_path0
 
 
+def _find_latest_experiment(script_path: str):
+    """Find and resume the most recent experiment for this script."""
+    from .core import Experiment
+    from .core.db import get_db
+
+    resolved = str(Path(script_path).resolve())
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT id FROM experiments
+               WHERE script=?
+               ORDER BY created_at DESC LIMIT 1""",
+            (resolved,)
+        ).fetchone()
+    if not row:
+        print(f"[exptrack] No previous experiment found for {Path(script_path).name}, starting new",
+              file=sys.stderr)
+        return Experiment(script=script_path, _caller_depth=0)
+    return Experiment.resume(row["id"])
+
+
 def _restore_streams(log_files):
     """Restore original stdout/stderr and close log files."""
     if isinstance(sys.stdout, _TeeWriter):
@@ -192,23 +221,10 @@ _SKIP_DIRS = {'.exptrack', '.git', '__pycache__', 'node_modules', '.venv', 'venv
 def _auto_detect_outputs(exp, start_ts):
     """Scan working directory for files created during the run and log them.
 
-    Skips the outputs directory (managed by savefig patch / save_output) and
-    deduplicates against artifacts already registered on this experiment so
-    the same file is never logged twice.
+    Deduplicates against artifacts already registered on this experiment
+    (e.g. by the savefig patch) so the same file is never logged twice.
     """
-    from . import config as _cfg
-
-    # Determine the outputs directory name so we can skip it — files there
-    # are copies managed by the savefig patch or save_output() and were
-    # already registered as artifacts when they were created.
-    try:
-        conf = _cfg.load()
-        outputs_dir = conf.get("outputs_dir", "outputs")
-    except Exception as e:
-        print(f"[exptrack] warning: could not load config for outputs dir: {e}", file=sys.stderr)
-        outputs_dir = "outputs"
-
-    skip_dirs = _SKIP_DIRS | {outputs_dir}
+    skip_dirs = _SKIP_DIRS
 
     # Collect paths already registered so we don't double-log
     already_registered: set[str] = set()

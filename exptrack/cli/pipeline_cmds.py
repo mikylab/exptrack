@@ -202,14 +202,38 @@ def cmd_run_start(args):
     if not calling_script:
         calling_script = "exptrack run-start " + " ".join(args.params)
 
-    exp = Experiment(
-        name=name or make_run_name(naming_hint, params),
-        params=params,
-        tags=tags,
-        notes=notes,
-        script=calling_script,
-        _caller_depth=0,
-    )
+    # Resume existing experiment or start a new one
+    resume_id = getattr(args, "resume", None)
+    if resume_id:
+        if resume_id == "latest":
+            # Find latest experiment for this script
+            resolved_script = str(Path(calling_script).resolve()) if Path(calling_script).is_file() else calling_script
+            row = get_db().execute(
+                "SELECT id FROM experiments WHERE script=? ORDER BY created_at DESC LIMIT 1",
+                (resolved_script,)
+            ).fetchone()
+            if not row:
+                print(f"[exptrack] No previous experiment found, starting new", file=sys.stderr)
+                resume_id = None
+            else:
+                resume_id = row["id"]
+        if resume_id:
+            exp = Experiment.resume(resume_id)
+            # Update params from this invocation
+            if params:
+                exp.log_params(params)
+        else:
+            resume_id = None  # fall through to new experiment
+
+    if not resume_id:
+        exp = Experiment(
+            name=name or make_run_name(naming_hint, params),
+            params=params,
+            tags=tags,
+            notes=notes,
+            script=calling_script,
+            _caller_depth=0,
+        )
 
     conf = cfg.load()
     out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name

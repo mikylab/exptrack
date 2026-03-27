@@ -9,6 +9,7 @@ Setup
 
 Script Tracking
   exptrack run script.py [args]     Run script with automatic param/artifact capture
+                                    Auto-resumes if script args contain --resume (configurable)
 
 Shell / SLURM Pipeline (works with any language — Python, C++, Julia, R, shell)
   exptrack run-start [--key val]    Start experiment, print env vars for eval $()
@@ -18,6 +19,7 @@ Shell / SLURM Pipeline (works with any language — Python, C++, Julia, R, shell
                      [--stage-name] Stage label (train, eval, etc.)
                      [--tags t1 t2] Add tags
                      [--notes text] Add notes
+                     [--resume [ID]] Resume previous experiment (default: latest for script)
   exptrack run-finish <id>          Mark done (--metrics file.json to log from JSON)
                       [--params K=V] Add extra params at finish time
   exptrack run-fail <id> [reason]   Mark failed

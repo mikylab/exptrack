@@ -23,6 +23,7 @@ exptrack init          # initialize in your project
 | `pipeline_multistep.sh` | `bash pipeline_multistep.sh` | Multi-step: train → test → analyze |
 | `pipeline_wrapper.sh` | `bash pipeline_wrapper.sh` | Wrapper: auto-inherited study + stage |
 | `slurm_job.sh` | `sbatch slurm_job.sh` | SLURM job script with error trapping |
+| `resume_training.py` | `exptrack run resume_training.py --epochs 5` then `exptrack run resume_training.py --epochs 10 --resume` | Resume a run — metrics aggregate into one experiment |
 
 ## View Results
 

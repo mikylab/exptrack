@@ -143,6 +143,44 @@ class Experiment:
 
         print(f"[exptrack] {self.name}  ({self.id[:6]})", file=sys.stderr)
 
+    @classmethod
+    def resume(cls, exp_id: str) -> "Experiment":
+        """Reopen a finished/failed experiment to continue it."""
+        from .queries import find_experiment
+        conn = get_db()
+        row = find_experiment(conn, exp_id,
+            "id, name, script, git_branch, git_commit, git_diff, "
+            "hostname, python_ver, notes, tags, created_at, output_dir, project")
+        if not row:
+            raise ValueError(f"Experiment '{exp_id}' not found")
+
+        exp = object.__new__(cls)
+        for col in ("id", "name", "script", "git_branch", "git_commit",
+                     "git_diff", "hostname", "python_ver", "notes",
+                     "created_at", "project"):
+            setattr(exp, col, row[col] or "")
+        exp.tags = json.loads(row["tags"] or "[]")
+        exp._output_dir = row["output_dir"] or ""
+        exp.status, exp._finished, exp._start = "running", False, time.time()
+        exp._resumed = True
+        exp._thin_every = exp._snapshot_hash = None
+
+        exp._params = {r["key"]: json.loads(r["value"]) for r in conn.execute(
+            "SELECT key, value FROM params WHERE exp_id=?", (exp.id,)).fetchall()}
+        exp._timeline_seq = conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM timeline WHERE exp_id=?",
+            (exp.id,)).fetchone()[0]
+
+        conn.execute("UPDATE experiments SET status='running', updated_at=? WHERE id=?",
+                     (datetime.now(timezone.utc).isoformat(), exp.id))
+        conn.commit()
+
+        # Log a timeline event so the dashboard shows when/why this was resumed
+        exp.log_event("resume", key="command", value=exp._build_command())
+
+        print(f"[exptrack] resumed: {exp.name}  ({exp.id[:6]})", file=sys.stderr)
+        return exp
+
     @staticmethod
     def _build_command() -> str:
         """Build a clean command string from sys.argv.

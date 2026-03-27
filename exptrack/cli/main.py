@@ -120,6 +120,9 @@ def main():
     p_rs.add_argument("--stage",  type=int, default=None, help="Stage number (e.g. 1, 2, 3)")
     p_rs.add_argument("--stage-name", default=None, help="Stage label (e.g. preprocess, train, eval)")
     p_rs.add_argument("--notes",  default="", help="Notes")
+    p_rs.add_argument("--resume", nargs="?", const="latest", default=None,
+                        metavar="EXP_ID",
+                        help="Resume a previous experiment instead of starting new")
     p_rs.add_argument("params",   nargs=argparse.REMAINDER,
                       help="Params as --key value pairs, e.g. --lr 0.01 --epochs 50")
 
