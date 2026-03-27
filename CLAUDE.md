@@ -39,6 +39,20 @@ python train.py; exptrack run-finish $EXP_ID
 eval $(exptrack run-start --stage-name eval)
 ./evaluate; exptrack run-finish $EXP_ID
 
+# Resume a previous experiment (auto-detected from script's --resume flag)
+# All metrics, artifacts, and params aggregate into the same experiment
+exptrack run train.py --output_dir results/ --resume --ckpt results/model.pt
+
+# Shell pipeline resume
+eval $(exptrack run-start --resume --lr 0.01)
+# or resume a specific experiment:
+eval $(exptrack run-start --resume abc123 --lr 0.01)
+
+# Programmatic resume
+from exptrack.core import Experiment
+exp = Experiment.resume("abc123")    # by ID
+exp = Experiment.resume("abc")       # by ID prefix
+
 # CLI commands: ls, show, diff, compare, history, timeline, tag, untag, note,
 #   edit-note, rm, clean, finish, delete-tag, study, unstudy, stage, stale,
 #   upgrade, storage, export, verify, ui
@@ -59,7 +73,7 @@ Key test files: `test_pipeline_shell.py` (53 tests for shell/SLURM pipeline comm
 ```
 exptrack/
   __init__.py                 Package init, exports Experiment, load_ipython_extension
-  __main__.py                 python -m exptrack entry point (wraps scripts via runpy)
+  __main__.py                 python -m exptrack entry point (wraps scripts via runpy, auto-resume detection)
   config.py                   Project-aware config (.exptrack/config.json), root detection
   notebook.py                 Jupyter: %load_ext exptrack magic + explicit API
   core/
@@ -69,7 +83,7 @@ exptrack/
     naming.py                 Run name generation ({script}__{params}__{date}_{uid})
     hashing.py                File integrity hashing (SHA-256, partial for large files)
     git.py                    Git branch/commit/diff capture
-    artifact_protection.py    Archive old artifacts on path conflict during reruns
+
   capture/
     __init__.py               Re-exports capture modules
     argparse_patch.py         Patches parse_args() and parse_known_args()
@@ -138,7 +152,7 @@ exptrack/
 
 ### Key modules
 
-- **`core/experiment.py`** — `Experiment` class: context manager support, param/metric/artifact logging, timeline events, variable context reconstruction. `thin_every` parameter controls write-time metric thinning. Properties: id, name, status, git_branch, git_commit, git_diff, created_at, duration_s, tags, notes
+- **`core/experiment.py`** — `Experiment` class: context manager support, param/metric/artifact logging, timeline events, variable context reconstruction. `Experiment.resume(exp_id)` reopens a finished experiment for continuation. `thin_every` parameter controls write-time metric thinning. Properties: id, name, status, git_branch, git_commit, git_diff, created_at, duration_s, tags, notes
 - **`core/db.py`** — SQLite schema with 7 tables (experiments, params, metrics, artifacts, timeline, cell_lineage, code_baselines). WAL mode, indexed on exp_id/key/created_at. Schema migrations via ALTER TABLE
 - **`capture/argparse_patch.py`** — Patches both `parse_args()` AND `parse_known_args()`, plus raw `sys.argv` fallback for non-argparse scripts (catches single-dash flags, click, manual parsing)
 - **`capture/notebook_hooks.py`** — `post_run_cell` hook: content-addressed cell lineage, diff against parent cells, variable change detection with fingerprinting, assignment expression enrichment, timeline event emission, HP auto-detection, cell snapshot saving
@@ -158,7 +172,9 @@ exptrack/
 - **Project root detection**: Walks parent directories looking for `.git` or `.exptrack/`
 - **stdout/stderr separation**: Shell pipeline commands (`run-start`) output `export` statements to stdout so `eval $()` works; all status messages go to stderr
 - **Auto artifact linking**: `plt.savefig()` is monkey-patched so saved plots auto-register as artifacts. Figures saved before experiment creation are buffered and flushed
-- **Artifact protection**: On rerun, old artifacts at conflicting paths are archived to prevent data loss
+- **Auto output detection**: After a script finishes, `_auto_detect_outputs` scans the working directory for new files (images, models, data) created during the run and registers them as artifacts. Deduplicates against already-registered artifacts. Recognizes `.pt`, `.pth`, `.ckpt`, `.safetensors`, `.h5`, `.onnx`, `.pkl`, and other common ML file types
+- **No-copy artifact tracking**: Artifacts are tracked by reference (path + hash in DB) — exptrack never copies or moves user files. Resume workflows and large checkpoint directories are unaffected
+- **Auto-resume detection**: When `exptrack run` sees `--resume` (or any flag in `resume_flags` config) in the script's argv, it automatically resumes the latest experiment for that script instead of creating a new one. All metrics, artifacts, and params aggregate into the same experiment. Timeline seq and stdout/stderr logs append. Shell pipelines use `exptrack run-start --resume [EXP_ID]` explicitly. Programmatic: `Experiment.resume(exp_id)`
 - **Plugin system**: Plugins loaded dynamically from `exptrack.plugins.<name>`, each module exports `plugin_class`. 4 lifecycle hooks
 - **Per-project storage**: DB + notebook history in `.exptrack/` (gitignored), config.json is committable
 - **Inline editing**: All editable fields (name, tags, notes) support double-click inline editing in dashboard — no modal prompts
@@ -194,10 +210,10 @@ Indexed on: metrics(exp_id, key), params(exp_id), artifacts(exp_id), timeline(ex
   "max_git_diff_kb": 256,
   "artifact_strategy": "reference",
   "hash_max_mb": 500,
-  "protect_on_rerun": true,
   "metric_keep_every": 1,
   "metric_max_points": 500,
   "timezone": "",
+  "resume_flags": ["--resume"],
   "auto_capture": { "argparse": true, "argv": true, "notebook": true },
   "naming": { "max_param_keys": 4, "key_max_len": 8 },
   "plugins": { "enabled": [] }

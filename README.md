@@ -142,6 +142,20 @@ eval $(exptrack run-start --stage-name eval)
 python eval.py; exptrack run-finish $EXP_ID
 ```
 
+### Resuming experiments
+
+If your script has a `--resume` flag, exptrack auto-detects it and continues the **same experiment** instead of creating a new one. Metrics, artifacts, and params all aggregate into the original run.
+
+```bash
+# First run
+exptrack run train.py --lr 0.01 --epochs 50 --output_dir results/
+
+# Resume from checkpoint — same experiment, metrics continue from where you left off
+exptrack run train.py --lr 0.01 --epochs 100 --output_dir results/ --resume --ckpt results/model.pt
+```
+
+No extra flags for exptrack. Your script's `--resume` does double duty. See [Configuration](docs/configuration.md) if your script uses a different flag like `--continue` or `--load-checkpoint`.
+
 ### 4. Python API (full control)
 
 ```python
@@ -257,6 +271,7 @@ The [`examples/`](examples/) directory has ready-to-run scripts:
 | [`pipeline_multistep.sh`](examples/pipeline_multistep.sh) | Multi-step pipeline: train, test, analyze |
 | [`pipeline_wrapper.sh`](examples/pipeline_wrapper.sh) | Wrapper script with auto-inherited study and stages |
 | [`slurm_job.sh`](examples/slurm_job.sh) | SLURM sbatch script with error trapping |
+| [`resume_training.py`](examples/resume_training.py) | Resuming a run — metrics aggregate into one experiment |
 
 ---
 

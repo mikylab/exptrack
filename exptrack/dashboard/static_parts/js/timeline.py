@@ -44,7 +44,7 @@ async function loadTimeline(expId, filter) {
   const container = document.getElementById('detail-tab-timeline');
 
   let html = '<div class="tl-filters">';
-  const types = ['', 'cell_exec', 'var_set', 'artifact', 'observational', 'lineage'];
+  const types = ['', 'cell_exec', 'var_set', 'artifact', 'observational', 'resume', 'lineage'];
   const labels = ['All', 'Code', 'Variables', 'Artifacts', 'Observational', 'Lineage'];
   types.forEach((t, i) => {
     html += '<button class="' + (timelineFilter===t?'active':'') + '" onclick="loadTimeline(\'' + expId + '\',\'' + t + '\')">' + labels[i] + '</button>';
@@ -65,9 +65,9 @@ async function loadTimeline(expId, filter) {
   for (const ev of events) {
     const cls = 'tl-event tl-' + ev.event_type;
     const ts = fmtDt(ev.ts);
-    const icons = {cell_exec:'&gt;&gt;', var_set:'=', artifact:'&#9633;', metric:'#', observational:'..'};
-    const colors = {cell_exec:'var(--tl-cell)', var_set:'var(--tl-var)', artifact:'var(--tl-artifact)', metric:'var(--tl-metric)', observational:'var(--tl-obs)'};
-    const typeLabels = {cell_exec:'code', var_set:'var', artifact:'artifact', metric:'metric', observational:'observe'};
+    const icons = {cell_exec:'&gt;&gt;', var_set:'=', artifact:'&#9633;', metric:'#', observational:'..', resume:'&#8635;'};
+    const colors = {cell_exec:'var(--tl-cell)', var_set:'var(--tl-var)', artifact:'var(--tl-artifact)', metric:'var(--tl-metric)', observational:'var(--tl-obs)', resume:'var(--accent)'};
+    const typeLabels = {cell_exec:'code', var_set:'var', artifact:'artifact', metric:'metric', observational:'observe', resume:'resumed'};
     const icon = icons[ev.event_type] || '?';
     const iconColor = colors[ev.event_type] || 'var(--fg)';
     const typeLabel = '<span class="tl-type-label tl-type-' + ev.event_type + '">' + (typeLabels[ev.event_type]||ev.event_type) + '</span>';
