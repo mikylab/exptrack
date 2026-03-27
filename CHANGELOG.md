@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [2.1.0] - 2026-03-27
 
 ### Added
 
@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Model checkpoints not saved on resume** — argparse recapture was renaming the experiment's output directory mid-run, causing scripts to write to a stale path. Resumed experiments now preserve their original name and output directory
 - **Model checkpoints not detected** — the `outputs/` directory was incorrectly skipped during auto-detection, so files saved there by the user's script were never registered
 - **Artifact protection breaking resume** — `protect_previous_artifacts` was moving checkpoint files before the script started, breaking resume workflows that need to load from the same path. Removed entirely — artifacts are now tracked by reference only (path + hash), exptrack never copies or moves user files
 
@@ -87,5 +88,5 @@ Initial public release.
 - Artifact strategy, git diff size limits, naming conventions, auto-capture toggles
 - Non-finite metric values (NaN, Inf) silently dropped
 
-[Unreleased]: https://github.com/mikylab/exptrack/compare/v1.0.0...HEAD
+[2.1.0]: https://github.com/mikylab/exptrack/compare/v1.0.0...v2.1.0
 [1.0.0]: https://github.com/mikylab/exptrack/releases/tag/v1.0.0
