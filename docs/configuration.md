@@ -15,7 +15,11 @@ exptrack stores config in `.exptrack/config.json`. Safe to commit — no secrets
 
   // --- Artifacts ---
   "artifact_strategy":     "reference",  // "reference" (default) = log path only; "copy" = copy file into outputs
-  "protect_on_rerun":      true,         // archive old artifacts when a rerun would overwrite them
+
+  // --- Resume ---
+  // Flags in your script's argv that trigger auto-resume of the latest experiment.
+  // exptrack run train.py --resume  →  auto-detected, continues same experiment.
+  "resume_flags":          ["--resume"],  // add "--continue", "--load-checkpoint", etc. as needed
 
   // --- Metrics ---
   "metric_keep_every":     1,    // store every Nth metric point (increase to thin large series during training)

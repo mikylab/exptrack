@@ -28,6 +28,34 @@ exp.log_artifact("outputs/plot.png", label="training curve")
 exp.finish()   # or exp.fail("reason")
 ```
 
+## Resuming an Experiment
+
+```python
+from exptrack.core import Experiment
+
+# Resume by ID (or prefix)
+exp = Experiment.resume("abc123")
+
+# All new metrics/artifacts append to the same experiment
+for epoch in range(50, 100):
+    loss = train(...)
+    exp.log_metric("loss", loss, step=epoch)
+
+exp.finish()
+```
+
+The original params, tags, timeline, and artifacts are preserved. New data appends to the same experiment ID. Status is set back to `"running"` until you call `finish()`.
+
+With `exptrack run`, resume is auto-detected from the script's own `--resume` flag — no extra flags needed:
+
+```bash
+# First run creates a new experiment
+exptrack run train.py --lr 0.01 --epochs 50
+
+# Resume continues the same experiment
+exptrack run train.py --lr 0.01 --epochs 100 --resume --ckpt model.pt
+```
+
 ## `exptrack run` vs Python API
 
 With `exptrack run train.py`, params and artifacts are captured automatically — you just need `exp = globals().get("__exptrack__")` to log metrics. With the Python API, you manage the full lifecycle yourself. Use `exptrack run` for minimal changes; use the API when you want full control.
@@ -66,3 +94,4 @@ With `exptrack run train.py`, params and artifacts are captured automatically �
 | `log_artifact(path, label="")` | Register an existing file |
 | `finish()` | Mark as done |
 | `fail(error="")` | Mark as failed |
+| `resume(exp_id)` | *classmethod* — Reopen a finished experiment to continue it |
