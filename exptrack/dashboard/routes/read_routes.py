@@ -92,7 +92,7 @@ def api_cell_source(conn, cell_hash: str) -> dict:
 
 
 def api_export(conn, exp_id: str, qs: dict) -> dict:
-    from ...core.queries import format_export_markdown
+    from ...core.queries import PARAMS_EXPORT_FORMATS, format_export_markdown, format_export_params
     data = get_export_data(conn, exp_id)
     if not data:
         return {"error": "not found"}
@@ -100,6 +100,9 @@ def api_export(conn, exp_id: str, qs: dict) -> dict:
     if fmt == "markdown":
         md = format_export_markdown(data)
         return {"markdown": md, "data": data}
+    if fmt in PARAMS_EXPORT_FORMATS:
+        return {"params_text": format_export_params(data, style=PARAMS_EXPORT_FORMATS[fmt]),
+                "data": data}
     return data
 
 

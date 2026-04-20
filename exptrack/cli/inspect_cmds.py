@@ -692,10 +692,12 @@ def cmd_watch(args):
 
 
 def cmd_export(args):
-    """Export experiment data: exptrack export <id> [--format json|markdown|csv|tsv]"""
+    """Export experiment data: exptrack export <id> [--format json|markdown|csv|tsv|params|params-flags|params-json]"""
     from ..core.queries import (
+        PARAMS_EXPORT_FORMATS,
         format_export_csv,
         format_export_markdown,
+        format_export_params,
         get_export_data,
     )
     conn = get_db()
@@ -719,6 +721,8 @@ def cmd_export(args):
     elif fmt in ("csv", "tsv"):
         delimiter = "\t" if fmt == "tsv" else ","
         print(format_export_csv([data], delimiter=delimiter), end="")
+    elif fmt in PARAMS_EXPORT_FORMATS:
+        print(format_export_params(data, style=PARAMS_EXPORT_FORMATS[fmt]))
     else:
         print(json.dumps(data, indent=2, default=str))
 

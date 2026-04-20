@@ -63,6 +63,37 @@ function artifactTypeBadge(path) {
   return '<span class="artifact-type-badge">file</span>';
 }
 
+function showAllArtifacts(expId) {
+  const table = document.getElementById('artifact-table-' + expId);
+  if (!table) return;
+  table.classList.remove('truncated');
+  const notice = document.getElementById('art-truncate-' + expId);
+  if (notice) notice.remove();
+}
+
+function filterArtifacts(expId, query) {
+  const table = document.getElementById('artifact-table-' + expId);
+  if (!table) return;
+  if (query) showAllArtifacts(expId);
+  const q = (query || '').trim().toLowerCase();
+  const rows = table.querySelectorAll('tr[data-artifact-search]');
+  let visible = 0;
+  rows.forEach(r => {
+    const match = !q || (r.dataset.artifactSearch || '').includes(q);
+    r.classList.toggle('filter-hidden', !match);
+    if (match) visible++;
+  });
+  let hint = table.querySelector('tr.artifact-filter-hint');
+  if (q && visible === 0) {
+    if (!hint) {
+      const tbody = table.querySelector('tbody') || table;
+      tbody.insertAdjacentHTML('beforeend', '<tr class="artifact-filter-hint"><td colspan="3" style="color:var(--muted);font-size:12px;text-align:center;padding:8px">No artifacts match filter.</td></tr>');
+    }
+  } else if (hint) {
+    hint.remove();
+  }
+}
+
 async function showDetail(id) {
   // Toggle: clicking same experiment deselects
   if (currentDetailId === id) {
@@ -147,15 +178,30 @@ async function refreshDetail(id) {
     }
   }
 
-  const artRows = exp.artifacts.map(a => {
+  const ARTIFACT_TRUNCATE_THRESHOLD = 50;
+  const artTotal = exp.artifacts.length;
+  const artTruncated = artTotal > ARTIFACT_TRUNCATE_THRESHOLD;
+  const artRows = exp.artifacts.map((a, i) => {
     const ext = (a.path || '').split('.').pop().toLowerCase();
     const isLog = ['log', 'txt', 'out', 'err'].includes(ext);
     const isData = ['csv', 'json', 'jsonl'].includes(ext);
     const viewBtn = (isLog || isData)
       ? `<button onclick="viewLogFile('${esc(a.path)}','${esc(a.label)}')" title="View contents">view</button>`
       : '';
-    return `<tr><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td class="artifact-path-cell" title="${esc(a.path)}">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`;
+    const searchKey = ((a.label || '') + ' ' + (a.path || '')).toLowerCase();
+    const overflow = i >= ARTIFACT_TRUNCATE_THRESHOLD ? ' overflow' : '';
+    return `<tr data-artifact-search="${esc(searchKey)}" class="artifact-row-tr${overflow}"><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td class="artifact-path-cell" title="${esc(a.path)}">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${esc(a.label)}','${esc(a.path)}')">del</button></div></td></tr>`;
   }).join('');
+  const artFilterHtml = artTotal > 10
+    ? `<div style="margin-bottom:6px"><input type="text" class="artifact-filter-input" id="art-filter-${exp.id}" placeholder="Filter artifacts..." oninput="filterArtifacts('${exp.id}', this.value)"></div>`
+    : '';
+  const artTruncateNotice = artTruncated
+    ? `<div class="artifact-truncate-notice" id="art-truncate-${exp.id}">
+         <span>Showing ${ARTIFACT_TRUNCATE_THRESHOLD} of ${artTotal} artifacts.</span>
+         <button onclick="showAllArtifacts('${exp.id}')">Show all ${artTotal}</button>
+       </div>`
+    : '';
+  const artTableClass = artTruncated ? 'params-table truncated' : 'params-table';
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
     <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:210px">
@@ -350,7 +396,7 @@ async function refreshDetail(id) {
               <span class="label">Uncommitted</span><span>${diffData.diff ? (diffCompacted ? '<span style="color:var(--yellow)">' + esc(diffData.diff.split(' — ')[1] || 'compacted') + '</span>' : '<span style="color:var(--green)">' + exp.diff_lines + ' lines</span> <button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:6px" onclick="exportDiff(\'' + exp.id + '\')">Export</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="compactDiff(\'' + exp.id + '\')">Compact</button>') : '<span style="color:var(--muted)">none (all changes were committed)</span>'}</span>
             </div>
             ${exp.command ? '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span><span><button class="copy-btn" onclick="saveReproduceToCommands(\'' + exp.id + '\')" title="Save to Commands notepad">&gt;_ Save</button><button class="copy-btn" data-cmd="' + esc(exp.command).replace(/"/g,'&quot;') + '" onclick="navigator.clipboard.writeText(this.dataset.cmd).then(()=>owlSay(\'Copied!\'))">Copy</button></span></div><code class="reproduce-cmd editable-hint" id="detail-command" ondblclick="startDetailCommandEdit(\'' + exp.id + '\')" title="Double-click to edit">' + esc(exp.command) + '</code></div>' : '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span></div><code class="reproduce-cmd editable-hint" id="detail-command" ondblclick="startDetailCommandEdit(\'' + exp.id + '\')" title="Double-click to add command" style="color:var(--muted);cursor:pointer">double-click to add command</code></div>'}
-            ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')</h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
+            ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')<span class="section-actions" onclick="event.stopPropagation()"><button class="copy-btn" title="Copy as a markdown table — pastes into lab notebooks, Obsidian, GitHub, Jupyter markdown cells" onclick="copyExportFmt(\'' + exp.id + '\',\'params-md\')">Copy</button></span></h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
             ${varHtml}
           </div>
           <!-- Right column: metrics + charts + artifacts -->
@@ -363,7 +409,7 @@ async function refreshDetail(id) {
             </div>
             <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
             <div class="section-body">
-            ${artRows ? '<table class="params-table"><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr>'+artRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
+            ${artTotal ? artFilterHtml + '<table class="' + artTableClass + '" id="artifact-table-' + exp.id + '"><thead><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr></thead><tbody>' + artRows + '</tbody></table>' + artTruncateNotice : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
             ${addArtifactForm}
             </div>
           </div>
