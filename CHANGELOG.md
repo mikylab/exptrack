@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [2.1.0] - 2026-03-27
+## [1.0.1] - 2026-03-27
 
 ### Added
 
@@ -88,5 +88,5 @@ Initial public release.
 - Artifact strategy, git diff size limits, naming conventions, auto-capture toggles
 - Non-finite metric values (NaN, Inf) silently dropped
 
-[2.1.0]: https://github.com/mikylab/exptrack/compare/v1.0.0...v2.1.0
+[1.0.1]: https://github.com/mikylab/exptrack/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/mikylab/exptrack/releases/tag/v1.0.0
