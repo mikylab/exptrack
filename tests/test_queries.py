@@ -83,3 +83,85 @@ def test_get_latest_metrics(tmp_project, sample_experiment):
     assert metrics["loss"] == 0.3  # step 2 value
     assert "acc" in metrics
     assert metrics["acc"] == 0.85
+
+
+def test_format_export_params_equals(tmp_project, sample_experiment):
+    """format_export_params(style='equals') emits key=JSONvalue lines."""
+    from exptrack.core import get_db
+    from exptrack.core.queries import format_export_params, get_export_data
+
+    conn = get_db()
+    data = get_export_data(conn, sample_experiment.id)
+    text = format_export_params(data, style="equals")
+    lines = text.splitlines()
+    assert "lr=0.01" in lines
+    assert "epochs=10" in lines
+    # Private keys should not appear
+    assert not any(line.startswith("_") for line in lines)
+
+
+def test_format_export_params_flags(tmp_project, sample_experiment):
+    """format_export_params(style='flags') emits --key value pairs."""
+    from exptrack.core import get_db
+    from exptrack.core.queries import format_export_params, get_export_data
+
+    conn = get_db()
+    data = get_export_data(conn, sample_experiment.id)
+    text = format_export_params(data, style="flags")
+    lines = text.splitlines()
+    assert "--lr 0.01" in lines
+    assert "--epochs 10" in lines
+
+
+def test_format_export_params_json(tmp_project, sample_experiment):
+    """format_export_params(style='json') emits a JSON object."""
+    import json as _json
+    from exptrack.core import get_db
+    from exptrack.core.queries import format_export_params, get_export_data
+
+    conn = get_db()
+    data = get_export_data(conn, sample_experiment.id)
+    text = format_export_params(data, style="json")
+    parsed = _json.loads(text)
+    assert parsed["lr"] == 0.01
+    assert parsed["epochs"] == 10
+
+
+def test_format_export_params_md_table(tmp_project, sample_experiment):
+    """format_export_params(style='md-table') emits a Keep-a-Changelog-style markdown table."""
+    from exptrack.core import get_db
+    from exptrack.core.queries import format_export_params, get_export_data
+
+    conn = get_db()
+    data = get_export_data(conn, sample_experiment.id)
+    text = format_export_params(data, style="md-table")
+    lines = text.splitlines()
+    assert lines[0] == "| Key | Value |"
+    assert lines[1] == "| --- | --- |"
+    assert "| lr | 0.01 |" in lines
+    assert "| epochs | 10 |" in lines
+
+
+def test_format_export_params_tsv(tmp_project, sample_experiment):
+    """format_export_params(style='tsv') emits key<TAB>value for spreadsheet paste."""
+    from exptrack.core import get_db
+    from exptrack.core.queries import format_export_params, get_export_data
+
+    conn = get_db()
+    data = get_export_data(conn, sample_experiment.id)
+    text = format_export_params(data, style="tsv")
+    lines = text.splitlines()
+    assert "lr\t0.01" in lines
+    assert "epochs\t10" in lines
+
+
+def test_format_export_params_bool_flag(tmp_project):
+    """Boolean True renders as a bare --flag; False is omitted in flags style."""
+    from exptrack.core.queries import format_export_params
+
+    data = {"params": {"train": True, "debug": False, "lr": 0.1}}
+    text = format_export_params(data, style="flags")
+    lines = text.splitlines()
+    assert "--train" in lines
+    assert "--debug" not in " ".join(lines)
+    assert "--lr 0.1" in lines
