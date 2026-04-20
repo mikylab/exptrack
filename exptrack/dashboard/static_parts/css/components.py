@@ -233,6 +233,28 @@ CSS_COMPONENTS = """
   .section-toggle.collapsed::before { transform: rotate(-90deg); }
   .section-body { transition: max-height 0.2s ease; }
   .section-toggle.collapsed + .section-body { display: none; }
+  .section-actions { margin-left: auto; display: inline-flex; gap: 4px; cursor: default; }
+  .section-actions .copy-btn {
+    font-family: inherit; font-size: 11px; background: var(--code-bg); border: 1px solid var(--border);
+    padding: 2px 8px; border-radius: 3px; color: var(--muted); cursor: pointer;
+  }
+  .section-actions .copy-btn:hover { color: var(--blue); border-color: var(--blue); }
+  .artifact-truncate-notice {
+    padding: 8px 12px; font-size: 12px; color: var(--muted); background: var(--code-bg);
+    border: 1px dashed var(--border); border-radius: 4px; margin-top: 6px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .artifact-truncate-notice button {
+    font-family: inherit; font-size: 12px; background: var(--card-bg); border: 1px solid var(--border);
+    padding: 3px 10px; border-radius: 3px; color: var(--fg); cursor: pointer;
+  }
+  .artifact-truncate-notice button:hover { color: var(--blue); border-color: var(--blue); }
+  .artifact-filter-input {
+    font-family: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border);
+    border-radius: 3px; background: var(--card-bg); color: var(--fg); width: 180px;
+  }
+  table.truncated tr.overflow { display: none; }
+  tr.filter-hidden { display: none; }
   .metric-group-header { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 4px; user-select: none; }
   .metric-group-header::before { content: '\\25BC'; font-size: 9px; display: inline-block; width: 12px; text-align: center; transition: transform 0.15s; margin-right: 2px; }
   .metric-group.collapsed .metric-group-header::before { transform: rotate(-90deg); }

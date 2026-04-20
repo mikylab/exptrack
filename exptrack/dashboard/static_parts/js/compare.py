@@ -32,7 +32,9 @@ function closeDetailExport(btn) {
 }
 
 async function _fetchExportText(id, fmt) {
-  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt'};
+  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt',
+               params:'.params.txt', 'params-flags':'.params.txt', 'params-json':'.params.json',
+               'params-md':'.params.md', 'params-tsv':'.params.tsv'};
   let text;
   if (fmt === 'csv' || fmt === 'tsv') {
     const data = await postApi('/api/bulk-export', {ids: [id], format: fmt});
@@ -41,11 +43,15 @@ async function _fetchExportText(id, fmt) {
     const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt));
     if (fmt === 'markdown') text = data.markdown || JSON.stringify(data, null, 2);
     else if (fmt === 'plain') text = _formatExpPlainText(data.data || data);
+    else if (fmt.startsWith('params')) {
+      text = data.params_text != null ? data.params_text : JSON.stringify(data, null, 2);
+    }
     else text = JSON.stringify(data, null, 2);
   }
   const exp = allExperiments.find(e => e.id.startsWith(id));
   const name = exp ? exp.name.replace(/[^a-zA-Z0-9_-]/g, '_') : id.slice(0,8);
-  return {text, filename: name + (ext[fmt] || '.txt'), mime: fmt === 'json' ? 'application/json' : 'text/plain'};
+  const mime = (fmt === 'json' || fmt === 'params-json') ? 'application/json' : 'text/plain';
+  return {text, filename: name + (ext[fmt] || '.txt'), mime};
 }
 
 function _downloadBlob(text, filename, mime) {

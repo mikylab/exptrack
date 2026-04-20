@@ -65,6 +65,11 @@ def _capture_namespace(exp: Experiment, ns):
             exp._rename(make_run_name(exp.script, exp._params))
 
 
+def _normalize_long_flag(key: str) -> str:
+    """Match argparse's Namespace convention: `--batch-size` stored as `batch_size`."""
+    return key.replace("-", "_")
+
+
 def _capture_remaining(exp: Experiment, args: list[str]):
     """Parse residual --key value / --key=value / -k value from remaining args."""
     params = {}
@@ -75,14 +80,13 @@ def _capture_remaining(exp: Experiment, args: list[str]):
             key = a[2:]
             if "=" in key:
                 k, v = key.split("=", 1)
-                params[k] = _coerce(v)
+                params[_normalize_long_flag(k)] = _coerce(v)
             elif i + 1 < len(args) and not args[i + 1].startswith("-"):
-                params[key] = _coerce(args[i + 1])
+                params[_normalize_long_flag(key)] = _coerce(args[i + 1])
                 i += 1
             else:
-                params[key] = True
+                params[_normalize_long_flag(key)] = True
         elif a.startswith("-") and len(a) == 2:
-            # Single-dash flag: -l value
             key = a[1:]
             if i + 1 < len(args) and not args[i + 1].startswith("-"):
                 params[key] = _coerce(args[i + 1])
@@ -110,12 +114,12 @@ def capture_argv(exp: Experiment):
             key = a[2:]
             if "=" in key:
                 k, v = key.split("=", 1)
-                params[k] = _coerce(v)
+                params[_normalize_long_flag(k)] = _coerce(v)
             elif i + 1 < len(args) and not args[i + 1].startswith("-"):
-                params[key] = _coerce(args[i + 1])
+                params[_normalize_long_flag(key)] = _coerce(args[i + 1])
                 i += 1
             else:
-                params[key] = True
+                params[_normalize_long_flag(key)] = True
         elif a.startswith("-") and len(a) == 2:
             key = a[1:]
             if i + 1 < len(args) and not args[i + 1].startswith("-"):

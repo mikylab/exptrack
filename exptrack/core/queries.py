@@ -877,6 +877,48 @@ def format_export_markdown(data: dict) -> str:
     return "\n".join(lines)
 
 
+PARAMS_EXPORT_FORMATS = {
+    "params": "equals",
+    "params-flags": "flags",
+    "params-json": "json",
+    "params-md": "md-table",
+    "params-tsv": "tsv",
+}
+
+
+def format_export_params(data: dict, style: str = "equals") -> str:
+    """Format just the parameters of an experiment as a plain list.
+
+    Styles:
+      - "equals":    key=value (JSON-encoded)   — shell/CLI friendly
+      - "flags":     --key value                — argparse-style command flags
+      - "json":      {"key": value, ...}        — single-line JSON object
+      - "md-table":  | Key | Value | markdown   — pastes into lab notebooks
+      - "tsv":       key\\tvalue                 — pastes into spreadsheets
+    """
+    params = data.get("params", {}) or {}
+    if style == "json":
+        return json.dumps(params, indent=2, default=str)
+    if style == "md-table":
+        lines = ["| Key | Value |", "| --- | --- |"]
+        for k, v in params.items():
+            lines.append(f"| {k} | {json.dumps(v)} |")
+        return "\n".join(lines)
+    if style == "tsv":
+        return "\n".join(f"{k}\t{json.dumps(v)}" for k, v in params.items())
+    lines = []
+    for k, v in params.items():
+        if style == "flags":
+            if isinstance(v, bool):
+                if v:
+                    lines.append(f"--{k}")
+            else:
+                lines.append(f"--{k} {json.dumps(v)}")
+        else:
+            lines.append(f"{k}={json.dumps(v)}")
+    return "\n".join(lines)
+
+
 def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
     """Format batch export data as CSV/TSV string.
 

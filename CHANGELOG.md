@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-04-20
+
+### Added
+
+- **Params-only export (CLI)** — new `exptrack export <id> --format` values that emit just the parameters: `params` (`key=value` lines, shell-friendly), `params-flags` (`--key value` CLI flags, with bare `--flag` for booleans), `params-json` (JSON object), `params-md` (markdown table, pastes into lab notebooks), and `params-tsv` (tab-separated, pastes into spreadsheets). Also available via `/api/export/<id>?format=<name>`
+- **Params "Copy" button on the dashboard** — the detail view's Params section header now has a one-click Copy button (next to the section like the Reproduce box's Copy). Copies the parameters as a markdown table for direct paste into lab notebooks, Obsidian, GitHub, or Jupyter markdown cells. The main Export ▼ / Copy ▼ dropdowns remain unchanged (whole-experiment only)
+
+### Changed
+
+- **Artifacts list is truncated for runs with >50 artifacts** — the detail view now shows the first 50 artifacts with a "Show all N" expand button. Prevents the page from becoming unreadable on runs that produce hundreds of outputs
+- **Artifacts filter** — a filter input appears above the artifact list when a run has more than 10 artifacts, so users can quickly locate a specific file by label or path. Typing into the filter also auto-expands any truncated rows
+
+### Fixed
+
+- **Duplicate `batch-size` / `batch_size` params** — scripts using argparse with dashed long flags (e.g. `--batch-size`) previously produced two keys in their params: the dashed form from the raw `sys.argv` fallback and the underscored form from argparse's Namespace. The fallback now normalizes dashes to underscores on capture, matching argparse's convention, so only one key lands in the params store
+
 ## [1.0.1] - 2026-03-27
 
 ### Added
@@ -88,5 +104,6 @@ Initial public release.
 - Artifact strategy, git diff size limits, naming conventions, auto-capture toggles
 - Non-finite metric values (NaN, Inf) silently dropped
 
+[1.1.0]: https://github.com/mikylab/exptrack/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/mikylab/exptrack/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/mikylab/exptrack/releases/tag/v1.0.0
