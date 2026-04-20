@@ -286,7 +286,7 @@ def main():
 
     p_export = sub.add_parser("export", help="Export experiment data (JSON, markdown, or CSV)")
     p_export.add_argument("id", nargs="?", default=None)
-    p_export.add_argument("--format", choices=["json", "markdown", "csv", "tsv"], default="json")
+    p_export.add_argument("--format", choices=["json", "markdown", "csv", "tsv", "params", "params-flags", "params-json", "params-md", "params-tsv"], default="json")
     p_export.add_argument("--all", action="store_true", dest="export_all",
                           help="Export all experiments (batch export)")
 
