@@ -394,17 +394,39 @@ function applyFilterFromDropdown(type, name) {
 
 function rerender() { renderExperiments(); renderExpList(); renderFilterBar(); }
 
-// Extract auth token from URL query param once at load time
-const _authToken = new URLSearchParams(window.location.search).get('token') || '';
+// ── Auth ────────────────────────────────────────────────────────────────────
+// First load flow:
+//   1. CLI prints URL with ?token=... embedded → we save it to localStorage
+//      and strip the query string so the token doesn't live in browser
+//      history or referer headers.
+//   2. Subsequent loads: pull the token from localStorage and send it as
+//      `Authorization: Bearer ...` on every API call.
+//   3. If we don't have a token, or the server rejects it (401), we show
+//      a login overlay that accepts a token and revalidates.
+// File URLs (<img src="...">) can't set headers, so those still carry the
+// token as a query param — scoped to the image request only.
+const _TOKEN_KEY = 'exptrack_token';
 
-function _authUrl(path) {
-  if (!_authToken) return path;
-  const sep = path.includes('?') ? '&' : '?';
-  return path + sep + 'token=' + encodeURIComponent(_authToken);
+let _authToken = (function() {
+  const urlToken = new URLSearchParams(window.location.search).get('token');
+  if (urlToken) {
+    try { localStorage.setItem(_TOKEN_KEY, urlToken); } catch (e) {}
+    const url = new URL(window.location);
+    url.searchParams.delete('token');
+    window.history.replaceState({}, '', url.toString());
+    return urlToken;
+  }
+  try { return localStorage.getItem(_TOKEN_KEY) || ''; } catch (e) { return ''; }
+})();
+
+function _authHeaders() {
+  return _authToken ? {'Authorization': 'Bearer ' + _authToken} : {};
 }
 
 function fileUrl(path) {
-  return _authUrl('/api/file/' + encodeURIComponent(path).replace(/%2F/g, '/'));
+  const base = '/api/file/' + encodeURIComponent(path).replace(/%2F/g, '/');
+  if (!_authToken) return base;
+  return base + '?token=' + encodeURIComponent(_authToken);
 }
 
 function mergeArtifactImages(images, artifactImages) {
@@ -417,33 +439,88 @@ function mergeArtifactImages(images, artifactImages) {
 }
 
 async function api(path) {
-  const r = await fetch(_authUrl(path));
-  if (r.status === 401) { _showAuthError(); return {}; }
+  const r = await fetch(path, {headers: _authHeaders()});
+  if (r.status === 401) { _showLoginOverlay(); return {}; }
   return r.json();
 }
 
 async function postApi(path, body = {}) {
-  const r = await fetch(_authUrl(path), {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', ..._authHeaders()},
     body: JSON.stringify(body)
   });
-  if (r.status === 401) { _showAuthError(); return {}; }
+  if (r.status === 401) { _showLoginOverlay(); return {}; }
   return r.json();
 }
 
-function _showAuthError() {
-  // Only show once per page load
-  if (document.getElementById('auth-error-banner')) return;
-  const banner = document.createElement('div');
-  banner.id = 'auth-error-banner';
-  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;'
-    + 'background:#dc3545;color:#fff;padding:16px 24px;text-align:center;'
-    + 'font-size:15px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.3)';
-  banner.innerHTML = 'Authentication required — append <code style="background:rgba(0,0,0,.2);'
-    + 'padding:2px 6px;border-radius:3px">?token=YOUR_TOKEN</code> to the URL, '
-    + 'or set <code style="background:rgba(0,0,0,.2);padding:2px 6px;border-radius:3px">'
-    + 'Authorization: Bearer YOUR_TOKEN</code> header.';
-  document.body.prepend(banner);
+function _showLoginOverlay(errorMsg) {
+  const existing = document.getElementById('exptrack-login-overlay');
+  if (existing) {
+    if (errorMsg) document.getElementById('exptrack-login-error').textContent = errorMsg;
+    return;
+  }
+  const overlay = document.createElement('div');
+  overlay.id = 'exptrack-login-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;'
+    + 'background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = ''
+    + '<div style="background:var(--bg,#fff);color:var(--fg,#222);'
+    + 'border-radius:8px;padding:28px 32px;min-width:360px;max-width:440px;'
+    + 'box-shadow:0 12px 40px rgba(0,0,0,.4);font-family:system-ui,sans-serif">'
+    +   '<div style="font-size:18px;font-weight:600;margin-bottom:6px">exptrack dashboard</div>'
+    +   '<div style="color:var(--muted,#666);font-size:13px;margin-bottom:16px">'
+    +     'Paste the token from your terminal. The URL printed by '
+    +     '<code>exptrack ui</code> contains it after <code>?token=</code>.'
+    +   '</div>'
+    +   '<input id="exptrack-token-input" type="password" autocomplete="off" '
+    +          'placeholder="token" '
+    +          'style="width:100%;padding:10px 12px;border:1px solid var(--border,#ccc);'
+    +                 'border-radius:4px;font-size:14px;box-sizing:border-box;'
+    +                 'background:var(--bg,#fff);color:var(--fg,#222)">'
+    +   '<button id="exptrack-login-btn" '
+    +           'style="margin-top:12px;width:100%;padding:10px;border:0;border-radius:4px;'
+    +                  'background:#2563eb;color:#fff;font-size:14px;font-weight:600;cursor:pointer">'
+    +     'Log in'
+    +   '</button>'
+    +   '<div id="exptrack-login-error" style="color:#dc3545;font-size:13px;'
+    +        'margin-top:10px;min-height:18px"></div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+
+  const input = document.getElementById('exptrack-token-input');
+  const btn = document.getElementById('exptrack-login-btn');
+  const err = document.getElementById('exptrack-login-error');
+  if (errorMsg) err.textContent = errorMsg;
+  input.focus();
+
+  async function submit() {
+    const tok = input.value.trim();
+    if (!tok) { err.textContent = 'Enter a token.'; return; }
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/stats', {headers: {'Authorization': 'Bearer ' + tok}});
+      if (r.ok) {
+        _authToken = tok;
+        try { localStorage.setItem(_TOKEN_KEY, tok); } catch (e) {}
+        overlay.remove();
+        location.reload();
+      } else {
+        err.textContent = 'Invalid token. Check the one printed by exptrack ui.';
+        try { localStorage.removeItem(_TOKEN_KEY); } catch (e) {}
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  btn.onclick = submit;
+  input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+}
+
+function logout() {
+  try { localStorage.removeItem(_TOKEN_KEY); } catch (e) {}
+  _authToken = '';
+  location.reload();
 }
 
 async function deleteTagGlobal(tag) {
