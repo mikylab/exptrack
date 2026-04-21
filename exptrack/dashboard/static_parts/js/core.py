@@ -395,28 +395,25 @@ function applyFilterFromDropdown(type, name) {
 function rerender() { renderExperiments(); renderExpList(); renderFilterBar(); }
 
 // ── Auth ────────────────────────────────────────────────────────────────────
-// First load flow:
-//   1. CLI prints URL with ?token=... embedded → we save it to localStorage
-//      and strip the query string so the token doesn't live in browser
-//      history or referer headers.
-//   2. Subsequent loads: pull the token from localStorage and send it as
-//      `Authorization: Bearer ...` on every API call.
-//   3. If we don't have a token, or the server rejects it (401), we show
-//      a login overlay that accepts a token and revalidates.
-// File URLs (<img src="...">) can't set headers, so those still carry the
-// token as a query param — scoped to the image request only.
+// Tokens live in localStorage (not the URL) so they don't leak via browser
+// history or referer. Image URLs still carry the token as a query param
+// because <img> can't set request headers.
 const _TOKEN_KEY = 'exptrack_token';
+
+function _storageGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+function _storageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function _storageDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
 
 let _authToken = (function() {
   const urlToken = new URLSearchParams(window.location.search).get('token');
   if (urlToken) {
-    try { localStorage.setItem(_TOKEN_KEY, urlToken); } catch (e) {}
+    _storageSet(_TOKEN_KEY, urlToken);
     const url = new URL(window.location);
     url.searchParams.delete('token');
     window.history.replaceState({}, '', url.toString());
     return urlToken;
   }
-  try { return localStorage.getItem(_TOKEN_KEY) || ''; } catch (e) { return ''; }
+  return _storageGet(_TOKEN_KEY);
 })();
 
 function _authHeaders() {
@@ -454,12 +451,30 @@ async function postApi(path, body = {}) {
   return r.json();
 }
 
-function _showLoginOverlay(errorMsg) {
-  const existing = document.getElementById('exptrack-login-overlay');
-  if (existing) {
-    if (errorMsg) document.getElementById('exptrack-login-error').textContent = errorMsg;
-    return;
+async function _validateToken(tok) {
+  const r = await fetch('/api/ping', {headers: {'Authorization': 'Bearer ' + tok}});
+  return r.ok;
+}
+
+// Resolves true once we have a token the server accepts. Called from init
+// to gate the initial data load; also resolved by the login overlay after
+// a successful submit.
+let _authResolve;
+const _authReady = new Promise(r => { _authResolve = r; });
+
+async function ensureAuth() {
+  if (_authToken && await _validateToken(_authToken)) {
+    _authResolve(true);
+    return true;
   }
+  _storageDel(_TOKEN_KEY);
+  _authToken = '';
+  _showLoginOverlay();
+  return _authReady;
+}
+
+function _showLoginOverlay() {
+  if (document.getElementById('exptrack-login-overlay')) return;
   const overlay = document.createElement('div');
   overlay.id = 'exptrack-login-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;'
@@ -491,7 +506,6 @@ function _showLoginOverlay(errorMsg) {
   const input = document.getElementById('exptrack-token-input');
   const btn = document.getElementById('exptrack-login-btn');
   const err = document.getElementById('exptrack-login-error');
-  if (errorMsg) err.textContent = errorMsg;
   input.focus();
 
   async function submit() {
@@ -499,15 +513,14 @@ function _showLoginOverlay(errorMsg) {
     if (!tok) { err.textContent = 'Enter a token.'; return; }
     btn.disabled = true;
     try {
-      const r = await fetch('/api/stats', {headers: {'Authorization': 'Bearer ' + tok}});
-      if (r.ok) {
+      if (await _validateToken(tok)) {
         _authToken = tok;
-        try { localStorage.setItem(_TOKEN_KEY, tok); } catch (e) {}
+        _storageSet(_TOKEN_KEY, tok);
         overlay.remove();
-        location.reload();
+        _authResolve(true);
       } else {
         err.textContent = 'Invalid token. Check the one printed by exptrack ui.';
-        try { localStorage.removeItem(_TOKEN_KEY); } catch (e) {}
+        _storageDel(_TOKEN_KEY);
       }
     } finally {
       btn.disabled = false;
@@ -518,7 +531,7 @@ function _showLoginOverlay(errorMsg) {
 }
 
 function logout() {
-  try { localStorage.removeItem(_TOKEN_KEY); } catch (e) {}
+  _storageDel(_TOKEN_KEY);
   _authToken = '';
   location.reload();
 }

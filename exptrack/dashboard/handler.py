@@ -6,6 +6,7 @@ This file handles HTTP parsing, routing dispatch, and response formatting.
 """
 import json
 import os
+import secrets
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
@@ -67,11 +68,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         token = _get_auth_token()
         if not token:
             return True  # no auth configured
+        # Constant-time compare guards against timing-based token enumeration
+        # on network-exposed dashboards.
         auth_header = self.headers.get("Authorization", "")
-        # Allow token via query param for browser access
-        parsed = urllib.parse.urlparse(self.path)
-        qs = dict(urllib.parse.parse_qsl(parsed.query))
-        if auth_header == f"Bearer {token}" or qs.get("token") == token:
+        presented = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        if not presented:
+            parsed = urllib.parse.urlparse(self.path)
+            qs = dict(urllib.parse.parse_qsl(parsed.query))
+            presented = qs.get("token", "")
+        if presented and secrets.compare_digest(presented, token):
             return True
         self.send_error(401, "Unauthorized - set Authorization: Bearer <token> header "
                         "or ?token=<token> query param")
@@ -90,6 +95,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if not self._check_auth():
             return
+
+        # Lightweight auth probe — used by the login overlay to validate a
+        # candidate token without touching the DB.
+        if path == "/api/ping":
+            self._json({"ok": True})
+            return
+
         qs = dict(urllib.parse.parse_qsl(parsed.query))
         conn = get_db()
 
