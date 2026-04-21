@@ -60,5 +60,15 @@ Clean Up
 Admin
   exptrack upgrade [--reinstall]    Run database schema migrations
   exptrack storage                  Show DB size, output size, optimization tips
-  exptrack ui [--port 7331]         Launch web dashboard
+  exptrack ui [--port 7331]         Launch web dashboard (auto-generates an
+                                      auth token and prints a URL with it
+                                      embedded — Jupyter-style)
+    --token <value>                   Persist an auth token to config
+                                      (survives restarts)
+    --clear-token                     Remove the persisted auth token
+    --no-auth                         Disable the auto-generated token
+                                      (trusted-local only)
+    --host <addr>                     Bind address (default 127.0.0.1)
+  exptrack ui-stop [--port 7331]    Kill a stale dashboard still holding
+                                      the port (uses fuser / lsof)
 ```

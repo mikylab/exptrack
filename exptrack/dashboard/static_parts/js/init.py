@@ -5,17 +5,23 @@ JS_INIT = r"""
 // Init — sidebar starts collapsed (opens when entering detail view)
 document.getElementById('exp-sidebar').classList.add('collapsed');
 syncHighlightCheckbox();
-loadTimezoneConfig();
-loadMetricSettings();
 renderTableHeader();
-loadAllTags();
-loadAllStudies();
-loadResultTypes();
-loadStats();
-loadExperiments().then(() => {
-  if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
-  // owl only speaks when clicked, not on page load
-});
+
+function _bootDashboard() {
+  loadTimezoneConfig();
+  loadMetricSettings();
+  loadAllTags();
+  loadAllStudies();
+  loadResultTypes();
+  loadStats();
+  loadExperiments().then(() => {
+    if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
+  });
+}
+
+// Gate data-loading on auth so we don't fire ~8 requests that all 401 at once
+// and leave downstream renderers reading {} responses.
+ensureAuth().then(ok => { if (ok) _bootDashboard(); });
 """
 
 # Study management UI — column-based studies with inline editing
