@@ -4,12 +4,8 @@ exptrack/dashboard/app.py — Web dashboard entry point (stdlib only, no Flask n
 Usage: python -m exptrack.dashboard.app [port]
        exptrack ui [--port 7331]
 
-SSH / controlling-terminal behaviour:
-    The dashboard is a foreground process. When its parent shell dies
-    (e.g. SSH disconnect) the kernel delivers SIGHUP and Python's default
-    handler terminates the process, which releases the listening port.
-    To keep the dashboard running past a disconnect use tmux/screen or
-    `nohup exptrack ui &`.
+The dashboard is a foreground process and dies on SSH disconnect (default
+SIGHUP behaviour). Use `nohup exptrack ui &`, tmux, or screen for persistence.
 """
 import errno
 import secrets

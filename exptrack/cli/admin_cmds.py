@@ -50,35 +50,25 @@ def cmd_ui(args):
 
 
 def cmd_ui_stop(args):
-    """Kill any process listening on the dashboard port.
-
-    Useful after an SSH disconnect leaves a dashboard holding the port,
-    or if the user started a dashboard in a different terminal and lost
-    the auto-generated token.
-    """
+    """Kill any process listening on the dashboard port."""
     import os
-    import signal as _signal
+    import signal
     import subprocess
     port = getattr(args, "port", 7331)
 
-    # Prefer `fuser` (Linux), fall back to `lsof` (macOS/BSD).
-    for tool, argv, parse in (
-        ("fuser", ["fuser", f"{port}/tcp"], "fuser"),
-        ("lsof",  ["lsof", "-ti", f"tcp:{port}"], "lsof"),
-    ):
+    # Both fuser (Linux) and lsof -ti (macOS/BSD) print PIDs to stdout
+    # whitespace-separated; fuser's "<port>/tcp:" header goes to stderr.
+    candidates = (
+        ["fuser", f"{port}/tcp"],
+        ["lsof", "-ti", f"tcp:{port}"],
+    )
+    for argv in candidates:
         try:
             result = subprocess.run(argv, capture_output=True, text=True, timeout=5)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
 
-        if parse == "fuser":
-            pids = [p for p in result.stderr.replace(f"{port}/tcp:", "").split()
-                    if p.isdigit()]
-            pids += [p for p in result.stdout.split() if p.isdigit()]
-        else:
-            pids = [p for p in result.stdout.split() if p.isdigit()]
-
-        pids = sorted(set(pids))
+        pids = sorted({p for p in result.stdout.split() if p.isdigit()})
         if not pids:
             print(dim(f"No process is listening on port {port}."), file=sys.stderr)
             return
@@ -86,7 +76,7 @@ def cmd_ui_stop(args):
         killed = []
         for pid in pids:
             try:
-                os.kill(int(pid), _signal.SIGTERM)
+                os.kill(int(pid), signal.SIGTERM)
                 killed.append(pid)
             except ProcessLookupError:
                 pass

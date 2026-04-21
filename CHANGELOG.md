@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-04-21
+
+### Added
+
+- **Auto-generated dashboard token** — `exptrack ui` now generates a per-session URL-safe token (`secrets.token_urlsafe`) when none is configured and prints a Jupyter-style URL with the token embedded. The token lives only in process memory: never persisted to `.exptrack/config.json`, never exported to the environment, so it can't leak to child processes. A fresh token is rolled on every restart. `--token` and `EXPTRACK_DASHBOARD_TOKEN` still take precedence when set
+- **`--no-auth` flag for `exptrack ui`** — opt out of the auto-generated token for fully-trusted local sessions
+- **`exptrack ui-stop --port N`** — kill a dashboard process still holding a port (useful after a parent shell died without propagating SIGHUP, or you lost the auto-generated token in a different terminal). Uses `fuser` (Linux) with an `lsof` fallback (macOS/BSD)
+- **EADDRINUSE hint** — `exptrack ui` now prints a helpful message pointing at `ui-stop` and `lsof -i :PORT` when the port is already taken
+
 ## [1.1.0] - 2026-04-20
 
 ### Added
