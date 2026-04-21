@@ -460,8 +460,9 @@ def test_fileurl_helper_exists():
     from exptrack.dashboard.static_parts.js.core import JS_CORE
 
     assert "function fileUrl(path)" in JS_CORE, "Core JS should define fileUrl() helper"
-    assert "_authUrl" in JS_CORE.split("function fileUrl")[1].split("\n")[0:3].__repr__(), (
-        "fileUrl() should use _authUrl internally"
+    body = JS_CORE.split("function fileUrl")[1].split("\n}\n", 1)[0]
+    assert "_authToken" in body and "token=" in body, (
+        "fileUrl() should forward the auth token as a query param"
     )
 
 
@@ -485,7 +486,7 @@ def test_all_file_urls_use_helper():
             if stripped.startswith('//') or stripped.startswith('*'):
                 continue
             # Allow the fileUrl definition itself
-            if 'function fileUrl' in stripped or "return _authUrl('/api/file/'" in stripped:
+            if 'function fileUrl' in stripped or "'/api/file/' + encodeURIComponent" in stripped:
                 continue
             bare_urls.append(f"  line {i}: {stripped[:100]}")
 

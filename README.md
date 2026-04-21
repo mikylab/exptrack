@@ -220,8 +220,10 @@ exptrack storage                   # show DB size and stats
 ## Dashboard Features
 
 ```bash
-exptrack ui          # opens http://localhost:7331
-exptrack ui --token secret   # with optional authentication
+exptrack ui                  # auto-generates a per-session token, prints URL
+exptrack ui --token secret   # set a persistent token (saved to .exptrack/config.json)
+exptrack ui --no-auth        # disable auth (local-only, trusted environments)
+exptrack ui-stop             # kill a stale dashboard still holding port 7331
 ```
 
 - **Experiment list** with status filters, search, sparkline charts, and customizable columns (resize, show/hide)

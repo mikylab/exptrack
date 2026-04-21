@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .admin_cmds import cmd_backup, cmd_compact, cmd_init, cmd_restore, cmd_run, cmd_stale, cmd_storage, cmd_ui, cmd_upgrade
+from .admin_cmds import cmd_backup, cmd_compact, cmd_init, cmd_restore, cmd_run, cmd_stale, cmd_storage, cmd_ui, cmd_ui_stop, cmd_upgrade
 from .inspect_cmds import (
     cmd_compare,
     cmd_diff,
@@ -312,9 +312,18 @@ def main():
     p_ui.add_argument("--port", type=int, default=7331)
     p_ui.add_argument("--host", type=str, default="127.0.0.1")
     p_ui.add_argument("--token", type=str, default=None,
-                       help="Set a dashboard auth token (saved to .exptrack/config.json)")
+                       help="Set a persistent dashboard auth token (saved to "
+                            ".exptrack/config.json). Without this a random "
+                            "per-session token is generated automatically.")
     p_ui.add_argument("--clear-token", action="store_true",
                        help="Remove the saved dashboard auth token")
+    p_ui.add_argument("--no-auth", action="store_true",
+                       help="Disable the auto-generated auth token (not "
+                            "recommended when binding to a non-local host)")
+
+    p_ui_stop = sub.add_parser("ui-stop",
+                                help="Kill a dashboard process still holding the port")
+    p_ui_stop.add_argument("--port", type=int, default=7331)
 
     p_storage = sub.add_parser("storage", help="Show data storage breakdown and tips")
     p_storage.add_argument("--checkpoint", action="store_true",
@@ -417,6 +426,7 @@ def main():
         "rm":           cmd_rm,
         "clean":        cmd_clean,
         "ui":           cmd_ui,
+        "ui-stop":      cmd_ui_stop,
     }
     try:
         dispatch[args.cmd](args)
