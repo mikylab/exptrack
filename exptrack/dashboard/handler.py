@@ -18,8 +18,26 @@ def get_db():
     return _get_db()
 
 
+_session_token: str = ""
+
+
+def set_session_token(token: str) -> None:
+    """Install an in-memory token for the running dashboard process.
+
+    Lives only for this process — not persisted to config and not exported
+    to the environment, so it cannot leak to child processes.
+    """
+    global _session_token
+    _session_token = token
+
+
 def _get_auth_token() -> str:
-    """Return the dashboard auth token from config or env, or empty string if none."""
+    """Return the dashboard auth token from the session, env, or config.
+
+    Precedence: explicit env var > saved config > in-process session token.
+    Env/config are honored first so a user who set a token on purpose always
+    wins over the auto-generated one.
+    """
     token = os.environ.get("EXPTRACK_DASHBOARD_TOKEN", "")
     if not token:
         try:
@@ -28,6 +46,8 @@ def _get_auth_token() -> str:
             token = conf.get("dashboard_token", "")
         except Exception:
             pass
+    if not token:
+        token = _session_token
     return token
 
 

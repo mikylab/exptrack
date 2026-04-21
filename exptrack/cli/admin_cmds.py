@@ -30,9 +30,9 @@ def cmd_run(args):
 
 def cmd_ui(args):
     from ..dashboard.app import main as ui_main
-    from ..dashboard.handler import _get_auth_token
     host = getattr(args, "host", "127.0.0.1")
     port = getattr(args, "port", 7331)
+    no_auth = getattr(args, "no_auth", False)
 
     # Handle --token / --clear-token (persist to config)
     if getattr(args, "clear_token", False):
@@ -46,14 +46,61 @@ def cmd_ui(args):
         cfg.save(conf)
         print(col("Dashboard token saved to .exptrack/config.json", G), file=sys.stderr)
 
-    token = _get_auth_token()
-    url = f"http://{host}:{port}"
-    if token:
-        print(col(f"Launching dashboard -> {url}?token={token}", C), file=sys.stderr)
-        print(col("Auth enabled -- use the URL above or add ?token=... to any request", G), file=sys.stderr)
-    else:
-        print(col(f"Launching dashboard -> {url}", C), file=sys.stderr)
-    ui_main(host=host, port=port)
+    ui_main(host=host, port=port, no_auth=no_auth)
+
+
+def cmd_ui_stop(args):
+    """Kill any process listening on the dashboard port.
+
+    Useful after an SSH disconnect leaves a dashboard holding the port,
+    or if the user started a dashboard in a different terminal and lost
+    the auto-generated token.
+    """
+    import os
+    import signal as _signal
+    import subprocess
+    port = getattr(args, "port", 7331)
+
+    # Prefer `fuser` (Linux), fall back to `lsof` (macOS/BSD).
+    for tool, argv, parse in (
+        ("fuser", ["fuser", f"{port}/tcp"], "fuser"),
+        ("lsof",  ["lsof", "-ti", f"tcp:{port}"], "lsof"),
+    ):
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+
+        if parse == "fuser":
+            pids = [p for p in result.stderr.replace(f"{port}/tcp:", "").split()
+                    if p.isdigit()]
+            pids += [p for p in result.stdout.split() if p.isdigit()]
+        else:
+            pids = [p for p in result.stdout.split() if p.isdigit()]
+
+        pids = sorted(set(pids))
+        if not pids:
+            print(dim(f"No process is listening on port {port}."), file=sys.stderr)
+            return
+
+        killed = []
+        for pid in pids:
+            try:
+                os.kill(int(pid), _signal.SIGTERM)
+                killed.append(pid)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                print(col(f"Permission denied killing PID {pid}.", R), file=sys.stderr)
+
+        if killed:
+            print(col(f"Sent SIGTERM to {', '.join(killed)} on port {port}.", G),
+                  file=sys.stderr)
+        return
+
+    print(col("Neither 'fuser' nor 'lsof' is available on this system. "
+              f"Find and kill the process manually (listening on port {port}).", Y),
+          file=sys.stderr)
 
 
 def cmd_stale(args):
