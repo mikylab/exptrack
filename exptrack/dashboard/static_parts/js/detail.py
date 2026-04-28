@@ -136,9 +136,28 @@ async function refreshDetail(id) {
     }
   }
 
-  const paramRows = Object.entries(regularParams).map(([k,v]) =>
-    `<tr><td style="color:var(--blue)">${esc(k)}</td><td>${esc(JSON.stringify(v))}</td></tr>`
-  ).join('');
+  const paramSources = exp.param_sources || {};
+  const paramRows = Object.entries(regularParams).map(([k,v]) => {
+    const src = paramSources[k] || 'auto';
+    const isManual = src === 'manual';
+    const keyColor = isManual ? 'var(--tl-metric)' : 'var(--blue)';
+    const keyAttrs = isManual
+      ? ` class="editable-hint" ondblclick="startParamRename('${exp.id}','${esc(k)}',this)" title="Double-click to rename"`
+      : '';
+    const valAttrs = isManual
+      ? ` class="editable-hint" ondblclick="startParamEdit('${exp.id}','${esc(k)}',this)" title="Double-click to edit"`
+      : '';
+    const delBtn = isManual
+      ? `<span class="result-del-x" onclick="event.stopPropagation();deleteParam('${exp.id}','${esc(k)}')" title="Delete">&times;</span>`
+      : '';
+    return `<tr><td style="color:${keyColor}"${keyAttrs}>${esc(k)}</td><td${valAttrs}>${esc(JSON.stringify(v))}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
+  }).join('');
+
+  const addParamForm = `<div class="artifact-add-form" style="margin-top:8px" id="add-param-form-${exp.id}">
+    <input type="text" id="param-key-${exp.id}" placeholder="Key" style="width:160px" onkeydown="if(event.key==='Enter')addParam('${exp.id}')">
+    <input type="text" id="param-val-${exp.id}" placeholder="Value (JSON or text)" style="width:200px" onkeydown="if(event.key==='Enter')addParam('${exp.id}')">
+    <button onclick="addParam('${exp.id}')">+ Add Param</button>
+  </div>`;
 
   // Build unified metrics rows grouped by prefix (train/*, test/*, val/*, etc.)
   function buildMetricRow(m, showFullKey) {
@@ -377,6 +396,7 @@ async function refreshDetail(id) {
         <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
         <button class="tab" onclick="switchDetailTab('logs','${exp.id}')">Data Files</button>
         <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
+        <button class="tab" onclick="switchDetailTab('confusion','${exp.id}')" title="Calculate accuracy, precision, recall, F1 from a confusion matrix">Confusion Matrix</button>
       </div>
 
       <div id="detail-tab-overview">
@@ -396,7 +416,11 @@ async function refreshDetail(id) {
               <span class="label">Uncommitted</span><span>${diffData.diff ? (diffCompacted ? '<span style="color:var(--yellow)">' + esc(diffData.diff.split(' — ')[1] || 'compacted') + '</span>' : '<span style="color:var(--green)">' + exp.diff_lines + ' lines</span> <button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:6px" onclick="exportDiff(\'' + exp.id + '\')">Export</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="compactDiff(\'' + exp.id + '\')">Compact</button>') : '<span style="color:var(--muted)">none (all changes were committed)</span>'}</span>
             </div>
             ${exp.command ? '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span><span><button class="copy-btn" onclick="saveReproduceToCommands(\'' + exp.id + '\')" title="Save to Commands notepad">&gt;_ Save</button><button class="copy-btn" data-cmd="' + esc(exp.command).replace(/"/g,'&quot;') + '" onclick="navigator.clipboard.writeText(this.dataset.cmd).then(()=>owlSay(\'Copied!\'))">Copy</button></span></div><code class="reproduce-cmd editable-hint" id="detail-command" ondblclick="startDetailCommandEdit(\'' + exp.id + '\')" title="Double-click to edit">' + esc(exp.command) + '</code></div>' : '<div class="reproduce-box"><div class="reproduce-header"><span class="label">Reproduce</span></div><code class="reproduce-cmd editable-hint" id="detail-command" ondblclick="startDetailCommandEdit(\'' + exp.id + '\')" title="Double-click to add command" style="color:var(--muted);cursor:pointer">double-click to add command</code></div>'}
-            ${paramRows ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Params (' + Object.keys(regularParams).length + ')<span class="section-actions" onclick="event.stopPropagation()"><button class="copy-btn" title="Copy as a markdown table — pastes into lab notebooks, Obsidian, GitHub, Jupyter markdown cells" onclick="copyExportFmt(\'' + exp.id + '\',\'params-md\')">Copy</button></span></h2><div class="section-body"><table class="params-table"><tr><th>Key</th><th>Value</th></tr>'+paramRows+'</table></div>' : ''}
+            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Params (${Object.keys(regularParams).length})<span class="section-actions" onclick="event.stopPropagation()"><button class="copy-btn" title="Copy as a markdown table — pastes into lab notebooks, Obsidian, GitHub, Jupyter markdown cells" onclick="copyExportFmt('${exp.id}','params-md')">Copy</button></span></h2>
+            <div class="section-body">
+            ${paramRows ? '<table class="params-table"><tr><th>Key</th><th>Value</th><th>Source</th></tr>'+paramRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No params yet.</p>'}
+            ${addParamForm}
+            </div>
             ${varHtml}
           </div>
           <!-- Right column: metrics + charts + artifacts -->
@@ -426,6 +450,7 @@ async function refreshDetail(id) {
       <div id="detail-tab-images" style="display:none"></div>
       <div id="detail-tab-logs" style="display:none"></div>
       <div id="detail-tab-compare-within" style="display:none"></div>
+      <div id="detail-tab-confusion" style="display:none"></div>
     </div>
   `;
 
@@ -484,6 +509,89 @@ function stopAutoRefresh() {
   _autoRefreshExpId = null;
   const badge = document.getElementById('live-badge');
   if (badge) badge.remove();
+}
+
+// ── Param mutations (manual params only) ────────────────────────────────────
+
+async function addParam(id) {
+  const keyEl = document.getElementById('param-key-' + id);
+  const valEl = document.getElementById('param-val-' + id);
+  if (!keyEl || !valEl) return;
+  const key = keyEl.value.trim();
+  const value = valEl.value;
+  if (!key) { owlSay('Enter a param key'); return; }
+  const d = await postApi('/api/experiment/' + id + '/add-param', {key, value});
+  if (d.ok) {
+    keyEl.value = ''; valEl.value = '';
+    refreshDetail(id);
+    loadExperiments();
+    owlSay('Added param ' + key);
+  } else {
+    alert(d.error || 'Failed to add param');
+  }
+}
+
+async function deleteParam(id, key) {
+  if (!confirm('Delete param "' + key + '"?')) return;
+  const d = await postApi('/api/experiment/' + id + '/delete-param', {key});
+  if (d.ok) { refreshDetail(id); loadExperiments(); }
+  else alert(d.error || 'Failed to delete param');
+}
+
+function startParamEdit(id, key, td) {
+  if (td.querySelector('input')) return;
+  const savedHtml = td.innerHTML;
+  // td contains JSON.stringify(value) — pull current text as the editing seed
+  const currentText = td.textContent.trim();
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = currentText;
+  input.style.cssText = 'width:100%;font-size:13px;padding:2px 4px;font-family:inherit;box-sizing:border-box';
+  td.innerHTML = '';
+  td.appendChild(input);
+  input.focus();
+  input.select();
+  const restore = () => { td.innerHTML = savedHtml; };
+  const save = async () => {
+    input.onblur = null;
+    const val = input.value;
+    if (val.trim() === currentText) { restore(); return; }
+    const d = await postApi('/api/experiment/' + id + '/edit-param', {key, value: val});
+    if (d.ok) { refreshDetail(id); loadExperiments(); }
+    else { restore(); alert(d.error || 'Failed'); }
+  };
+  input.onblur = save;
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+    else if (e.key === 'Escape') { input.onblur = null; restore(); }
+  };
+}
+
+function startParamRename(id, key, td) {
+  if (td.querySelector('input')) return;
+  const savedHtml = td.innerHTML;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = key;
+  input.style.cssText = 'width:100%;padding:2px 4px;font:inherit;border:1px solid var(--blue);border-radius:3px;background:var(--card-bg);color:var(--fg)';
+  td.innerHTML = '';
+  td.appendChild(input);
+  input.focus();
+  input.select();
+  const finish = async (save) => {
+    input.onblur = null;
+    if (save) {
+      const newKey = input.value.trim();
+      if (newKey && newKey !== key) {
+        const d = await postApi('/api/experiment/' + id + '/rename-param', {old_key: key, new_key: newKey});
+        if (d.ok) { refreshDetail(id); loadExperiments(); owlSay('Renamed: ' + newKey); return; }
+        else alert(d.error || 'Failed to rename');
+      }
+    }
+    td.innerHTML = savedHtml;
+  };
+  input.onkeydown = e => { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); };
+  input.onblur = () => finish(false);
 }
 
 async function _autoRefreshPoll() {

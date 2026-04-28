@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.5] - 2026-04-28
+
+### Changed
+
+- **Confusion matrix class names render in caps** — both the column header inputs and the mirrored row labels apply `text-transform: uppercase` so typing "class 1" displays as "CLASS 1" on both axes (the underlying value is preserved as-typed in storage and exports)
+- **Color picker + dark-mode-friendly heatmap** — new "Color" dropdown in the matrix toolbar lets you switch between Blue, Green, Purple, Orange, Teal, and Grey palettes (choice persists in localStorage). The on-screen heatmap now uses an alpha-based fill so empty cells stay transparent against the card background, which fixes the washed-out look in dark mode while keeping the same gradient feel in light mode. The PNG export lerps from white to the chosen accent so it stays clean on a white background
+
+## [1.4.4] - 2026-04-28
+
+### Changed
+
+- **Confusion matrix uses natural casing throughout** — dropped `text-transform: uppercase` from the axis labels ("Predicted" / "Actual"), the row/column "Total" labels, the metric stat labels, and the per-class table header. The PNG export now renders these in the same Title-case form. Domain abbreviations (TP/FP/FN/TN/F1) are kept since that's their conventional spelling
+
+## [1.4.3] - 2026-04-28
+
+### Changed
+
+- **Confusion matrix row labels match column labels** — row class names share the same font, size, padding, and centering as the column-header inputs, so the two axes look like one set of labels rather than two visually distinct fields
+- **Confusion matrix PNG export** — new "Export PNG" button rasterizes the matrix (with axis labels, totals, and the Blues heatmap) at 2× scale via SVG → canvas, ready to drop straight into a slide deck or paper
+
+## [1.4.2] - 2026-04-28
+
+### Changed
+
+- **Confusion matrix totals, exports, and palette** — the matrix now grows a "Total" column on the right and a "Total" row at the bottom showing per-row, per-column, and grand-total counts. Cells are shaded with a single sklearn-style Blues gradient (no more red/green) so colorblind viewers and dark-mode users can read it without the traffic-light palette. New buttons export the matrix as **CSV** (download), **Markdown** (clipboard), or **JSON** (clipboard) — labels, row/column totals, and grand total included
+
+## [1.4.1] - 2026-04-28
+
+### Changed
+
+- **Confusion matrix UX polish** — class names are now edited in one place (the column headers) and mirror onto the row headers, so labels stay in sync. Cells auto-fit large counts and drop the +/- spinner (counts can be pasted in directly). The "Actual" axis is rendered as a vertical sidebar that no longer overlaps row labels. A diagonal-green / off-diagonal-red heatmap shades each cell by relative magnitude so big confusions stand out at a glance. Per-class numbers in the results table are formatted with thousands separators
+
+## [1.4.0] - 2026-04-28
+
+### Added
+
+- **Confusion matrix calculator in the dashboard** — every experiment detail view gains a "Confusion Matrix" tab where you punch in raw counts (binary or NxN multi-class) and immediately see accuracy, per-class precision/recall/F1, plus macro and weighted aggregates. Class labels are editable, the matrix size is adjustable up to 20 classes, and "Save as metrics" pushes accuracy and macro/weighted precision/recall/F1 onto the experiment as manual metrics. Matrix state is persisted per-experiment in localStorage so it survives reloads
+- **Multi-line notes** — pressing Enter inside the inline notes editor now produces a real visual line break in the rendered notes; the detail view honors `\n` via `white-space: pre-wrap` so paragraphs read the way you typed them
+
+## [1.3.0] - 2026-04-28
+
+### Added
+
+- **Editable manual params in the dashboard** — params now carry a `source` ('auto' or 'manual') alongside their value. Auto params (captured from the script via argparse/argv) are read-only with an "auto" badge; manual params (created via the New Experiment modal or the per-experiment "+ Add Param" form) get a "manual" badge and full inline-edit support: double-click the key to rename, double-click the value to edit, click `×` to delete. New endpoints: `/api/experiment/<id>/{add-param,edit-param,delete-param,rename-param}`
+- **Per-experiment "+ Add Param" form** — every experiment detail view (auto or manual) gains a small form below the params table for attaching extra manual params after the run. Refuses to overwrite any existing key — to update a value, double-click to edit; to swap an auto key, pick a different name. Values are JSON-decoded when possible (so `50` stays a number, `true` stays a boolean) and fall back to a plain string otherwise
+
+### Changed
+
+- **`params` table now has a `source` column** — automatic ALTER TABLE migration on first run. Backfill marks params on manually-created experiments (those with NULL `hostname`/`python_ver`) as `manual`; everything else stays `auto`. Existing reads via `get_experiment_detail` are unchanged in shape; a new sibling `param_sources` map exposes per-key origin to the dashboard
+
 ## [1.2.0] - 2026-04-21
 
 ### Added

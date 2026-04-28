@@ -298,6 +298,22 @@ def _ensure_schema(conn):
     except Exception as e:
         print(f"[exptrack] warning: metrics source migration error: {e}", file=sys.stderr)
 
+    # Add source column to params (auto vs manual). Backfill existing params
+    # on manually-created experiments (hostname/python_ver are NULL there).
+    try:
+        pcols = {row[1] for row in conn.execute("PRAGMA table_info(params)").fetchall()}
+        if "source" not in pcols:
+            conn.execute("ALTER TABLE params ADD COLUMN source TEXT DEFAULT 'auto'")
+            conn.execute(
+                "UPDATE params SET source='manual' WHERE exp_id IN "
+                "(SELECT id FROM experiments "
+                " WHERE hostname IS NULL AND python_ver IS NULL)"
+            )
+    except sqlite3.OperationalError:
+        pass
+    except Exception as e:
+        print(f"[exptrack] warning: params source migration error: {e}", file=sys.stderr)
+
     # Add output_dir, studies, stage columns to experiments if missing
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(experiments)").fetchall()}
