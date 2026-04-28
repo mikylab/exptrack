@@ -362,7 +362,7 @@ CSS_COMPONENTS = """
   .editable-hint:hover { border-bottom-color: var(--blue); }
   .detail-tags-inline { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .detail-tags-inline .tag-input-area { display: inline-flex; align-items: center; }
-  .detail-notes-inline { cursor: text; min-height: 28px; padding: 6px; border-radius: 4px; }
+  .detail-notes-inline { cursor: text; min-height: 28px; padding: 6px; border-radius: 4px; white-space: pre-wrap; }
   .detail-notes-inline:hover { background: rgba(44,90,160,0.05); }
   .owl-mascot { cursor: pointer; transition: transform 0.3s; display: inline-block; }
   .owl-mascot:hover { transform: scale(1.2) rotate(-5deg); }
@@ -430,4 +430,44 @@ CSS_COMPONENTS = """
   .live-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--green); padding: 2px 8px; border-radius: 10px; background: rgba(45,125,70,0.1); margin-left: 6px; }
   .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: livePulse 1.5s ease-in-out infinite; }
   @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* Confusion matrix calculator */
+  .conf-wrap { padding: 8px 4px; }
+  .conf-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .conf-controls label { font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .conf-controls input[type="number"] { width: 64px; padding: 4px 6px; font-family: inherit; font-size: 13px; background: var(--code-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; }
+  .conf-controls select { padding: 4px 6px; font-family: inherit; font-size: 13px; background: var(--code-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; }
+  .conf-hint { color: var(--muted); font-size: 12px; }
+  table.conf-matrix { border-collapse: collapse; margin-bottom: 18px; }
+  table.conf-matrix th, table.conf-matrix td { border: 1px solid var(--border); padding: 0; }
+  table.conf-matrix .conf-axis { text-align: center; font-size: 12px; color: var(--muted); padding: 4px 6px; font-weight: 500; background: var(--code-bg); }
+  table.conf-matrix .conf-corner { background: transparent; border: none; }
+  table.conf-matrix .conf-actual-axis { background: var(--code-bg); width: 22px; vertical-align: middle; text-align: center; }
+  table.conf-matrix .conf-actual-axis span { display: inline-block; transform: rotate(-90deg); white-space: nowrap; font-size: 12px; color: var(--muted); }
+  table.conf-matrix .conf-row-head { background: var(--code-bg); padding: 0; max-width: 140px; }
+  table.conf-matrix .conf-row-label-text { display: block; box-sizing: border-box; width: 100%; min-width: 70px; max-width: 140px; padding: 5px 8px; font-family: inherit; font-size: 12px; color: var(--fg); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: uppercase; }
+  table.conf-matrix .conf-col-head { background: var(--code-bg); padding: 0; }
+  .conf-label { width: 100%; min-width: 70px; box-sizing: border-box; padding: 5px 8px; font-family: inherit; font-size: 12px; background: transparent; color: var(--fg); border: none; text-align: center; text-transform: uppercase; }
+  .conf-label:focus { outline: 1px solid var(--blue); background: var(--card-bg); }
+  .conf-cell-td { padding: 0; min-width: 80px; }
+  .conf-cell { width: 100%; min-width: 80px; box-sizing: border-box; padding: 8px 10px; font-family: inherit; font-size: 14px; text-align: right; background: transparent; border: none; }
+  .conf-cell:focus { outline: 2px solid var(--blue); outline-offset: -2px; }
+  .conf-cell.conf-diag { font-weight: 600; }
+  table.conf-matrix .conf-total-corner { font-size: 12px; color: var(--muted); padding: 4px 8px; background: var(--code-bg); text-align: center; }
+  table.conf-matrix .conf-total-cell { padding: 8px 10px; text-align: right; font-size: 13px; color: var(--muted); background: var(--code-bg); font-variant-numeric: tabular-nums; }
+  table.conf-matrix .conf-totals-row .conf-row-head { color: var(--muted); font-size: 12px; text-align: center; }
+  table.conf-matrix .conf-grand-total { font-weight: 600; color: var(--fg); }
+  /* Hide number-input spinner arrows */
+  .conf-cell[type="number"]::-webkit-inner-spin-button,
+  .conf-cell[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  .conf-cell[type="number"] { -moz-appearance: textfield; }
+  .conf-summary { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .conf-stat { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px 14px; min-width: 110px; }
+  .conf-stat-label { font-size: 12px; color: var(--muted); }
+  .conf-stat-value { font-size: 18px; font-weight: 600; color: var(--fg); margin-top: 2px; }
+  table.conf-perclass { border-collapse: collapse; font-size: 13px; }
+  table.conf-perclass th, table.conf-perclass td { border: 1px solid var(--border); padding: 4px 10px; text-align: right; }
+  table.conf-perclass th:first-child, table.conf-perclass td:first-child { text-align: left; }
+  table.conf-perclass thead th { background: var(--code-bg); color: var(--muted); font-weight: 500; font-size: 12px; }
+  table.conf-perclass tr.conf-agg { background: var(--code-bg); font-style: italic; }
 """

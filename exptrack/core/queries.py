@@ -63,7 +63,8 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
 
     full_id = exp["id"]
     params = conn.execute(
-        "SELECT key, value FROM params WHERE exp_id=? ORDER BY key",
+        "SELECT key, value, COALESCE(source, 'auto') as source "
+        "FROM params WHERE exp_id=? ORDER BY key",
         (full_id,)
     ).fetchall()
     metrics = conn.execute("""
@@ -103,6 +104,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "stage": exp["stage"],
         "stage_name": exp["stage_name"],
         "params": {p["key"]: json.loads(p["value"]) for p in params},
+        "param_sources": {p["key"]: p["source"] for p in params},
         "metrics": [{
             "key": m["key"], "last": m["last_v"],
             "min": m["min_v"], "max": m["max_v"], "n": m["n"],

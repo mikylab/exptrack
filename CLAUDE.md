@@ -141,6 +141,7 @@ exptrack/
         studies.py            Study management UI
         stage.py              Stage/pipeline state tracking
         manual.py             Manual experiment creation modal
+        confusion.py          Confusion matrix calculator tab (per-experiment)
         init.py               Page initialization, event binding
     js/
       __init__.py             Convenience re-exports with short aliases
@@ -162,7 +163,7 @@ exptrack/
 - **`notebook.py`** — `%load_ext exptrack` magic + explicit API (`start()`, `metric()`, `metrics()`, `param()`, `tag()`, `note()`, `artifact()`, `out()`, `done()`, `current()`). Deferred experiment creation (skips `%load_ext` cell itself)
 - **`cli/`** — 24 subcommands across 4 modules. ANSI-colored terminal output. Shell pipeline commands (`run-start`/`run-finish`/`run-fail`) print to stdout for `eval $()` capture, everything else to stderr
 - **`plugins/__init__.py`** — `Plugin` base class with 4 lifecycle hooks (`on_start`, `on_finish`, `on_fail`, `on_metric`). `registry` singleton loads plugins dynamically from config
-- **`dashboard/`** — Web UI: stats cards, experiment list with filters, detail view with overview chart preview, dedicated Charts tab (single/all view with scale controls and configurable downsampling), timeline view with cell source viewer, compare view (pair + multi), image comparison, git diff viewer. Image artifacts only display in the Images tab and Compare view (not in the overview artifacts table). Reproduce box with inline editing and Save-to-Commands (reads current DOM text, includes tags/study). Commands notepad with inline-adjustable code and modified indicator. Inline editing (double-click), tag autocomplete, timezone selector, bulk operations, studies/stages, manual experiment creation, export (JSON/Markdown/Plain Text). Fully modularized: 13 CSS modules in `static_parts/css/`, 16 JS modules in `static_parts/js/`, routes split into `routes/read_routes.py` and `routes/write_routes.py`
+- **`dashboard/`** — Web UI: stats cards, experiment list with filters, detail view with overview chart preview, dedicated Charts tab (single/all view with scale controls and configurable downsampling), timeline view with cell source viewer, compare view (pair + multi), image comparison, git diff viewer, per-experiment Confusion Matrix tab (binary or NxN, computes accuracy/precision/recall/F1 with macro and weighted aggregates; "Save as metrics" persists results via `/api/experiment/<id>/log-result`; matrix state stored in localStorage). Image artifacts only display in the Images tab and Compare view (not in the overview artifacts table). Reproduce box with inline editing and Save-to-Commands (reads current DOM text, includes tags/study). Commands notepad with inline-adjustable code and modified indicator. Inline editing (double-click), tag autocomplete, timezone selector, bulk operations, studies/stages, manual experiment creation, export (JSON/Markdown/Plain Text). Fully modularized: 13 CSS modules in `static_parts/css/`, 16 JS modules in `static_parts/js/`, routes split into `routes/read_routes.py` and `routes/write_routes.py`
 
 ## Key Design Patterns
 
@@ -183,13 +184,14 @@ exptrack/
 - **Timeline-based tracking**: Every event (cell_exec, var_set, artifact, metric, observational) gets a sequence number for full execution order reconstruction
 - **Metric thinning**: Two-layer system for large metric series. Write-time: `thin_every` param on Experiment or `metric_keep_every` in config stores every Nth point. Read-time: min-max bucketing downsamples for chart display. Configurable via dashboard settings or `metric_max_points` in config
 - **Metric source tracking**: Metrics tagged as auto/manual/pipeline via `source` column. Manual metrics cannot overwrite auto points at the same step. Metrics table splits rows by source for clarity
+- **Param source tracking**: Params tagged as auto/manual via `source` column. Auto params (captured by argparse/argv) are read-only in the dashboard; manual params (added via the manual-experiment modal or the per-experiment "+ Add Param" form) can be edited, renamed, or deleted inline. `+ Add Param` refuses to overwrite an existing key — to change a value, double-click to edit; to swap an auto key, delete is blocked, so pick a different key. Endpoints: `/api/experiment/<id>/{add-param,edit-param,delete-param,rename-param}`
 
 ## Database Schema
 
 SQLite WAL mode with 7 tables:
 
 - **`experiments`** — run metadata (id, name, status, created_at, duration_s, git_branch, git_commit, git_diff, hostname, python_ver, notes, tags, output_dir)
-- **`params`** — key/value pairs (exp_id, key, value as JSON string)
+- **`params`** — key/value pairs (exp_id, key, value as JSON string, source). Source is 'auto' (captured from script/argparse) or 'manual' (added via dashboard or `api_create_experiment`). Auto params are read-only in the UI; manual params can be edited, renamed, and deleted via dashboard inline editing
 - **`metrics`** — float values (exp_id, key, value, step, ts, source). Source is 'auto' (from scripts), 'manual' (dashboard), or 'pipeline' (CLI)
 - **`artifacts`** — output files (exp_id, label, path, content_hash, size_bytes, timeline_seq, created_at)
 - **`timeline`** — execution events (exp_id, seq, event_type, cell_hash, cell_pos, key, value, prev_value, source_diff, ts)
@@ -235,7 +237,7 @@ The dashboard has been fully modularized. `static.py` is a thin assembler (~10 l
 
 **Current structure:**
 - **`static_parts/css/`** — 13 CSS modules (reset, layout, cards, table, detail, charts, code, timeline, compare, components, studies, images). Each exports a single string constant. `get_all_css()` assembles them
-- **`static_parts/js/`** — 16 JS modules (core, owl, sidebar, table, experiments, inline_edit, detail, charts, compare, mutations, timeline, image_compare, studies, stage, manual, init). `get_all_js()` assembles them
+- **`static_parts/js/`** — JS modules (core, owl, sidebar, table, experiments, inline_edit, detail, charts, compare, mutations, timeline, image_compare, studies, stage, manual, todos, commands, confusion, init). `get_all_js()` assembles them
 - **`static_parts/html.py`** — HTML_HEAD, HTML_BODY, HTML_FOOTER
 - **`static_parts/styles.py`** and **`static_parts/scripts.py`** — thin re-export shims for backward compatibility
 - **`dashboard/js/__init__.py`** — convenience re-exports with short aliases (e.g., `from exptrack.dashboard.js import core`)
@@ -247,3 +249,13 @@ The dashboard has been fully modularized. `static.py` is a thin assembler (~10 l
 - All API calls should go through `api()` (GET) or `postApi()` (POST) helpers
 - New UI features should follow the inline-editing pattern (double-click to edit, Enter/Escape to save/cancel)
 - CSS custom properties (variables) are defined in `:root` — use them instead of hardcoded colors
+
+## Rules for Changes
+
+Every user-visible change (new feature, bug fix, behavior change) must update **all three** of the following before commit:
+
+1. **`CLAUDE.md`** — keep the codebase documentation in sync. Update the relevant sections (Architecture, Key modules, Key Design Patterns, Database Schema, Configuration) so this file accurately reflects the current state
+2. **`CHANGELOG.md`** — add an entry under the current unreleased version using the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Use `### Added` / `### Changed` / `### Fixed` / `### Removed` sub-headings. Lead each bullet with a bolded short title (e.g. `**Param editing in the dashboard**`) followed by a one-sentence description of what changed and why a user should care
+3. **`pyproject.toml`** — bump the `version` field. Patch (`x.y.Z+1`) for bug fixes; minor (`x.Y+1.0`) for new features or schema migrations; major (`X+1.0.0`) for breaking API changes. The `__version__` exposed in `exptrack/__init__.py` reads from package metadata, so this is the single source of truth
+
+Internal-only refactors with no user-visible effect (e.g. moving a helper, renaming a private function) may skip the changelog and version bump, but should still update `CLAUDE.md` if the structural map changes.

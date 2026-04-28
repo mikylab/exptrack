@@ -10,10 +10,10 @@ function switchDetailTab(tab, expId) {
   currentDetailTab = tab;
   currentDetailExpId = expId;
   document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
-    const tabs = ['overview','timeline','charts','images','logs','compare-within'];
+    const tabs = ['overview','timeline','charts','images','logs','compare-within','confusion'];
     t.classList.toggle('active', tabs[i] === tab);
   });
-  ['overview','timeline','charts','images','logs','compare-within'].forEach(t => {
+  ['overview','timeline','charts','images','logs','compare-within','confusion'].forEach(t => {
     const el = document.getElementById('detail-tab-'+t);
     if (el) el.style.display = t === tab ? '' : 'none';
   });
@@ -23,6 +23,7 @@ function switchDetailTab(tab, expId) {
   if (tab === 'images') loadImages(expId);
   if (tab === 'logs') loadLogs(expId);
   if (tab === 'compare-within') loadCompareWithin(expId);
+  if (tab === 'confusion') loadConfusionTab(expId);
 }
 
 // ── Timeline visualization ───────────────────────────────────────────────────
