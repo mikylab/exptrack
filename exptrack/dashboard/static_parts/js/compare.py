@@ -54,20 +54,10 @@ async function _fetchExportText(id, fmt) {
   return {text, filename: name + (ext[fmt] || '.txt'), mime};
 }
 
-function _downloadBlob(text, filename, mime) {
-  const blob = new Blob([text], {type: mime || 'text/plain'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
 async function downloadExportFmt(id, fmt) {
   owlSpeak('export');
   const d = await _fetchExportText(id, fmt);
-  _downloadBlob(d.text, d.filename, d.mime);
-  owlSay('Downloaded ' + d.filename);
+  await saveOrDownload(d.text, d.filename, d.mime);
 }
 
 async function copyExportFmt(id, fmt) {

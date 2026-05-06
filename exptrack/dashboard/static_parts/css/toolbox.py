@@ -18,7 +18,8 @@ CSS_TOOLBOX = """
   .toolbox-overlay.visible { opacity: 1; pointer-events: auto; }
 
   .toolbox-drawer {
-    position: fixed; top: 0; right: -480px; bottom: 0; width: 460px;
+    position: fixed; top: 0; right: calc(-1 * (var(--toolbox-w, 460px) + 20px));
+    bottom: 0; width: var(--toolbox-w, 460px);
     background: var(--card-bg); border-left: 1px solid var(--border);
     box-shadow: -4px 0 20px rgba(0,0,0,0.12); z-index: 1000;
     display: flex; flex-direction: column;
@@ -26,11 +27,57 @@ CSS_TOOLBOX = """
   }
   .toolbox-drawer.visible { right: 0; }
 
+  /* Pinned mode: drawer stays open as a persistent right panel; main content
+     and header are pushed left to make room. No backdrop overlay. */
+  .toolbox-drawer.pinned {
+    box-shadow: none; transition: none;
+    border-left: 1px solid var(--border);
+  }
+  body.toolbox-pinned .header,
+  body.toolbox-pinned #app-layout {
+    margin-right: var(--toolbox-w, 460px);
+  }
+  body.toolbox-pinned { overflow-x: hidden; }
+  body.toolbox-pinned .toolbox-overlay { display: none !important; }
+
+  /* Drag-to-resize handle on the drawer's left edge (visible only when pinned) */
+  .toolbox-resize-handle {
+    position: absolute; left: -3px; top: 0; bottom: 0; width: 6px;
+    cursor: ew-resize; background: transparent; z-index: 1001;
+    display: none;
+  }
+  .toolbox-drawer.pinned .toolbox-resize-handle { display: block; }
+  .toolbox-resize-handle:hover,
+  .toolbox-resize-handle.dragging { background: var(--blue); opacity: 0.4; }
+  body.toolbox-resizing { cursor: ew-resize !important; user-select: none; }
+  body.toolbox-resizing * { cursor: ew-resize !important; }
+
   .toolbox-header {
     display: flex; justify-content: space-between; align-items: center;
     padding: 14px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    gap: 6px;
   }
-  .toolbox-header h3 { font-size: 15px; font-weight: 600; margin: 0; }
+  .toolbox-header h3 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
+  .toolbox-header-actions { display: flex; gap: 4px; align-items: center; }
+
+  .toolbox-pin-btn {
+    background: none; border: 1px solid var(--border); cursor: pointer;
+    color: var(--muted); padding: 4px 8px; border-radius: 3px;
+    font-family: inherit; font-size: 13px;
+  }
+  .toolbox-pin-btn:hover { color: var(--fg); background: var(--code-bg); }
+  .toolbox-pin-btn.active { color: var(--blue); border-color: var(--blue); }
+
+  .toolbox-export-row {
+    display: flex; gap: 4px; margin-bottom: 10px; justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  .toolbox-export-btn {
+    font-family: inherit; font-size: 11px; padding: 3px 9px;
+    background: var(--code-bg); border: 1px solid var(--border);
+    cursor: pointer; border-radius: 3px; color: var(--muted);
+  }
+  .toolbox-export-btn:hover { color: var(--fg); border-color: var(--blue); }
 
   .toolbox-tabs {
     display: flex; gap: 0; border-bottom: 1px solid var(--border); flex-shrink: 0;

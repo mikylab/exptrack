@@ -50,6 +50,14 @@ HTML_BODY = r"""</style>
               <option value="Australia/Sydney">Sydney</option>
             </select>
           </div>
+          <div class="settings-row">
+            <label title="Keep the Todos / Commands panel pinned to the side instead of opening as a popout">Pin Todos / Commands panel</label>
+            <input type="checkbox" id="settings-toolbox-pin" onchange="setToolboxPinned(this.checked)">
+          </div>
+          <div class="settings-row">
+            <label title="Write exports to <project>/exports/ instead of downloading via the browser. Existing files are never overwritten — a numeric suffix is added on conflict.">Save exports to project folder</label>
+            <input type="checkbox" id="settings-export-to-folder" onchange="setExportToFolder(this.checked)">
+          </div>
         </div>
         <div class="settings-section">
           <div class="settings-section-title">Metrics</div>
@@ -365,9 +373,13 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
 
 <div class="toolbox-overlay" id="toolbox-overlay" onclick="closeToolbox()"></div>
 <div class="toolbox-drawer" id="toolbox-drawer">
+  <div class="toolbox-resize-handle" id="toolbox-resize-handle" onmousedown="startToolboxResize(event)" title="Drag to resize"></div>
   <div class="toolbox-header">
     <h3 id="toolbox-title">Toolbox</h3>
-    <button class="toolbox-close" onclick="closeToolbox()">&times;</button>
+    <div class="toolbox-header-actions">
+      <button class="toolbox-pin-btn" id="toolbox-pin-btn" onclick="toggleToolboxPin()" title="Pin as persistent side panel">&#128204;</button>
+      <button class="toolbox-close" onclick="closeToolbox()">&times;</button>
+    </div>
   </div>
   <div class="toolbox-tabs">
     <button class="toolbox-tab active" data-tab="todos" onclick="switchToolboxTab('todos')">&#9745; Todos</button>
@@ -396,6 +408,11 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
         <span id="todo-study-filters"></span>
         <span class="todo-count" id="todo-count"></span>
       </div>
+      <div class="toolbox-export-row">
+        <button class="toolbox-export-btn" onclick="exportTodos('md')" title="Download as Markdown">&#x2913; .md</button>
+        <button class="toolbox-export-btn" onclick="exportTodos('txt')" title="Download as plain text">&#x2913; .txt</button>
+        <button class="toolbox-export-btn" onclick="exportTodos('json')" title="Download as JSON">&#x2913; .json</button>
+      </div>
       <div class="todo-list" id="todo-list"></div>
     </div>
     <div class="toolbox-panel" id="toolbox-commands">
@@ -410,6 +427,11 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
       <div class="cmd-filters">
         <span id="cmd-tag-filters"></span>
         <span id="cmd-study-filters"></span>
+      </div>
+      <div class="toolbox-export-row">
+        <button class="toolbox-export-btn" onclick="exportCommands('sh')" title="Download as shell script">&#x2913; .sh</button>
+        <button class="toolbox-export-btn" onclick="exportCommands('md')" title="Download as Markdown">&#x2913; .md</button>
+        <button class="toolbox-export-btn" onclick="exportCommands('json')" title="Download as JSON">&#x2913; .json</button>
       </div>
       <div class="cmd-list" id="cmd-list"></div>
     </div>

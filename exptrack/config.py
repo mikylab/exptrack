@@ -13,6 +13,7 @@ from pathlib import Path
 DEFAULTS: dict = {
     "db":                    ".exptrack/experiments.db",
     "outputs_dir":           "outputs",
+    "exports_dir":           "exports",
     "notebook_history_dir":  ".exptrack/notebook_history",
     "max_git_diff_kb":       256,
     "artifact_strategy":     "reference",   # "reference" (no copy) | "copy" (legacy)

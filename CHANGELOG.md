@@ -4,6 +4,89 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.4] - 2026-05-06
+
+### Fixed
+
+- **Detail canvas no longer scrolls horizontally and hides content on the left** — reverted `#main-content` to `overflow-x: hidden`. With `overflow: auto`, focusing an input (e.g. the "Add Path" field on the Data Files tab) auto-scrolled the canvas to the right and tucked the start of every line behind the left edge. Now horizontal scroll is opt-in per-element instead of canvas-wide
+- **Tab bar wraps to a second row when squeezed** — `.tabs` now `flex-wrap: wrap`, so Timeline / Charts / Images / Data Files / Compare Within / Confusion Matrix flow onto a new row instead of one being shoved past the edge when both sidebars are open
+- **Confusion matrix and per-class table scroll inside their own area** — re-added `max-width: 100%; overflow-x: auto` on `#conf-matrix-area` and `#conf-results` only (not on the whole canvas), so a wide NxN grid gets its own scrollbar without anything else on the page being affected
+
+## [1.7.3] - 2026-05-06
+
+### Fixed
+
+- **Wide content (confusion matrix etc.) is reachable instead of clipped** — `#main-content` switched from `overflow-x: hidden` to `overflow-x: auto`. Previously a wide unbreakable element (NxN confusion matrix grid) was being clipped against the canvas edge with no way to see the rest. Now the canvas itself scrolls horizontally when content can't shrink, so nothing is hidden. Removed the inner `overflow-x: auto` wrap on the matrix areas — it was causing the matrix to vanish behind a narrow inner scroll region instead of letting the canvas scroll naturally
+
+## [1.7.2] - 2026-05-06
+
+### Fixed
+
+- **Confusion matrix no longer overflows the canvas** — `#conf-matrix-area` and `#conf-results` (per-class table) now scroll horizontally inside the detail panel instead of pushing past the right edge when both the experiments sidebar and a pinned Todos / Commands panel are open
+- **Confusion matrix Compare view stacks based on canvas width** — switched the `.conf-compare-grid` two-column → one-column breakpoint from a viewport `@media` rule to the same `@container main` query used by the rest of the detail layout
+- **Detail two-column layout keeps both columns longer** — bumped the `.detail-grid` stack threshold from 760px to 980px (and `.info-grid` from 520px to 600px) so two columns only collapse when the canvas is genuinely too narrow, not while there's still comfortable room
+
+## [1.7.1] - 2026-05-06
+
+### Changed
+
+- **Configurable exports directory** — `exports_dir` (default `"exports"`) is now a config key, matching the `outputs_dir` convention. `api_save_export` reads it from `config.json` instead of hard-coding the folder name
+- **`api_save_export` collision fallback** — capped numeric-suffix retries at 999 (down from 9999) and added a microsecond-timestamp fallback after that, so the endpoint never silently fails on a saturated exports directory
+- **`saveOrDownload` surfaces server errors** — when the server returns `{error: "..."}`, the dashboard toast now includes the message before falling back to a browser download
+- **`setExportToFolder` storage style** — writes `'true'`/`'false'` via `_storageSet` for both states, matching the rest of the dashboard's preference handling instead of using `removeItem` for false
+
+## [1.7.0] - 2026-05-06
+
+### Added
+
+- **Save exports to project folder (no overwrite)** — a new "Save exports to project folder" toggle under Settings → Display routes every download (Todos, Commands, experiment exports, bulk exports) to `<project_root>/exports/` instead of the browser. The server picks a non-conflicting filename by appending `_2`, `_3`, … so existing files are never overwritten. Backed by a new `POST /api/save-export` endpoint and the unified `saveOrDownload(text, filename, mime)` helper in `js/core.py`
+
+### Changed
+
+- **Toolbox tab switches no longer re-fetch from the API** — Todos / Commands are loaded once per session; subsequent tab switches just re-render local state. Mutations still refresh from the server
+- **Toolbox resize is RAF-throttled** — drag updates coalesce on `requestAnimationFrame` and a single cached `innerWidth` per drag, eliminating the per-mousemove style invalidation hot loop. Drag also recovers cleanly if focus leaves the window mid-drag
+- **Single source of truth for toolbox boot** — pin classes apply synchronously at module load (no FOUC), data loading happens once via `_bootDashboard` after auth clears, removing the previous double-fetch path
+- **Shared `downloadBlob` helper** — promoted to `js/core.py`; new toolbox exports and the experiment Compare/Export flow now share it. The new `saveOrDownload` wraps it with the project-folder option
+
+## [1.6.3] - 2026-05-06
+
+### Fixed
+
+- **Experiment-list cards no longer overflow the sidebar** — `.exp-card-name` is now a `flex: 1; min-width: 0` flex item so long names truncate with an ellipsis instead of pushing the card past the 280px sidebar width
+- **"edit" / "del" / "view" buttons no longer wrap letter-by-letter** — added `white-space: nowrap` to artifact-action buttons and the notes "edit" overlay so their text stays on one line when the canvas is squeezed by a pinned Todos/Commands panel. The `.artifact-actions` row also wraps to a new line as a whole rather than letting the cell shrink each button
+- **Detail layout stacks based on canvas width, not viewport width** — `#main-content` is now a CSS containment context (`container-type: inline-size`), and the two-up `.detail-grid` plus the `.info-grid` label/value pairs collapse to a single column once the canvas itself drops below 760px / 520px. Previously the stacking only triggered on a narrow viewport, so a pinned right panel could squeeze the canvas without ever flipping to single-column
+- **Reverted forced equal-width columns on params/metrics tables** — `table-layout: fixed` was distributing the 6 metric columns equally, leaving badge / source cells too narrow. Returned to natural column sizing while keeping `word-break: break-word` so long values still wrap
+
+## [1.6.2] - 2026-05-06
+
+### Fixed
+
+- **Detail overview no longer overflows the main canvas** — `#main-content` now clips horizontal overflow so wide content (long values in info-grid, params, metrics) wraps instead of pushing past the viewport edge when the Todos / Commands panel is pinned. Params and metrics tables use `table-layout: fixed` with `word-break: break-word` so long values wrap in-cell, and info-grid value columns use `minmax(0, 1fr)` so long paths and commit hashes wrap rather than expanding the grid
+
+## [1.6.1] - 2026-05-06
+
+### Added
+
+- **Resizable Todos / Commands panel** — when the toolbox is pinned, drag the divider on its left edge to make the panel narrower or wider (clamped to 260–800px). Width persists across reloads in `localStorage` (`exptrack-toolbox-w`)
+
+### Fixed
+
+- **Pinned panel no longer pushes content off-screen** — the layout shift now uses a CSS variable (`--toolbox-w`) tied to the drawer width, and `body.toolbox-pinned` clips horizontal overflow so resizing the panel correctly reflows the header and main canvas instead of producing a horizontal scrollbar
+
+## [1.6.0] - 2026-05-06
+
+### Added
+
+- **Persistent Todos / Commands side panel** — the toolbox drawer (Todos & Commands) can now be pinned as a persistent right-side panel, mirroring the experiment sidebar on the left. Pin via the new pushpin button in the drawer header or via the new "Pin Todos / Commands panel" checkbox under Settings → Display. When pinned, the drawer stays open across navigation, the page content is shifted to make room, and clicking the Todo / Cmds header buttons just switches tabs instead of toggling. Pin state and last-active tab persist in localStorage (`exptrack-toolbox-pinned`, `exptrack-toolbox-tab`)
+- **Export Todos and Commands** — each toolbox panel now has download buttons. Todos export as `.md` (grouped Active / Done with checkboxes), `.txt`, or `.json`. Commands export as `.sh` (runnable script with label / tags / study comments), `.md` (fenced code blocks), or `.json`
+
+## [1.5.1] - 2026-05-06
+
+### Fixed
+
+- **Dark-mode contrast across the dashboard** — added `color-scheme: light` / `color-scheme: dark` to `:root` and `body.dark` so browser-rendered form controls (text inputs, selects, number spinners, scrollbars) flip to dark UA defaults instead of leaving black-on-white text scattered through the UI when dark mode is on
+- **Confusion matrix readability in dark mode** — heatmap cells now brighten the palette and use a higher base alpha so low-intensity fills are visible against the dark card background, and any filled cell uses white text in dark mode (instead of switching at 0.55 intensity, which left mid-range cells with low-contrast gray text)
+
 ## [1.5.0] - 2026-05-01
 
 ### Added

@@ -9,7 +9,7 @@ CSS_CARDS = """
   .status-dot.status-done { background: var(--green); }
   .status-dot.status-failed { background: var(--red); }
   .status-dot.status-running { background: var(--yellow); }
-  .exp-card-name { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .exp-card-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .exp-card-meta { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .exp-card-tags { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .exp-card-tags .tag { font-size: 12px; padding: 2px 6px; margin-left: 0; margin-right: 3px; }

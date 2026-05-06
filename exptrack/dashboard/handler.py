@@ -253,6 +253,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/storage-info":         lambda: write_routes.api_storage_info(conn),
             "/api/propagate-tag-rename": lambda: write_routes.api_propagate_tag_rename(body),
             "/api/propagate-study-rename": lambda: write_routes.api_propagate_study_rename(body),
+            "/api/save-export":          lambda: write_routes.api_save_export(body),
         }
         handler = global_dispatch.get(path)
         if handler:

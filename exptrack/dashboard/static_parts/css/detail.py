@@ -7,9 +7,17 @@ CSS_DETAIL = """
   .detail-summary .sum-sep { color: var(--border); }
   .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .detail-grid-full { grid-column: 1 / -1; }
-  @media (max-width: 900px) {
+  @media (max-width: 900px) { #exp-sidebar { display: none; } }
+  /* Stack detail sections when the main canvas (not the viewport) is narrow —
+     so a pinned Todos/Commands panel that squeezes the canvas also collapses
+     the two-up grid into a single column. */
+  @container main (max-width: 980px) {
     .detail-grid { grid-template-columns: 1fr; }
-    #exp-sidebar { display: none; }
+    .detail-export-bar { flex-direction: column; align-items: stretch; }
+  }
+  @container main (max-width: 600px) {
+    .info-grid { grid-template-columns: 1fr; gap: 2px 0; }
+    .info-grid .label { margin-top: 6px; }
   }
   .detail { background: var(--card-bg); border: 1px solid var(--border); padding: 16px; margin-top: 12px; border-radius: 4px; }
   .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
@@ -28,10 +36,11 @@ CSS_DETAIL = """
   .action-btn.primary:hover { opacity: 0.9; }
   .close-btn { cursor: pointer; font-size: 20px; background: none; border: none; font-family: inherit; padding: 4px 8px; }
   .close-btn:hover { background: var(--code-bg); border-radius: 3px; }
-  .info-grid { display: grid; grid-template-columns: 160px 1fr; gap: 8px 20px; margin-bottom: 20px; font-size: 14px; }
+  .info-grid { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 8px 20px; margin-bottom: 20px; font-size: 14px; }
   .info-grid .label { color: var(--muted); font-weight: 500; }
+  .info-grid > *:not(.label) { min-width: 0; word-break: break-word; overflow-wrap: anywhere; }
   .params-table, .metrics-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-  .params-table td, .metrics-table td { padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .params-table td, .metrics-table td { padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 14px; word-break: break-word; overflow-wrap: anywhere; }
   .params-table th, .metrics-table th { padding: 9px 14px; font-size: 13px; text-align: left; border-bottom: 2px solid var(--border); }
   .summary-card { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; border-radius: 4px; margin-bottom: 20px; }
   .summary-card .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }

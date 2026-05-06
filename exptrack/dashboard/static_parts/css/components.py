@@ -9,7 +9,7 @@ CSS_COMPONENTS = """
   .help-btn:hover { background: var(--border); color: var(--fg); }
   .theme-btn { font-family: inherit; font-size: 18px; background: var(--code-bg); border: 1px solid var(--border); padding: 5px 12px; cursor: pointer; border-radius: 4px; color: var(--muted); line-height: 1; }
   .theme-btn:hover { background: var(--border); color: var(--fg); }
-  .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border); }
+  .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border); flex-wrap: wrap; }
   .tab {
     font-family: inherit; font-size: 14px;
     background: none; border: none; padding: 11px 22px;
@@ -31,7 +31,7 @@ CSS_COMPONENTS = """
   }
   .inline-form button:hover { background: var(--border); }
   .notes-display { white-space: pre-wrap; background: var(--code-bg); padding: 12px; border-radius: 4px; margin: 4px 0; font-size: 14px; position: relative; }
-  .notes-edit-btn { position: absolute; top: 6px; right: 6px; font-size: 12px; cursor: pointer; color: var(--muted); background: var(--card-bg); border: 1px solid var(--border); padding: 3px 8px; border-radius: 3px; }
+  .notes-edit-btn { position: absolute; top: 6px; right: 6px; font-size: 12px; cursor: pointer; color: var(--muted); background: var(--card-bg); border: 1px solid var(--border); padding: 3px 8px; border-radius: 3px; white-space: nowrap; }
   .notes-edit-btn:hover { color: var(--blue); border-color: var(--blue); }
   .notes-edit-area { width: 100%; font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 10px; border-radius: 4px; background: var(--card-bg); min-height: 90px; resize: vertical; }
   .tag-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -105,8 +105,8 @@ CSS_COMPONENTS = """
   .artifact-add-form { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
   .artifact-add-form input { font-family: inherit; font-size: 14px; border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px; background: var(--card-bg); }
   .artifact-add-form button { font-family: inherit; font-size: 13px; padding: 6px 14px; border: 1px solid var(--border); background: var(--code-bg); cursor: pointer; border-radius: 4px; }
-  .artifact-actions { display: flex; gap: 4px; }
-  .artifact-actions button { font-family: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; color: var(--muted); }
+  .artifact-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+  .artifact-actions button { font-family: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
   .artifact-actions button:hover { color: var(--fg); border-color: var(--fg); }
   .artifact-actions button.art-del:hover { color: var(--red); border-color: var(--red); }
   .artifact-thumb { margin-top: 6px; }
@@ -457,6 +457,9 @@ CSS_COMPONENTS = """
   table.conf-matrix .conf-total-cell { padding: 8px 10px; text-align: right; font-size: 13px; color: var(--muted); background: var(--code-bg); font-variant-numeric: tabular-nums; }
   table.conf-matrix .conf-totals-row .conf-row-head { color: var(--muted); font-size: 12px; text-align: center; }
   table.conf-matrix .conf-grand-total { font-weight: 600; color: var(--fg); }
+  /* Wide matrix / per-class tables get their own horizontal scrollbar so
+     they never push past the canvas edge when both sidebars are open. */
+  #conf-matrix-area, #conf-results { max-width: 100%; overflow-x: auto; }
   /* Hide number-input spinner arrows */
   .conf-cell[type="number"]::-webkit-inner-spin-button,
   .conf-cell[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
@@ -490,5 +493,5 @@ CSS_COMPONENTS = """
   .conf-diff-pos { color: var(--green); font-weight: 600; }
   .conf-diff-neg { color: var(--red, #c0392b); font-weight: 600; }
   .conf-diff-zero { color: var(--muted); }
-  @media (max-width: 1100px) { .conf-compare-grid { grid-template-columns: 1fr; } }
+  @container main (max-width: 1100px) { .conf-compare-grid { grid-template-columns: 1fr; } }
 """
