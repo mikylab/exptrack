@@ -223,6 +223,7 @@ function _confRenderGrid(expId, m, areaId, resultsId) {
   }
 
   const editable = areaId === 'conf-matrix-area';
+  const isDark = document.body.classList.contains('dark');
   let html = '<table class="conf-matrix">';
   html += '<thead>';
   html += '<tr><th class="conf-corner" colspan="2" rowspan="2"></th>' +
@@ -246,8 +247,8 @@ function _confRenderGrid(expId, m, areaId, resultsId) {
       const v = +m.matrix[i][j] || 0;
       const isDiag = i === j;
       const intensity = cellMax > 0 ? (v / cellMax) * (m.intensity || 1) : 0;
-      const bg = _confCellColor(intensity, m.palette);
-      const fg = _confCellTextColor(intensity);
+      const bg = _confCellColor(intensity, m.palette, isDark);
+      const fg = _confCellTextColor(intensity, isDark);
       const cls = 'conf-cell' + (isDiag ? ' conf-diag' : '');
       const inner = editable
         ? '<input type="text" inputmode="numeric" pattern="[0-9]*" class="' + cls + '" style="color:' + fg + '" value="' + v
@@ -271,15 +272,23 @@ function _confRenderGrid(expId, m, areaId, resultsId) {
   if (resultsId) _confCompute(m, resultsId);
 }
 
-function _confCellColor(t, paletteId) {
+function _confCellColor(t, paletteId, isDark) {
   if (t <= 0) return 'transparent';
   const p = _CONF_PALETTES.find(p => p.id === paletteId) || _CONF_PALETTES[0];
   const tt = Math.max(0, Math.min(1, t));
-  const a = 0.10 + 0.85 * tt;
-  return 'rgba(' + p.rgb[0] + ',' + p.rgb[1] + ',' + p.rgb[2] + ',' + a.toFixed(3) + ')';
+  // Brighten + raise base alpha in dark mode so low-intensity fills survive
+  // compositing onto the dark card background.
+  const shift = isDark ? 60 : 0;
+  const r = Math.min(255, p.rgb[0] + shift);
+  const g = Math.min(255, p.rgb[1] + shift);
+  const b = Math.min(255, p.rgb[2] + shift);
+  const a = isDark ? 0.20 + 0.75 * tt : 0.10 + 0.85 * tt;
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + a.toFixed(3) + ')';
 }
 
-function _confCellTextColor(t) {
+function _confCellTextColor(t, isDark) {
+  if (t <= 0) return 'var(--fg)';
+  if (isDark) return '#ffffff';
   return t > 0.55 ? '#ffffff' : 'var(--fg)';
 }
 

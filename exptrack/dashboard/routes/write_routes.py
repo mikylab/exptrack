@@ -495,6 +495,44 @@ def api_bulk_export(conn, body: dict) -> dict | list:
         return batch
 
 
+def api_save_export(body: dict) -> dict:
+    """Write an export string to <project_root>/<exports_dir>/, picking a
+    non-clashing filename (foo.md, foo_2.md, foo_3.md, ...). Existing files
+    are never overwritten."""
+    from ...config import project_root, load as load_config
+    filename = (body.get("filename") or "").strip()
+    content = body.get("content", "")
+    if not filename:
+        return {"error": "filename required"}
+    safe = Path(filename).name
+    if not safe or safe in (".", ".."):
+        return {"error": "invalid filename"}
+
+    root = project_root()
+    out_dir = root / load_config().get("exports_dir", "exports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem, ext = Path(safe).stem, Path(safe).suffix
+
+    # Try the requested name, then _2…_999, then a microsecond timestamp
+    # fallback so we never silently fail.
+    candidates = [safe] + [f"{stem}_{n}{ext}" for n in range(2, 1000)]
+    candidates.append(f"{stem}_{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}{ext}")
+    for name in candidates:
+        target = out_dir / name
+        try:
+            with target.open("x", encoding="utf-8") as f:
+                f.write(content)
+            return {
+                "ok": True,
+                "filename": name,
+                "path": str(target.relative_to(root)),
+                "absolute": str(target),
+            }
+        except FileExistsError:
+            continue
+    return {"error": "could not find a non-conflicting filename"}
+
+
 def _propagate_tag_change_to_config(old_tag: str, new_tag: str = ""):
     """Rename or remove a tag from todos and commands in config.json.
 

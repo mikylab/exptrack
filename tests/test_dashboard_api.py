@@ -416,6 +416,49 @@ def test_api_add_note():
         print("  [PASS] test_api_add_note")
 
 
+def test_api_save_export_no_overwrite():
+    """api_save_export writes to <project>/exports/ and suffixes on conflict."""
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        _reset_config()
+        from exptrack import config as cfg
+        cfg.init("test")
+        from exptrack.dashboard.routes.write_routes import api_save_export
+        from pathlib import Path
+
+        r1 = api_save_export({"filename": "todos_2026-05-06.md", "content": "first"})
+        assert r1["ok"] and r1["filename"] == "todos_2026-05-06.md"
+        assert Path(r1["absolute"]).read_text() == "first"
+
+        r2 = api_save_export({"filename": "todos_2026-05-06.md", "content": "second"})
+        assert r2["ok"] and r2["filename"] == "todos_2026-05-06_2.md"
+        assert Path(r2["absolute"]).read_text() == "second"
+        # Original is preserved.
+        assert Path(r1["absolute"]).read_text() == "first"
+
+        r3 = api_save_export({"filename": "todos_2026-05-06.md", "content": "third"})
+        assert r3["filename"] == "todos_2026-05-06_3.md"
+
+        # Path traversal is stripped to basename.
+        r4 = api_save_export({"filename": "../../etc/passwd", "content": "x"})
+        assert r4["ok"] and r4["filename"] == "passwd"
+        assert (Path(tmp) / "exports" / "passwd").exists()
+
+        # Empty / invalid filenames rejected.
+        assert "error" in api_save_export({"filename": "", "content": "x"})
+        assert "error" in api_save_export({"filename": ".", "content": "x"})
+        assert "error" in api_save_export({"filename": "..", "content": "x"})
+
+        # Custom exports_dir from config is honored.
+        from exptrack import config as cfg
+        cfg._cache = None
+        cfg.save({**cfg.load(), "exports_dir": "my_exports"})
+        r5 = api_save_export({"filename": "custom.txt", "content": "y"})
+        assert r5["ok"] and (Path(tmp) / "my_exports" / "custom.txt").exists()
+
+        print("  [PASS] test_api_save_export_no_overwrite")
+
+
 def test_api_finish():
     """api_finish marks a running experiment as done."""
     with tempfile.TemporaryDirectory() as tmp:

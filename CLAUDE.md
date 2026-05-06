@@ -178,6 +178,8 @@ exptrack/
 - **Auto-resume detection**: When `exptrack run` sees `--resume` (or any flag in `resume_flags` config) in the script's argv, it automatically resumes the latest experiment for that script instead of creating a new one. All metrics, artifacts, and params aggregate into the same experiment. Timeline seq and stdout/stderr logs append. Shell pipelines use `exptrack run-start --resume [EXP_ID]` explicitly. Programmatic: `Experiment.resume(exp_id)`
 - **Plugin system**: Plugins loaded dynamically from `exptrack.plugins.<name>`, each module exports `plugin_class`. 4 lifecycle hooks
 - **Per-project storage**: DB + notebook history in `.exptrack/` (gitignored), config.json is committable
+- **Pinnable Todos / Commands panel**: The toolbox drawer (Todos + Commands) can be pinned as a persistent right-side panel via the pushpin button in the drawer header or the "Pin Todos / Commands panel" checkbox in Settings → Display. When pinned, `body.toolbox-pinned` shifts the header and `#app-layout` right by `var(--toolbox-w)` (the drawer width), the overlay is hidden, and `closeToolbox()` is a no-op. The drawer's left edge is a drag handle when pinned — drag to resize between 260–800px (RAF-throttled). State persists in localStorage (`exptrack-toolbox-pinned`, `exptrack-toolbox-tab`, `exptrack-toolbox-w`). Each panel also has export buttons: Todos → `.md`/`.txt`/`.json`, Commands → `.sh` (runnable script)/`.md`/`.json`. Tab switches re-render local state without re-fetching
+- **Save exports to project folder**: A "Save exports to project folder" toggle in Settings → Display routes all downloads (Todos, Commands, experiment exports) through `POST /api/save-export`, which writes to `<project_root>/exports/` and auto-suffixes filenames (`foo.md`, `foo_2.md`, …) so existing files are never overwritten. The unified `saveOrDownload(text, filename, mime)` helper in `js/core.py` wraps `downloadBlob` (browser download) with this server-side save path; preference is held in localStorage (`exptrack-export-to-folder`)
 - **Inline editing**: All editable fields (name, tags, notes) support double-click inline editing in dashboard — no modal prompts
 - **Tag autocomplete**: `/api/all-tags` endpoint returns all tags with usage counts; UI shows autocomplete dropdown
 - **Timezone-aware display**: Dashboard timestamps use `Intl.DateTimeFormat` with configurable timezone stored in project config
@@ -208,6 +210,7 @@ Indexed on: metrics(exp_id, key), params(exp_id), artifacts(exp_id), timeline(ex
 {
   "db": ".exptrack/experiments.db",
   "outputs_dir": "outputs",
+  "exports_dir": "exports",
   "notebook_history_dir": ".exptrack/notebook_history",
   "max_git_diff_kb": 256,
   "artifact_strategy": "reference",

@@ -258,23 +258,83 @@ async function saveEditCmd(id) {
 }
 
 // ── Toolbox drawer management ─────────────────────────────────────────────────
-let _toolboxTab = 'todos';
+let _toolboxTab = _storageGet('exptrack-toolbox-tab') || 'todos';
+let _toolboxPinned = _storageGet('exptrack-toolbox-pinned') === 'true';
+let _todosLoaded = false, _commandsLoaded = false;
+
+const TOOLBOX_MIN_W = 260;
+const TOOLBOX_MAX_W = 800;
+const TOOLBOX_DEFAULT_W = 460;
+
+function _applyToolboxWidth(w) {
+  const clamped = Math.max(TOOLBOX_MIN_W, Math.min(TOOLBOX_MAX_W, w));
+  document.documentElement.style.setProperty('--toolbox-w', clamped + 'px');
+  return clamped;
+}
+
+(function initToolboxWidth() {
+  const saved = parseInt(_storageGet('exptrack-toolbox-w'), 10);
+  _applyToolboxWidth(Number.isFinite(saved) ? saved : TOOLBOX_DEFAULT_W);
+})();
+
+function startToolboxResize(ev) {
+  ev.preventDefault();
+  const handle = document.getElementById('toolbox-resize-handle');
+  if (handle) handle.classList.add('dragging');
+  document.body.classList.add('toolbox-resizing');
+
+  // Drawer is anchored to the right edge, so width = (viewport right edge - cursor x).
+  // Cache vw once: it can't change mid-drag without firing a resize event.
+  const vw = window.innerWidth;
+  let lastW = TOOLBOX_DEFAULT_W;
+  let rafId = 0, pendingX = 0;
+
+  function flush() {
+    rafId = 0;
+    lastW = _applyToolboxWidth(vw - pendingX);
+  }
+  function onMove(e) {
+    pendingX = e.clientX;
+    if (!rafId) rafId = requestAnimationFrame(flush);
+  }
+  function cleanup() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', cleanup);
+    window.removeEventListener('blur', cleanup);
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    if (handle) handle.classList.remove('dragging');
+    document.body.classList.remove('toolbox-resizing');
+    _storageSet('exptrack-toolbox-w', String(lastW));
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', cleanup);
+  window.addEventListener('blur', cleanup);
+}
 
 function openToolbox(tab) {
   const drawer = document.getElementById('toolbox-drawer');
   const overlay = document.getElementById('toolbox-overlay');
+
+  if (_toolboxPinned) {
+    _toolboxTab = tab || _toolboxTab;
+    _storageSet('exptrack-toolbox-tab', _toolboxTab);
+    _syncToolboxUI();
+    return;
+  }
 
   if (drawer.classList.contains('visible') && _toolboxTab === tab) {
     closeToolbox(); return;
   }
 
   _toolboxTab = tab || 'todos';
+  _storageSet('exptrack-toolbox-tab', _toolboxTab);
   drawer.classList.add('visible');
   overlay.classList.add('visible');
   _syncToolboxUI();
 }
 
 function closeToolbox() {
+  if (_toolboxPinned) return;
   document.getElementById('toolbox-drawer').classList.remove('visible');
   document.getElementById('toolbox-overlay').classList.remove('visible');
   document.querySelectorAll('.toolbox-btn').forEach(b => b.classList.remove('active'));
@@ -282,6 +342,7 @@ function closeToolbox() {
 
 function switchToolboxTab(tab) {
   _toolboxTab = tab;
+  _storageSet('exptrack-toolbox-tab', tab);
   _syncToolboxUI();
 }
 
@@ -293,10 +354,112 @@ function _syncToolboxUI() {
   document.querySelectorAll('.toolbox-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === _toolboxTab));
 
-  setupToolboxMeta('todo');
-  setupToolboxMeta('cmd');
-  if (_toolboxTab === 'todos') loadTodos();
-  else loadCommands();
+  setupToolboxMeta(_toolboxTab === 'todos' ? 'todo' : 'cmd');
+  if (_toolboxTab === 'todos') {
+    if (_todosLoaded) renderTodos(); else { _todosLoaded = true; loadTodos(); }
+  } else {
+    if (_commandsLoaded) renderCommands(); else { _commandsLoaded = true; loadCommands(); }
+  }
+}
+
+// ── Pinning ───────────────────────────────────────────────────────────────────
+
+function setToolboxPinned(pinned) {
+  _toolboxPinned = !!pinned;
+  _storageSet('exptrack-toolbox-pinned', _toolboxPinned ? 'true' : 'false');
+  _applyToolboxPinned();
+  if (_toolboxPinned) _syncToolboxUI();
+}
+
+function toggleToolboxPin() { setToolboxPinned(!_toolboxPinned); }
+
+// CSS-only state apply — safe to call synchronously at module load
+// since the script tag is at the end of <body>.
+function _applyToolboxPinned() {
+  const drawer = document.getElementById('toolbox-drawer');
+  const overlay = document.getElementById('toolbox-overlay');
+  document.body.classList.toggle('toolbox-pinned', _toolboxPinned);
+  drawer.classList.toggle('pinned', _toolboxPinned);
+  document.getElementById('toolbox-pin-btn').classList.toggle('active', _toolboxPinned);
+  document.getElementById('settings-toolbox-pin').checked = _toolboxPinned;
+  drawer.classList.toggle('visible', _toolboxPinned);
+  overlay.classList.remove('visible');
+  if (!_toolboxPinned) {
+    document.querySelectorAll('.toolbox-btn').forEach(b => b.classList.remove('active'));
+  }
+}
+
+// Apply persisted pin state immediately so there's no FOUC before _bootDashboard runs.
+_applyToolboxPinned();
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+function _todoMetaSuffix(t) {
+  const parts = [];
+  if (t.tags && t.tags.length) parts.push(t.tags.map(x => '#' + x).join(' '));
+  if (t.study) parts.push('study:' + t.study);
+  if (t.due) parts.push('due:' + t.due);
+  return parts.length ? '  (' + parts.join(', ') + ')' : '';
+}
+
+function exportTodos(fmt) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  if (fmt === 'json') {
+    saveOrDownload(JSON.stringify(_todos, null, 2),
+      'todos_' + stamp + '.json', 'application/json');
+    return;
+  }
+  if (fmt === 'md') {
+    const active = _todos.filter(t => !t.done);
+    const done = _todos.filter(t => t.done);
+    const lines = ['# Todos', '', '_Exported ' + stamp + '_', ''];
+    if (active.length) {
+      lines.push('## Active');
+      active.forEach(t => lines.push('- [ ] ' + t.text + _todoMetaSuffix(t)));
+      lines.push('');
+    }
+    if (done.length) {
+      lines.push('## Done');
+      done.forEach(t => lines.push('- [x] ' + t.text + _todoMetaSuffix(t)));
+    }
+    saveOrDownload(lines.join('\n'), 'todos_' + stamp + '.md', 'text/markdown');
+    return;
+  }
+  const lines = _todos.map(t =>
+    (t.done ? '[x] ' : '[ ] ') + t.text + _todoMetaSuffix(t));
+  saveOrDownload(lines.join('\n'), 'todos_' + stamp + '.txt', 'text/plain');
+}
+
+function exportCommands(fmt) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  if (fmt === 'json') {
+    saveOrDownload(JSON.stringify(_commands, null, 2),
+      'commands_' + stamp + '.json', 'application/json');
+    return;
+  }
+  if (fmt === 'md') {
+    const lines = ['# Commands', '', '_Exported ' + stamp + '_', ''];
+    _commands.forEach(c => {
+      lines.push('## ' + (c.label || '(unlabeled)'));
+      const meta = [];
+      if (c.tags && c.tags.length) meta.push(c.tags.map(x => '#' + x).join(' '));
+      if (c.study) meta.push('study: ' + c.study);
+      if (meta.length) lines.push('_' + meta.join(' · ') + '_', '');
+      lines.push('```sh', c.command, '```', '');
+    });
+    saveOrDownload(lines.join('\n'), 'commands_' + stamp + '.md', 'text/markdown');
+    return;
+  }
+  const lines = ['#!/usr/bin/env bash', '# exptrack saved commands — exported ' + stamp, ''];
+  _commands.forEach(c => {
+    if (c.label) lines.push('# ' + c.label);
+    const meta = [];
+    if (c.tags && c.tags.length) meta.push('tags: ' + c.tags.join(', '));
+    if (c.study) meta.push('study: ' + c.study);
+    if (meta.length) lines.push('# ' + meta.join(' | '));
+    lines.push(c.command, '');
+  });
+  saveOrDownload(lines.join('\n'), 'commands_' + stamp + '.sh', 'text/x-shellscript');
 }
 
 """

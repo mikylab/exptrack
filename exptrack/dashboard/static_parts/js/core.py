@@ -404,6 +404,40 @@ function _storageGet(k) { try { return localStorage.getItem(k) || ''; } catch (e
 function _storageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 function _storageDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
 
+function downloadBlob(text, filename, mime) {
+  const blob = new Blob([text], {type: mime || 'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+}
+
+// Save to <project_root>/exports/ if the user has opted in (Settings → Display);
+// otherwise fall back to a browser download. Server picks a non-conflicting
+// filename, so existing files are never overwritten.
+async function saveOrDownload(text, filename, mime) {
+  if (_storageGet('exptrack-export-to-folder') !== 'true') {
+    downloadBlob(text, filename, mime);
+    return;
+  }
+  try {
+    const res = await postApi('/api/save-export', { filename, content: text });
+    if (res && res.ok) { owlSay('Saved to ' + res.path); return; }
+    owlSay('Save failed: ' + ((res && res.error) || 'unknown') + ' — downloading');
+  } catch (e) { /* fall through to download */ }
+  downloadBlob(text, filename, mime);
+}
+
+function setExportToFolder(checked) {
+  _storageSet('exptrack-export-to-folder', checked ? 'true' : 'false');
+}
+// Sync settings checkbox to persisted state on first paint.
+{
+  const el = document.getElementById('settings-export-to-folder');
+  if (el) el.checked = _storageGet('exptrack-export-to-folder') === 'true';
+}
+
 let _authToken = (function() {
   const urlToken = new URLSearchParams(window.location.search).get('token');
   if (urlToken) {

@@ -27,5 +27,9 @@ CSS_LAYOUT = """
   .status-chips button:hover { background: var(--code-bg); color: var(--fg); }
   .status-chips button.active { background: var(--fg); color: var(--bg); }
   #exp-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
-  #main-content { flex: 1; overflow-y: auto; min-width: 0; padding: 16px 24px; }
+  #main-content {
+    flex: 1; overflow-y: auto; overflow-x: hidden; min-width: 0;
+    padding: 16px 24px;
+    container-type: inline-size; container-name: main;
+  }
 """

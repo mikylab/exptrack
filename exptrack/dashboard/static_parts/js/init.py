@@ -17,6 +17,7 @@ function _bootDashboard() {
   loadExperiments().then(() => {
     if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
   });
+  if (_toolboxPinned) _syncToolboxUI();
 }
 
 // Gate data-loading on auth so we don't fire ~8 requests that all 401 at once
