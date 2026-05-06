@@ -154,6 +154,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/logs/"):
             exp_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
             self._json(read_routes.api_list_logs(conn, exp_id))
+        elif path.startswith("/api/confusion/"):
+            self._json(read_routes.api_list_confusion(conn, path.split("/")[-1]))
         elif path.startswith("/api/images/"):
             exp_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
             self._json(read_routes.api_list_images(conn, exp_id))
@@ -213,6 +215,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "delete-param":    lambda: write_routes.api_delete_param(conn, exp_id, body),
                 "rename-param":    lambda: write_routes.api_rename_param(conn, exp_id, body),
                 "edit-script":     lambda: write_routes.api_edit_script(conn, exp_id, body),
+                "save-confusion":  lambda: write_routes.api_save_confusion(conn, exp_id, body),
                 "edit-command":    lambda: write_routes.api_edit_command(conn, exp_id, body),
                 "export-diff":     lambda: write_routes.api_export_diff(conn, exp_id),
             }

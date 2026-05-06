@@ -104,9 +104,17 @@ async function showDetail(id) {
 }
 
 async function refreshDetail(id) {
+  // Only auto-expand the sidebar when transitioning to a different experiment
+  // (or entering detail view from welcome/compare). On in-place refreshes from
+  // logging a metric / adding a param / etc, leave the sidebar in whatever
+  // state the user left it.
+  const isInitialEntry = currentDetailId !== id ||
+    document.getElementById('detail-view').style.display === 'none';
   currentDetailId = id;
   showDetailView();
-  document.getElementById('exp-sidebar').classList.remove('collapsed');
+  if (isInitialEntry) {
+    document.getElementById('exp-sidebar').classList.remove('collapsed');
+  }
   renderExpList();
 
   const [exp, metricsData, diffData] = await Promise.all([

@@ -35,6 +35,27 @@ def api_experiment(conn, exp_id: str) -> dict:
     return result if result else {"error": "not found"}
 
 
+def api_list_confusion(conn, exp_id: str) -> dict:
+    """Return the list of saved confusion matrices for this experiment."""
+    import json as _json
+    from ...core.queries import find_experiment
+    exp = find_experiment(conn, exp_id)
+    if not exp:
+        return {"error": "not found"}
+    row = conn.execute(
+        "SELECT value FROM params WHERE exp_id=? AND key=?",
+        (exp["id"], "_confusion_matrices"),
+    ).fetchone()
+    if not row:
+        return {"matrices": []}
+    try:
+        data = _json.loads(row["value"]) if row["value"] else {}
+    except (ValueError, TypeError):
+        data = {}
+    matrices = data.get("matrices", []) if isinstance(data, dict) else []
+    return {"matrices": matrices}
+
+
 def api_metrics(conn, exp_id: str, qs: dict | None = None) -> dict:
     from ...config import load
     from ...core.queries import find_experiment

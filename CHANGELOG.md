@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.0] - 2026-05-01
+
+### Added
+
+- **Multiple confusion matrices per experiment** — the Confusion Matrix tab now keeps a tab bar of named matrices. "+ New" adds another, double-click a tab to rename, "Duplicate" makes a copy, "Delete" drops one. Each matrix has its own classes, palette, and intensity, so you can keep e.g. "validation", "test", and "after threshold tuning" side-by-side on the same experiment
+- **Compare confusion matrices** — once you have ≥2 matrices, a "Compare…" tab opens a side-by-side read-only view with two dropdowns (A and B) and a difference table for accuracy / macro & weighted precision-recall-F1 / total. Δ is colored green for B>A and red for B<A
+- **Confusion matrix intensity slider** — new range control (0.3–1.5) in the matrix toolbar lets you lighten or darken the heatmap independently of the color palette, useful when high-count cells are saturating or low-count cells are too pale
+- **Confusion matrices persist on the experiment** — matrices now save to the server (as a JSON-encoded manual param `_confusion_matrices`) so they survive across browsers and clean cache, and round-trip with the experiment record. Saves are debounced; legacy localStorage matrices are auto-migrated on first load. New endpoints `GET /api/confusion/<id>` and `POST /api/experiment/<id>/save-confusion`. Saved metrics are prefixed with the matrix name when more than one matrix exists, so saving from each doesn't clobber the previous
+
+### Fixed
+
+- **Sidebar no longer pops back open on every detail refresh** — adding a metric, param, tag, note, or any other in-place mutation kept re-expanding the experiment sidebar even after you collapsed it. The dashboard now only auto-expands the sidebar when transitioning into the detail view (or switching to a different experiment); subsequent refreshes leave the user's collapsed/open choice alone
+
 ## [1.4.5] - 2026-04-28
 
 ### Changed
