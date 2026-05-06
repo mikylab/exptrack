@@ -1106,6 +1106,33 @@ def api_rename_param(conn, exp_id: str, body: dict) -> dict:
     return {"ok": True, "old_key": old_key, "new_key": new_key}
 
 
+_CONFUSION_PARAM_KEY = "_confusion_matrices"
+
+
+def api_save_confusion(conn, exp_id: str, body: dict) -> dict:
+    """Replace the persisted list of confusion matrices for an experiment.
+
+    Stored as a single JSON-encoded manual param so it round-trips with
+    the rest of the experiment record (export, copy-to-study, etc.) and
+    is hidden from the regular params table by the dashboard's `_`-prefix
+    filter.
+    """
+    exp = find_experiment(conn, exp_id, "id")
+    if not exp:
+        return {"error": "not found"}
+    matrices = body.get("matrices")
+    if not isinstance(matrices, list):
+        return {"error": "matrices must be a list"}
+    payload = json.dumps({"matrices": matrices})
+    conn.execute(
+        "INSERT INTO params (exp_id, key, value, source) VALUES (?,?,?,?) "
+        "ON CONFLICT(exp_id, key) DO UPDATE SET value=excluded.value, source=excluded.source",
+        (exp["id"], _CONFUSION_PARAM_KEY, payload, "manual"),
+    )
+    conn.commit()
+    return {"ok": True, "count": len(matrices)}
+
+
 def api_edit_script(conn, exp_id: str, body: dict) -> dict:
     """Edit the script/notebook path for an experiment."""
     exp = find_experiment(conn, exp_id, "id")

@@ -470,4 +470,25 @@ CSS_COMPONENTS = """
   table.conf-perclass th:first-child, table.conf-perclass td:first-child { text-align: left; }
   table.conf-perclass thead th { background: var(--code-bg); color: var(--muted); font-weight: 500; font-size: 12px; }
   table.conf-perclass tr.conf-agg { background: var(--code-bg); font-style: italic; }
+  /* Multi-matrix tabs */
+  .conf-tabs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .conf-tab { padding: 5px 12px; font-size: 13px; background: transparent; color: var(--fg); border: 1px solid var(--border); border-radius: 14px; cursor: pointer; font-family: inherit; }
+  .conf-tab:hover { background: var(--code-bg); }
+  .conf-tab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .conf-tab-new { color: var(--muted); border-style: dashed; }
+  .conf-tab-compare { color: var(--muted); }
+  .conf-controls input[type="text"] { padding: 4px 8px; font-family: inherit; font-size: 13px; background: var(--code-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; min-width: 140px; }
+  .conf-controls input[type="range"] { vertical-align: middle; }
+  .action-btn.danger { color: var(--red, #c0392b); }
+  /* Compare layout */
+  .conf-compare-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .conf-compare-controls select { padding: 4px 6px; font-family: inherit; font-size: 13px; background: var(--code-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; }
+  .conf-compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+  .conf-compare-side { min-width: 0; overflow-x: auto; }
+  .conf-compare-title { margin: 0 0 8px 0; font-size: 14px; color: var(--fg); }
+  table.conf-diff-table td { font-variant-numeric: tabular-nums; }
+  .conf-diff-pos { color: var(--green); font-weight: 600; }
+  .conf-diff-neg { color: var(--red, #c0392b); font-weight: 600; }
+  .conf-diff-zero { color: var(--muted); }
+  @media (max-width: 1100px) { .conf-compare-grid { grid-template-columns: 1fr; } }
 """
