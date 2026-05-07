@@ -14,6 +14,20 @@ CSS_CARDS = """
   .exp-card-tags { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .exp-card-tags .tag { font-size: 12px; padding: 2px 6px; margin-left: 0; margin-right: 3px; }
   .exp-card-cb { margin-right: 4px; cursor: pointer; }
+  .sidebar-study-header {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 10px; margin: 4px 0 2px;
+    background: var(--code-bg); border-radius: 4px;
+    cursor: pointer; user-select: none;
+    font-size: 12px; font-weight: 600;
+    color: var(--fg);
+  }
+  .sidebar-study-header:hover { background: var(--border); }
+  .sidebar-study-header.collapsed { opacity: 0.85; }
+  .sidebar-study-toggle { font-size: 9px; color: var(--muted); width: 10px; flex-shrink: 0; }
+  .sidebar-study-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sidebar-study-count { color: var(--muted); font-weight: 500; font-size: 11px; padding: 1px 6px; background: var(--bg); border-radius: 8px; flex-shrink: 0; }
+  #sidebar-group-study-btn.active { color: var(--blue); border-color: var(--blue); }
   .sidebar-actions-bar { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--code-bg); display: flex; flex-direction: column; gap: 4px; }
   .sidebar-actions-bar button { font-family: inherit; font-size: 13px; border: none; padding: 6px 12px; cursor: pointer; border-radius: 3px; width: 100%; }
   .sidebar-actions-bar button.primary { background: var(--blue); color: #fff; }

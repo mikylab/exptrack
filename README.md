@@ -87,6 +87,53 @@ exp.metric("val/loss", 0.23, step=5)
 exp.done()
 ```
 
+### 2b. Session Trees (notebook, opt-in)
+
+Standard `%load_ext exptrack` records *what* you ran. **Session Trees** record
+*how you got there* — the shape of your exploration as a tree of checkpoints
+and branches you can read back weeks later. Activate explicitly (no session →
+all session magics are silent no-ops, normal tracking is unchanged):
+
+```python
+%load_ext exptrack
+%exptrack session start "exploring threshold sensitivity"
+
+# ...preprocess, run cells normally...
+
+%exptrack checkpoint "after preprocessing clean"   # AFTER a stable change
+%exptrack branch "try threshold 0.7 instead of 0.5" # BEFORE diverging
+
+# ...try the new threshold...
+
+%%scratch
+# anything in this cell is executed but NEVER logged
+
+%exptrack checkpoint "threshold 0.7 works"          # AFTER it works
+%exptrack promote "0.7 outperformed baseline"       # link active exp to node
+%exptrack session end
+```
+
+**Timing rules of thumb:**
+
+| Magic | Run it… | Why |
+|---|---|---|
+| `%exptrack session start "..."` | once, **before** any other session magic | nothing else activates without it |
+| `%exptrack checkpoint "..."` | **after** a stable change you might want to return to | snapshots a per-checkpoint git diff vs. the previous checkpoint |
+| `%exptrack branch "..."` | **before** you start diverging | declares intent for the next segment of work; attaches under the most recent checkpoint |
+| `%%scratch` | as the **first line** of any throwaway cell | the cell runs but the post-cell hook skips all logging |
+| `%exptrack promote "..."` | **after** a run finishes promisingly | links the active `Experiment` to the current node so it shows up as `→ exp <id>` in the tree |
+| `%exptrack session end` | when you're done exploring | open branches with no checkpoint flip to *abandoned* (still visible, dimmed) |
+
+Inspect from the CLI or the dashboard's `☰ Sessions` tab:
+
+```bash
+exptrack sessions                # list sessions
+exptrack session show <id>       # ASCII tree
+exptrack session note <node> "…" # annotate a node after the fact
+```
+
+Full guide: [`docs/session-trees.md`](docs/session-trees.md).
+
 ### 3. Shell / SLURM pipeline
 
 For shell scripts, SLURM jobs, or multi-step workflows.

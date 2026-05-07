@@ -460,6 +460,23 @@ def _post_run_cell(result=None):
         if not source:
             return
 
+        # ── 0a. Skip scratch cells entirely (Session Trees) ───────────────────
+        try:
+            from .session_hooks import is_scratch_cell
+            if is_scratch_cell(source):
+                return
+        except Exception:
+            pass
+
+        # ── 0a'. Buffer non-scratch cells onto the active session ────────────
+        try:
+            from ..sessions import get_current_session
+            sm = get_current_session()
+            if sm is not None and sm.session_id:
+                sm.record_cell(source)
+        except Exception:
+            pass
+
         # ── 0b. Handle deferred start ────────────────────────────────────────
         if _handle_deferred_start(source, ip):
             return

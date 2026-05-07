@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.2] - 2026-05-07
+
+### Added
+
+- **Side-by-side diff in the Sessions tab** — node diffs now render as a GitHub-style split view with one column per side, grouped by file (collapsible), with per-file `+N −M` stats, hunk headers, and a `Split / Unified` toggle (`localStorage` key `exptrack-diff-mode`). Replaces the single-column wall of green/red lines
+- **Branches capture and refresh their diff** — `%exptrack branch "label"` now snapshots `git diff` against the parent checkpoint at creation, and `record_cell` refreshes the branch's `git_diff` after each non-`%%scratch` cell so the dashboard always shows the current divergence under that branch. Checkpoints still freeze their diff at creation. New `SessionManager._compute_diff_vs_checkpoint` helper concatenates the committed-range diff with the working-tree diff when commits differ
+
+### Changed
+
+- **Diff coloring is theme-aware and subtler** — added/removed lines now use semi-transparent tints driven by new `--diff-add-bg`, `--diff-add-bar`, `--diff-del-bg`, `--diff-del-bar`, `--diff-empty-bg`, `--diff-hunk-bg` CSS variables (with separate values for `body.dark`), plus a 3px inset bar instead of the old saturated `rgba(...)` block. Easier on the eyes than the previous wall-of-green/wall-of-red
+- **Sessions tab buttons and inputs match the rest of the dashboard** — the per-node "Save note" button and note `<textarea>` previously used hard-coded colors and an undefined `--input-bg` / `--text` variable (so dark mode showed white-on-white); they now follow the same `var(--code-bg)` / `var(--card-bg)` / `var(--border)` pattern as `.bulk-bar button` and other action buttons. Same fix applied to all `var(--accent)` / `var(--hover-bg)` references in the sessions stylesheet, which were also undefined
+
+## [1.9.1] - 2026-05-07
+
+### Changed
+
+- **Sessions tab — readable diffs and cell runs** — the node-detail panel previously rendered git diffs and captured cells as undifferentiated `<pre>` blobs. Diffs now render line-by-line with green/red coloring (added/removed) plus dimmed context, file/hunk headers, and a `+N −M` summary next to the section title. Captured cell runs render as collapsible `<details>` blocks with a header (`cell N / M`, line count) and inline line-number gutter; when a node has more than three cells, older ones default to collapsed so the most recent work stays in view
+
+### Fixed
+
+- **`CHANGELOG.md` version-bracket links** — reference-style URL definitions only existed for `[1.0.0]`–`[1.1.0]`, so every version header from `[1.2.0]` onward (including `[1.9.0]`) rendered as plain text instead of a GitHub compare link. Added the missing definitions through `[1.9.1]`
+
+## [1.9.0] - 2026-05-07
+
+### Added
+
+- **Sessions tab auto-refresh** — the Sessions list now reloads automatically when the dashboard window regains focus (the most common moment a session was just created in the notebook), and the list header gets explicit Refresh (`↻`) and Close (`×`) buttons. Clicking the `☰ Sessions` header toggle while the tab is already active reloads instead of closing — the previous behavior of "click again to close" was confusable with "click again to see new data"
+- **`%%pin "label"` cell magic** — runs the cell, captures stdout and the trailing expression's repr, and saves a markdown artifact (`pin_<timestamp>_<label>.md`) on the active experiment. If a session is active, also appends `pinned: <label>` to the current node's note. Lets you freeze "this is the result I want to come back to" without leaving the notebook
+- **Delete sessions from the dashboard** — every session card in the `☰ Sessions` tab now has a `×` button (with a confirmation prompt) that calls the new `POST /api/session/<id>/delete` endpoint. Linked experiments are preserved with their `session_node_id` cleared, matching `exptrack session rm`
+- **`%exptrack` magic + code in the same cell now records the code** — putting `%exptrack branch "X"` (or `checkpoint "Y"`) at the top of a working cell with code below it is the natural pattern, but the previous filter saw the leading magic line and skipped the whole cell, so cells run "under" a freshly-declared branch were invisible until the *next* cell ran. Now `%exptrack` line magics are stripped from the recorded cell source while the rest of the cell is captured live. Pure-magic cells (only `%exptrack` lines plus comments/blanks) and cell magics (`%%scratch` / `%%pin`) still skip entirely
+- **Cells stream into the active node live, idempotent re-runs** — every non-magic cell that runs while a session node is active is appended to *that* node's `cell_source` immediately, so cells under a `branch` show up under the branch right away (no need to make a follow-up checkpoint to materialize them). Re-running a cell that contains `%exptrack checkpoint "X"` or `%exptrack branch "Y"` reuses the existing node by label instead of creating a duplicate; abandoned branches revive when their label is re-declared. Immediate re-runs of the same cell are deduped. Replaces the previous "buffer + drain on next node" model that left cells invisible until a follow-up checkpoint
+- **Session Trees per-node cell capture** — every non-`%%scratch` cell run while a session node is active is appended to that node's `cell_source`, so the dashboard's node-detail panel shows the verbatim cells (split out into individual code blocks) and the tree-row shows an "N cells" badge. Makes it possible to see *what actually diverged* on each path
+- **`exptrack storage` reports Session Trees** — adds a Sessions row to the database breakdown and per-column hotspot rows for `session_nodes.cell_source` and `session_nodes.git_diff`
+- **Session Trees** — an opt-in layer for exploratory notebook work that records the *shape* of your thinking (checkpoints, branches, scratch cells) as a navigable tree, not a flat log. Drive it from the notebook with new IPython magics: `%exptrack session start "name"` to begin, `%exptrack checkpoint "label"` to mark a stable point (snapshots a per-checkpoint git diff), `%exptrack branch "label"` to declare intent before diverging, `%%scratch` to opt a cell out of all tracking, `%exptrack promote "label"` to link the active experiment to the current node, and `%exptrack session end` to close. Sessions live in two new tables (`sessions`, `session_nodes`) and add a nullable `session_node_id` to `experiments`; standard `%load_ext exptrack` tracking is unchanged when no session is active. New CLI: `exptrack sessions`, `exptrack session show <id|name>` (ASCII tree), `exptrack session nodes <id>`, `exptrack session rm <id>` (preserves linked experiments), `exptrack session note <node_id> "..."`. New dashboard tab toggled from the header (`☰ Sessions`) renders the tree as a vertical node graph with checkpoint/branch/abandoned styles, click-to-inspect (cell source, diff, note), and links to promoted experiments. Stdlib only, no new deps
+
+## [1.8.0] - 2026-05-07
+
+### Added
+
+- **Collapsible study groups in the sidebar AND the main table** — both the left experiments sidebar (via a new "Group by study" toggle next to the search box) and the main experiments table (via a new "Study" button in the Group by row) can now group experiments under their first study, so a study with four runs collapses to a single row instead of dominating the panel. Defaults differ: the **sidebar** starts each study **collapsed** (the busy-rail case is the main reason), while the **main table** starts each study **expanded** like the other groupings (Git Commit / Branch / Status). State persists in localStorage (`exptrack-sidebar-group-study`, `exptrack-expanded-studies`); experiments without a study fall under "(no study)"
+
 ## [1.7.4] - 2026-05-06
 
 ### Fixed
@@ -260,6 +301,29 @@ Initial public release.
 - Artifact strategy, git diff size limits, naming conventions, auto-capture toggles
 - Non-finite metric values (NaN, Inf) silently dropped
 
+[1.9.2]: https://github.com/mikylab/exptrack/compare/v1.9.1...v1.9.2
+[1.9.1]: https://github.com/mikylab/exptrack/compare/v1.9.0...v1.9.1
+[1.9.0]: https://github.com/mikylab/exptrack/compare/v1.8.0...v1.9.0
+[1.8.0]: https://github.com/mikylab/exptrack/compare/v1.7.4...v1.8.0
+[1.7.4]: https://github.com/mikylab/exptrack/compare/v1.7.3...v1.7.4
+[1.7.3]: https://github.com/mikylab/exptrack/compare/v1.7.2...v1.7.3
+[1.7.2]: https://github.com/mikylab/exptrack/compare/v1.7.1...v1.7.2
+[1.7.1]: https://github.com/mikylab/exptrack/compare/v1.7.0...v1.7.1
+[1.7.0]: https://github.com/mikylab/exptrack/compare/v1.6.3...v1.7.0
+[1.6.3]: https://github.com/mikylab/exptrack/compare/v1.6.2...v1.6.3
+[1.6.2]: https://github.com/mikylab/exptrack/compare/v1.6.1...v1.6.2
+[1.6.1]: https://github.com/mikylab/exptrack/compare/v1.6.0...v1.6.1
+[1.6.0]: https://github.com/mikylab/exptrack/compare/v1.5.1...v1.6.0
+[1.5.1]: https://github.com/mikylab/exptrack/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/mikylab/exptrack/compare/v1.4.5...v1.5.0
+[1.4.5]: https://github.com/mikylab/exptrack/compare/v1.4.4...v1.4.5
+[1.4.4]: https://github.com/mikylab/exptrack/compare/v1.4.3...v1.4.4
+[1.4.3]: https://github.com/mikylab/exptrack/compare/v1.4.2...v1.4.3
+[1.4.2]: https://github.com/mikylab/exptrack/compare/v1.4.1...v1.4.2
+[1.4.1]: https://github.com/mikylab/exptrack/compare/v1.4.0...v1.4.1
+[1.4.0]: https://github.com/mikylab/exptrack/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/mikylab/exptrack/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/mikylab/exptrack/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/mikylab/exptrack/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/mikylab/exptrack/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/mikylab/exptrack/releases/tag/v1.0.0

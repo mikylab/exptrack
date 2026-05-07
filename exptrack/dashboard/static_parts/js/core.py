@@ -23,6 +23,10 @@ let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
 let allKnownStudies = []; // {name, count}[]
 let highlightMode = localStorage.getItem('exptrack-highlight') === 'true';
+let sidebarGroupByStudy = localStorage.getItem('exptrack-sidebar-group-study') === 'true';
+// Study groups default to collapsed: we track which ones are EXPANDED.
+// Shared between the sidebar and the main table when groupBy === 'study'.
+let expandedStudyGroups = new Set(JSON.parse(localStorage.getItem('exptrack-expanded-studies') || '[]'));
 let autoRefreshTimer = null;
 
 // Display abbreviations for common metric names (config stores full names)

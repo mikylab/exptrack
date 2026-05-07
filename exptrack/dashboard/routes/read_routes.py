@@ -360,3 +360,30 @@ def api_list_images(conn, exp_id: str) -> dict:
     }
 
 
+
+
+# ── Session Trees ────────────────────────────────────────────────────────────
+
+def api_sessions(conn) -> dict:
+    """List all sessions with summary counts."""
+    from ...sessions.tree import list_sessions
+    return {"sessions": list_sessions()}
+
+
+def api_session_tree(conn, session_id: str) -> dict:
+    """Return a session's full tree."""
+    from ...sessions.manager import build_tree
+    tree = build_tree(session_id)
+    if not tree:
+        return {"error": "not found"}
+    return tree
+
+
+def api_session_nodes(conn, session_id: str) -> dict:
+    """Return the flat node list for a session."""
+    rows = conn.execute(
+        "SELECT id, parent_id, node_type, label, note, seq, created_at "
+        "FROM session_nodes WHERE session_id=? ORDER BY seq",
+        (session_id,),
+    ).fetchall()
+    return {"nodes": [dict(r) for r in rows]}

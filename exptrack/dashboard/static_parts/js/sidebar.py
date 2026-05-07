@@ -25,30 +25,64 @@ function renderStatusChips() {
   ).join('');
 }
 
+function _renderExpCard(e) {
+  const active = currentDetailId === e.id ? ' active' : '';
+  const statusCls = 'status-' + e.status;
+  const isSelected = selectedIds.has(e.id);
+  const cbHtml = '<label style="display:inline-flex;align-items:center;cursor:pointer;padding:2px" onclick="event.stopPropagation()"><input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
+    ' onclick="toggleSelection(\'' + e.id + '\')" title="Select"></label>';
+  const tagsHtml = (e.tags||[]).length ? '<div class="exp-card-tags">' + (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') + '</div>' : '';
+  const cardStudiesHtml = (e.studies||[]).length ? '<div class="exp-card-tags">' + (e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') + '</div>' : '';
+  const cardHl = getHighlightStudy(e);
+  const cardHlStyle = cardHl ? ' style="border-left:3px solid ' + cardHl.border + ';background:' + cardHl.bg + '"' : '';
+  return '<div class="exp-card' + active + '"' + cardHlStyle + ' onclick="showDetail(\'' + e.id + '\')">' +
+    '<div class="exp-card-row1">' + cbHtml +
+    '<span class="status-dot ' + statusCls + '"></span>' +
+    '<span class="exp-card-name" ondblclick="event.stopPropagation();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name) + '</span></div>' +
+    '<div class="exp-card-meta">' +
+      esc(e.git_branch || '') + ' &middot; ' + fmtDur(e.duration_s) + ' &middot; ' + fmtDt(e.created_at) +
+    '</div>' +
+    tagsHtml + cardStudiesHtml +
+  '</div>';
+}
+
 function renderExpList() {
   const list = document.getElementById('exp-list');
   if (!list) return;
   const filtered = getFilteredExperiments();
-  list.innerHTML = filtered.map(e => {
-    const active = currentDetailId === e.id ? ' active' : '';
-    const statusCls = 'status-' + e.status;
-    const isSelected = selectedIds.has(e.id);
-    const cbHtml = '<label style="display:inline-flex;align-items:center;cursor:pointer;padding:2px" onclick="event.stopPropagation()"><input type="checkbox" class="exp-card-cb" ' + (isSelected?'checked':'') +
-      ' onclick="toggleSelection(\'' + e.id + '\')" title="Select"></label>';
-    const tagsHtml = (e.tags||[]).length ? '<div class="exp-card-tags">' + (e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') + '</div>' : '';
-    const cardStudiesHtml = (e.studies||[]).length ? '<div class="exp-card-tags">' + (e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') + '</div>' : '';
-    const cardHl = getHighlightStudy(e);
-    const cardHlStyle = cardHl ? ' style="border-left:3px solid ' + cardHl.border + ';background:' + cardHl.bg + '"' : '';
-    return '<div class="exp-card' + active + '"' + cardHlStyle + ' onclick="showDetail(\'' + e.id + '\')">' +
-      '<div class="exp-card-row1">' + cbHtml +
-      '<span class="status-dot ' + statusCls + '"></span>' +
-      '<span class="exp-card-name" ondblclick="event.stopPropagation();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name) + '</span></div>' +
-      '<div class="exp-card-meta">' +
-        esc(e.git_branch || '') + ' &middot; ' + fmtDur(e.duration_s) + ' &middot; ' + fmtDt(e.created_at) +
-      '</div>' +
-      tagsHtml + cardStudiesHtml +
-    '</div>';
-  }).join('');
+
+  const btn = document.getElementById('sidebar-group-study-btn');
+  if (btn) {
+    btn.classList.toggle('active', sidebarGroupByStudy);
+    btn.title = sidebarGroupByStudy ? 'Ungroup' : 'Group by study';
+  }
+
+  if (!sidebarGroupByStudy) {
+    list.innerHTML = filtered.map(_renderExpCard).join('');
+  } else {
+    const NO_STUDY = '__no_study__';
+    const groups = new Map();
+    for (const e of filtered) {
+      const key = (e.studies && e.studies.length) ? e.studies[0] : NO_STUDY;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    }
+    let html = '';
+    for (const [key, items] of groups) {
+      const isCollapsed = !expandedStudyGroups.has(key);
+      const arrow = isCollapsed ? '▶' : '▼';
+      const label = key === NO_STUDY ? '<span style="color:var(--muted);font-style:italic">(no study)</span>' : esc(key);
+      html += '<div class="sidebar-study-header' + (isCollapsed ? ' collapsed' : '') + '" onclick="toggleStudyGroup(\'' + esc(key) + '\')">' +
+        '<span class="sidebar-study-toggle">' + arrow + '</span>' +
+        '<span class="sidebar-study-name">' + label + '</span>' +
+        '<span class="sidebar-study-count">' + items.length + '</span>' +
+      '</div>';
+      if (!isCollapsed) {
+        html += items.map(_renderExpCard).join('');
+      }
+    }
+    list.innerHTML = html;
+  }
 
   // Update sidebar count
   const countEl = document.getElementById('sidebar-count');
@@ -56,6 +90,19 @@ function renderExpList() {
 
   // Render sidebar actions bar
   renderSidebarActionsBar();
+}
+
+function toggleSidebarStudyGroup() {
+  sidebarGroupByStudy = !sidebarGroupByStudy;
+  localStorage.setItem('exptrack-sidebar-group-study', sidebarGroupByStudy ? 'true' : 'false');
+  renderExpList();
+}
+
+function toggleStudyGroup(key) {
+  if (expandedStudyGroups.has(key)) expandedStudyGroups.delete(key);
+  else expandedStudyGroups.add(key);
+  localStorage.setItem('exptrack-expanded-studies', JSON.stringify([...expandedStudyGroups]));
+  renderExpList();
 }
 
 function renderSidebarActionsBar() {
@@ -87,6 +134,8 @@ function renderSidebarActionsBar() {
 function showWelcome() {
   currentDetailId = '';
   stopAutoRefresh();
+  // Make sure the Sessions tab isn't holding the canvas
+  if (typeof closeSessionsTab === 'function') closeSessionsTab();
   document.getElementById('welcome-state').style.display = '';
   document.getElementById('detail-view').style.display = 'none';
   document.getElementById('compare-view').style.display = 'none';
