@@ -158,12 +158,14 @@ function renderExperiments() {
   }
 
   // Group experiments
+  const NO_STUDY = '__no_study__';
   const groups = new Map();
   for (const e of exps) {
     let key = '';
     if (groupBy === 'git_commit') key = e.git_commit ? e.git_commit.slice(0, 7) : 'no commit';
     else if (groupBy === 'git_branch') key = e.git_branch || 'no branch';
     else if (groupBy === 'status') key = e.status || 'unknown';
+    else if (groupBy === 'study') key = (e.studies && e.studies.length) ? e.studies[0] : NO_STUDY;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(e);
   }
@@ -174,6 +176,10 @@ function renderExperiments() {
     let groupLabel = key;
     if (groupBy === 'git_commit' && items[0].git_branch) {
       groupLabel = key + ' <span class="group-meta">' + esc(items[0].git_branch) + '</span>';
+    } else if (groupBy === 'study' && key === NO_STUDY) {
+      groupLabel = '<span style="color:var(--muted);font-style:italic">(no study)</span>';
+    } else {
+      groupLabel = esc(key);
     }
     html += '<tr class="group-header" onclick="toggleGroup(\'' + esc(key) + '\')"><td colspan="' + visibleCols.length + '">';
     html += '<span class="group-toggle">' + (isCollapsed ? '\u25B6' : '\u25BC') + '</span> ';

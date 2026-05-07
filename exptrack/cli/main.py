@@ -49,6 +49,7 @@ from .mutate_cmds import (
     cmd_unstudy,
     cmd_untag,
 )
+from .session_cmds import cmd_session, cmd_sessions
 from .pipeline_cmds import (
     cmd_create,
     cmd_link_dir,
@@ -381,6 +382,26 @@ def main():
     p_finish = sub.add_parser("finish", help="Manually mark a running experiment as done")
     p_finish.add_argument("id")
 
+    # ── Session Trees ────────────────────────────────────────────────────────
+    sub.add_parser("sessions", help="List session trees for the current project")
+
+    p_sess = sub.add_parser("session", help="Inspect or modify a session tree")
+    sess_sub = p_sess.add_subparsers(dest="session_sub")
+
+    p_ss = sess_sub.add_parser("show", help="Render a session tree as ASCII")
+    p_ss.add_argument("id_or_name", help="Session id (prefix) or exact name")
+
+    p_sn = sess_sub.add_parser("nodes", help="List nodes in a session (flat)")
+    p_sn.add_argument("id_or_name")
+
+    p_sr = sess_sub.add_parser("rm",
+        help="Delete a session and its nodes (linked experiments preserved)")
+    p_sr.add_argument("id_or_name")
+
+    p_snote = sess_sub.add_parser("note", help="Annotate a node by id")
+    p_snote.add_argument("node_id")
+    p_snote.add_argument("text")
+
     args = p.parse_args()
     if not args.cmd:
         p.print_help(); return
@@ -427,6 +448,8 @@ def main():
         "clean":        cmd_clean,
         "ui":           cmd_ui,
         "ui-stop":      cmd_ui_stop,
+        "sessions":     cmd_sessions,
+        "session":      cmd_session,
     }
     try:
         dispatch[args.cmd](args)

@@ -23,6 +23,7 @@ HTML_BODY = r"""</style>
 <div class="header">
   <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech" onclick="event.stopPropagation();dismissOwl()"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak('click')"><svg width="28" height="28" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
   <div class="header-actions">
+    <button class="toolbox-btn" onclick="toggleSessionsTab()" title="Session Trees">&#9783; Sessions</button>
     <button class="toolbox-btn" data-tab="todos" onclick="openToolbox('todos')" title="Todo list">&#9745; Todo</button>
     <button class="toolbox-btn" data-tab="commands" onclick="openToolbox('commands')" title="Saved commands">&gt;_ Cmds</button>
     <button class="theme-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">&#9790;</button>
@@ -281,6 +282,7 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
     <div class="sidebar-content">
       <div class="sidebar-header">
         <input type="text" id="search-input" placeholder="Search..." oninput="searchQuery=this.value;renderExpList()">
+        <button class="collapse-btn" id="sidebar-group-study-btn" onclick="toggleSidebarStudyGroup()" title="Group by study">&#9783;</button>
         <button class="collapse-btn" onclick="toggleSidebar()" title="Collapse sidebar">&#8249;</button>
       </div>
       <div class="status-chips" id="status-chips"></div>
@@ -312,6 +314,7 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
         <button data-group="git_commit" onclick="setGroup('git_commit')" class="active">Git Commit</button>
         <button data-group="git_branch" onclick="setGroup('git_branch')">Branch</button>
         <button data-group="status" onclick="setGroup('status')">Status</button>
+        <button data-group="study" onclick="setGroup('study')">Study</button>
         <button data-group="" onclick="setGroup('')">None</button>
         <span style="margin-left:12px;border-left:1px solid var(--border);padding-left:12px" class="highlight-toggle">
           <label><input type="checkbox" id="highlight-toggle" onchange="toggleHighlightMode(this.checked)"> Highlight by study</label>
@@ -326,6 +329,31 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
     <!-- Detail state: shown when an experiment is selected -->
     <div id="detail-view" style="display:none">
       <div id="detail-panel"></div>
+    </div>
+
+    <!-- Sessions tab -->
+    <div id="sessions-tab">
+      <div id="sessions-list">
+        <div class="sessions-list-header">
+          <h3>Sessions <span id="sessions-updated-stamp" class="sessions-updated-stamp"></span></h3>
+          <div class="sessions-list-actions">
+            <button class="sessions-refresh-btn" title="Reload sessions" onclick="loadSessionsList()">&#x21bb;</button>
+            <button class="sessions-close-btn" title="Close sessions tab" onclick="closeSessionsTab()">&times;</button>
+          </div>
+        </div>
+        <div id="sessions-list-items"></div>
+      </div>
+      <div id="session-tree-view">
+        <div class="session-tree-empty">
+          <p><b>Session Trees</b> are an opt-in layer for exploratory notebook work — they record the shape of your thinking as a navigable tree.</p>
+          <p>To start one, run in a notebook:</p>
+          <pre style="margin:8px 0;font-family:'IBM Plex Mono',monospace;font-size:12px">%load_ext exptrack
+%exptrack session start "exploring threshold sensitivity"
+%exptrack checkpoint "after preprocessing clean"
+%exptrack branch "try threshold 0.7"</pre>
+          <p>Use <code>%%scratch</code> to mark cells you want excluded from logging.</p>
+        </div>
+      </div>
     </div>
 
     <!-- Compare state -->

@@ -258,7 +258,46 @@ def _ensure_schema(conn):
             file_list   TEXT,
             created_at  TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            notebook    TEXT,
+            status      TEXT DEFAULT 'active',
+            git_branch  TEXT,
+            git_commit  TEXT,
+            created_at  REAL NOT NULL,
+            ended_at    REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS session_nodes (
+            id          TEXT PRIMARY KEY,
+            session_id  TEXT NOT NULL REFERENCES sessions(id),
+            parent_id   TEXT REFERENCES session_nodes(id),
+            node_type   TEXT NOT NULL,
+            label       TEXT NOT NULL,
+            note        TEXT,
+            cell_source TEXT,
+            git_diff    TEXT,
+            git_commit  TEXT,
+            seq         INTEGER NOT NULL,
+            created_at  REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_nodes_session
+            ON session_nodes(session_id, seq);
+        CREATE INDEX IF NOT EXISTS idx_session_nodes_parent
+            ON session_nodes(parent_id);
     """)
+
+    # Add session_node_id to experiments if missing
+    try:
+        ecols = {row[1] for row in conn.execute("PRAGMA table_info(experiments)").fetchall()}
+        if "session_node_id" not in ecols:
+            conn.execute("ALTER TABLE experiments ADD COLUMN session_node_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+    except Exception as e:
+        print(f"[exptrack] warning: session_node_id migration error: {e}", file=sys.stderr)
 
     # Add timeline_seq, content_hash, size_bytes to artifacts if missing
     try:

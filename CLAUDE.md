@@ -53,9 +53,19 @@ from exptrack.core import Experiment
 exp = Experiment.resume("abc123")    # by ID
 exp = Experiment.resume("abc")       # by ID prefix
 
+# Session Trees (notebook only — opt-in, no-op when not started)
+#   %exptrack session start "name"        begin a session (must precede other magics)
+#   %exptrack checkpoint "label"          mark stable point (snapshots per-checkpoint diff)
+#   %exptrack branch "label"              declare intent for the next divergence
+#   %%scratch                             cell magic — runs cell, never logged
+#   %%pin "label"                         cell magic — runs cell, snapshots cell+output as artifact
+#   %exptrack promote "label"             link active experiment to current node
+#   %exptrack session end                 close session (open branches → abandoned)
+#
 # CLI commands: ls, show, diff, compare, history, timeline, tag, untag, note,
 #   edit-note, rm, clean, finish, delete-tag, study, unstudy, stage, stale,
-#   upgrade, storage, export, verify, ui
+#   upgrade, storage, export, verify, ui,
+#   sessions, session show|nodes|rm|note     Session Trees
 ```
 
 ## Testing & Linting
@@ -79,7 +89,7 @@ exptrack/
   core/
     __init__.py               Re-exports Experiment, make_run_name
     experiment.py             Experiment class, lifecycle, param/metric/artifact logging
-    db.py                     SQLite schema (7 tables), migrations, WAL mode
+    db.py                     SQLite schema (9 tables), migrations, WAL mode
     naming.py                 Run name generation ({script}__{params}__{date}_{uid})
     hashing.py                File integrity hashing (SHA-256, partial for large files)
     git.py                    Git branch/commit/diff capture
@@ -88,7 +98,8 @@ exptrack/
     __init__.py               Re-exports capture modules
     argparse_patch.py         Patches parse_args() and parse_known_args()
     matplotlib_patch.py       Patches plt.savefig() and Figure.savefig()
-    notebook_hooks.py         IPython post_run_cell hook, cell snapshots
+    notebook_hooks.py         IPython post_run_cell hook, cell snapshots (skips %%scratch cells)
+    session_hooks.py          Session Trees magics (%exptrack ..., %%scratch)
     cell_lineage.py           Content-addressed cell tracking (SHA-256, 30% similarity)
     variables.py              Variable fingerprinting, HP detection, assignment extraction
     script_tracking.py        Git diff capture for scripts
@@ -98,6 +109,11 @@ exptrack/
     inspect_cmds.py           ls, show, diff, compare, history, timeline, export, verify
     mutate_cmds.py            tag, untag, delete-tag, note, edit-note, rm, finish
     admin_cmds.py             clean, stale, upgrade, storage
+    session_cmds.py           sessions, session show|nodes|rm|note (Session Trees CLI)
+  sessions/
+    __init__.py               Re-exports SessionManager, get_current_session, set_current_session
+    manager.py                SessionManager — start/end, checkpoint, branch, promote, get_tree
+    tree.py                   ASCII renderer + JSON renderer + list_sessions, find_session
   plugins/
     __init__.py               Plugin base class + event registry singleton
     github_sync.py            Sync run metadata to GitHub repo as JSONL
@@ -123,6 +139,7 @@ exptrack/
         compare.py            Compare view, side-by-side diffs, reproduce box
         components.py         Tabs, help, export, tags, inline editing, owl mascot
         studies.py             Study management panel
+        sessions.py           Session Trees tree-view styling (checkpoint/branch/abandoned nodes)
         images.py             Image gallery, modals, image comparison
       js/
         __init__.py           JS assembly: get_all_js() + all section re-exports
@@ -142,6 +159,7 @@ exptrack/
         stage.py              Stage/pipeline state tracking
         manual.py             Manual experiment creation modal
         confusion.py          Confusion matrix calculator tab (per-experiment)
+        sessions.py           Session Trees tab — list + tree renderer + node detail
         init.py               Page initialization, event binding
     js/
       __init__.py             Convenience re-exports with short aliases
@@ -154,7 +172,7 @@ exptrack/
 ### Key modules
 
 - **`core/experiment.py`** — `Experiment` class: context manager support, param/metric/artifact logging, timeline events, variable context reconstruction. `Experiment.resume(exp_id)` reopens a finished experiment for continuation. `thin_every` parameter controls write-time metric thinning. Properties: id, name, status, git_branch, git_commit, git_diff, created_at, duration_s, tags, notes
-- **`core/db.py`** — SQLite schema with 7 tables (experiments, params, metrics, artifacts, timeline, cell_lineage, code_baselines). WAL mode, indexed on exp_id/key/created_at. Schema migrations via ALTER TABLE
+- **`core/db.py`** — SQLite schema with 9 tables (experiments, params, metrics, artifacts, timeline, cell_lineage, code_baselines, sessions, session_nodes). WAL mode, indexed on exp_id/key/created_at. Schema migrations via ALTER TABLE
 - **`capture/argparse_patch.py`** — Patches both `parse_args()` AND `parse_known_args()`, plus raw `sys.argv` fallback for non-argparse scripts (catches single-dash flags, click, manual parsing)
 - **`capture/notebook_hooks.py`** — `post_run_cell` hook: content-addressed cell lineage, diff against parent cells, variable change detection with fingerprinting, assignment expression enrichment, timeline event emission, HP auto-detection, cell snapshot saving
 - **`capture/variables.py`** — Variable fingerprinting (scalars via repr, ndarrays/DataFrames/Tensors via content hash, collections via JSON). HP name regex detection. Assignment expression extraction from cell source. Observational cell detection
@@ -178,6 +196,7 @@ exptrack/
 - **Auto-resume detection**: When `exptrack run` sees `--resume` (or any flag in `resume_flags` config) in the script's argv, it automatically resumes the latest experiment for that script instead of creating a new one. All metrics, artifacts, and params aggregate into the same experiment. Timeline seq and stdout/stderr logs append. Shell pipelines use `exptrack run-start --resume [EXP_ID]` explicitly. Programmatic: `Experiment.resume(exp_id)`
 - **Plugin system**: Plugins loaded dynamically from `exptrack.plugins.<name>`, each module exports `plugin_class`. 4 lifecycle hooks
 - **Per-project storage**: DB + notebook history in `.exptrack/` (gitignored), config.json is committable
+- **Collapsible study groups (sidebar + main table)**: The experiments sidebar has a "Group by study" toggle button in the sidebar header, and the main-table group bar has a "Study" option alongside Git Commit / Branch / Status / None. The two views use **different defaults**: the sidebar defaults study groups to **collapsed** (tracked via `expandedStudyGroups`, persisted as `exptrack-expanded-studies`) since a busy left rail is the main motivation; the main table defaults to **expanded** like the other groupings (uses the existing `collapsedGroups` set, so click-to-collapse behavior matches Git Commit / Branch / Status). Master sidebar toggle persists in localStorage (`exptrack-sidebar-group-study`). Experiments without a study fall under a "(no study)" header in both views
 - **Pinnable Todos / Commands panel**: The toolbox drawer (Todos + Commands) can be pinned as a persistent right-side panel via the pushpin button in the drawer header or the "Pin Todos / Commands panel" checkbox in Settings → Display. When pinned, `body.toolbox-pinned` shifts the header and `#app-layout` right by `var(--toolbox-w)` (the drawer width), the overlay is hidden, and `closeToolbox()` is a no-op. The drawer's left edge is a drag handle when pinned — drag to resize between 260–800px (RAF-throttled). State persists in localStorage (`exptrack-toolbox-pinned`, `exptrack-toolbox-tab`, `exptrack-toolbox-w`). Each panel also has export buttons: Todos → `.md`/`.txt`/`.json`, Commands → `.sh` (runnable script)/`.md`/`.json`. Tab switches re-render local state without re-fetching
 - **Save exports to project folder**: A "Save exports to project folder" toggle in Settings → Display routes all downloads (Todos, Commands, experiment exports) through `POST /api/save-export`, which writes to `<project_root>/exports/` and auto-suffixes filenames (`foo.md`, `foo_2.md`, …) so existing files are never overwritten. The unified `saveOrDownload(text, filename, mime)` helper in `js/core.py` wraps `downloadBlob` (browser download) with this server-side save path; preference is held in localStorage (`exptrack-export-to-folder`)
 - **Inline editing**: All editable fields (name, tags, notes) support double-click inline editing in dashboard — no modal prompts
@@ -186,19 +205,22 @@ exptrack/
 - **Timeline-based tracking**: Every event (cell_exec, var_set, artifact, metric, observational) gets a sequence number for full execution order reconstruction
 - **Metric thinning**: Two-layer system for large metric series. Write-time: `thin_every` param on Experiment or `metric_keep_every` in config stores every Nth point. Read-time: min-max bucketing downsamples for chart display. Configurable via dashboard settings or `metric_max_points` in config
 - **Metric source tracking**: Metrics tagged as auto/manual/pipeline via `source` column. Manual metrics cannot overwrite auto points at the same step. Metrics table splits rows by source for clarity
+- **Session Trees (opt-in exploratory tree tracking)**: A second tracking mode for notebooks that records the *shape* of exploration (checkpoints + branches + scratch cells) as a tree, layered on top of standard `%load_ext exptrack` capture. Activated only by `%exptrack session start "name"` — without it every other session magic is a silent no-op, so existing capture is unaffected. `%exptrack checkpoint "label"` writes a node and snapshots a per-checkpoint git diff (`git diff` from the previous checkpoint's commit, falling back to `git diff HEAD`). `%exptrack branch "label"` adds a child of the most recent checkpoint and tags it as the current node so subsequent commits/checkpoints flow under it. `%%scratch` is a cell magic that executes the cell body but its source begins with `%%scratch`, so the `_post_run_cell` hook detects it via `is_scratch_cell()` and skips all logging — no DB row is ever inserted, not insert-then-delete. `%exptrack promote "label"` writes the active experiment's `session_node_id` to the current node and appends the label to the node's `note`. `%exptrack session end` flips any open branch (no descendant) to `node_type='abandoned'` and sets `sessions.status='ended'`. The current `SessionManager` lives in `exptrack.sessions` as a module-level singleton (`get_current_session()` / `set_current_session()`); it caches `_current_node_id` and `_last_checkpoint_id` so branches always attach under the most recent checkpoint. The dashboard's `Sessions` tab (toggled via the `☰ Sessions` header button, which adds `body.sessions-active`) renders the tree as a vertical, indented node graph (checkpoints = filled circles, branches = open circles, abandoned = dashed/dimmed); each node shows label, time, diff summary, and a `→ exp <id>` badge when promoted. Clicking a node shows its source/diff/note in `#session-detail`, with inline note editing via `POST /api/session/<id>/note-node`. Cell runs render as collapsible `<details>` blocks (header shows `cell N / M` and line count) with an inline line-number gutter; older cells default to collapsed when there are more than three. Git diffs render in a GitHub-style **split** (side-by-side) view by default with a `Split / Unified` toggle (persisted in localStorage as `exptrack-diff-mode`); each file is its own collapsible card with per-file `+N −M` stats, hunk headers, and theme-aware tinted backgrounds (`--diff-add-bg`, `--diff-del-bg`, `--diff-add-bar`, `--diff-del-bar`, `--diff-empty-bg`, `--diff-hunk-bg`, all redefined under `body.dark`). Branch nodes capture and refresh their `git_diff` (vs. the parent checkpoint's commit, plus working-tree changes) at creation time and after every recorded cell, via `SessionManager._compute_diff_vs_checkpoint`; checkpoints freeze their diff at creation. Tree reconstruction tolerates orphaned nodes (attached to root) and synthesizes a root if none exists. CLI: `exptrack sessions`, `exptrack session show|nodes|rm|note`. Schema: `sessions`, `session_nodes`, plus a nullable `experiments.session_node_id` foreign key — all added by `_ensure_schema()` so `exptrack upgrade` is idempotent
 - **Param source tracking**: Params tagged as auto/manual via `source` column. Auto params (captured by argparse/argv) are read-only in the dashboard; manual params (added via the manual-experiment modal or the per-experiment "+ Add Param" form) can be edited, renamed, or deleted inline. `+ Add Param` refuses to overwrite an existing key — to change a value, double-click to edit; to swap an auto key, delete is blocked, so pick a different key. Endpoints: `/api/experiment/<id>/{add-param,edit-param,delete-param,rename-param}`
 
 ## Database Schema
 
-SQLite WAL mode with 7 tables:
+SQLite WAL mode with 9 tables:
 
-- **`experiments`** — run metadata (id, name, status, created_at, duration_s, git_branch, git_commit, git_diff, hostname, python_ver, notes, tags, output_dir)
+- **`experiments`** — run metadata (id, name, status, created_at, duration_s, git_branch, git_commit, git_diff, hostname, python_ver, notes, tags, output_dir, **session_node_id** — nullable FK into `session_nodes` set only by `%exptrack promote`)
 - **`params`** — key/value pairs (exp_id, key, value as JSON string, source). Source is 'auto' (captured from script/argparse) or 'manual' (added via dashboard or `api_create_experiment`). Auto params are read-only in the UI; manual params can be edited, renamed, and deleted via dashboard inline editing
 - **`metrics`** — float values (exp_id, key, value, step, ts, source). Source is 'auto' (from scripts), 'manual' (dashboard), or 'pipeline' (CLI)
 - **`artifacts`** — output files (exp_id, label, path, content_hash, size_bytes, timeline_seq, created_at)
 - **`timeline`** — execution events (exp_id, seq, event_type, cell_hash, cell_pos, key, value, prev_value, source_diff, ts)
 - **`cell_lineage`** — content-addressed cell history (cell_hash, notebook, source, parent_hash, created_at)
 - **`code_baselines`** — position-based cell baselines (notebook, cell_seq, source, source_hash)
+- **`sessions`** — Session Trees container (id, name, notebook, status `'active'|'ended'`, git_branch, git_commit, created_at, ended_at). Created only by `%exptrack session start`
+- **`session_nodes`** — tree nodes (id, session_id, parent_id, node_type `'root'|'checkpoint'|'branch'|'abandoned'`, label, note, cell_source, git_diff, git_commit, seq, created_at). Indexed on (session_id, seq) and (parent_id)
 
 Indexed on: metrics(exp_id, key), params(exp_id), artifacts(exp_id), timeline(exp_id, seq), experiments(created_at, status).
 

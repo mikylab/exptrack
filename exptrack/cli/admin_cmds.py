@@ -772,6 +772,24 @@ def cmd_storage(args):
     except Exception:
         cl_count, cl_size, cl_compacted = 0, 0, 0
 
+    # Session Trees
+    try:
+        sess_count = conn.execute("SELECT COUNT(*) as n FROM sessions").fetchone()["n"]
+        snode_row = conn.execute(
+            "SELECT COUNT(*) as n, "
+            "COALESCE(SUM(LENGTH(cell_source)), 0) as cells_sz, "
+            "COALESCE(SUM(LENGTH(git_diff)), 0) as diff_sz, "
+            "COALESCE(SUM(LENGTH(note)), 0) as note_sz "
+            "FROM session_nodes"
+        ).fetchone()
+        snode_count = snode_row["n"]
+        snode_size = (snode_row["cells_sz"] or 0) + (snode_row["diff_sz"] or 0) + (snode_row["note_sz"] or 0)
+        snode_cells_size = snode_row["cells_sz"] or 0
+        snode_diff_size = snode_row["diff_sz"] or 0
+    except Exception:
+        sess_count, snode_count, snode_size = 0, 0, 0
+        snode_cells_size, snode_diff_size = 0, 0
+
     # Notebook history disk usage
     hist_dir = root / conf.get("notebook_history_dir", ".exptrack/notebook_history")
     hist_size, hist_count = 0, 0
@@ -801,6 +819,9 @@ def cmd_storage(args):
     print(f"  Metrics:       {metric_count:>8,} rows")
     print(f"  Artifacts:     {artifact_count:>8,} rows")
     print(f"  Timeline:      {timeline_count:>8,} rows  (~{fmt(timeline_size)})")
+    if sess_count or snode_count:
+        print(f"  Sessions:      {sess_count:>8,} rows  "
+              f"({snode_count} nodes, ~{fmt(snode_size)})")
     print()
     print(bold(col("  Storage Hotspots", W)))
     print(dim("  " + "-" * 50))
@@ -824,6 +845,9 @@ def cmd_storage(args):
           f"({cl_count} cells with source, {cl_compacted} compacted)")
     print(f"  timeline.source_diff: {fmt(tl_diff_total)}")
     print(f"  notebook_history/:    {fmt(hist_size)}  ({hist_count} snapshots)")
+    if snode_count:
+        print(f"  session_nodes.cell_source: {fmt(snode_cells_size)}  ({snode_count} nodes)")
+        print(f"  session_nodes.git_diff:    {fmt(snode_diff_size)}")
     print()
 
     cell_total = cl_size + tl_diff_total + hist_size

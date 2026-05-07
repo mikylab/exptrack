@@ -323,6 +323,14 @@ def load_ipython_extension(ip: Any) -> None:
     ip.register_magic_function(exp_tag, magic_kind='line')
     ip.register_magic_function(exp_note, magic_kind='line')
 
+    # Session Trees magics (%exptrack ..., %%scratch)
+    try:
+        from .capture.session_hooks import register_session_magics
+        register_session_magics(ip)
+    except Exception as e:
+        print(f"[exptrack] warning: could not register session magics: {e}",
+              file=sys.stderr)
+
     # Finish experiment on kernel shutdown
     import atexit
     atexit.register(lambda: done() if _active else None)

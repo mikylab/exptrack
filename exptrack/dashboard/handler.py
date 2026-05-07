@@ -159,6 +159,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/images/"):
             exp_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
             self._json(read_routes.api_list_images(conn, exp_id))
+        elif path == "/api/sessions":
+            self._json(read_routes.api_sessions(conn))
+        elif path.startswith("/api/session/") and path.endswith("/nodes"):
+            sid = path.split("/")[3]
+            self._json(read_routes.api_session_nodes(conn, sid))
+        elif path.startswith("/api/session/"):
+            sid = path.split("/")[-1]
+            self._json(read_routes.api_session_tree(conn, sid))
         elif path.startswith("/api/file/"):
             # Serve a file from the project root (for image viewing)
             file_path = "/".join(path.split("/")[3:])
@@ -224,6 +232,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(handler())
                 self._wal_checkpoint(conn)
                 return
+
+        # Session-scoped mutations: /api/session/<id>/<action>
+        if path.startswith("/api/session/"):
+            parts = path.split("/")
+            if len(parts) >= 5:
+                sid = parts[-2]
+                action = parts[-1]
+                sess_dispatch = {
+                    "note-node": lambda: write_routes.api_session_note_node(conn, sid, body),
+                    "end":       lambda: write_routes.api_session_end(conn, sid, body),
+                    "delete":    lambda: write_routes.api_session_delete(conn, sid, body),
+                }
+                handler = sess_dispatch.get(action)
+                if handler:
+                    self._json(handler())
+                    self._wal_checkpoint(conn)
+                    return
 
         # Global mutations
         global_dispatch = {

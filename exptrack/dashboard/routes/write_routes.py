@@ -1545,3 +1545,51 @@ def api_storage_info(conn) -> dict:
         "artifacts": n_artifacts,
         "timeline": n_timeline,
     }
+
+
+# ── Session Trees ────────────────────────────────────────────────────────────
+
+def api_session_note_node(conn, session_id: str, body: dict) -> dict:
+    """Annotate a session node by id."""
+    node_id = body.get("node_id", "")
+    text = body.get("text", "")
+    if not node_id:
+        return {"error": "missing node_id"}
+    row = conn.execute(
+        "SELECT id, session_id FROM session_nodes WHERE id=? AND session_id=?",
+        (node_id, session_id),
+    ).fetchone()
+    if not row:
+        return {"error": "not found"}
+    conn.execute("UPDATE session_nodes SET note=? WHERE id=?", (text, node_id))
+    conn.commit()
+    return {"ok": True}
+
+
+def api_session_delete(conn, session_id: str, body: dict) -> dict:
+    """Delete a session and its nodes. Linked experiments are preserved with
+    their session_node_id cleared."""
+    from ...sessions.manager import delete_session
+    if not delete_session(session_id):
+        return {"error": "not found"}
+    return {"ok": True}
+
+
+def api_session_end(conn, session_id: str, body: dict) -> dict:
+    """Mark a session as ended (and abandon any open branches)."""
+    import time
+    row = conn.execute("SELECT id, status FROM sessions WHERE id=?",
+                       (session_id,)).fetchone()
+    if not row:
+        return {"error": "not found"}
+    conn.execute(
+        "UPDATE session_nodes SET node_type='abandoned' "
+        "WHERE session_id=? AND node_type='branch' "
+        "AND id NOT IN (SELECT parent_id FROM session_nodes "
+        "  WHERE session_id=? AND parent_id IS NOT NULL)",
+        (session_id, session_id),
+    )
+    conn.execute("UPDATE sessions SET status='ended', ended_at=? WHERE id=?",
+                 (time.time(), session_id))
+    conn.commit()
+    return {"ok": True}

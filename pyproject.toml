@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "exptrack"
-version = "1.7.4"
+version = "1.9.2"
 description = "Local-first ML experiment tracker — zero friction, zero cloud"
 requires-python = ">=3.8"
 license = {text = "MIT"}
