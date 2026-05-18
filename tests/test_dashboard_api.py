@@ -482,7 +482,7 @@ def test_api_finish():
 
 
 def test_api_delete():
-    """api_delete removes an experiment."""
+    """api_delete soft-deletes (moves to Trash); row still exists with deleted_at set."""
     with tempfile.TemporaryDirectory() as tmp:
         os.chdir(tmp)
         _reset_config()
@@ -497,13 +497,181 @@ def test_api_delete():
         conn = get_db()
         result = api_delete(conn, exp.id)
         assert result.get("ok") is True
+        assert result.get("trashed") is True
 
-        # Verify gone
-        row = conn.execute("SELECT id FROM experiments WHERE id=?",
-                           (exp.id,)).fetchone()
-        assert row is None, "Experiment should be deleted"
+        # Row still present, but deleted_at is set
+        row = conn.execute(
+            "SELECT id, deleted_at FROM experiments WHERE id=?", (exp.id,)
+        ).fetchone()
+        assert row is not None, "Soft delete should not remove the row"
+        assert row["deleted_at"], "deleted_at should be set after soft delete"
 
         print("  [PASS] test_api_delete")
+
+
+def test_api_restore():
+    """api_restore clears deleted_at."""
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        _reset_config()
+        from exptrack import config as cfg
+        cfg.init("test")
+        from exptrack.core import get_db
+        from exptrack.dashboard.routes.write_routes import api_delete, api_restore
+
+        exp = _make_experiment()
+        exp.finish()
+        conn = get_db()
+        api_delete(conn, exp.id)
+
+        result = api_restore(conn, exp.id)
+        assert result.get("ok") is True
+        assert result.get("restored") is True
+        row = conn.execute(
+            "SELECT deleted_at FROM experiments WHERE id=?", (exp.id,)
+        ).fetchone()
+        assert row["deleted_at"] is None
+
+        print("  [PASS] test_api_restore")
+
+
+def test_api_delete_permanent_keeps_files_by_default():
+    """api_delete_permanent removes the DB row; with delete_files=False, files are kept."""
+    import json
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        _reset_config()
+        from exptrack import config as cfg
+        cfg.init("test")
+        from exptrack.core import get_db
+        from exptrack.dashboard.routes.write_routes import (
+            api_delete, api_delete_permanent,
+        )
+
+        exp = _make_experiment()
+        # Create an artifact file on disk
+        art = Path(tmp) / "outputs" / "model.bin"
+        art.parent.mkdir(parents=True, exist_ok=True)
+        art.write_bytes(b"weights")
+        exp.log_artifact(str(art), label="weights")
+        exp.finish()
+
+        conn = get_db()
+        api_delete(conn, exp.id)  # trash first
+        result = api_delete_permanent(conn, exp.id, {"delete_files": False})
+        assert result.get("ok") is True
+        assert result.get("deleted_files") is False
+
+        # DB row gone
+        row = conn.execute(
+            "SELECT id FROM experiments WHERE id=?", (exp.id,)
+        ).fetchone()
+        assert row is None
+
+        # File preserved
+        assert art.exists(), "delete_files=False should leave the artifact on disk"
+        json  # quiet linter
+
+        print("  [PASS] test_api_delete_permanent_keeps_files_by_default")
+
+
+def test_api_delete_permanent_sends_files_to_trash():
+    """With delete_files=True, files move to OS Trash (or local fallback) — never unlinked outright."""
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        _reset_config()
+        from exptrack import config as cfg
+        cfg.init("test")
+        from exptrack.core import db as core_db
+        from exptrack.core import get_db
+        from exptrack.dashboard.routes.write_routes import (
+            api_delete, api_delete_permanent,
+        )
+
+        # Force the local-trash fallback so this test doesn't touch Finder/XDG.
+        original = core_db._send_to_os_trash
+        core_db._send_to_os_trash = lambda p: False
+        try:
+            exp = _make_experiment()
+            art = Path(tmp) / "outputs" / "model.bin"
+            art.parent.mkdir(parents=True, exist_ok=True)
+            art.write_bytes(b"weights")
+            exp.log_artifact(str(art), label="weights")
+            exp.finish()
+
+            conn = get_db()
+            api_delete(conn, exp.id)  # trash first
+            result = api_delete_permanent(conn, exp.id, {"delete_files": True})
+            assert result.get("ok") is True
+            assert result.get("deleted_files") is True
+
+            # File no longer at original path
+            assert not art.exists(), "delete_files=True should move the file away from its original path"
+            # …but it's recoverable in .exptrack/trash/ (local fallback)
+            local_trash = Path(tmp) / ".exptrack" / "trash"
+            assert local_trash.is_dir(), "local trash directory should be created"
+            assert any(local_trash.iterdir()), "trashed file should land in .exptrack/trash/"
+
+            stats = result.get("file_stats") or {}
+            assert stats.get("local_trash", 0) >= 1, f"expected local_trash >=1, got {stats}"
+
+            print("  [PASS] test_api_delete_permanent_sends_files_to_trash")
+        finally:
+            core_db._send_to_os_trash = original
+
+
+def test_api_delete_preview_counts():
+    """api_delete_preview reports metric/param/artifact counts."""
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        _reset_config()
+        from exptrack import config as cfg
+        cfg.init("test")
+        from exptrack.core import get_db
+        from exptrack.dashboard.routes.read_routes import api_delete_preview
+
+        exp = _make_experiment()
+        exp.log_metric("loss", 0.5, step=1)
+        exp.log_metric("loss", 0.3, step=2)
+        exp.log_param("lr", 0.01)
+        exp.finish()
+
+        conn = get_db()
+        result = api_delete_preview(conn, exp.id)
+        assert "error" not in result
+        assert result["metrics_count"] == 2
+        assert result["params_count"] >= 1
+        assert result["artifacts_count"] >= 0
+
+        print("  [PASS] test_api_delete_preview_counts")
+
+
+def test_list_experiments_hides_trashed():
+    """list_experiments filters out trashed experiments by default."""
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        _reset_config()
+        from exptrack import config as cfg
+        cfg.init("test")
+        from exptrack.core import get_db
+        from exptrack.core.db import trash_experiment
+        from exptrack.core.queries import list_experiments
+
+        e1 = _make_experiment()
+        e1.finish()
+        e2 = _make_experiment()
+        e2.finish()
+
+        conn = get_db()
+        trash_experiment(conn, e1.id)
+        conn.commit()
+
+        assert len(list_experiments(conn)) == 1
+        assert len(list_experiments(conn, include_trashed=True)) == 2
+
+        print("  [PASS] test_list_experiments_hides_trashed")
 
 
 def test_api_edit_notes():
@@ -546,6 +714,11 @@ if __name__ == "__main__":
         test_api_add_note,
         test_api_finish,
         test_api_delete,
+        test_api_restore,
+        test_api_delete_permanent_keeps_files_by_default,
+        test_api_delete_permanent_sends_files_to_trash,
+        test_api_delete_preview_counts,
+        test_list_experiments_hides_trashed,
         test_api_edit_notes,
     ]
     passed = 0

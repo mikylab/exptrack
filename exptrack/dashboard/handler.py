@@ -117,6 +117,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_stats(conn))
         elif path == "/api/experiments":
             self._json(read_routes.api_experiments(conn, qs))
+        elif path.startswith("/api/experiment/") and path.endswith("/delete-preview"):
+            # Must come before the generic /api/experiment/<id> route below,
+            # otherwise this is dead code and the dispatch returns "not found".
+            exp_id = path.split("/")[3]
+            self._json(read_routes.api_delete_preview(conn, exp_id))
         elif path.startswith("/api/experiment/"):
             self._json(read_routes.api_experiment(conn, path.split("/")[-1]))
         elif path.startswith("/api/metrics/"):
@@ -159,6 +164,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/images/"):
             exp_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
             self._json(read_routes.api_list_images(conn, exp_id))
+        elif path == "/api/trash":
+            self._json(read_routes.api_trash(conn))
         elif path == "/api/sessions":
             self._json(read_routes.api_sessions(conn))
         elif path.startswith("/api/session/") and path.endswith("/nodes"):
@@ -200,6 +207,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "tag":             lambda: write_routes.api_add_tag(conn, exp_id, body),
                 "rename":          lambda: write_routes.api_rename(conn, exp_id, body),
                 "delete":          lambda: write_routes.api_delete(conn, exp_id),
+                "restore":         lambda: write_routes.api_restore(conn, exp_id),
+                "delete-permanent": lambda: write_routes.api_delete_permanent(conn, exp_id, body),
                 "finish":          lambda: write_routes.api_finish(conn, exp_id),
                 "artifact":        lambda: write_routes.api_add_artifact(conn, exp_id, body),
                 "delete-tag":      lambda: write_routes.api_delete_tag(conn, exp_id, body),
@@ -254,6 +263,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         global_dispatch = {
             "/api/delete-tag-global":    lambda: write_routes.api_delete_tag_global(conn, body),
             "/api/bulk-delete":          lambda: write_routes.api_bulk_delete(conn, body),
+            "/api/bulk-restore":         lambda: write_routes.api_bulk_restore(conn, body),
+            "/api/bulk-delete-permanent": lambda: write_routes.api_bulk_delete_permanent(conn, body),
+            "/api/bulk-delete-preview":  lambda: write_routes.api_bulk_delete_preview(conn, body),
             "/api/bulk-compact":         lambda: write_routes.api_compact(conn, body),
             "/api/bulk-export":          lambda: write_routes.api_bulk_export(conn, body),
             "/api/config/timezone":      lambda: write_routes.api_set_timezone(body),

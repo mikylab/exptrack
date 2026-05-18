@@ -4,6 +4,7 @@ exptrack/core/db.py — Database schema, connections, and deletion helpers
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -371,6 +372,9 @@ def _ensure_schema(conn):
             conn.execute("ALTER TABLE experiments ADD COLUMN image_paths TEXT")
         if "log_paths" not in cols:
             conn.execute("ALTER TABLE experiments ADD COLUMN log_paths TEXT")
+        if "deleted_at" not in cols:
+            conn.execute("ALTER TABLE experiments ADD COLUMN deleted_at TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_exp_deleted_at ON experiments(deleted_at)")
         # Drop old 'groups' column if it exists (renamed to 'studies')
         if "groups" in cols:
             try:
@@ -424,15 +428,19 @@ def store_git_diff(conn: sqlite3.Connection, diff_text: str) -> str:
 # ── Deletion helpers ──────────────────────────────────────────────────────────
 
 def delete_experiment(conn: sqlite3.Connection, exp_id: str,
-                      delete_files: bool = True) -> None:
+                      delete_files: bool = True) -> dict:
     """Delete an experiment and all related DB records.
 
-    If *delete_files* is True, also removes artifact files on disk, the
-    experiment's output directory (``outputs/<name>/``), and any notebook
-    history snapshots tied to this experiment.
+    If *delete_files* is True, also sends artifact files, the experiment's
+    output directory (``outputs/<name>/``), and any notebook history
+    snapshots to the OS Trash (with a local ``.exptrack/trash/`` fallback —
+    never unlinked outright). Returns a dict of per-bucket trash counts
+    (``os_trash`` / ``local_trash`` / ``missing`` / ``failed``), or an empty
+    dict when *delete_files* is False.
     """
+    file_stats: dict = {}
     if delete_files:
-        _delete_experiment_files(conn, exp_id)
+        file_stats = _delete_experiment_files(conn, exp_id)
     for table in ("metrics", "params", "artifacts", "timeline"):
         conn.execute(f"DELETE FROM {table} WHERE exp_id=?", (exp_id,))
     conn.execute("DELETE FROM experiments WHERE id=?", (exp_id,))
@@ -447,12 +455,142 @@ def delete_experiment(conn: sqlite3.Connection, exp_id: str,
             WHERE cell_hash IS NOT NULL
         )
     """)
+    return file_stats
 
 
-def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str):
-    """Remove artifact files, the experiment output directory, and notebook
-    history snapshot files from disk."""
-    # Delete individual artifact files
+# ── OS-trash helpers ──────────────────────────────────────────────────────────
+
+def _send_to_os_trash(path: Path) -> bool:
+    """Move *path* to the user's OS Trash. Returns True on success.
+
+    Uses platform-native mechanisms so the file is recoverable from Finder
+    (macOS) or the user's Files app (Linux, XDG spec). Other platforms return
+    False so the caller can use a local-trash fallback.
+    """
+    if not path.exists():
+        return False
+    abs_path = str(path.resolve())
+    plat = sys.platform
+
+    if plat == "darwin":
+        import subprocess
+        escaped = abs_path.replace("\\", "\\\\").replace('"', '\\"')
+        script = f'tell application "Finder" to delete POSIX file "{escaped}"'
+        try:
+            subprocess.run(
+                ["osascript", "-e", script],
+                check=True, capture_output=True, timeout=20,
+            )
+            return True
+        except Exception as e:
+            print(f"[exptrack] warning: osascript trash failed for {path}: {e}",
+                  file=sys.stderr)
+            return False
+
+    if plat.startswith("linux"):
+        # XDG trash spec: $XDG_DATA_HOME/Trash/{files,info}
+        import urllib.parse
+        from datetime import datetime
+        try:
+            data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+            trash_root = Path(data_home) / "Trash"
+            files_dir = trash_root / "files"
+            info_dir = trash_root / "info"
+            files_dir.mkdir(parents=True, exist_ok=True)
+            info_dir.mkdir(parents=True, exist_ok=True)
+            dest = files_dir / path.name
+            i = 1
+            while dest.exists():
+                dest = files_dir / f"{path.name}.{i}"
+                i += 1
+            shutil.move(abs_path, str(dest))
+            info_path = info_dir / (dest.name + ".trashinfo")
+            info_path.write_text(
+                "[Trash Info]\n"
+                f"Path={urllib.parse.quote(abs_path)}\n"
+                f"DeletionDate={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}\n"
+            )
+            return True
+        except Exception as e:
+            print(f"[exptrack] warning: XDG trash failed for {path}: {e}",
+                  file=sys.stderr)
+            return False
+
+    # Windows / other: no stdlib OS-trash path; caller falls back to local.
+    return False
+
+
+def _trash_or_local(path: Path, label: str = "file") -> str:
+    """Send *path* to the OS Trash; on failure, move it to ``.exptrack/trash/``.
+
+    Never falls through to a destructive ``unlink``/``rmtree`` — if both
+    OS-trash and local-fallback fail, the file is left alone with a warning.
+    Returns one of ``'os_trash'``, ``'local_trash'``, ``'missing'``, ``'failed'``.
+    """
+    if not path.exists():
+        return "missing"
+    if _send_to_os_trash(path):
+        return "os_trash"
+    try:
+        local_trash = cfg.project_root() / ".exptrack" / "trash"
+        local_trash.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = local_trash / f"{stamp}__{path.name}"
+        i = 1
+        base = dest
+        while dest.exists():
+            dest = local_trash / f"{base.name}.{i}"
+            i += 1
+        shutil.move(str(path), str(dest))
+        return "local_trash"
+    except Exception as e:
+        print(f"[exptrack] warning: could not trash {label} {path}: {e}",
+              file=sys.stderr)
+        return "failed"
+
+
+def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str) -> dict:
+    """Move artifact files, output directory, and notebook history snapshots
+    to the OS Trash (with a local ``.exptrack/trash/`` fallback).
+
+    Returns counts: ``{"os_trash": N, "local_trash": N, "failed": N, "missing": N}``.
+    """
+    stats = {"os_trash": 0, "local_trash": 0, "failed": 0, "missing": 0}
+
+    def _bump(result: str):
+        stats[result] = stats.get(result, 0) + 1
+
+    # Resolve output directories first so we can skip individual artifacts that
+    # live inside them (they're handled by the directory move).
+    exp_row = conn.execute(
+        "SELECT name, output_dir FROM experiments WHERE id=?", (exp_id,)
+    ).fetchone()
+    output_dirs: list[Path] = []
+    if exp_row:
+        if exp_row["output_dir"]:
+            output_dirs.append(Path(exp_row["output_dir"]))
+        if exp_row["name"]:
+            try:
+                conf = cfg.load()
+                output_dirs.append(
+                    cfg.project_root() / conf.get("outputs_dir", "outputs") / exp_row["name"]
+                )
+            except Exception as e:
+                print(f"[exptrack] warning: could not resolve output dir: {e}",
+                      file=sys.stderr)
+    handled_dirs: list[str] = []
+    for out_dir in output_dirs:
+        try:
+            if out_dir.is_dir():
+                resolved = str(out_dir.resolve())
+                _bump(_trash_or_local(out_dir, label="output dir"))
+                handled_dirs.append(resolved)
+        except Exception as e:
+            print(f"[exptrack] warning: could not process output dir {out_dir}: {e}",
+                  file=sys.stderr)
+
+    # Individual artifact files that live OUTSIDE the moved output_dir(s).
     rows = conn.execute(
         "SELECT path FROM artifacts WHERE exp_id=?", (exp_id,)
     ).fetchall()
@@ -462,48 +600,37 @@ def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str):
             continue
         try:
             fp = Path(p)
-            if fp.is_file():
-                fp.unlink()
+            if not fp.is_file():
+                continue
+            rp = str(fp.resolve())
+            if any(rp == hd or rp.startswith(hd + os.sep) for hd in handled_dirs):
+                continue  # already moved with the output directory
+            _bump(_trash_or_local(fp, label="artifact"))
         except Exception as e:
-            print(f"[exptrack] warning: could not delete artifact {p}: {e}", file=sys.stderr)
+            print(f"[exptrack] warning: could not trash artifact {p}: {e}",
+                  file=sys.stderr)
 
-    # Delete the experiment's output directory
-    exp_row = conn.execute(
-        "SELECT name, output_dir FROM experiments WHERE id=?", (exp_id,)
-    ).fetchone()
-    if exp_row:
-        dirs_to_try = []
-        # Prefer the tracked output_dir (survives renames)
-        if exp_row["output_dir"]:
-            dirs_to_try.append(Path(exp_row["output_dir"]))
-        # Also try the name-based path as fallback
-        if exp_row["name"]:
-            try:
-                conf = cfg.load()
-                dirs_to_try.append(
-                    cfg.project_root() / conf.get("outputs_dir", "outputs") / exp_row["name"]
-                )
-            except Exception as e:
-                print(f"[exptrack] warning: could not resolve output dir: {e}", file=sys.stderr)
-        for out_dir in dirs_to_try:
-            try:
-                if out_dir.is_dir():
-                    shutil.rmtree(str(out_dir), ignore_errors=True)
-            except Exception as e:
-                print(f"[exptrack] warning: could not remove output dir {out_dir}: {e}", file=sys.stderr)
+    # Notebook history snapshots for this experiment.
+    nb_count = _delete_notebook_history(exp_id)
+    for k, n in nb_count.items():
+        stats[k] = stats.get(k, 0) + n
 
-    # Delete notebook history snapshots for this experiment
-    _delete_notebook_history(exp_id)
+    return stats
 
 
-def _delete_notebook_history(exp_id: str):
-    """Remove notebook history snapshot files belonging to this experiment."""
+def _delete_notebook_history(exp_id: str) -> dict:
+    """Trash notebook history snapshot files belonging to this experiment.
+
+    Returns counts matching ``_trash_or_local`` keys so the caller can
+    aggregate per-experiment trash statistics.
+    """
+    stats = {"os_trash": 0, "local_trash": 0, "failed": 0, "missing": 0}
     try:
         conf = cfg.load()
         root = cfg.project_root()
         hist_root = root / conf.get("notebook_history_dir", ".exptrack/notebook_history")
         if not hist_root.is_dir():
-            return
+            return stats
         for nb_dir in hist_root.iterdir():
             if not nb_dir.is_dir():
                 continue
@@ -512,10 +639,12 @@ def _delete_notebook_history(exp_id: str):
                     import json as _json
                     snap = _json.loads(snap_file.read_text())
                     if snap.get("exp_id") == exp_id:
-                        snap_file.unlink()
+                        result = _trash_or_local(snap_file, label="notebook snapshot")
+                        stats[result] = stats.get(result, 0) + 1
                 except Exception as e:
                     print(f"[exptrack] warning: could not process snapshot {snap_file}: {e}", file=sys.stderr)
-            # Remove the notebook dir if empty
+            # Remove the notebook dir if empty (an empty bookkeeping dir is
+            # not worth sending to Trash — just rmdir it).
             try:
                 if nb_dir.is_dir() and not any(nb_dir.iterdir()):
                     nb_dir.rmdir()
@@ -523,6 +652,154 @@ def _delete_notebook_history(exp_id: str):
                 print(f"[exptrack] warning: could not remove empty dir {nb_dir}: {e}", file=sys.stderr)
     except Exception as e:
         print(f"[exptrack] warning: notebook history cleanup failed: {e}", file=sys.stderr)
+    return stats
+
+
+def trash_experiment(conn: sqlite3.Connection, exp_id: str) -> bool:
+    """Soft-delete: mark deleted_at = now(). No file ops, fully reversible."""
+    from datetime import datetime, timezone
+    cur = conn.execute(
+        "UPDATE experiments SET deleted_at=? WHERE id=? AND deleted_at IS NULL",
+        (datetime.now(timezone.utc).isoformat(), exp_id),
+    )
+    return cur.rowcount > 0
+
+
+def restore_experiment(conn: sqlite3.Connection, exp_id: str) -> bool:
+    """Undo soft-delete: clear deleted_at."""
+    cur = conn.execute(
+        "UPDATE experiments SET deleted_at=NULL WHERE id=? AND deleted_at IS NOT NULL",
+        (exp_id,),
+    )
+    return cur.rowcount > 0
+
+
+def get_delete_preview(conn: sqlite3.Connection, exp_id: str) -> dict:
+    """Summarize what permanent deletion of an experiment would remove."""
+    exp = conn.execute(
+        "SELECT id, name, output_dir, deleted_at FROM experiments WHERE id=?", (exp_id,)
+    ).fetchone()
+    if not exp:
+        return {"error": "not found"}
+
+    n_metrics = conn.execute(
+        "SELECT COUNT(*) AS n FROM metrics WHERE exp_id=?", (exp_id,)
+    ).fetchone()["n"]
+    n_params = conn.execute(
+        "SELECT COUNT(*) AS n FROM params WHERE exp_id=?", (exp_id,)
+    ).fetchone()["n"]
+    n_timeline = conn.execute(
+        "SELECT COUNT(*) AS n FROM timeline WHERE exp_id=?", (exp_id,)
+    ).fetchone()["n"]
+
+    art_rows = conn.execute(
+        "SELECT label, path, size_bytes FROM artifacts WHERE exp_id=?", (exp_id,)
+    ).fetchall()
+    artifacts: list[dict] = []
+    artifact_bytes = 0
+    artifact_files_exist = 0
+    for r in art_rows:
+        p = r["path"] or ""
+        exists = False
+        size = r["size_bytes"] or 0
+        if p:
+            try:
+                fp = Path(p)
+                if fp.is_file():
+                    exists = True
+                    artifact_files_exist += 1
+                    if not size:
+                        size = fp.stat().st_size
+            except Exception:
+                pass
+        artifact_bytes += size
+        artifacts.append({
+            "label": r["label"] or "",
+            "path": p,
+            "size_bytes": size,
+            "exists": exists,
+        })
+
+    output_dir = exp["output_dir"] or ""
+    output_dir_exists = False
+    output_dir_bytes = 0
+    output_dir_files = 0
+    candidates: list[Path] = []
+    if output_dir:
+        candidates.append(Path(output_dir))
+    if exp["name"]:
+        try:
+            conf = cfg.load()
+            candidates.append(
+                cfg.project_root() / conf.get("outputs_dir", "outputs") / exp["name"]
+            )
+        except Exception:
+            pass
+    for d in candidates:
+        try:
+            if d.is_dir():
+                output_dir_exists = True
+                if not output_dir:
+                    output_dir = str(d)
+                for sub in d.rglob("*"):
+                    try:
+                        if sub.is_file():
+                            output_dir_files += 1
+                            output_dir_bytes += sub.stat().st_size
+                    except Exception:
+                        pass
+                break
+        except Exception:
+            pass
+
+    n_history = 0
+    try:
+        conf = cfg.load()
+        hist_root = cfg.project_root() / conf.get(
+            "notebook_history_dir", ".exptrack/notebook_history"
+        )
+        if hist_root.is_dir():
+            for nb_dir in hist_root.iterdir():
+                if not nb_dir.is_dir():
+                    continue
+                for snap in nb_dir.glob("*.json"):
+                    try:
+                        import json as _json
+                        if _json.loads(snap.read_text()).get("exp_id") == exp_id:
+                            n_history += 1
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    return {
+        "id": exp["id"],
+        "name": exp["name"] or "",
+        "deleted_at": exp["deleted_at"],
+        "metrics_count": n_metrics,
+        "params_count": n_params,
+        "timeline_count": n_timeline,
+        "artifacts_count": len(artifacts),
+        "artifacts_existing": artifact_files_exist,
+        "artifacts": artifacts,
+        "artifact_bytes": artifact_bytes,
+        "output_dir": output_dir,
+        "output_dir_exists": output_dir_exists,
+        "output_dir_files": output_dir_files,
+        "output_dir_bytes": output_dir_bytes,
+        "notebook_history_count": n_history,
+    }
+
+
+def list_trashed_experiments(conn: sqlite3.Connection) -> list[dict]:
+    """List experiments soft-deleted via trash_experiment, newest-trashed first."""
+    rows = conn.execute(
+        "SELECT id, name, status, created_at, deleted_at, "
+        "       git_branch, git_commit, output_dir, tags, studies "
+        "FROM experiments WHERE deleted_at IS NOT NULL "
+        "ORDER BY deleted_at DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def rename_output_folder(conn: sqlite3.Connection, exp_id: str,

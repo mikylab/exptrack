@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.1] - 2026-05-17
+
+### Changed
+
+- **Permanent-delete now moves files to the OS Trash, not `rm -rf`** — when the "Also move files to system Trash" checkbox is ticked on a permanent delete, artifact files and the experiment's output directory are sent to the user's system Trash (Finder Trash via `osascript` on macOS, XDG `~/.local/share/Trash` on Linux) instead of being unlinked. If the OS-trash call fails (or platform isn't supported), files fall back to `<project>/.exptrack/trash/<timestamp>__<name>/`. Files are never destructively deleted — if both OS-trash and local-fallback fail, the file is left alone with a stderr warning. `delete_experiment` now returns a `{os_trash, local_trash, missing, failed}` count dict; `POST /api/experiment/<id>/delete-permanent` and `/api/bulk-delete-permanent` include this as `file_stats` in the response. Modal copy updated: "Also delete files on disk" → "Also move files to system Trash" with a hint about Finder/Files recovery and the `.exptrack/trash/` fallback. Bumped patch version since the API response shape is additive
+
+## [1.10.0] - 2026-05-17
+
+### Added
+
+- **Soft-delete (Trash) for experiments** — the dashboard delete button (and bulk delete) now defaults to a reversible **Move to Trash** instead of an immediate, destructive hard delete. Trashed experiments are hidden from the experiment list, stats cards, tag/study/branch aggregations, and pickers — but their database rows, artifact files, and output directories are completely untouched. A new **Trash** view (header button, 🗑) lists trashed experiments with **Restore** and **Permanently delete…** actions, plus bulk Restore / Permanent-delete. Adds a `deleted_at` column to `experiments` (nullable; non-null = trashed), `trash_experiment` / `restore_experiment` / `list_trashed_experiments` helpers in `core.db`, a new `trashed` field on the stats endpoint, and an `include_trashed=` opt-in on `list_experiments`. Schema migration is idempotent (`exptrack upgrade` is a no-op on already-migrated DBs)
+- **Delete-confirm modal with full scope preview** — replaces the bare `confirm('… cannot be undone')` browser dialog. Before deleting, the modal now shows the experiment name + id, metric/param/timeline/artifact counts, the output directory (with file count + total size), and notebook history snapshot count. Two tabs split the choice: **Move to Trash** (default, non-destructive) and **Permanently delete…** (destructive). Bulk delete shows aggregate totals across the selected experiments plus a scrollable per-experiment list. New endpoints: `GET /api/experiment/<id>/delete-preview`, `POST /api/bulk-delete-preview`
+- **"Keep artifacts" by default on permanent delete** — the permanent-delete tab includes a checkbox **"Also delete files on disk"** that defaults to **OFF**. The DB record (metrics, params, artifacts, timeline, notebook history snapshots) is removed, but artifact files and the experiment's output directory are preserved unless the user opts in. New endpoints: `POST /api/experiment/<id>/delete-permanent` (body: `{delete_files}`), `POST /api/bulk-delete-permanent`, `POST /api/experiment/<id>/restore`, `POST /api/bulk-restore`, `GET /api/trash`
+
+### Changed
+
+- **`POST /api/experiment/<id>/delete` and `POST /api/bulk-delete` are now soft-deletes** — they set `deleted_at` and leave files alone. The destructive path is now only reachable through the new `/delete-permanent` endpoints. Code that relied on the old hard-delete semantics from these endpoints should switch to `/delete-permanent` with an explicit `{delete_files: true}` body
+- **Default queries now filter out trashed experiments** — `list_experiments`, `get_stats` (every count), `get_all_tags`, `get_all_studies`, `get_studies`, and unique-branches stats all add `deleted_at IS NULL`. Single-experiment lookups (`find_experiment`, `get_experiment_detail`) are deliberately unfiltered so the Trash view can still load detail by id
+
 ## [1.9.2] - 2026-05-07
 
 ### Added
@@ -301,6 +320,8 @@ Initial public release.
 - Artifact strategy, git diff size limits, naming conventions, auto-capture toggles
 - Non-finite metric values (NaN, Inf) silently dropped
 
+[1.10.1]: https://github.com/mikylab/exptrack/compare/v1.10.0...v1.10.1
+[1.10.0]: https://github.com/mikylab/exptrack/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/mikylab/exptrack/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/mikylab/exptrack/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/mikylab/exptrack/compare/v1.8.0...v1.9.0
