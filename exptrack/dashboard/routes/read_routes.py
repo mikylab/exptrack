@@ -35,6 +35,56 @@ def api_experiment(conn, exp_id: str) -> dict:
     return result if result else {"error": "not found"}
 
 
+def api_trash(conn) -> list:
+    """Return trashed experiments (most recently trashed first) with quick scope info."""
+    import json as _json
+
+    from ...core.db import list_trashed_experiments
+    rows = list_trashed_experiments(conn)
+    out: list[dict] = []
+    for r in rows:
+        eid = r["id"]
+        try:
+            tags = _json.loads(r["tags"] or "[]")
+        except (ValueError, TypeError):
+            tags = []
+        try:
+            studies = _json.loads(r["studies"] or "[]")
+        except (ValueError, TypeError):
+            studies = []
+        n_metrics = conn.execute(
+            "SELECT COUNT(*) AS n FROM metrics WHERE exp_id=?", (eid,)
+        ).fetchone()["n"]
+        n_artifacts = conn.execute(
+            "SELECT COUNT(*) AS n FROM artifacts WHERE exp_id=?", (eid,)
+        ).fetchone()["n"]
+        out.append({
+            "id": eid,
+            "name": r["name"] or "",
+            "status": r["status"],
+            "created_at": r["created_at"],
+            "deleted_at": r["deleted_at"],
+            "git_branch": r["git_branch"],
+            "git_commit": r["git_commit"],
+            "output_dir": r["output_dir"] or "",
+            "tags": tags,
+            "studies": studies,
+            "metrics_count": n_metrics,
+            "artifacts_count": n_artifacts,
+        })
+    return out
+
+
+def api_delete_preview(conn, exp_id: str) -> dict:
+    """Summary of what permanent deletion of this experiment would remove."""
+    from ...core.db import get_delete_preview
+    from ...core.queries import find_experiment
+    exp = find_experiment(conn, exp_id)
+    if not exp:
+        return {"error": "not found"}
+    return get_delete_preview(conn, exp["id"])
+
+
 def api_list_confusion(conn, exp_id: str) -> dict:
     """Return the list of saved confusion matrices for this experiment."""
     import json as _json

@@ -204,10 +204,17 @@ def _get_compact_status(conn, exp_id: str, raw_git_diff) -> dict:
 # ── Experiment listing ────────────────────────────────────────────────────────
 
 def list_experiments(conn, limit: int = 50, status: str = "",
-                     tag: str = "", study: str = "") -> list[dict]:
-    """List experiments with last metrics and params."""
+                     tag: str = "", study: str = "",
+                     include_trashed: bool = False) -> list[dict]:
+    """List experiments with last metrics and params.
+
+    Trashed experiments (``deleted_at IS NOT NULL``) are excluded unless
+    *include_trashed* is True.
+    """
     clauses: list[str] = []
     params: list = []
+    if not include_trashed:
+        clauses.append("deleted_at IS NULL")
     if status:
         clauses.append("status=?")
         params.append(status)
@@ -423,16 +430,17 @@ def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 def get_stats(conn) -> dict[str, Any]:
-    """Aggregate statistics across all experiments."""
-    total = conn.execute("SELECT COUNT(*) as n FROM experiments").fetchone()["n"]
-    done = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE status='done'").fetchone()["n"]
-    failed = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE status='failed'").fetchone()["n"]
-    running = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE status='running'").fetchone()["n"]
-    avg_dur = conn.execute("SELECT AVG(duration_s) as v FROM experiments WHERE duration_s IS NOT NULL").fetchone()["v"]
-    longest = conn.execute("SELECT MAX(duration_s) as v FROM experiments WHERE duration_s IS NOT NULL").fetchone()["v"]
-    most_recent = conn.execute("SELECT created_at FROM experiments ORDER BY created_at DESC LIMIT 1").fetchone()
+    """Aggregate statistics across all experiments (excludes trashed)."""
+    total = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE deleted_at IS NULL").fetchone()["n"]
+    done = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE deleted_at IS NULL AND status='done'").fetchone()["n"]
+    failed = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE deleted_at IS NULL AND status='failed'").fetchone()["n"]
+    running = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE deleted_at IS NULL AND status='running'").fetchone()["n"]
+    trashed = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE deleted_at IS NOT NULL").fetchone()["n"]
+    avg_dur = conn.execute("SELECT AVG(duration_s) as v FROM experiments WHERE deleted_at IS NULL AND duration_s IS NOT NULL").fetchone()["v"]
+    longest = conn.execute("SELECT MAX(duration_s) as v FROM experiments WHERE deleted_at IS NULL AND duration_s IS NOT NULL").fetchone()["v"]
+    most_recent = conn.execute("SELECT created_at FROM experiments WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 1").fetchone()
 
-    tag_rows = conn.execute("SELECT tags FROM experiments WHERE tags IS NOT NULL AND tags != '[]'").fetchall()
+    tag_rows = conn.execute("SELECT tags FROM experiments WHERE deleted_at IS NULL AND tags IS NOT NULL AND tags != '[]'").fetchall()
     all_tags = set()
     for r in tag_rows:
         try:
@@ -442,20 +450,23 @@ def get_stats(conn) -> dict[str, Any]:
             pass
 
     try:
-        total_artifacts = conn.execute("SELECT COUNT(*) as n FROM artifacts").fetchone()["n"]
+        total_artifacts = conn.execute(
+            "SELECT COUNT(*) as n FROM artifacts "
+            "WHERE exp_id IN (SELECT id FROM experiments WHERE deleted_at IS NULL)"
+        ).fetchone()["n"]
     except Exception as e:
         print(f"[exptrack] warning: could not count artifacts: {e}", file=sys.stderr)
         total_artifacts = 0
 
     unique_branches = conn.execute(
         "SELECT COUNT(DISTINCT git_branch) as n FROM experiments "
-        "WHERE git_branch IS NOT NULL AND git_branch != ''"
+        "WHERE deleted_at IS NULL AND git_branch IS NOT NULL AND git_branch != ''"
     ).fetchone()["n"]
 
     # Git diff storage stats
     diff_rows = conn.execute(
         "SELECT LENGTH(git_diff) as sz FROM experiments "
-        "WHERE git_diff IS NOT NULL AND git_diff != '' "
+        "WHERE deleted_at IS NULL AND git_diff IS NOT NULL AND git_diff != '' "
         "AND git_diff NOT LIKE '[compacted%' AND git_diff NOT LIKE '[ref:%'"
     ).fetchall()
     diff_total_bytes = sum(r["sz"] for r in diff_rows)
@@ -470,6 +481,7 @@ def get_stats(conn) -> dict[str, Any]:
         "done": done,
         "failed": failed,
         "running": running,
+        "trashed": trashed,
         "success_rate": round(done / total * 100, 1) if total else 0,
         "avg_duration_s": round(avg_dur or 0, 1),
         "longest_run_s": round(longest or 0, 1),
@@ -486,9 +498,10 @@ def get_stats(conn) -> dict[str, Any]:
 # ── Tags ──────────────────────────────────────────────────────────────────────
 
 def get_all_tags(conn) -> list[dict]:
-    """Get all tags with usage counts, sorted by frequency."""
+    """Get all tags with usage counts, sorted by frequency. Skips trashed experiments."""
     rows = conn.execute(
-        "SELECT tags FROM experiments WHERE tags IS NOT NULL AND tags != '[]'"
+        "SELECT tags FROM experiments "
+        "WHERE deleted_at IS NULL AND tags IS NOT NULL AND tags != '[]'"
     ).fetchall()
     counts: dict[str, int] = {}
     for r in rows:
@@ -1018,9 +1031,10 @@ def update_experiment_studies(conn, exp_id: str, studies: list[str]):
 
 
 def get_all_studies(conn) -> list[dict]:
-    """Get all studies with usage counts (like get_all_tags)."""
+    """Get all studies with usage counts (like get_all_tags). Skips trashed."""
     rows = conn.execute(
-        "SELECT studies FROM experiments WHERE studies IS NOT NULL AND studies != '[]'"
+        "SELECT studies FROM experiments "
+        "WHERE deleted_at IS NULL AND studies IS NOT NULL AND studies != '[]'"
     ).fetchall()
     counts: dict[str, int] = {}
     for r in rows:
@@ -1033,10 +1047,10 @@ def get_all_studies(conn) -> list[dict]:
 
 
 def get_studies(conn) -> list[dict]:
-    """Get studies with summary stats."""
+    """Get studies with summary stats. Skips trashed experiments."""
     rows = conn.execute(
         "SELECT id, studies, status, created_at FROM experiments "
-        "WHERE studies IS NOT NULL AND studies != '[]'"
+        "WHERE deleted_at IS NULL AND studies IS NOT NULL AND studies != '[]'"
     ).fetchall()
     study_data: dict[str, list[dict]] = {}
     for r in rows:

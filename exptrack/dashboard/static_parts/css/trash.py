@@ -1,0 +1,132 @@
+"""CSS for the delete-confirm modal and the Trash view."""
+
+CSS_TRASH = """
+  /* ── Delete-confirm modal ────────────────────────────────────────────── */
+  .dc-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 10001; display: flex; align-items: center; justify-content: center;
+  }
+  .dc-dialog {
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px;
+    width: 560px; max-width: 95vw; max-height: 88vh;
+    display: flex; flex-direction: column;
+  }
+  .dc-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  .dc-header h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  .dc-close { background: none; border: none; color: var(--muted); font-size: 22px; cursor: pointer; padding: 0 4px; }
+  .dc-close:hover { color: var(--fg); }
+  .dc-body { padding: 14px 16px; overflow-y: auto; flex: 1; font-size: 13px; }
+  .dc-footer {
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    flex-wrap: wrap;
+  }
+  .dc-footer-left { display: flex; align-items: center; gap: 8px; }
+  .dc-footer-right { display: flex; align-items: center; gap: 8px; }
+  .dc-subject {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; margin-bottom: 10px;
+  }
+  .dc-subject .dc-subject-name { font-weight: 600; }
+  .dc-subject .dc-subject-id { color: var(--muted); font-family: var(--font-mono, monospace); font-size: 12px; margin-left: 6px; }
+  .dc-scope-grid {
+    display: grid; grid-template-columns: auto 1fr; gap: 4px 12px;
+    margin-bottom: 8px;
+  }
+  .dc-scope-key { color: var(--muted); }
+  .dc-scope-val { font-family: var(--font-mono, monospace); }
+  .dc-warning {
+    margin-top: 10px; padding: 8px 10px; border-radius: 4px;
+    background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.25);
+    color: var(--red); font-size: 12px; line-height: 1.45;
+  }
+  .dc-info {
+    margin-top: 10px; padding: 8px 10px; border-radius: 4px;
+    background: rgba(96, 165, 250, 0.08); border: 1px solid rgba(96, 165, 250, 0.25);
+    color: var(--blue); font-size: 12px; line-height: 1.45;
+  }
+  .dc-files-checkbox {
+    display: flex; align-items: flex-start; gap: 8px; cursor: pointer;
+    font-size: 13px; user-select: none;
+  }
+  .dc-files-checkbox input { margin-top: 2px; }
+  .dc-files-checkbox-label { line-height: 1.4; }
+  .dc-files-checkbox-label .dc-files-checkbox-hint { display: block; color: var(--muted); font-size: 11px; }
+  .dc-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+  .dc-tab {
+    background: none; border: none; padding: 8px 14px; font-family: inherit; font-size: 13px;
+    cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent;
+  }
+  .dc-tab.active { color: var(--fg); border-bottom-color: var(--blue); }
+  .dc-button {
+    font-family: inherit; font-size: 13px; padding: 6px 12px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--card-bg); color: var(--fg); cursor: pointer;
+  }
+  .dc-button:hover { background: var(--code-bg); }
+  .dc-button.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .dc-button.primary:hover { filter: brightness(1.1); }
+  .dc-button.danger { background: var(--red); color: #fff; border-color: var(--red); }
+  .dc-button.danger:hover { filter: brightness(1.1); }
+  .dc-button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Bulk list inside the modal */
+  .dc-bulk-list {
+    max-height: 180px; overflow-y: auto; margin-top: 8px;
+    border: 1px solid var(--border); border-radius: 4px;
+  }
+  .dc-bulk-item {
+    display: grid; grid-template-columns: 1fr auto;
+    padding: 4px 8px; font-size: 12px; gap: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .dc-bulk-item:last-child { border-bottom: none; }
+  .dc-bulk-item .dc-bulk-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dc-bulk-item .dc-bulk-meta { color: var(--muted); font-family: var(--font-mono, monospace); }
+
+  /* ── Trash view ──────────────────────────────────────────────────────── */
+  #trash-view { padding: 12px 16px 24px; }
+  .trash-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px; gap: 12px; flex-wrap: wrap;
+  }
+  .trash-header h2 { margin: 0; font-size: 18px; font-weight: 600; }
+  .trash-header .trash-actions { display: flex; gap: 6px; }
+  .trash-blurb { color: var(--muted); font-size: 12px; margin: 0 0 12px; line-height: 1.5; }
+  .trash-empty {
+    padding: 32px 16px; text-align: center; color: var(--muted);
+    border: 1px dashed var(--border); border-radius: 6px;
+  }
+  .trash-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .trash-table thead th {
+    text-align: left; font-weight: 500; color: var(--muted);
+    padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  .trash-table tbody td {
+    padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top;
+  }
+  .trash-table tbody tr:hover { background: var(--code-bg); }
+  .trash-table .trash-name { font-weight: 500; }
+  .trash-table .trash-id { color: var(--muted); font-family: var(--font-mono, monospace); font-size: 11px; }
+  .trash-table .trash-deleted { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .trash-table .trash-meta { color: var(--muted); font-size: 12px; }
+  .trash-table .trash-row-actions { display: flex; gap: 4px; justify-content: flex-end; }
+  .trash-row-checkbox { width: 16px; }
+
+  /* Trash header button */
+  .trash-btn {
+    font-family: inherit; font-size: 12px; padding: 4px 8px;
+    background: transparent; border: 1px solid var(--border); border-radius: 3px;
+    color: var(--muted); cursor: pointer;
+  }
+  .trash-btn:hover { color: var(--fg); background: var(--code-bg); }
+  .trash-btn.has-items { color: var(--fg); }
+  .trash-btn-count {
+    display: inline-block; margin-left: 4px;
+    background: var(--red); color: #fff;
+    border-radius: 9px; padding: 0 6px; font-size: 10px; line-height: 14px;
+  }
+"""

@@ -136,6 +136,7 @@ function showWelcome() {
   stopAutoRefresh();
   // Make sure the Sessions tab isn't holding the canvas
   if (typeof closeSessionsTab === 'function') closeSessionsTab();
+  if (typeof closeTrashView === 'function') closeTrashView();
   document.getElementById('welcome-state').style.display = '';
   document.getElementById('detail-view').style.display = 'none';
   document.getElementById('compare-view').style.display = 'none';

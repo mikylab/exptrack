@@ -75,6 +75,7 @@ HTML_BODY = r"""</style>
           <div class="settings-section-title">Database</div>
           <div class="settings-storage" id="settings-storage"></div>
           <div class="settings-actions">
+            <button id="trash-toggle-btn" onclick="toggleTrashView()" title="Soft-deleted experiments — hidden from the dashboard but recoverable">&#x1F5D1; Open Trash</button>
             <button onclick="settingsCleanDb()" title="Remove orphaned rows not linked to any experiment">&#x2702; Clean orphans</button>
             <button onclick="settingsVacuumDb()" title="Checkpoint WAL and compact the database file">&#x1F5DC; Vacuum</button>
             <button class="danger" onclick="settingsResetDb()" title="Delete ALL experiments and data">&#x26A0; Reset DB</button>
@@ -330,6 +331,9 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
     <div id="detail-view" style="display:none">
       <div id="detail-panel"></div>
     </div>
+
+    <!-- Trash view (soft-deleted experiments) -->
+    <div id="trash-view" style="display:none"></div>
 
     <!-- Sessions tab -->
     <div id="sessions-tab">

@@ -19,6 +19,7 @@ from .studies import CSS_STUDIES
 from .table import CSS_TABLE
 from .timeline import CSS_TIMELINE
 from .toolbox import CSS_TOOLBOX
+from .trash import CSS_TRASH
 
 
 def get_all_css() -> str:
@@ -26,7 +27,7 @@ def get_all_css() -> str:
     return (CSS_RESET + CSS_LAYOUT + CSS_CARDS + CSS_TABLE +
             CSS_DETAIL + CSS_CHARTS + CSS_CODE + CSS_TIMELINE + CSS_COMPARE +
             CSS_COMPONENTS + CSS_STUDIES + CSS_IMAGES + CSS_IMAGE_COMPARE +
-            CSS_TOOLBOX + CSS_SESSIONS)
+            CSS_TOOLBOX + CSS_SESSIONS + CSS_TRASH)
 
 
 __all__ = [
@@ -45,5 +46,6 @@ __all__ = [
     "CSS_TABLE",
     "CSS_TIMELINE",
     "CSS_TOOLBOX",
+    "CSS_TRASH",
     "get_all_css",
 ]

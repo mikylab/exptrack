@@ -8,16 +8,7 @@ function esc(s) {
 }
 
 
-async function deleteExp(id, name) {
-  owlSpeak('delete');
-  if (!confirm('Delete experiment "' + name + '"? This cannot be undone.')) return;
-  const d = await postApi('/api/experiment/' + id + '/delete');
-  if (d.ok) {
-    showWelcome();
-    loadStats();
-    loadExperiments();
-  } else alert(d.error || 'Failed');
-}
+// deleteExp() now lives in JS_TRASH (opens a confirm modal showing scope).
 
 async function finishExp(id) {
   if (!confirm('Mark this experiment as done?')) return;

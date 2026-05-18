@@ -25,6 +25,7 @@ from .todos import JS_TODOS
 from .commands import JS_COMMANDS
 from .confusion import JS_CONFUSION
 from .sessions import JS_SESSIONS
+from .trash import JS_TRASH
 
 
 def get_all_js() -> str:
@@ -33,7 +34,8 @@ def get_all_js() -> str:
             JS_EXPERIMENTS + JS_INLINE_EDIT + JS_DETAIL + JS_CHARTS +
             JS_COMPARE + JS_MUTATIONS + JS_TIMELINE +
             JS_IMAGE_COMPARE + JS_STUDIES + JS_STAGE + JS_MANUAL +
-            JS_TODOS + JS_COMMANDS + JS_CONFUSION + JS_SESSIONS + JS_INIT)
+            JS_TODOS + JS_COMMANDS + JS_CONFUSION + JS_SESSIONS +
+            JS_TRASH + JS_INIT)
 
 
 __all__ = [
@@ -57,5 +59,6 @@ __all__ = [
     "JS_COMMANDS",
     "JS_CONFUSION",
     "JS_SESSIONS",
+    "JS_TRASH",
     "get_all_js",
 ]

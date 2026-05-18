@@ -58,13 +58,49 @@ def api_rename(conn, exp_id: str, body: dict) -> dict:
 
 
 def api_delete(conn, exp_id: str) -> dict:
+    """Soft-delete (move to Trash). Use /delete-permanent for the destructive path."""
     exp = find_experiment(conn, exp_id)
     if not exp:
         return {"error": "not found"}
-    from ...core.db import delete_experiment
-    delete_experiment(conn, exp["id"])
+    from ...core.db import trash_experiment
+    moved = trash_experiment(conn, exp["id"])
     conn.commit()
-    return {"ok": True}
+    return {"ok": True, "trashed": moved}
+
+
+def api_restore(conn, exp_id: str) -> dict:
+    """Restore a trashed experiment."""
+    exp = find_experiment(conn, exp_id)
+    if not exp:
+        return {"error": "not found"}
+    from ...core.db import restore_experiment
+    restored = restore_experiment(conn, exp["id"])
+    conn.commit()
+    return {"ok": True, "restored": restored}
+
+
+def api_delete_permanent(conn, exp_id: str, body: dict) -> dict:
+    """Permanently delete an experiment. With delete_files=True, files on disk
+    are moved to the OS Trash (recoverable in Finder/Files) with a local
+    ``.exptrack/trash/`` fallback — never unlinked outright.
+    """
+    exp = find_experiment(conn, exp_id)
+    if not exp:
+        return {"error": "not found"}
+    delete_files = bool(body.get("delete_files", False))
+    from ...core.db import delete_experiment
+    file_stats = delete_experiment(conn, exp["id"], delete_files=delete_files)
+    conn.commit()
+    return {"ok": True, "deleted_files": delete_files, "file_stats": file_stats}
+
+
+def api_delete_preview(conn, exp_id: str) -> dict:
+    """Summary of what permanent deletion of this experiment would remove."""
+    exp = find_experiment(conn, exp_id)
+    if not exp:
+        return {"error": "not found"}
+    from ...core.db import get_delete_preview
+    return get_delete_preview(conn, exp["id"])
 
 
 def api_finish(conn, exp_id: str) -> dict:
@@ -462,18 +498,102 @@ def api_export_diff(conn, exp_id: str) -> dict:
 
 
 def api_bulk_delete(conn, body: dict) -> dict:
+    """Bulk soft-delete (Trash). Use /api/bulk-delete-permanent for permanent."""
     ids = body.get("ids", [])
     if not ids:
         return {"error": "no ids provided"}
+    from ...core.db import trash_experiment
+    trashed = 0
+    for eid in ids:
+        exp = find_experiment(conn, eid)
+        if exp and trash_experiment(conn, exp["id"]):
+            trashed += 1
+    conn.commit()
+    return {"ok": True, "trashed": trashed}
+
+
+def api_bulk_restore(conn, body: dict) -> dict:
+    ids = body.get("ids", [])
+    if not ids:
+        return {"error": "no ids provided"}
+    from ...core.db import restore_experiment
+    restored = 0
+    for eid in ids:
+        exp = find_experiment(conn, eid)
+        if exp and restore_experiment(conn, exp["id"]):
+            restored += 1
+    conn.commit()
+    return {"ok": True, "restored": restored}
+
+
+def api_bulk_delete_permanent(conn, body: dict) -> dict:
+    """Permanently delete N experiments. With delete_files=True, files on disk
+    are moved to the OS Trash (recoverable in Finder/Files) with a local
+    ``.exptrack/trash/`` fallback — never unlinked outright.
+    """
+    ids = body.get("ids", [])
+    if not ids:
+        return {"error": "no ids provided"}
+    delete_files = bool(body.get("delete_files", False))
     from ...core.db import delete_experiment
     deleted = 0
+    totals = {"os_trash": 0, "local_trash": 0, "failed": 0, "missing": 0}
     for eid in ids:
         exp = find_experiment(conn, eid)
         if exp:
-            delete_experiment(conn, exp["id"])
+            stats = delete_experiment(conn, exp["id"], delete_files=delete_files)
+            for k, v in (stats or {}).items():
+                totals[k] = totals.get(k, 0) + v
             deleted += 1
     conn.commit()
-    return {"ok": True, "deleted": deleted}
+    return {"ok": True, "deleted": deleted, "deleted_files": delete_files,
+            "file_stats": totals}
+
+
+def api_bulk_delete_preview(conn, body: dict) -> dict:
+    """Aggregate preview of what permanent bulk delete would remove."""
+    ids = body.get("ids", [])
+    if not ids:
+        return {"error": "no ids provided"}
+    from ...core.db import get_delete_preview
+    items: list[dict] = []
+    totals = {
+        "experiments": 0,
+        "metrics": 0,
+        "params": 0,
+        "artifacts": 0,
+        "artifacts_existing": 0,
+        "artifact_bytes": 0,
+        "output_dirs_existing": 0,
+        "output_dir_files": 0,
+        "output_dir_bytes": 0,
+        "notebook_history": 0,
+    }
+    for eid in ids:
+        exp = find_experiment(conn, eid)
+        if not exp:
+            continue
+        p = get_delete_preview(conn, exp["id"])
+        if "error" in p:
+            continue
+        items.append({
+            "id": p["id"], "name": p["name"],
+            "artifacts": p["artifacts_count"],
+            "artifact_bytes": p["artifact_bytes"],
+            "output_dir": p["output_dir"],
+            "output_dir_bytes": p["output_dir_bytes"],
+        })
+        totals["experiments"] += 1
+        totals["metrics"] += p["metrics_count"]
+        totals["params"] += p["params_count"]
+        totals["artifacts"] += p["artifacts_count"]
+        totals["artifacts_existing"] += p["artifacts_existing"]
+        totals["artifact_bytes"] += p["artifact_bytes"]
+        totals["output_dirs_existing"] += 1 if p["output_dir_exists"] else 0
+        totals["output_dir_files"] += p["output_dir_files"]
+        totals["output_dir_bytes"] += p["output_dir_bytes"]
+        totals["notebook_history"] += p["notebook_history_count"]
+    return {"items": items, "totals": totals}
 
 
 def api_bulk_export(conn, body: dict) -> dict | list:

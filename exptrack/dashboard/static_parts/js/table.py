@@ -51,18 +51,8 @@ function renderTableActionsBar() {
   bar.innerHTML = html;
 }
 
-async function sidebarBulkDelete() {
-  owlSpeak('delete');
-  if (!confirm('Delete ' + selectedIds.size + ' experiments? This cannot be undone.')) return;
-  const ids = [...selectedIds];
-  const d = await postApi('/api/bulk-delete', {ids});
-  if (d.ok) {
-    selectedIds.clear();
-    showWelcome();
-    loadStats();
-    loadExperiments();
-  } else alert(d.error || 'Failed');
-}
+// sidebarBulkDelete() now lives in JS_TRASH — opens the confirm modal with
+// aggregate scope and a Trash / Permanent-delete choice.
 
 async function sidebarExportFmt(fmt) {
   owlSpeak('export');
