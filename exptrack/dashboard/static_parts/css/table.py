@@ -24,6 +24,19 @@ CSS_TABLE = """
     padding: 8px 14px; border-radius: 4px; background: var(--card-bg); min-width: 260px; color: var(--fg);
   }
   .main-search-input:focus { outline: none; border-color: var(--blue); }
+  /* "auto" badge: run still carries its generated name (never renamed). */
+  .auto-name-badge {
+    display: inline-block; font-size: 9px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.3px;
+    color: var(--yellow, #d4820f); background: rgba(212,130,15,0.12);
+    border: 1px solid rgba(212,130,15,0.35); border-radius: 3px;
+    padding: 0 4px; margin-right: 5px; vertical-align: middle; cursor: default;
+  }
+  /* Live count next to the "Needs naming" toggle in the group bar. */
+  .auto-named-count {
+    color: var(--yellow, #d4820f); font-size: 11px; font-weight: 600;
+    margin-left: 2px;
+  }
   .table-actions-bar {
     display: flex; gap: 6px; align-items: center; padding: 8px 12px; margin-bottom: 8px;
     background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;

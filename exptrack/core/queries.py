@@ -229,7 +229,7 @@ def list_experiments(conn, limit: int = 50, status: str = "",
     query = f"""
         SELECT id, project, name, status, created_at, duration_s,
                git_branch, git_commit, tags, studies, notes, output_dir,
-               stage, stage_name
+               stage, stage_name, COALESCE(name_is_auto, 0) AS name_is_auto
         FROM experiments {where}
         ORDER BY created_at DESC LIMIT ?
     """
@@ -257,6 +257,7 @@ def list_experiments(conn, limit: int = 50, status: str = "",
             "output_dir": r["output_dir"] or "",
             "stage": r["stage"],
             "stage_name": r["stage_name"],
+            "name_is_auto": bool(r["name_is_auto"]),
             "metrics": metrics,
             "sparklines": sparklines,
             "params": all_params,

@@ -282,7 +282,7 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
   <div id="exp-sidebar">
     <div class="sidebar-content">
       <div class="sidebar-header">
-        <input type="text" id="search-input" placeholder="Search..." oninput="searchQuery=this.value;renderExpList()">
+        <input type="text" id="search-input" placeholder="Search name, params, tags…" oninput="searchQuery=this.value;renderExpList()">
         <button class="collapse-btn" id="sidebar-group-study-btn" onclick="toggleSidebarStudyGroup()" title="Group by study">&#9783;</button>
         <button class="collapse-btn" onclick="toggleSidebar()" title="Collapse sidebar">&#8249;</button>
       </div>
@@ -302,7 +302,7 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
     <div id="welcome-state">
       <div class="stats" id="stats"></div>
       <div class="table-toolbar">
-        <input type="text" id="main-search" class="main-search-input" placeholder="Search experiments..." oninput="searchQuery=this.value;renderExperiments();renderExpList()">
+        <input type="text" id="main-search" class="main-search-input" placeholder="Search name, params, tags, notes…" oninput="searchQuery=this.value;renderExperiments();renderExpList()">
         <div class="toolbar-btn-group">
           <button class="toolbar-btn compare-main-btn" onclick="showCompareView()" title="Compare two experiments">&#x2194; Compare</button>
           <button class="toolbar-btn" onclick="toggleManageDrawer()" title="Manage tags &amp; studies">&#x2699; Manage</button>
@@ -315,10 +315,17 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
         <button data-group="git_commit" onclick="setGroup('git_commit')" class="active">Git Commit</button>
         <button data-group="git_branch" onclick="setGroup('git_branch')">Branch</button>
         <button data-group="status" onclick="setGroup('status')">Status</button>
+        <button data-group="day" onclick="setGroup('day')">Day</button>
         <button data-group="study" onclick="setGroup('study')">Study</button>
         <button data-group="" onclick="setGroup('')">None</button>
+        <span style="margin-left:12px;border-left:1px solid var(--border);padding-left:12px;color:var(--muted)">Show:</span>
+        <button data-range="" onclick="setDateRange('')" class="active">All time</button>
+        <button data-range="today" onclick="setDateRange('today')">Today</button>
+        <button data-range="7d" onclick="setDateRange('7d')">7d</button>
+        <button data-range="30d" onclick="setDateRange('30d')">30d</button>
         <span style="margin-left:12px;border-left:1px solid var(--border);padding-left:12px" class="highlight-toggle">
-          <label><input type="checkbox" id="highlight-toggle" onchange="toggleHighlightMode(this.checked)"> Highlight by study</label>
+          <label><input type="checkbox" id="auto-named-toggle" onchange="setAutoNamedOnly(this.checked)"> Needs naming <span class="auto-named-count" id="auto-named-count"></span></label>
+          <label style="margin-left:10px"><input type="checkbox" id="highlight-toggle" onchange="toggleHighlightMode(this.checked)"> Highlight by study</label>
         </span>
         <span class="highlight-legend" id="highlight-legend"></span>
       </div>

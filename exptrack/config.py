@@ -27,6 +27,7 @@ DEFAULTS: dict = {
     "naming": {
         "max_param_keys": 4,
         "key_max_len":    8,
+        "date_style":     "readable",
     },
     "param_redact_patterns": [
         "api.key", "password", "token", "secret", "credential",

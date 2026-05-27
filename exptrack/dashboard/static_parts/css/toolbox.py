@@ -219,17 +219,35 @@ CSS_TOOLBOX = """
 
   .cmd-item {
     border: 1px solid var(--border); border-radius: 6px;
-    overflow: hidden; transition: border-color 0.15s;
+    overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s;
+    background: var(--card-bg);
   }
   .cmd-item:hover { border-color: color-mix(in srgb, var(--border) 50%, var(--blue) 50%); }
 
+  /* Drag-and-drop: visual states for the reorderable list. */
+  .cmd-item.cmd-dragging { opacity: 0.4; }
+  .cmd-item.cmd-drop-before { box-shadow: 0 -3px 0 0 var(--blue); }
+  .cmd-item.cmd-drop-after  { box-shadow: 0  3px 0 0 var(--blue); }
+
   .cmd-item-header {
     display: flex; align-items: center; gap: 8px;
-    padding: 8px 12px; background: var(--code-bg); flex-wrap: wrap;
+    padding: 10px 12px;
+    /* Stronger separation from the code block so title and command don't blur together. */
+    background: linear-gradient(to bottom, var(--code-bg), var(--card-bg));
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
   }
+  .cmd-drag-handle {
+    cursor: grab; color: var(--muted); font-size: 14px;
+    padding: 0 2px; user-select: none; line-height: 1;
+  }
+  .cmd-drag-handle:active { cursor: grabbing; }
+  .cmd-item:not(:hover) .cmd-drag-handle { opacity: 0.4; }
   .cmd-label {
-    font-size: 13px; font-weight: 600;
+    /* Bigger and bolder so it's clearly the title, not the command. */
+    font-size: 14px; font-weight: 700;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--fg);
   }
   .cmd-actions {
     display: flex; gap: 2px; opacity: 0; transition: opacity 0.1s; margin-left: auto;
@@ -242,16 +260,27 @@ CSS_TOOLBOX = """
   .cmd-action-btn:hover { color: var(--fg); background: var(--card-bg); }
   .cmd-action-btn.cmd-del:hover { color: var(--red, #e55); }
 
-  .cmd-code-wrap { position: relative; padding: 0; }
+  .cmd-code-wrap { position: relative; padding: 0; background: var(--code-bg); }
   .cmd-code {
-    display: block; padding: 10px 12px 24px; padding-right: 70px;
+    display: block; padding: 12px 14px 24px; padding-right: 70px;
     font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
-    font-size: 12px; line-height: 1.5; color: var(--fg);
+    font-size: 12.5px; line-height: 1.55; color: var(--fg);
     white-space: pre-wrap; word-break: break-all;
     margin: 0; background: transparent; outline: none;
     border-top: 1px solid transparent; transition: border-color 0.15s;
   }
   .cmd-code:focus { border-top-color: var(--blue); background: rgba(44,90,160,0.03); }
+  /* Highlight substituted template values inside the rendered command so the
+     user can see exactly which segments came from a variable. */
+  .cmd-fill {
+    background: rgba(44,90,160,0.14); color: var(--blue);
+    border-radius: 3px; padding: 0 3px;
+    box-shadow: inset 0 -1px 0 rgba(44,90,160,0.35);
+  }
+  .cmd-fill-empty {
+    background: rgba(212,130,15,0.12); color: var(--yellow, #d4820f);
+    box-shadow: inset 0 -1px 0 rgba(212,130,15,0.4);
+  }
   .cmd-copy-btn {
     position: absolute; top: 6px; right: 6px;
     font-family: inherit; font-size: 11px; padding: 4px 10px;
@@ -268,6 +297,32 @@ CSS_TOOLBOX = """
     font-family: inherit;
   }
   .cmd-modified:hover { text-decoration: underline; }
+
+  /* ── Command templates ({{var}}) ──────────────────────────────────────── */
+  .cmd-tpl-badge {
+    font-family: 'SFMono-Regular', 'Consolas', 'Menlo', monospace;
+    font-size: 10px; font-weight: 700; line-height: 1;
+    color: var(--blue); border: 1px solid var(--blue);
+    border-radius: 3px; padding: 2px 4px; letter-spacing: -1px;
+  }
+  .cmd-vars {
+    display: flex; flex-wrap: wrap; gap: 6px 10px;
+    padding: 8px 12px; background: rgba(44,90,160,0.04);
+    border-bottom: 1px solid var(--border);
+  }
+  .cmd-var { display: flex; align-items: center; gap: 5px; }
+  .cmd-var-name {
+    font-family: 'SFMono-Regular', 'Consolas', 'Menlo', monospace;
+    font-size: 11px; color: var(--muted);
+  }
+  .cmd-var-input {
+    font-family: inherit; font-size: 12px;
+    padding: 3px 6px; min-width: 90px; max-width: 160px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--card-bg); color: var(--fg);
+  }
+  .cmd-var-input:focus { outline: none; border-color: var(--blue); }
+  .cmd-templated .cmd-code { padding-bottom: 10px; cursor: default; }
 
   /* Edit mode for commands */
   .cmd-edit-form {

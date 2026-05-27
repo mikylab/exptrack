@@ -350,6 +350,7 @@ async function refreshDetail(id) {
     '<span class="tag-input-area" id="detail-study-input-area"></span>' +
     '</span>';
 
+  const _restoreRename = _preserveActiveRename();
   document.getElementById('detail-panel').innerHTML = `
     <div class="detail" style="border:none;padding:4px 16px;margin:0">
       <!-- Summary bar -->
@@ -369,7 +370,7 @@ async function refreshDetail(id) {
 
       <!-- Header with name + actions -->
       <div class="detail-header">
-        <h2 id="detail-name" class="editable-hint" ondblclick="startInlineRename('${exp.id}',this)" title="Double-click to rename">${esc(exp.name)}</h2>
+        <h2 id="detail-name" class="editable-hint" data-rename-slot="${exp.id}" ondblclick="startInlineRename('${exp.id}',this)" title="Double-click to rename">${esc(exp.name)}</h2>
         <div class="detail-actions">
           ${exp.status === 'running' ? `<button class="action-btn primary" onclick="finishExp('${exp.id}')">Finish Run</button>` : ''}
           <span style="position:relative;display:inline-block">
@@ -461,6 +462,7 @@ async function refreshDetail(id) {
       <div id="detail-tab-confusion" style="display:none"></div>
     </div>
   `;
+  _restoreRename();
 
   // Wire up inline tag input in detail view
   const tagInputArea = document.getElementById('detail-tag-input-area');

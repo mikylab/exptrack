@@ -181,7 +181,16 @@ async function sidebarCopyText() {
 function setGroup(field) {
   groupBy = field;
   collapsedGroups.clear();
-  document.querySelectorAll('#group-bar button').forEach(b => {
+  // When grouping by day, fold away older days so the most recent stays in view.
+  if (field === 'day') {
+    const keys = [];
+    for (const e of getFilteredExperiments()) {
+      const k = dayKeyOf(e.created_at) || 'unknown';
+      if (!keys.includes(k)) keys.push(k);
+    }
+    keys.slice(1).forEach(k => collapsedGroups.add(k));
+  }
+  document.querySelectorAll('#group-bar [data-group]').forEach(b => {
     const val = b.getAttribute('data-group');
     b.classList.toggle('active', val === field);
   });
@@ -224,6 +233,21 @@ function getFilteredExperiments() {
   }
   if (studyFilter) {
     exps = exps.filter(e => (e.studies || []).includes(studyFilter));
+  }
+  if (autoNamedOnly) {
+    exps = exps.filter(e => e.name_is_auto || recentlyRenamedIds.has(e.id));
+  }
+  if (dateRange) {
+    if (dateRange === 'today') {
+      const todayKey = dayKeyOf(new Date().toISOString());
+      exps = exps.filter(e => dayKeyOf(e.created_at) === todayKey);
+    } else {
+      const days = dateRange === '7d' ? 7 : dateRange === '30d' ? 30 : 0;
+      if (days) {
+        const cutoff = Date.now() - days * 86400 * 1000;
+        exps = exps.filter(e => { const d = expDate(e.created_at); return d && !isNaN(d) && d.getTime() >= cutoff; });
+      }
+    }
   }
   if (searchQuery) {
     const q = searchQuery.toLowerCase();

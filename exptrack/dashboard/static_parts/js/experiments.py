@@ -75,6 +75,7 @@ async function loadExperiments() {
   renderExperiments();
   renderExpList();
   renderHiddenPanel();
+  updateAutoNamedCount();
 }
 
 function onRowClick(id) {
@@ -111,7 +112,7 @@ function renderExpRow(e) {
     pin: '<td' + hlBorder + ' onclick="event.stopPropagation()"><button class="pin-btn' + (isPinned?' pinned':'') + '" onclick="togglePin(\'' + e.id + '\')" title="' + (isPinned?'Unpin':'Pin') + '">' + (isPinned?'\u2605':'\u2606') + '</button></td>',
     cb: '<td onclick="event.stopPropagation()"><label style="display:flex;align-items:center;justify-content:center;cursor:pointer;padding:4px"><input type="checkbox" ' + (isSelected?'checked':'') + ' onclick="toggleSelection(\'' + e.id + '\')" title="Select" style="cursor:pointer"></label></td>',
     id: '<td class="truncate-cell">' + e.id.slice(0,6) + '</td>',
-    name: '<td class="truncate-cell"><span class="editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name.slice(0,45)) + editIcon + '</span></td>',
+    name: '<td class="truncate-cell">' + (e.name_is_auto ? '<span class="auto-name-badge" title="Auto-generated name — double-click to rename">auto</span>' : '') + '<span class="editable-cell" data-rename-slot="' + e.id + '" onclick="event.stopPropagation();cancelRowClick();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name.slice(0,45)) + editIcon + '</span></td>',
     status: '<td class="truncate-cell status-' + e.status + '">' + e.status + '</td>',
     tags: '<td class="tags-cell wrap-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineTag(\'' + e.id + '\',this)">' + ((e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
     studies: '<td class="tags-cell wrap-cell editable-cell" onclick="event.stopPropagation();cancelRowClick();startInlineStudy(\'' + e.id + '\',this)">' + ((e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon + '</td>',
@@ -145,15 +146,17 @@ function renderExpRow(e) {
 }
 
 function renderExperiments() {
+  const restoreRename = _preserveActiveRename();
   const exps = getFilteredExperiments();
   const tbody = document.getElementById('exp-body');
-  if (!tbody) return;
+  if (!tbody) { restoreRename(); return; }
   renderFilterBar();
   updateSortHeaders();
   renderTableActionsBar();
 
   if (!groupBy) {
     tbody.innerHTML = exps.map(renderExpRow).join('');
+    restoreRename();
     return;
   }
 
@@ -165,6 +168,7 @@ function renderExperiments() {
     if (groupBy === 'git_commit') key = e.git_commit ? e.git_commit.slice(0, 7) : 'no commit';
     else if (groupBy === 'git_branch') key = e.git_branch || 'no branch';
     else if (groupBy === 'status') key = e.status || 'unknown';
+    else if (groupBy === 'day') key = dayKeyOf(e.created_at) || 'unknown';
     else if (groupBy === 'study') key = (e.studies && e.studies.length) ? e.studies[0] : NO_STUDY;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(e);
@@ -176,6 +180,8 @@ function renderExperiments() {
     let groupLabel = key;
     if (groupBy === 'git_commit' && items[0].git_branch) {
       groupLabel = key + ' <span class="group-meta">' + esc(items[0].git_branch) + '</span>';
+    } else if (groupBy === 'day') {
+      groupLabel = esc(dayLabelOf(items[0].created_at));
     } else if (groupBy === 'study' && key === NO_STUDY) {
       groupLabel = '<span style="color:var(--muted);font-style:italic">(no study)</span>';
     } else {
@@ -191,6 +197,7 @@ function renderExperiments() {
     }
   }
   tbody.innerHTML = html;
+  restoreRename();
 }
 """
 
