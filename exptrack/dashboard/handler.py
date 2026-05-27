@@ -287,6 +287,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/commands/add":         lambda: write_routes.api_add_command(body),
             "/api/commands/update":      lambda: write_routes.api_update_command(body),
             "/api/commands/delete":      lambda: write_routes.api_delete_command(body),
+            "/api/commands/reorder":     lambda: write_routes.api_reorder_commands(body),
             "/api/storage-info":         lambda: write_routes.api_storage_info(conn),
             "/api/propagate-tag-rename": lambda: write_routes.api_propagate_tag_rename(body),
             "/api/propagate-study-rename": lambda: write_routes.api_propagate_study_rename(body),

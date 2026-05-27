@@ -375,6 +375,21 @@ def _ensure_schema(conn):
         if "deleted_at" not in cols:
             conn.execute("ALTER TABLE experiments ADD COLUMN deleted_at TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_exp_deleted_at ON experiments(deleted_at)")
+        if "name_is_auto" not in cols:
+            # 1 = run still carries its generated name (never renamed by the user).
+            conn.execute("ALTER TABLE experiments ADD COLUMN name_is_auto INTEGER DEFAULT 0")
+            # Backfill the existing backlog: flag rows whose name still matches
+            # the generated-name fingerprint so old un-renamed runs surface too.
+            try:
+                from .naming import looks_auto_named
+                rows = conn.execute("SELECT id, name FROM experiments").fetchall()
+                auto_ids = [(r[0],) for r in rows if looks_auto_named(r[1] or "")]
+                if auto_ids:
+                    conn.executemany(
+                        "UPDATE experiments SET name_is_auto=1 WHERE id=?", auto_ids
+                    )
+            except Exception as e:
+                print(f"[exptrack] warning: name_is_auto backfill error: {e}", file=sys.stderr)
         # Drop old 'groups' column if it exists (renamed to 'studies')
         if "groups" in cols:
             try:

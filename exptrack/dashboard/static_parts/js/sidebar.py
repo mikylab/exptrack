@@ -38,7 +38,8 @@ function _renderExpCard(e) {
   return '<div class="exp-card' + active + '"' + cardHlStyle + ' onclick="showDetail(\'' + e.id + '\')">' +
     '<div class="exp-card-row1">' + cbHtml +
     '<span class="status-dot ' + statusCls + '"></span>' +
-    '<span class="exp-card-name" ondblclick="event.stopPropagation();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name) + '</span></div>' +
+    (e.name_is_auto ? '<span class="auto-name-badge" title="Auto-generated name — double-click to rename">auto</span>' : '') +
+    '<span class="exp-card-name" data-rename-slot="' + e.id + '" onclick="event.stopPropagation()" ondblclick="event.stopPropagation();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name) + '</span></div>' +
     '<div class="exp-card-meta">' +
       esc(e.git_branch || '') + ' &middot; ' + fmtDur(e.duration_s) + ' &middot; ' + fmtDt(e.created_at) +
     '</div>' +
@@ -47,8 +48,9 @@ function _renderExpCard(e) {
 }
 
 function renderExpList() {
+  const restoreRename = _preserveActiveRename();
   const list = document.getElementById('exp-list');
-  if (!list) return;
+  if (!list) { restoreRename(); return; }
   const filtered = getFilteredExperiments();
 
   const btn = document.getElementById('sidebar-group-study-btn');
@@ -90,6 +92,7 @@ function renderExpList() {
 
   // Render sidebar actions bar
   renderSidebarActionsBar();
+  restoreRename();
 }
 
 function toggleSidebarStudyGroup() {

@@ -3,23 +3,21 @@ import re
 
 
 def test_make_run_name_basic(tmp_project):
-    """make_run_name produces expected format with script and params."""
+    """make_run_name produces the readable format: MonDD_<script>__<params>__<uid>."""
     from exptrack.core.naming import make_run_name
 
     name = make_run_name("train.py", {"lr": 0.01, "epochs": 10})
-    assert name.startswith("train__")
+    assert re.match(r"^[A-Z][a-z]{2}\d{2}_train__", name)  # readable date prefix
     assert "lr" in name
-    assert "__" in name  # separator between parts
+    assert re.search(r"__[a-f0-9]{8}$", name)  # short uid suffix
 
 
 def test_make_run_name_no_params(tmp_project):
-    """make_run_name works with no params."""
+    """make_run_name works with no params: MonDD_<script>__<uid>."""
     from exptrack.core.naming import make_run_name
 
     name = make_run_name("train.py")
-    assert name.startswith("train__")
-    # Should have date and uid suffix
-    assert re.search(r"\d{4}_[a-f0-9]{8}$", name)
+    assert re.match(r"^[A-Z][a-z]{2}\d{2}_train__[a-f0-9]{8}$", name)
 
 
 def test_make_run_name_no_script(tmp_project):
@@ -27,7 +25,31 @@ def test_make_run_name_no_script(tmp_project):
     from exptrack.core.naming import make_run_name
 
     name = make_run_name("")
-    assert name.startswith("exp__")
+    assert re.match(r"^[A-Z][a-z]{2}\d{2}_exp__", name)
+
+
+def test_make_run_name_numeric_date_style(tmp_project):
+    """date_style='numeric' reverts to the legacy MMDD layout."""
+    from exptrack import config as cfg
+    from exptrack.core.naming import make_run_name
+
+    conf = cfg.load()
+    conf.setdefault("naming", {})["date_style"] = "numeric"
+    cfg.save(conf)
+
+    name = make_run_name("train.py", {"lr": 0.01})
+    assert name.startswith("train__")
+    assert re.search(r"\d{4}_[a-f0-9]{8}$", name)
+
+
+def test_looks_auto_named(tmp_project):
+    """looks_auto_named flags generated names (readable + legacy), not user names."""
+    from exptrack.core.naming import looks_auto_named, make_run_name
+
+    assert looks_auto_named(make_run_name("train.py", {"lr": 0.01}))
+    assert looks_auto_named("train__lr0.01__0312_a3f25b1c")  # legacy
+    assert not looks_auto_named("my-best-run")
+    assert not looks_auto_named("")
 
 
 def test_make_run_name_float_params(tmp_project):

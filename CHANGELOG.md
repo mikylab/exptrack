@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.11.4] - 2026-05-26
+
+### Fixed
+
+- **Inline rename in the main table no longer hides what you're typing** — the name column is narrow with `overflow: hidden; white-space: nowrap`, and the `auto` badge eats ~30px at the front, so the `width: 100%` rename input ended up extending past the cell's right edge into the clipped zone. As you typed, the input scrolled its content to keep the cursor on the right — which was exactly where the column clipped — so old characters scrolled into view on the left and your current typing lived behind the clip, making the box look empty. The truncate-cell now lifts its `overflow: hidden` (and bumps `z-index`) while a `.name-edit-input` is mounted inside, so the input renders fully and the cursor stays visible. Added an explicit `color: var(--fg)` to `.name-edit-input` defensively so inputs always pick up the theme text color (some browsers don't inherit color into `<input>`/`<textarea>` by default).
+- **Renaming a run with "Needs naming" checked no longer makes it vanish** — committing an inline rename clears `name_is_auto`, which used to drop the row out of the filtered view instantly with no visible confirmation that the rename worked (and made multi-step edits like fixing a typo feel impossible). Just-renamed rows now stay visible in the "Needs naming" view for the rest of the session — the missing `auto` badge is the visual confirmation, and the `(N)` count still reflects the real backlog. Toggling the filter off (or reloading) clears the held-over rows.
+
+## [1.11.3] - 2026-05-26
+
+### Fixed
+
+- **Inline rename in the main table no longer disappears mid-edit (real fix)** — the v1.11.2 attempt only addressed the sidebar; the table bug had a different cause. Any of several normal events (a tag added in detail view, a metric POST, a backend `loadExperiments()` cycle from mutations) calls `renderExperiments()` while the user is still typing in the rename input, blowing away `#exp-body` innerHTML and triggering the input's blur — which then committed the partial text. `startInlineRename` now stores the in-progress input on a module-level `activeRename`, and `renderExperiments`, `renderExpList`, and the detail-panel rewrite each call `_preserveActiveRename()` to detach the input *before* the innerHTML reset and re-mount it in the freshly-rendered name slot (with value, focus, and selection preserved) afterwards. The blur handler now no-ops when the input has been detached, so a re-render no longer counts as the user finishing.
+- **Cursor jump in `{{template}}` variable inputs (real fix)** — the v1.11.2 surgical-span update wasn't enough; the underlying cause was `draggable="true"` on the parent `.cmd-item`. In several browsers (notably Firefox/Safari) a draggable ancestor disrupts cursor and selection behavior in child inputs as soon as you click into them, sending the caret back to position 0 between keystrokes. `draggable="true"` now lives on the `.cmd-drag-handle` glyph only; the card itself only listens for `dragover`/`drop`. Reorder still works the same — you just grab the handle, not the card body.
+
+## [1.11.2] - 2026-05-26
+
+### Fixed
+
+- **Inline rename in the sidebar no longer disappears mid-edit** — double-clicking a run name in the sidebar used to bubble the first click up to the card, which fired `showDetail` → `renderExpList`, redrawing the sidebar while the user was still typing and losing the input. The name span now stops single-click propagation (matching how the main table already handles it), so the rename input survives until you press Enter or click away.
+- **Cursor no longer jumps to the front when editing a `{{template}}` variable** — the previous keystroke handler rebuilt the entire command code block via `innerHTML` on every keypress, which on some browsers stole focus from the variable input and reset its cursor to position 0. Each `.cmd-fill` span now carries a `data-var` attribute, and the handler updates only the matching spans' `textContent` / class in place, so focus and caret position stay put.
+
+## [1.11.1] - 2026-05-26
+
+### Added
+
+- **Drag-and-drop reorder for saved commands** — every command card in the Commands notepad now has a drag handle in its header; drag a card up or down to set the order, which persists in `.exptrack/config.json` via a new `POST /api/commands/reorder` endpoint. The list no longer sorts by "most recently edited" — your hand-picked order is what shows.
+- **Color-highlighted template fills** — when a command contains `{{var}}` placeholders, the substituted values in the rendered command line are now visually highlighted (blue tint for filled, amber for still-empty), so you can see at a glance which segments came from the variable inputs vs. the literal command text.
+- **Live count on the "Needs naming" filter** — the toggle in the Group-by bar now shows `(N)` next to its label with the number of un-renamed runs in the current set, so the filter has a visible signal even when every run still needs naming. Updates on load and after every inline rename.
+
+### Changed
+
+- **Filled-in commands go to the export** — `.sh` / `.md` / `.json` exports of saved commands now write the *substituted* version of templated commands (with the variable values you typed in), so the exported script is runnable as-is. Tokens you never filled in stay as `{{var}}` in the export so they're visible. JSON keeps both `command` (raw template) and `filled` (substituted) on each entry for round-tripping.
+- **Clearer command-card hierarchy** — the title (label) is now bigger and bolder, the header has a subtle gradient + bottom border, and the code area sits in its own contrasted block — so it's easier to tell title vs. command at a glance. Empty labels fall back to `(unlabeled)` instead of rendering as an invisible gap.
+- **Removed the `{{ }}` badge next to command titles** — it was redundant noise; the variable inputs above the code already make the templated-ness obvious.
+
+### Fixed
+
+- **Inline rename now refreshes the "Needs naming" count** — renaming an experiment from the dashboard immediately clears its in-memory `name_is_auto` flag and updates the count next to the filter toggle, so you don't have to reload to see the badge disappear.
+
+## [1.11.0] - 2026-05-22
+
+### Added
+
+- **Command templates with `{{variables}}`** — any saved command in the Commands notepad can now contain `{{name}}` placeholders. Each unique placeholder renders an editable input above the command; the code block shows the live-substituted result and **Copy** copies that filled-in version, so you can tweak a value (e.g. a date) and re-run without retyping the whole command. The template text (with `{{...}}`) is never mutated. Filled-in values are remembered per command (persisted to `.exptrack/config.json` as a `values` map). Variables named `date`/`today` (or ending in `date`) get a native date-picker input and **default to today** every session instead of going stale. A small `{{ }}` badge marks templated commands.
+- **"Auto-named" flag + "Needs naming" filter** — exptrack now tracks whether a run still carries its auto-generated name (vs. one you deliberately renamed). Un-renamed runs show a small amber **auto** badge in the sidebar and the experiments table, and a **Needs naming** toggle in the Group-by bar filters the list down to just those, so the runs you forgot to name stop getting lost. A deliberate rename (dashboard double-click or `POST /api/experiment/<id>/rename`) clears the flag. Adds a `name_is_auto` column to `experiments` (idempotent migration) that **backfills your existing backlog** by fingerprinting generated names.
+- **Group experiments by Day** — the main table's Group-by bar gains a **Day** option that clusters runs under `Today` / `Yesterday` / `Wed, May 20, 2026` headers (timezone-aware). Days other than the most recent start collapsed so old work folds away while today's runs stay in view.
+- **Date-range filter** — a **Show:** control in the Group-by bar (`All time` / `Today` / `7d` / `30d`) filters both the sidebar and the main table to runs created in that window. Pairs with the existing search box. Selection persists in localStorage.
+
+### Changed
+
+- **Readable date in auto-generated run names** — `make_run_name` now front-loads a friendly month/day so un-renamed runs read chronologically: `May22_train__lr0.01_bs32__a3f2…` instead of the old `train__lr0.01_bs32__0312_a3f2…`. Set `naming.date_style` to `"numeric"` in `.exptrack/config.json` to keep the legacy `MMDD` layout.
+- **Clearer search placeholders** — the sidebar and main search boxes now read "Search name, params, tags…" / "Search name, params, tags, notes…" to surface that search already matches parameter keys/values, tags, studies, branch, and notes — not just the name.
+
 ## [1.10.1] - 2026-05-17
 
 ### Changed
@@ -320,6 +373,7 @@ Initial public release.
 - Artifact strategy, git diff size limits, naming conventions, auto-capture toggles
 - Non-finite metric values (NaN, Inf) silently dropped
 
+[1.11.0]: https://github.com/mikylab/exptrack/compare/v1.10.1...v1.11.0
 [1.10.1]: https://github.com/mikylab/exptrack/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/mikylab/exptrack/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/mikylab/exptrack/compare/v1.9.1...v1.9.2

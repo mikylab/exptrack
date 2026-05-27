@@ -28,6 +28,17 @@ let sidebarGroupByStudy = localStorage.getItem('exptrack-sidebar-group-study') =
 // Shared between the sidebar and the main table when groupBy === 'study'.
 let expandedStudyGroups = new Set(JSON.parse(localStorage.getItem('exptrack-expanded-studies') || '[]'));
 let autoRefreshTimer = null;
+// Date-range filter ('' = all time, 'today', '7d', '30d') and "needs naming"
+// (only runs that still carry their auto-generated name). Both apply globally
+// to the sidebar and the main table via getFilteredExperiments.
+let dateRange = localStorage.getItem('exptrack-date-range') || '';
+let autoNamedOnly = localStorage.getItem('exptrack-auto-named-only') === 'true';
+// Rows the user just renamed in this session. While the "Needs naming" filter
+// is on, these stay visible so the rename is visible to the user (the row's
+// `name_is_auto` flag flips to false on commit, which would otherwise drop it
+// out of the filtered view immediately and erase the user's confirmation).
+// Cleared whenever the filter toggle is touched.
+let recentlyRenamedIds = new Set();
 
 // Display abbreviations for common metric names (config stores full names)
 const METRIC_ABBREV = {
@@ -714,6 +725,80 @@ function fmtDur(s) {
   if (s >= 3600) return Math.floor(s/3600) + 'h' + Math.floor((s%3600)/60) + 'm';
   if (s >= 60) return Math.floor(s/60) + 'm' + Math.floor(s%60) + 's';
   return s.toFixed(1) + 's';
+}
+
+// ── Date helpers (grouping + range filtering) ────────────────────────────────
+// created_at is stored as UTC ISO; bare timestamps are treated as UTC.
+function expDate(iso) {
+  if (!iso) return null;
+  return new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
+}
+
+// Calendar-day key (YYYY-MM-DD) in the active timezone — stable group/filter key.
+function dayKeyOf(iso) {
+  const d = expDate(iso);
+  if (!d || isNaN(d)) return '';
+  if (currentTimezone) {
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: currentTimezone, year: 'numeric', month: '2-digit', day: '2-digit'
+      }).formatToParts(d);
+      const get = t => (parts.find(p => p.type === t) || {}).value || '';
+      return get('year') + '-' + get('month') + '-' + get('day');
+    } catch (e) {}
+  }
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+// Friendly day header: Today / Yesterday / "Wed, May 20, 2026".
+function dayLabelOf(iso) {
+  const key = dayKeyOf(iso);
+  if (!key) return 'unknown';
+  const todayKey = dayKeyOf(new Date().toISOString());
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  if (key === todayKey) return 'Today';
+  if (key === dayKeyOf(y.toISOString())) return 'Yesterday';
+  const d = expDate(iso);
+  const opts = { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' };
+  if (currentTimezone) opts.timeZone = currentTimezone;
+  try { return d.toLocaleDateString('en-US', opts); } catch (e) { return key; }
+}
+
+function setDateRange(r) {
+  dateRange = r;
+  localStorage.setItem('exptrack-date-range', r);
+  document.querySelectorAll('#group-bar [data-range]').forEach(b =>
+    b.classList.toggle('active', b.getAttribute('data-range') === r));
+  rerender();
+}
+
+function setAutoNamedOnly(on) {
+  autoNamedOnly = !!on;
+  localStorage.setItem('exptrack-auto-named-only', autoNamedOnly ? 'true' : 'false');
+  const cb = document.getElementById('auto-named-toggle');
+  if (cb) cb.checked = autoNamedOnly;
+  recentlyRenamedIds.clear();
+  rerender();
+}
+
+// Reflect persisted date-range / needs-naming state in the controls on boot.
+function syncFilterControls() {
+  document.querySelectorAll('#group-bar [data-range]').forEach(b =>
+    b.classList.toggle('active', b.getAttribute('data-range') === dateRange));
+  const cb = document.getElementById('auto-named-toggle');
+  if (cb) cb.checked = autoNamedOnly;
+  updateAutoNamedCount();
+}
+
+// Live count of un-renamed runs next to the "Needs naming" toggle so the
+// filter has a visible signal even when every run happens to need naming.
+function updateAutoNamedCount() {
+  const el = document.getElementById('auto-named-count');
+  if (!el) return;
+  const n = (allExperiments || []).filter(e => e.name_is_auto).length;
+  el.textContent = n > 0 ? '(' + n + ')' : '';
+  el.style.display = n > 0 ? '' : 'none';
 }
 
 function fmtTimeAgo(iso) {

@@ -103,7 +103,12 @@ class Experiment:
         else:
             self.script = script
 
-        # Build initial name (may be updated after argparse capture)
+        # Build initial name (may be updated after argparse capture).
+        # name_is_auto tracks whether the user ever deliberately named this run:
+        # True when we generated the name, False when one was passed explicitly.
+        # Internal auto-renames (argparse/notebook capture) keep it True; only a
+        # user rename in the dashboard/API flips it to False.
+        self.name_is_auto = not bool(name)
         self.name = name or make_run_name(script, self._params)
 
         # Snapshot git state at run time — this is the key traceability link
@@ -226,8 +231,8 @@ class Experiment:
                 INSERT OR REPLACE INTO experiments
                 (id, project, name, status, created_at, updated_at,
                  script, command, git_branch, git_commit, git_diff,
-                 hostname, python_ver, notes, tags, output_dir)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 hostname, python_ver, notes, tags, output_dir, name_is_auto)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 self.id, self.project, self.name, self.status,
                 self.created_at, self.created_at,
@@ -235,7 +240,7 @@ class Experiment:
                 self.git_branch, self.git_commit, diff_for_db,
                 self.hostname, self.python_ver,
                 self.notes, json.dumps(self.tags),
-                self._output_dir,
+                self._output_dir, int(getattr(self, "name_is_auto", True)),
             ))
             if self._params:
                 self._write_params(conn, self._params)

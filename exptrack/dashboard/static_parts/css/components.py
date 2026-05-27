@@ -295,9 +295,14 @@ CSS_COMPONENTS = """
   #exp-table th { position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #exp-table td { max-width: 0; }
   #exp-table td.truncate-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* When a truncate-cell is hosting an active inline-edit input, let the input
+     extend past the column's clip so the user can actually see what they're
+     typing — otherwise the input's cursor sits in the overflow-hidden zone and
+     the text appears invisible. */
+  #exp-table td.truncate-cell:has(.name-edit-input) { overflow: visible; position: relative; z-index: 5; }
   #exp-table td.wrap-cell { overflow: visible; white-space: normal; word-break: break-word; }
   #exp-table td.wrap-cell .tag { display: inline-block; margin-bottom: 2px; }
-  .name-edit-input { font-family: inherit; font-size: 14px; border: 1px solid var(--blue); padding: 5px 8px; border-radius: 4px; background: var(--card-bg); width: 100%; max-width: 300px; }
+  .name-edit-input { font-family: inherit; font-size: 14px; color: var(--fg); border: 1px solid var(--blue); padding: 5px 8px; border-radius: 4px; background: var(--card-bg); width: 100%; max-width: 300px; position: relative; z-index: 5; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   .tags-cell .tag { font-size: 13px; padding: 3px 8px; }
   .hidden-panel { display: none; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); font-size: 13px; }

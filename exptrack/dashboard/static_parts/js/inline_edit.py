@@ -3,10 +3,18 @@
 JS_INLINE_EDIT = r"""
 
 // ── Inline rename ────────────────────────────────────────────────────────────
+// `activeRename` tracks the in-progress rename so that re-renders triggered by
+// other UI events (e.g. mutations.py reload, refreshDetail) don't yank the
+// input out from under a user mid-type. renderExperiments and renderExpList
+// preserve the input via _preserveActiveRename().
+let activeRename = null;
+
 function startInlineRename(id, el) {
-  // Strip edit icon text from the element content
   const iconEl = el.querySelector('.edit-icon');
   const currentName = iconEl ? el.textContent.replace(iconEl.textContent, '').trim() : el.textContent.trim();
+  const where = el.closest('#exp-sidebar') ? 'sidebar'
+              : el.closest('#detail-view') ? 'detail'
+              : 'table';
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'name-edit-input';
@@ -15,34 +23,85 @@ function startInlineRename(id, el) {
   input.focus();
   input.select();
 
-  let saved = false;
-  async function doRename() {
-    if (saved) return;
-    saved = true;
+  let committed = false;
+  async function commit(save) {
+    if (committed) return;
+    committed = true;
     const newName = input.value.trim();
-    if (newName && newName !== currentName) {
+    activeRename = null;
+    if (save && newName && newName !== currentName) {
       const d = await postApi('/api/experiment/' + id + '/rename', {name: newName});
       if (d.ok) {
         const exp = allExperiments.find(e => e.id === id);
-        if (exp) exp.name = newName;
-        renderExperiments();
-        renderExpList();
+        if (exp) { exp.name = newName; exp.name_is_auto = false; }
+        // Keep the row visible under "Needs naming" so the user sees the
+        // rename took effect (the row would otherwise drop out instantly).
+        recentlyRenamedIds.add(id);
         if (currentDetailId === id) {
           const nameEl = document.getElementById('detail-name');
           if (nameEl) nameEl.textContent = newName;
         }
-        return;
       }
     }
     renderExperiments();
     renderExpList();
+    updateAutoNamedCount();
   }
 
-  input.addEventListener('blur', doRename);
+  activeRename = { id, input, commit, where };
+
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-    if (e.key === 'Escape') { input.value = currentName; input.blur(); }
+    if (e.key === 'Enter')  { e.preventDefault(); commit(true);  }
+    if (e.key === 'Escape') { e.preventDefault(); commit(false); }
   });
+  // Commit on blur only when the user actually moved focus to another real
+  // element. Re-renders that detach the input from the DOM also fire blur, but
+  // by then renderExperiments/renderExpList have already preserved the input
+  // via _preserveActiveRename, so the blur is from the OLD orphaned node — not
+  // a real focus change. We guard by checking input.isConnected.
+  input.addEventListener('blur', () => {
+    setTimeout(() => {
+      if (!activeRename || activeRename.input !== input) return;
+      if (!input.isConnected) return;  // detached by re-render; preserve handler will re-mount
+      if (document.activeElement === input) return;  // refocused
+      commit(true);
+    }, 0);
+  });
+}
+
+// Called by renderExperiments/renderExpList before they overwrite innerHTML.
+// Returns a function to call AFTER the re-render that re-mounts the input in
+// the row's name cell (preserving value and cursor). If no rename is active,
+// returns a no-op.
+function _preserveActiveRename() {
+  if (!activeRename) return () => {};
+  const input = activeRename.input;
+  if (!input || !input.isConnected) return () => {};
+  const id = activeRename.id;
+  const value = input.value;
+  const selStart = input.selectionStart;
+  const selEnd = input.selectionEnd;
+  // Detach so the parent's innerHTML reset doesn't destroy our node.
+  input.remove();
+  const where = activeRename.where;
+  return () => {
+    const rootId = where === 'sidebar' ? 'exp-sidebar' : where === 'detail' ? 'detail-view' : 'exp-body';
+    const root = document.getElementById(rootId);
+    let slot = root && root.querySelector('[data-rename-slot="' + id + '"]');
+    if (!slot) {
+      // Original view re-rendered without this row (e.g. filter changed) —
+      // try the other view as a fallback so the input doesn't vanish silently.
+      slot = document.querySelector('[data-rename-slot="' + id + '"]');
+    }
+    if (!slot) {
+      activeRename = null;
+      return;
+    }
+    slot.replaceWith(input);
+    input.value = value;
+    try { input.setSelectionRange(selStart, selEnd); } catch (_) {}
+    input.focus();
+  };
 }
 
 // ── Unified item autocomplete helper (tags & studies) ────────────────────────

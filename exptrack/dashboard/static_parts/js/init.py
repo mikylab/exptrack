@@ -5,6 +5,7 @@ JS_INIT = r"""
 // Init — sidebar starts collapsed (opens when entering detail view)
 document.getElementById('exp-sidebar').classList.add('collapsed');
 syncHighlightCheckbox();
+syncFilterControls();
 renderTableHeader();
 
 function _bootDashboard() {

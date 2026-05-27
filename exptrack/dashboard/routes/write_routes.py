@@ -47,8 +47,10 @@ def api_rename(conn, exp_id: str, body: dict) -> dict:
     if not new_name:
         return {"error": "empty name"}
     old_name = exp["name"]
+    # A deliberate rename clears the auto-named flag so the run stops being
+    # nudged as "needs naming".
     conn.execute(
-        "UPDATE experiments SET name=?, updated_at=? WHERE id=?",
+        "UPDATE experiments SET name=?, name_is_auto=0, updated_at=? WHERE id=?",
         (new_name, datetime.now(timezone.utc).isoformat(), exp["id"])
     )
     from ...core.db import rename_output_folder
@@ -1633,11 +1635,38 @@ def api_add_command(body: dict) -> dict:
 
 def api_update_command(body: dict) -> dict:
     return _config_list_update("commands", body,
-                               ["label", "command", "tags", "study"])
+                               ["label", "command", "tags", "study", "values"])
 
 
 def api_delete_command(body: dict) -> dict:
     return _config_list_delete("commands", body)
+
+
+def api_reorder_commands(body: dict) -> dict:
+    """Reorder saved commands by id. Body: {ids: [c_..., ...]}. Items not
+    listed in `ids` keep their relative order at the end (so a missing id
+    after a race can't drop a command)."""
+    from ... import config as cfg
+    new_ids = body.get("ids") or []
+    if not isinstance(new_ids, list):
+        return {"error": "ids must be a list"}
+    conf = cfg.load()
+    items = conf.get("commands", [])
+    by_id = {c.get("id"): c for c in items}
+    seen = set()
+    ordered = []
+    for cid in new_ids:
+        c = by_id.get(cid)
+        if c is not None and cid not in seen:
+            ordered.append(c)
+            seen.add(cid)
+    # Append any commands not mentioned (defensive: don't drop them)
+    for c in items:
+        if c.get("id") not in seen:
+            ordered.append(c)
+    conf["commands"] = ordered
+    cfg.save(conf)
+    return {"ok": True}
 
 
 def api_storage_info(conn) -> dict:

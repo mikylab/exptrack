@@ -29,6 +29,34 @@ def test_create_writes_to_db(tmp_project):
     exp.finish()
 
 
+def test_name_is_auto_flag(tmp_project):
+    """Auto-generated names set name_is_auto=1; an explicit name sets it to 0."""
+    from exptrack.core import Experiment, get_db
+
+    auto = Experiment(script="train.py")
+    explicit = Experiment(script="train.py", name="my-best-run")
+    conn = get_db()
+    a = conn.execute("SELECT name_is_auto FROM experiments WHERE id=?", (auto.id,)).fetchone()
+    e = conn.execute("SELECT name_is_auto FROM experiments WHERE id=?", (explicit.id,)).fetchone()
+    assert a["name_is_auto"] == 1
+    assert e["name_is_auto"] == 0
+    auto.finish()
+    explicit.finish()
+
+
+def test_internal_rename_keeps_auto_flag(tmp_project):
+    """Internal auto-rename (argparse/notebook capture) keeps name_is_auto=1."""
+    from exptrack.core import Experiment, get_db
+    from exptrack.core.naming import make_run_name
+
+    exp = Experiment(script="train.py")
+    exp._rename(make_run_name("train.py", {"lr": 0.01}))
+    conn = get_db()
+    row = conn.execute("SELECT name_is_auto FROM experiments WHERE id=?", (exp.id,)).fetchone()
+    assert row["name_is_auto"] == 1
+    exp.finish()
+
+
 def test_create_with_initial_params(tmp_project):
     """Experiment created with initial params stores them in the DB."""
     from exptrack.core import Experiment, get_db
