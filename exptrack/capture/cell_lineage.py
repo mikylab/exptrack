@@ -14,13 +14,38 @@ def cell_hash(source: str) -> str:
     return hashlib.md5(source.encode()).hexdigest()[:12]
 
 
+def is_magic_only(source: str) -> bool:
+    """True if source is only IPython magics / shell escapes / comments / blanks.
+
+    Magic-only cells (e.g. ``%exptrack checkpoint "..."`` or ``%load_ext exptrack``)
+    are commands, not editable code. They must be kept out of cell lineage so the
+    fuzzy SequenceMatcher matcher never (a) assigns one a bogus "parent" it then
+    word-diffs against, or (b) offers one as a parent candidate for a real cell —
+    two short ``%exptrack`` magics trivially clear the 30% similarity bar.
+    """
+    has_magic = False
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        if stripped.startswith('%') or stripped.startswith('!'):
+            has_magic = True
+            continue
+        return False
+    return has_magic
+
+
 def find_parent_hash(notebook: str, source: str, current_hash: str) -> str | None:
     """
     Find the most similar existing cell in this notebook's lineage.
     Used when a cell is edited: the new hash points back to the old hash.
     Also handles cell splits — if a new cell's source is a subset of an
     existing cell, that existing cell is the parent.
+
+    Magic-only cells are excluded both as the search subject and as candidates.
     """
+    if is_magic_only(source):
+        return None
     try:
         from ..core import get_db
         conn = get_db()
@@ -41,6 +66,8 @@ def find_parent_hash(notebook: str, source: str, current_hash: str) -> str | Non
 
     for row in rows:
         if row["cell_hash"] == current_hash:
+            continue
+        if is_magic_only(row["source"]):
             continue
         ratio = SequenceMatcher(None, row["source"], source).ratio()
         if ratio > best_ratio:

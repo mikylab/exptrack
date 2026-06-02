@@ -121,7 +121,7 @@ def list_sessions() -> list[dict[str, Any]]:
         "  COALESCE(SUM(CASE WHEN n.node_type='checkpoint' THEN 1 ELSE 0 END), 0) AS checkpoints, "
         "  COUNT(DISTINCT e.id) AS promoted "
         "FROM sessions s "
-        "LEFT JOIN session_nodes n ON n.session_id = s.id "
+        "LEFT JOIN session_nodes n ON n.session_id = s.id AND n.deleted_at IS NULL "
         "LEFT JOIN experiments e ON e.session_node_id = n.id "
         "GROUP BY s.id "
         "ORDER BY s.created_at DESC",

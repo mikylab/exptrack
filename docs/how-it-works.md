@@ -10,13 +10,14 @@ If your script doesn't use argparse, exptrack falls back to parsing raw `sys.arg
 
 ### Notebooks: IPython hooks
 
-`%load_ext exptrack` registers a `post_run_cell` hook. After every cell:
+`%load_ext exptrack` registers `pre_run_cell` and `post_run_cell` hooks. The pre-hook tees `sys.stdout` so the cell's `print()` output is captured while still showing in the notebook. After every cell:
 
 1. The cell source is hashed (SHA-256) for content-addressed tracking
 2. Changes are diffed against the previous version of that cell (30% similarity match)
 3. New/changed variables are detected and fingerprinted
 4. HP-like variables (`lr`, `batch_size`, etc.) are logged as params
-5. Everything is recorded as timeline events
+5. The cell's output — captured `print()` stdout plus the trailing-expression value — is recorded (capped at 4000 chars) and shown in the dashboard Timeline's **Out** panel
+6. Everything is recorded as timeline events
 
 ### Plots: matplotlib patching
 

@@ -16,6 +16,7 @@ DEFAULTS: dict = {
     "exports_dir":           "exports",
     "notebook_history_dir":  ".exptrack/notebook_history",
     "max_git_diff_kb":       256,
+    "git_diff_exclude":      ["*.ipynb"],   # pathspecs excluded from diff capture
     "artifact_strategy":     "reference",   # "reference" (no copy) | "copy" (legacy)
     "hash_max_mb":           500,            # partial-hash files larger than this
     "protect_on_rerun":      True,           # archive old artifacts on path conflict

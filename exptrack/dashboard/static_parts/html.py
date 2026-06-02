@@ -59,6 +59,10 @@ HTML_BODY = r"""</style>
             <label title="Write exports to <project>/exports/ instead of downloading via the browser. Existing files are never overwritten — a numeric suffix is added on conflict.">Save exports to project folder</label>
             <input type="checkbox" id="settings-export-to-folder" onchange="setExportToFolder(this.checked)">
           </div>
+          <div class="settings-row">
+            <label title="In diffs, spotlight the exact word(s) that changed on an in-place edit (e.g. 0.7 → 0.5). Turn off for plain line-level add/remove.">Highlight word-level diff changes</label>
+            <input type="checkbox" id="settings-word-diff" onchange="setWordDiff(this.checked)">
+          </div>
         </div>
         <div class="settings-section">
           <div class="settings-section-title">Metrics</div>

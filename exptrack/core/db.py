@@ -279,6 +279,8 @@ def _ensure_schema(conn):
             label       TEXT NOT NULL,
             note        TEXT,
             cell_source TEXT,
+            cell_outputs TEXT,
+            images      TEXT,
             git_diff    TEXT,
             git_commit  TEXT,
             seq         INTEGER NOT NULL,
@@ -289,6 +291,29 @@ def _ensure_schema(conn):
         CREATE INDEX IF NOT EXISTS idx_session_nodes_parent
             ON session_nodes(parent_id);
     """)
+
+    # Soft-delete column + per-cell output capture for session_nodes.
+    try:
+        ncols = {row[1] for row in conn.execute("PRAGMA table_info(session_nodes)").fetchall()}
+        if "deleted_at" not in ncols:
+            conn.execute("ALTER TABLE session_nodes ADD COLUMN deleted_at REAL")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_nodes_deleted "
+                "ON session_nodes(session_id, deleted_at)"
+            )
+        # cell_outputs mirrors cell_source: one SEP-joined output segment per
+        # recorded cell, so the dashboard can show "what the branch produced".
+        if "cell_outputs" not in ncols:
+            conn.execute("ALTER TABLE session_nodes ADD COLUMN cell_outputs TEXT")
+        # images: JSON list of {path, label, ts} for plots saved (by reference,
+        # no copy) while the node was active — lets branches show/compare plots.
+        if "images" not in ncols:
+            conn.execute("ALTER TABLE session_nodes ADD COLUMN images TEXT")
+    except sqlite3.OperationalError:
+        pass
+    except Exception as e:
+        print(f"[exptrack] warning: session_nodes migration error: {e}",
+              file=sys.stderr)
 
     # Add session_node_id to experiments if missing
     try:
@@ -835,8 +860,9 @@ def rename_output_folder(conn: sqlite3.Connection, exp_id: str,
         try:
             old_dir.rename(new_dir)
             renamed = True
-        except OSError:
-            pass
+        except OSError as e:
+            print(f"[exptrack] warning: could not rename output dir "
+                  f"{old_dir} → {new_dir}: {e}", file=sys.stderr)
 
     # Update output_dir in experiments table
     if renamed:

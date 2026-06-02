@@ -148,7 +148,7 @@ CSS_IMAGE_COMPARE = """
   }
   .cmp-img-thumb .cmp-thumb-name {
     position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.6);
-    color: #fff; font-size: 9px; padding: 2px 4px; overflow: hidden;
+    color: #fff; font-size: var(--text-xs); padding: 2px 4px; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
   }
   .compare-select-bar {

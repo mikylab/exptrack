@@ -4,6 +4,7 @@ exptrack/capture/notebook_hooks.py — IPython post_run_cell hook and snapshot s
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sys
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from .cell_lineage import (
     find_parent_hash,
     get_cell_baseline,
     get_cell_source,
+    is_magic_only,
     simple_diff,
     store_cell_lineage,
     update_cell_baseline,
@@ -46,7 +48,115 @@ _nb_state: dict = {
     "deferred_nb_file":  "",    # notebook file for deferred start
     "last_cell_hash": None,  # hash of the last executed cell (for lineage)
     "hash_to_last_exec_hash": {},  # cell_lineage_key -> last exec's source hash
+    "_stdout_buf":   None,    # StringIO capturing the running cell's stdout
 }
+
+# Cap on captured cell output (stdout + trailing-expression repr) stored per
+# cell — keeps a chatty training loop from bloating the DB / dashboard.
+_MAX_CELL_OUTPUT = 4000
+# The live tee stops buffering past this so a cell printing megabytes can't
+# balloon memory; the headroom over _MAX_CELL_OUTPUT lets _combine_cell_output
+# still detect the overflow and add its "… (output truncated)" marker.
+_STDOUT_BUFFER_CAP = _MAX_CELL_OUTPUT * 2
+
+
+class _StdoutTee:
+    """Wraps a stream so writes go to BOTH the original (the notebook still
+    shows the output) and a capture buffer (so exptrack can record print()
+    output). Buffering is bounded at _STDOUT_BUFFER_CAP — writes past that still
+    reach the real stream but aren't captured. Everything else delegates to the
+    original stream."""
+
+    def __init__(self, original, buffer):
+        self._original = original
+        self._buffer = buffer
+        self._captured = 0
+
+    def write(self, s):
+        try:
+            remaining = _STDOUT_BUFFER_CAP - self._captured
+            if remaining > 0:
+                chunk = s if len(s) <= remaining else s[:remaining]
+                self._buffer.write(chunk)
+                self._captured += len(chunk)
+        except Exception:
+            pass
+        return self._original.write(s)
+
+    def flush(self):
+        return self._original.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+def _start_stdout_capture():
+    """Install a tee on sys.stdout so the running cell's printed output is
+    captured. Idempotent and defensive — never breaks the user's cell."""
+    try:
+        if isinstance(sys.stdout, _StdoutTee):
+            return  # already capturing (re-entrant pre_run_cell)
+        buf = io.StringIO()
+        _nb_state["_stdout_buf"] = buf
+        sys.stdout = _StdoutTee(sys.stdout, buf)
+    except Exception as e:
+        print(f"[exptrack] warning: could not start stdout capture: {e}",
+              file=sys.stderr)
+
+
+def _collect_stdout_capture() -> str:
+    """Read the captured stdout for the cell that just ran and restore the
+    original stream. Returns the captured text ('' if none). Always restores,
+    so an early return in the post-hook can't leave the tee installed."""
+    text = ""
+    buf = _nb_state.get("_stdout_buf")
+    try:
+        if buf is not None:
+            text = buf.getvalue()
+    except Exception:
+        pass
+    # Restore only if our tee is still the active stream — the user's cell may
+    # have swapped sys.stdout itself, in which case we leave their choice alone.
+    try:
+        if isinstance(sys.stdout, _StdoutTee):
+            sys.stdout = sys.stdout._original
+    except Exception:
+        pass
+    _nb_state["_stdout_buf"] = None
+    return text
+
+
+def _combine_cell_output(stdout_text: str, result_repr):
+    """Merge captured stdout (print output) with the trailing-expression repr
+    into one output blob, mirroring what the notebook shows (prints first, then
+    the cell's returned value). Caps the total so a chatty cell can't bloat the
+    DB. Returns None when the cell produced nothing."""
+    parts = []
+    if stdout_text:
+        parts.append(stdout_text.rstrip("\n"))
+    if result_repr:
+        parts.append(str(result_repr))
+    combined = "\n".join(p for p in parts if p)
+    if not combined:
+        return None
+    if len(combined) > _MAX_CELL_OUTPUT:
+        combined = combined[:_MAX_CELL_OUTPUT] + "\n… (output truncated)"
+    return combined
+
+
+def _pre_run_cell(info=None, *args, **kwargs):
+    """IPython pre_run_cell hook — start capturing this cell's stdout and
+    reserve the cell_exec event's timeline seq, so artifacts saved mid-cell
+    (e.g. plt.savefig) sort *after* the code rather than before it."""
+    _start_stdout_capture()
+    _nb_state["_reserved_seq"] = None
+    exp = _nb_state.get("exp")
+    if exp is not None:
+        try:
+            _nb_state["_reserved_seq"] = exp.reserve_timeline_seq()
+        except Exception as e:
+            print(f"[exptrack] warning: could not reserve timeline seq: {e}",
+                  file=sys.stderr)
 
 
 def attach_notebook(exp: Experiment, nb_name: str = "notebook", ip=None):
@@ -70,6 +180,7 @@ def attach_notebook(exp: Experiment, nb_name: str = "notebook", ip=None):
             return
     _nb_state["ip"] = ip
     _unregister_hook(ip)
+    ip.events.register("pre_run_cell", _pre_run_cell)
     ip.events.register("post_run_cell", _post_run_cell)
 
 
@@ -106,11 +217,17 @@ def attach_notebook_deferred(nb_file: str = "", ip=None, start_fn=None):
             return
     _nb_state["ip"] = ip
     _unregister_hook(ip)
+    ip.events.register("pre_run_cell", _pre_run_cell)
     ip.events.register("post_run_cell", _post_run_cell)
 
 
 def _is_magic_only(source: str) -> bool:
-    """Return True if source consists only of IPython magic commands or blank lines."""
+    """Return True if source consists only of IPython magic commands, comments,
+    or blank lines. Used to defer experiment start past setup-only cells.
+
+    Distinct from ``cell_lineage.is_magic_only`` (which requires an actual magic
+    line) — here an all-comment/blank cell also counts, so we don't start the
+    experiment on it."""
     for line in source.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith('#'):
@@ -133,15 +250,20 @@ def detach_notebook():
 
 
 def _unregister_hook(ip):
-    for hook_fn in (_post_run_cell, _post_execute):
-        try:
-            ip.events.unregister("post_run_cell", hook_fn)
-        except (ValueError, Exception):
-            pass  # hook may not be registered
-        try:
-            ip.events.unregister("post_execute", hook_fn)
-        except (ValueError, Exception):
-            pass  # hook may not be registered
+    # _post_execute is just an alias for _post_run_cell (same object), so
+    # unregistering _post_run_cell from both events covers it.
+    for hook_fn, events in (
+        (_post_run_cell, ("post_run_cell", "post_execute")),
+        (_pre_run_cell, ("pre_run_cell",)),
+    ):
+        for event in events:
+            try:
+                ip.events.unregister(event, hook_fn)
+            except ValueError:
+                pass  # hook wasn't registered for this event — expected
+            except Exception as e:
+                print(f"[exptrack] warning: could not unregister {event} hook: {e}",
+                      file=sys.stderr)
 
 
 def _get_cell_source(result, ip):
@@ -209,19 +331,25 @@ def _process_cell_lineage(source, ch, notebook, exec_num):
     Returns (code_is_new, code_changed, source_diff, parent_source, parent_hash,
              already_seen).
     """
+    # Magic-only cells (e.g. %exptrack checkpoint/branch) are commands, not
+    # editable code — keep them out of lineage so they never get a fuzzy
+    # "parent" to word-diff against, and show no new/edited badge or diff.
+    # Still stored (parent_hash=None) so "view source" works.
+    magic_only = is_magic_only(source)
+
     # ── 1. Content-addressed cell lineage ────────────────────────────────
-    parent_hash = find_parent_hash(notebook, source, ch)
+    parent_hash = None if magic_only else find_parent_hash(notebook, source, ch)
     store_cell_lineage(notebook, source, parent_hash)
 
     # ── 2. Compute diff against parent cell (if any) ────────────────────
-    code_is_new = parent_hash is None
+    code_is_new = (not magic_only) and parent_hash is None
     code_changed = False
     source_diff = None
     parent_source = None
 
     already_seen = ch in _nb_state["cell_history"]
 
-    if already_seen:
+    if magic_only or already_seen:
         pass
     elif code_is_new:
         source_diff = [{"op": "+", "line": line}
@@ -350,6 +478,10 @@ def _emit_timeline_events(exp, ch, exec_num, source, source_diff, output,
             }])
 
     event_type = "observational" if is_obs else "cell_exec"
+    # Use the seq reserved in pre_run_cell (if any) so the code event sorts
+    # before any artifacts saved mid-cell; clear it so it can't leak to a later
+    # cell that doesn't reserve one.
+    reserved_seq = _nb_state.pop("_reserved_seq", None)
     exp.log_event(
         event_type=event_type,
         cell_hash=ch,
@@ -362,9 +494,12 @@ def _emit_timeline_events(exp, ch, exec_num, source, source_diff, output,
             "is_rerun": already_seen and not code_changed and not new_vars and not changed_vars,
             "source_preview": source[:200],
             "has_output": output is not None,
-            "output_preview": str(output)[:200] if output else None,
+            # Already capped at _MAX_CELL_OUTPUT in _combine_cell_output; store
+            # it whole so the dashboard's "Out" panel can show real print output.
+            "output_preview": str(output) if output else None,
         },
         source_diff=diff_str,
+        seq=reserved_seq,
     )
 
     max_vars = _conf.get("max_vars_per_cell", 50)
@@ -456,26 +591,34 @@ def _post_run_cell(result=None):
                 return
 
         # ── 0. Get the cell source and output ────────────────────────────────
-        source, output = _get_cell_source(result, ip)
+        # Always collect (and tear down) the stdout tee installed by the
+        # pre_run_cell hook, even on an early return, so it never leaks.
+        captured_stdout = _collect_stdout_capture()
+        source, result_repr = _get_cell_source(result, ip)
         if not source:
             return
+        # Full cell output = printed stdout + the trailing-expression repr,
+        # mirroring what the notebook displays (prints, then the returned value).
+        output = _combine_cell_output(captured_stdout, result_repr)
 
         # ── 0a. Skip scratch cells entirely (Session Trees) ───────────────────
         try:
             from .session_hooks import is_scratch_cell
             if is_scratch_cell(source):
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: scratch-cell check failed: {e}",
+                  file=sys.stderr)
 
         # ── 0a'. Buffer non-scratch cells onto the active session ────────────
         try:
             from ..sessions import get_current_session
             sm = get_current_session()
             if sm is not None and sm.session_id:
-                sm.record_cell(source)
-        except Exception:
-            pass
+                sm.record_cell(source, output)
+        except Exception as e:
+            print(f"[exptrack] warning: could not record cell on active session: {e}",
+                  file=sys.stderr)
 
         # ── 0b. Handle deferred start ────────────────────────────────────────
         if _handle_deferred_start(source, ip):
@@ -526,7 +669,9 @@ def _post_run_cell(result=None):
                             is_observational=is_obs)
 
     except Exception as _e:
+        import traceback
         print(f"[exptrack] cell capture error: {_e}", file=sys.stderr)
+        traceback.print_exc()
 
 
 # Backward-compat alias — old code registered _post_execute

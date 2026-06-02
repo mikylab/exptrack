@@ -15,6 +15,17 @@ from .. import config as cfg
 # carries its generated name (vs. one the user deliberately renamed).
 _AUTO_NAME_RE = re.compile(r"__(?:\d{4}_)?[0-9a-f]{8}$")
 
+# Characters that must never reach a run name: the name doubles as an on-disk
+# output-folder component, so a slash (or whitespace, or other path-hostile
+# char) would split it into nested dirs and break the rename. Collapse runs of
+# them away rather than substituting, to keep names compact.
+_PATH_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._+=-]+")
+
+
+def _path_safe(s: str) -> str:
+    """Strip characters that aren't safe in a single filesystem path component."""
+    return _PATH_UNSAFE_RE.sub("", s)
+
 
 def make_run_name(script: str = "", params: dict | None = None) -> str:
     """
@@ -34,17 +45,24 @@ def make_run_name(script: str = "", params: dict | None = None) -> str:
     key_len    = ncfg.get("key_max_len", 8)
     date_style = ncfg.get("date_style", "readable")
 
-    base  = Path(script).stem if script else "exp"
+    base  = _path_safe(Path(script).stem) if script else "exp"
     parts = []
     if params:
-        for k, v in list(params.items())[:max_keys]:
+        # Skip exptrack-internal bookkeeping params (prefixed with "_": _var/…,
+        # _code_change/…, _cells_ran, _confusion_matrices). They aren't
+        # hyperparameters — their values are assignment exprs / diff fragments /
+        # JSON whose slashes and spaces would otherwise pollute the name and
+        # break the on-disk output-dir rename. Filter *before* taking the top N.
+        real = [(k, v) for k, v in params.items() if not k.startswith("_")]
+        for k, v in real[:max_keys]:
             short_k = k.split(".")[-1][:key_len]
-            if isinstance(v, float):
-                parts.append(f"{short_k}{v:.3g}")
-            elif isinstance(v, bool):
-                parts.append(f"{short_k}{int(v)}")
+            if isinstance(v, bool):
+                val = str(int(v))
+            elif isinstance(v, float):
+                val = f"{v:.3g}"
             else:
-                parts.append(f"{short_k}{str(v)[:12]}")
+                val = str(v)[:12]
+            parts.append(_path_safe(f"{short_k}{val}"))
 
     uid = uuid.uuid4().hex[:8]
     now = datetime.now()

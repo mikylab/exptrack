@@ -102,6 +102,84 @@ def test_get_cell_source_none_result():
     assert source is None or source == ""
 
 
+# ── Tests for stdout capture + output combining ──────────────────────────────
+
+def test_combine_cell_output_merges_stdout_and_result():
+    from exptrack.capture.notebook_hooks import _combine_cell_output
+    # Printed output appears first, then the trailing-expression repr.
+    assert _combine_cell_output("hello\nworld\n", "42") == "hello\nworld\n42"
+    # Only print output (cell ends in a statement, no returned value).
+    assert _combine_cell_output("just printed", None) == "just printed"
+    # Only a returned value (no prints).
+    assert _combine_cell_output("", "0.95") == "0.95"
+    # Nothing at all.
+    assert _combine_cell_output("", None) is None
+
+
+def test_combine_cell_output_caps_long_output():
+    from exptrack.capture.notebook_hooks import _combine_cell_output, _MAX_CELL_OUTPUT
+    big = "x" * (_MAX_CELL_OUTPUT + 5000)
+    out = _combine_cell_output(big, None)
+    assert len(out) <= _MAX_CELL_OUTPUT + len("\n… (output truncated)")
+    assert out.endswith("(output truncated)")
+
+
+def test_stdout_capture_tees_and_records():
+    import sys
+    from exptrack.capture.notebook_hooks import (
+        _start_stdout_capture, _collect_stdout_capture, _StdoutTee,
+    )
+    orig = sys.stdout
+    _start_stdout_capture()
+    try:
+        assert isinstance(sys.stdout, _StdoutTee)
+        print("captured line")  # goes to both the real stream and the buffer
+    finally:
+        captured = _collect_stdout_capture()
+    # Original stream restored, and the printed text was captured.
+    assert sys.stdout is orig
+    assert "captured line" in captured
+
+
+def test_collect_stdout_capture_no_buffer_is_safe():
+    from exptrack.capture.notebook_hooks import _collect_stdout_capture, _nb_state
+    _nb_state["_stdout_buf"] = None
+    # No capture in progress — must return "" and never raise.
+    assert _collect_stdout_capture() == ""
+
+
+def test_stdout_tee_buffer_is_bounded():
+    import sys
+    from exptrack.capture.notebook_hooks import (
+        _start_stdout_capture, _collect_stdout_capture, _STDOUT_BUFFER_CAP,
+    )
+    _start_stdout_capture()
+    try:
+        print("y" * (_STDOUT_BUFFER_CAP * 4))  # a "chatty" cell
+    finally:
+        captured = _collect_stdout_capture()
+    # The tee stops buffering past the cap, so memory stays bounded regardless
+    # of how much the cell printed.
+    assert len(captured) <= _STDOUT_BUFFER_CAP
+    assert sys.stdout is not None  # stream restored cleanly
+
+
+def test_reserved_seq_orders_cell_before_midcell_artifact(tmp_project):
+    """A cell_exec event reserved in pre_run_cell must sort BEFORE an artifact
+    that was logged mid-cell (e.g. plt.savefig), so code shows above output."""
+    from exptrack.core import Experiment
+    exp = Experiment(script="notebook.py")
+    # pre_run_cell reserves the cell_exec seq up front...
+    reserved = exp.reserve_timeline_seq()
+    # ...then a mid-cell savefig logs an artifact (fresh seq)...
+    art_seq = exp.log_event(event_type="artifact", key="plot.png", value="plot.png")
+    # ...then post_run_cell emits the cell_exec with the reserved seq.
+    cell_seq = exp.log_event(event_type="cell_exec", key="cell_1",
+                             value={"source_preview": "x = 1"}, seq=reserved)
+    assert cell_seq == reserved
+    assert cell_seq < art_seq  # code sorts before the output it produced
+
+
 # ── Tests for _handle_deferred_start ─────────────────────────────────────────
 
 def test_deferred_skips_magic_cell(tmp_project):

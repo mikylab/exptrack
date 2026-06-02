@@ -505,17 +505,33 @@ class Experiment:
 
     _timeline_seq: int = 0
 
+    def reserve_timeline_seq(self) -> int:
+        """Claim the next timeline seq without writing an event yet.
+
+        Used by the notebook pre_run_cell hook to reserve the cell_exec event's
+        position BEFORE the cell body runs, so any artifacts saved mid-cell
+        (e.g. plt.savefig) get a LATER seq and sort *below* the code in the
+        timeline rather than above it. Pass the reserved value back as
+        ``log_event(..., seq=reserved)``.
+        """
+        self._timeline_seq += 1
+        return self._timeline_seq
+
     def log_event(self, event_type: str, cell_hash: str | None = None,
                   cell_pos: int | None = None, key: str | None = None, value: Any | None = None,
-                  prev_value: Any | None = None, source_diff: str | None = None) -> int:
+                  prev_value: Any | None = None, source_diff: str | None = None,
+                  seq: int | None = None) -> int:
         """
         Append an event to the execution timeline.
 
         event_type: 'cell_exec' | 'var_set' | 'artifact' | 'metric' | 'observational'
+        seq: optional pre-reserved seq (see reserve_timeline_seq); when omitted a
+             fresh seq is allocated.
         Returns the seq number of this event.
         """
-        self._timeline_seq += 1
-        seq = self._timeline_seq
+        if seq is None:
+            self._timeline_seq += 1
+            seq = self._timeline_seq
         ts = datetime.now(timezone.utc).isoformat()
         with get_db() as conn:
             conn.execute(

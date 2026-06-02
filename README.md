@@ -22,7 +22,8 @@ exptrack ui        # open the web dashboard
 
 ## Dashboard
 
-<img width="1392" height="678" alt="exptrack dashboard" src="https://github.com/user-attachments/assets/5e388fec-a884-4bcc-a2ec-7f24ed2ff89b" />
+<img width="1385" height="666" alt="image" src="https://github.com/user-attachments/assets/42d83735-fbb0-45e7-871c-f0d2d775c1bf" />
+
 
 Filter, compare, tag, and explore experiments from a local web UI. Runs on localhost with no accounts or internet needed.
 

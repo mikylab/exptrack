@@ -508,8 +508,9 @@ def _compact_cells(conn, exp_ids):
                 "(SELECT DISTINCT notebook FROM cell_lineage)"
             )
             conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: could not prune superseded code_baselines: {e}",
+                  file=sys.stderr)
         return freed
     except Exception as e:
         print(f"[exptrack] warning: could not compact cells: {e}", file=sys.stderr)

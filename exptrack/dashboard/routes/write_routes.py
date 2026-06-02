@@ -6,6 +6,7 @@ POST endpoints for notes, tags, rename, delete, finish, artifacts, groups.
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -335,8 +336,9 @@ def _compact_preview(conn, exp_ids: list, do_diff: bool, do_cells: bool,
             if sz:
                 total_bytes += sz
                 will_remove.append(f"Cell source code ({_fmt(sz)}, {cnt} cell(s))")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: cell-source compact preview query failed: {e}",
+                  file=sys.stderr)
 
     if do_timeline:
         placeholders = ",".join("?" * len(exp_ids))
@@ -352,8 +354,9 @@ def _compact_preview(conn, exp_ids: list, do_diff: bool, do_cells: bool,
             if sz:
                 total_bytes += sz
                 will_remove.append(f"Timeline inline diffs ({_fmt(sz)}, {cnt} event(s))")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: timeline-diff compact preview query failed: {e}",
+                  file=sys.stderr)
 
     return {"ok": True, "dry_run": True, "will_remove": will_remove,
             "total_bytes": total_bytes, "total_fmt": _fmt(total_bytes)}
@@ -1492,8 +1495,9 @@ def api_clean_db(conn) -> dict:
                 if resolved not in exp_dirs and child.name not in exp_names:
                     shutil.rmtree(child)
                     n_dirs += 1
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: api_clean_db output-dir cleanup failed: {e}",
+              file=sys.stderr)
     if n_dirs:
         counts["output_dirs"] = n_dirs
         total += n_dirs
@@ -1527,8 +1531,9 @@ def api_reset_db(conn) -> dict:
                   "cell_lineage", "code_baselines", "git_diffs"):
         try:
             conn.execute(f"DELETE FROM {table}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: api_reset_db could not clear {table}: {e}",
+                  file=sys.stderr)
     conn.commit()
     # Clean outputs directory
     try:
@@ -1542,15 +1547,18 @@ def api_reset_db(conn) -> dict:
                         shutil.rmtree(child)
                     else:
                         child.unlink()
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as e:
+                    print(f"[exptrack] warning: api_reset_db could not remove {child}: {e}",
+                          file=sys.stderr)
+    except Exception as e:
+        print(f"[exptrack] warning: api_reset_db outputs cleanup failed: {e}",
+              file=sys.stderr)
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("VACUUM")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: api_reset_db VACUUM failed "
+              f"(another connection may be open): {e}", file=sys.stderr)
     return {"ok": True, "deleted_experiments": n_exp}
 
 
@@ -1722,6 +1730,89 @@ def api_session_delete(conn, session_id: str, body: dict) -> dict:
     if not delete_session(session_id):
         return {"error": "not found"}
     return {"ok": True}
+
+
+def _validate_session_node(conn, session_id: str, body: dict):
+    """Pull `node_id` from the body and confirm it belongs to this session.
+    Returns (node_id, None) on success or (None, error_dict) to return."""
+    node_id = body.get("node_id", "")
+    if not node_id:
+        return None, {"error": "missing node_id"}
+    row = conn.execute(
+        "SELECT id FROM session_nodes WHERE id=? AND session_id=?",
+        (node_id, session_id),
+    ).fetchone()
+    if not row:
+        return None, {"error": "not found"}
+    return node_id, None
+
+
+def api_session_delete_node(conn, session_id: str, body: dict) -> dict:
+    """Cascade-delete a single node (and descendants). Refuses to delete the
+    session root. Linked experiments are preserved (session_node_id cleared)."""
+    node_id, err = _validate_session_node(conn, session_id, body)
+    if err:
+        return err
+    from ...sessions.manager import delete_node
+    r = delete_node(node_id)
+    if not r.get("ok"):
+        return {"error": r.get("error", "delete failed")}
+    return {"ok": True, "nodes": r["nodes"], "experiments": r["experiments"]}
+
+
+def api_session_preview_delete_node(conn, session_id: str, body: dict) -> dict:
+    """Preview a node cascade-delete: counts of nodes and linked experiments."""
+    node_id, err = _validate_session_node(conn, session_id, body)
+    if err:
+        return err
+    from ...sessions.manager import preview_node_delete
+    return preview_node_delete(node_id) or {"error": "not found"}
+
+
+def api_session_restore_node(conn, session_id: str, body: dict) -> dict:
+    """Restore a soft-deleted session node and its trashed subtree."""
+    node_id, err = _validate_session_node(conn, session_id, body)
+    if err:
+        return err
+    from ...sessions.manager import restore_node
+    r = restore_node(node_id)
+    if not r.get("ok"):
+        return {"error": r.get("error", "restore failed")}
+    return {"ok": True, "nodes": r["nodes"]}
+
+
+def api_session_rename_node(conn, session_id: str, body: dict) -> dict:
+    """Rename a session node's label."""
+    node_id, err = _validate_session_node(conn, session_id, body)
+    if err:
+        return err
+    from ...sessions.manager import rename_node
+    r = rename_node(node_id, body.get("label", ""))
+    if not r.get("ok"):
+        return {"error": r.get("error", "rename failed")}
+    return {"ok": True, "label": r["label"]}
+
+
+def api_session_purge_node(conn, session_id: str, body: dict) -> dict:
+    """Permanently delete a trashed node and its subtree (no undo)."""
+    node_id, err = _validate_session_node(conn, session_id, body)
+    if err:
+        return err
+    from ...sessions.manager import purge_node
+    r = purge_node(node_id)
+    if not r.get("ok"):
+        return {"error": r.get("error", "purge failed")}
+    return {"ok": True, "nodes": r["nodes"], "images": r.get("images", {})}
+
+
+def api_session_empty_trash(conn, session_id: str, body: dict) -> dict:
+    """Permanently delete every trashed node in the session (no undo)."""
+    row = conn.execute("SELECT id FROM sessions WHERE id=?", (session_id,)).fetchone()
+    if not row:
+        return {"error": "not found"}
+    from ...sessions.manager import empty_trash
+    r = empty_trash(session_id)
+    return {"ok": True, "nodes": r["nodes"], "images": r.get("images", {})}
 
 
 def api_session_end(conn, session_id: str, body: dict) -> dict:

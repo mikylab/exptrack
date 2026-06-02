@@ -398,6 +398,38 @@ def main():
         help="Delete a session and its nodes (linked experiments preserved)")
     p_sr.add_argument("id_or_name")
 
+    p_srn = sess_sub.add_parser("rm-node",
+        help="Cascade-delete a single branch/checkpoint and its descendants "
+             "(linked experiments preserved)")
+    p_srn.add_argument("node_id", help="Node id (prefix match)")
+    p_srn.add_argument("-y", "--yes", action="store_true",
+                       help="Skip confirmation prompt")
+
+    p_sresn = sess_sub.add_parser("restore-node",
+        help="Restore a soft-deleted node (and its trashed subtree)")
+    p_sresn.add_argument("node_id", help="Trashed node id (prefix match)")
+
+    p_spurge = sess_sub.add_parser("purge-node",
+        help="Permanently delete a trashed node and its subtree (no undo)")
+    p_spurge.add_argument("node_id", help="Trashed node id (prefix match)")
+    p_spurge.add_argument("-y", "--yes", action="store_true",
+                          help="Skip confirmation prompt")
+
+    p_sempty = sess_sub.add_parser("empty-trash",
+        help="Permanently delete every trashed node in a session (no undo)")
+    p_sempty.add_argument("id_or_name")
+    p_sempty.add_argument("-y", "--yes", action="store_true",
+                          help="Skip confirmation prompt")
+
+    p_strash = sess_sub.add_parser("trash",
+        help="List a session's trashed nodes")
+    p_strash.add_argument("id_or_name")
+
+    p_srename = sess_sub.add_parser("rename-node",
+        help="Rename a node's label by id")
+    p_srename.add_argument("node_id", help="Node id (prefix match)")
+    p_srename.add_argument("label", help="New label")
+
     p_snote = sess_sub.add_parser("note", help="Annotate a node by id")
     p_snote.add_argument("node_id")
     p_snote.add_argument("text")

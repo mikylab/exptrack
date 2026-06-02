@@ -296,7 +296,8 @@ def test_branch_idempotent_by_label(tmp_project):
     sm.checkpoint("base")
     first = sm.branch("try X")
     sm.record_cell("a = 1")
-    second = sm.branch("try X")  # re-run the same branch cell
+    second = sm.branch("try X")  # re-run the same branch cell (e.g. Run All)
+    sm.record_cell("a = 1")      # a real re-run replays the original cell first
     sm.record_cell("b = 2")
 
     assert first == second  # same node id reused
@@ -429,3 +430,442 @@ def test_dashboard_session_routes(tmp_project):
 
     nodes = read_routes.api_session_nodes(conn, sid)
     assert len(nodes["nodes"]) >= 2  # root + checkpoint
+
+
+def test_delete_node_cascades_to_descendants(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import (
+        delete_node, preview_node_delete, build_tree,
+    )
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sid = sm.start("cascade")
+    c1 = sm.checkpoint("c1")
+    b1 = sm.branch("b1")
+    c2 = sm.checkpoint("c2")  # child of b1
+
+    preview = preview_node_delete(b1)
+    assert preview["nodes"] == 2  # b1 + c2
+    assert preview["descendants"] == 1
+    assert preview["is_root"] is False
+
+    r = delete_node(b1)
+    assert r["ok"] is True
+    assert r["nodes"] == 2
+
+    conn = get_db()
+    # Soft delete: rows remain with deleted_at set; live rows filter that out.
+    remaining = conn.execute(
+        "SELECT id FROM session_nodes WHERE session_id=? AND deleted_at IS NULL",
+        (sid,),
+    ).fetchall()
+    remaining_ids = {row["id"] for row in remaining}
+    assert b1 not in remaining_ids
+    assert c2 not in remaining_ids
+    assert c1 in remaining_ids
+    # build_tree should also skip trashed nodes.
+    tree = build_tree(sid)
+    seen = []
+    def walk(n):
+        seen.append(n["id"])
+        for ch in n.get("children", []) or []:
+            walk(ch)
+    walk(tree["root"])
+    assert b1 not in seen and c2 not in seen and c1 in seen
+
+
+def test_delete_node_refuses_root(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import delete_node
+
+    sm = SessionManager()
+    sm.start("root-protect")
+    # The root node id == session_id for this manager's start() impl.
+    # Find the root via build_tree to be precise.
+    from exptrack.sessions.manager import build_tree
+    tree = build_tree(sm.session_id)
+    root_id = tree["root"]["id"]
+
+    r = delete_node(root_id)
+    assert r["ok"] is False
+    assert "root" in r["error"].lower()
+
+
+def test_delete_node_preserves_linked_experiment(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import delete_node
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("exp-preserve")
+    sm.checkpoint("c1")
+    b1 = sm.branch("b1")
+
+    # Link a fake experiment row to b1.
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, name, status, created_at, updated_at, "
+        "session_node_id) VALUES (?, ?, 'finished', ?, ?, ?)",
+        ("exp_test_1", "test_exp", 0, 0, b1),
+    )
+    conn.commit()
+
+    r = delete_node(b1)
+    assert r["ok"] is True
+    assert r["experiments"] == 1
+
+    row = conn.execute(
+        "SELECT id, session_node_id FROM experiments WHERE id='exp_test_1'",
+    ).fetchone()
+    assert row is not None  # experiment still exists
+    assert row["session_node_id"] is None  # FK cleared
+
+
+def test_restore_node_brings_back_subtree(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import (
+        build_tree, delete_node, list_trashed_nodes, restore_node,
+    )
+
+    sm = SessionManager()
+    sid = sm.start("restore-test")
+    sm.checkpoint("c1")
+    b1 = sm.branch("b1")
+    c2 = sm.checkpoint("c2")  # child of b1
+
+    delete_node(b1)
+    trash = list_trashed_nodes(sid)
+    trashed_ids = {n["id"] for n in trash}
+    assert b1 in trashed_ids and c2 in trashed_ids
+
+    r = restore_node(b1)
+    assert r["ok"] is True
+    assert r["nodes"] == 2  # b1 + c2
+
+    # Trash should now be empty for this session.
+    assert list_trashed_nodes(sid) == []
+    # Both nodes should be visible in build_tree again.
+    tree = build_tree(sid)
+    seen = []
+    def walk(n):
+        seen.append(n["id"])
+        for ch in n.get("children", []) or []:
+            walk(ch)
+    walk(tree["root"])
+    assert b1 in seen and c2 in seen
+
+
+def test_restore_node_refuses_live_node(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import restore_node
+
+    sm = SessionManager()
+    sm.start("not-trashed")
+    c1 = sm.checkpoint("c1")
+
+    r = restore_node(c1)
+    assert r["ok"] is False
+    assert "not trashed" in r["error"].lower()
+
+
+def test_restore_node_revives_trashed_parent(tmp_project):
+    """If you restore a node whose parent is also in the trash (because it
+    was deleted as part of the same cascade), restore must bring the parent
+    back too — otherwise the child renders as an orphan."""
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import (
+        build_tree, delete_node, restore_node,
+    )
+
+    sm = SessionManager()
+    sid = sm.start("orphan-guard")
+    sm.checkpoint("c1")
+    b1 = sm.branch("b1")
+    c2 = sm.checkpoint("c2")  # child of b1
+
+    delete_node(b1)  # trashes b1 AND c2
+
+    # Restore only the child — its parent (b1) must come back too.
+    r = restore_node(c2)
+    assert r["ok"] is True
+    assert r["nodes"] >= 2  # c2 + b1 walked back up
+
+    tree = build_tree(sid)
+    seen = {}
+    def walk(n, depth=0):
+        seen[n["id"]] = depth
+        for ch in n.get("children", []) or []:
+            walk(ch, depth + 1)
+    walk(tree["root"])
+    assert b1 in seen and c2 in seen
+    assert seen[c2] > seen[b1]  # c2 is still under b1, not at the root
+
+
+def test_record_cell_captures_output_aligned(tmp_project):
+    """cell_outputs stays segment-aligned with cell_source, refreshes on rerun."""
+    from exptrack.sessions import SessionManager
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sid = sm.start("s", "nb.ipynb")
+    sm.checkpoint("c1")
+    sm.record_cell("x = f(0.5)", output="{'acc': 0.98}")
+    sm.record_cell("print(x)", output=None)        # no trailing-expr output
+    sm.record_cell("x = f(0.5)", output="{'acc': 0.99}")  # new cell (last != this)
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT cell_source, cell_outputs FROM session_nodes WHERE id=?",
+        (sm._current_node_id,),
+    ).fetchone()
+    SEP = SessionManager._CELL_SEPARATOR
+    cells = row["cell_source"].split(SEP)
+    outs = row["cell_outputs"].split(SEP)
+    assert len(cells) == len(outs) == 3
+    assert outs[0] == "{'acc': 0.98}"
+    assert outs[1] == ""                  # print cell has no captured output
+    assert outs[2] == "{'acc': 0.99}"
+
+
+def test_record_cell_rerun_refreshes_output(tmp_project):
+    """Immediate re-run of the same cell refreshes its output, no duplicate."""
+    from exptrack.sessions import SessionManager
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("s", "nb.ipynb")
+    sm.checkpoint("c1")
+    sm.record_cell("y = g()", output="0.81")
+    sm.record_cell("y = g()", output="0.82")  # same source back-to-back
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT cell_source, cell_outputs FROM session_nodes WHERE id=?",
+        (sm._current_node_id,),
+    ).fetchone()
+    SEP = SessionManager._CELL_SEPARATOR
+    assert row["cell_source"].split(SEP) == ["y = g()"]   # not duplicated
+    assert row["cell_outputs"] == "0.82"                  # refreshed
+
+
+def test_purge_node_requires_trashed(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import purge_node, delete_node
+
+    sm = SessionManager()
+    sm.start("s", "nb.ipynb")
+    sm.checkpoint("c1")
+    b = sm.branch("b1")
+
+    # Live node refuses to purge.
+    assert purge_node(b)["ok"] is False
+    # Trash it, then purge succeeds and removes the row entirely.
+    delete_node(b)
+    r = purge_node(b)
+    assert r["ok"] is True and r["nodes"] == 1
+
+
+def test_purge_node_removes_row_for_good(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import (purge_node, delete_node,
+                                            list_trashed_nodes)
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sid = sm.start("s", "nb.ipynb")
+    sm.checkpoint("c1")
+    b = sm.branch("b1")
+    delete_node(b)
+    purge_node(b)
+
+    assert list_trashed_nodes(sid) == []
+    gone = get_db().execute(
+        "SELECT id FROM session_nodes WHERE id=?", (b,)).fetchone()
+    assert gone is None
+
+
+def test_empty_trash_clears_only_trashed(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import (empty_trash, delete_node,
+                                            list_trashed_nodes, build_tree)
+
+    sm = SessionManager()
+    sid = sm.start("s", "nb.ipynb")
+    c1 = sm.checkpoint("c1")
+    b1 = sm.branch("b1")
+    delete_node(b1)               # trash a branch
+    trashed_before = len(list_trashed_nodes(sid))
+    assert trashed_before >= 1
+
+    r = empty_trash(sid)
+    assert r["ok"] is True and r["nodes"] == trashed_before
+    assert list_trashed_nodes(sid) == []
+    # Live tree still intact: the surviving checkpoint c1 is still present.
+    tree = build_tree(sid)
+    assert tree["root"] is not None
+    live = []
+    def collect(n):
+        live.append(n["id"])
+        for ch in n.get("children", []) or []:
+            collect(ch)
+    collect(tree["root"])
+    assert c1 in live
+
+
+def test_purge_preserves_linked_experiment(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import purge_node, delete_node
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("s", "nb.ipynb")
+    sm.checkpoint("c1")
+    b = sm.branch("b1")
+    exp = Experiment(name="run")
+    sm.promote("good", exp.id)
+    delete_node(b)            # detaches exp
+    purge_node(b)
+
+    # Experiment row survives, just unlinked.
+    row = get_db().execute(
+        "SELECT id, session_node_id FROM experiments WHERE id=?", (exp.id,)
+    ).fetchone()
+    assert row is not None and row["session_node_id"] is None
+
+
+def test_branch_collision_forks_on_different_code(tmp_project):
+    """Re-declaring an existing branch label and then running DIFFERENT code
+    (the copy-paste-and-edit footgun) forks to a suffixed node instead of
+    silently merging the two explorations."""
+    from exptrack.sessions import SessionManager
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("collide")
+    sm.checkpoint("base")
+    first = sm.branch("try 0.7")
+    sm.record_cell("threshold = 0.7\nrun(threshold)")
+    # Re-use the label but with different code — a new idea, not a re-run.
+    again = sm.branch("try 0.7")
+    sm.record_cell("threshold = 0.5\nrun(threshold)")
+
+    assert again == first  # branch() still returns the existing id...
+    # ...but the divergent cell forked the manager to a new suffixed node.
+    assert sm._current_node_id != first
+    conn = get_db()
+    labels = {r["label"] for r in conn.execute(
+        "SELECT label FROM session_nodes WHERE session_id=? AND deleted_at IS NULL",
+        (sm.session_id,)).fetchall()}
+    assert "try 0.7" in labels and "try 0.7 (2)" in labels
+    # Original node keeps only its own code; the fork holds the divergent code.
+    orig = conn.execute("SELECT cell_source FROM session_nodes WHERE id=?",
+                        (first,)).fetchone()["cell_source"]
+    fork = conn.execute("SELECT cell_source FROM session_nodes WHERE id=?",
+                        (sm._current_node_id,)).fetchone()["cell_source"]
+    assert "0.7" in orig and "0.5" not in orig
+    assert "0.5" in fork
+
+
+def test_branch_collision_merges_on_identical_rerun(tmp_project):
+    """Re-running the same branch with the SAME first cell (a genuine Run-All)
+    merges into the existing node — no spurious fork."""
+    from exptrack.sessions import SessionManager
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("rerun")
+    sm.checkpoint("base")
+    first = sm.branch("explore")
+    sm.record_cell("x = 1")
+    sm.branch("explore")
+    sm.record_cell("x = 1")  # identical replay → merge, not fork
+
+    assert sm._current_node_id == first
+    conn = get_db()
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM session_nodes WHERE session_id=? AND label LIKE 'explore%'",
+        (sm.session_id,)).fetchone()["n"]
+    assert n == 1  # no suffixed fork created
+
+
+def test_rename_node(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import rename_node, delete_node
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("s")
+    sm.checkpoint("base")
+    b = sm.branch("old name")
+    assert rename_node(b, "new name")["ok"]
+    row = get_db().execute("SELECT label FROM session_nodes WHERE id=?", (b,)).fetchone()
+    assert row["label"] == "new name"
+    # Empty label rejected.
+    assert not rename_node(b, "   ")["ok"]
+    # Trashed node not renamable.
+    delete_node(b)
+    assert not rename_node(b, "whatever")["ok"]
+
+
+def test_record_image_attaches_and_dedups(tmp_project):
+    """savefig-by-reference: record_image stores paths on the current node,
+    dedups by path (refreshing the label), and resolves to absolute."""
+    import json
+    from pathlib import Path
+    from exptrack.sessions import SessionManager
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("imgs")
+    cp = sm.checkpoint("c")
+    sm.record_image("/tmp/a.png", label="ROC")
+    sm.record_image("/tmp/a.png", label="ROC v2")  # same path → dedup + refresh
+    sm.record_image("/tmp/b.png")
+
+    row = get_db().execute("SELECT images FROM session_nodes WHERE id=?", (cp,)).fetchone()
+    imgs = json.loads(row["images"])
+    a_abs = str(Path("/tmp/a.png").resolve())
+    assert len(imgs) == 2
+    assert [im["path"] for im in imgs].count(a_abs) == 1
+    a = next(im for im in imgs if im["path"] == a_abs)
+    assert a["label"] == "ROC v2"  # latest label wins
+
+
+def test_build_tree_exposes_images(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import build_tree
+
+    sm = SessionManager()
+    sid = sm.start("t")
+    sm.checkpoint("c")
+    sm.record_image("/tmp/x.png")
+    tree = build_tree(sid)
+    cp = tree["root"]["children"][0]
+    assert isinstance(cp["images"], list) and len(cp["images"]) == 1
+    # /tmp is outside the project root → not servable → url is None.
+    assert cp["images"][0]["url"] is None
+
+
+def test_purge_node_trashes_attached_images(tmp_project, monkeypatch):
+    """Permanently purging a node moves its by-reference plot files to the OS
+    Trash (via the shared helper) and reports the count."""
+    import exptrack.core.db as dbmod
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import delete_node, purge_node
+
+    moved = []
+    monkeypatch.setattr(dbmod, "_trash_or_local",
+                        lambda p, label="file": (moved.append(str(p)), "os_trash")[1])
+
+    sm = SessionManager()
+    sm.start("p")
+    sm.checkpoint("c")
+    b = sm.branch("b")
+    sm.record_image("/tmp/plot.png")
+    delete_node(b)            # soft delete leaves the file alone
+    assert not moved
+    r = purge_node(b)         # permanent → trashes the file
+    assert r["ok"] and r["images"]["os_trash"] == 1
+    assert moved and moved[0].endswith("plot.png")

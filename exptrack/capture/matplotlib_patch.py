@@ -81,6 +81,20 @@ def patch_savefig(exp: Experiment | None = None):
 
             fig_title = _nb_state.pop("_last_fig_title", "")
 
+            # Session Trees: if a session node is active, record the figure path
+            # on it (by reference, no copy) so branches can show/compare plots.
+            # Independent of whether an experiment exists. Never let it break
+            # the user's savefig.
+            if orig_path.exists():
+                try:
+                    from ..sessions import get_current_session
+                    sm = get_current_session()
+                    if sm is not None:
+                        sm.record_image(str(orig_path), label=fig_title)
+                except Exception as _se:
+                    print(f"[exptrack] session image capture warning: {_se}",
+                          file=sys.stderr)
+
             # No experiment yet — buffer the artifact for later
             if cur_exp is None:
                 if orig_path.exists():
