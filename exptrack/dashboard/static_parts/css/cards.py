@@ -1,9 +1,9 @@
 """CSS for experiment cards, stats cards, and status indicators."""
 
 CSS_CARDS = """
-  .exp-card { padding: 10px 12px; border-radius: 4px; cursor: pointer; margin-bottom: 2px; border: 1px solid transparent; }
+  .exp-card { padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer; margin-bottom: var(--space-1); border: 1px solid transparent; }
   .exp-card:hover { background: var(--code-bg); }
-  .exp-card.active { background: rgba(44,90,160,0.08); border-color: var(--blue); }
+  .exp-card.active { background: var(--accent-soft); border-color: var(--blue); }
   .exp-card-row1 { display: flex; align-items: center; gap: 6px; }
   .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .status-dot.status-done { background: var(--green); }
@@ -11,7 +11,7 @@ CSS_CARDS = """
   .status-dot.status-running { background: var(--yellow); }
   .exp-card-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .exp-card-meta { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .exp-card-tags { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .exp-card-tags { font-size: var(--text-xs); color: var(--muted); margin-top: 2px; }
   .exp-card-tags .tag { font-size: 12px; padding: 2px 6px; margin-left: 0; margin-right: 3px; }
   .exp-card-cb { margin-right: 4px; cursor: pointer; }
   .sidebar-study-header {
@@ -24,7 +24,7 @@ CSS_CARDS = """
   }
   .sidebar-study-header:hover { background: var(--border); }
   .sidebar-study-header.collapsed { opacity: 0.85; }
-  .sidebar-study-toggle { font-size: 9px; color: var(--muted); width: 10px; flex-shrink: 0; }
+  .sidebar-study-toggle { font-size: var(--text-xs); color: var(--muted); width: 10px; flex-shrink: 0; }
   .sidebar-study-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sidebar-study-count { color: var(--muted); font-weight: 500; font-size: 11px; padding: 1px 6px; background: var(--bg); border-radius: 8px; flex-shrink: 0; }
   #sidebar-group-study-btn.active { color: var(--blue); border-color: var(--blue); }

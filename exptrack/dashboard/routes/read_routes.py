@@ -430,10 +430,22 @@ def api_session_tree(conn, session_id: str) -> dict:
 
 
 def api_session_nodes(conn, session_id: str) -> dict:
-    """Return the flat node list for a session."""
+    """Return the flat node list for a session (live nodes only)."""
     rows = conn.execute(
         "SELECT id, parent_id, node_type, label, note, seq, created_at "
-        "FROM session_nodes WHERE session_id=? ORDER BY seq",
+        "FROM session_nodes WHERE session_id=? AND deleted_at IS NULL "
+        "ORDER BY seq",
         (session_id,),
     ).fetchall()
     return {"nodes": [dict(r) for r in rows]}
+
+
+def api_session_trash(conn, session_id: str) -> dict:
+    """Return the session's trashed nodes (for the Trash panel)."""
+    from ...sessions.manager import list_trashed_nodes
+    sess = conn.execute(
+        "SELECT id FROM sessions WHERE id=?", (session_id,),
+    ).fetchone()
+    if not sess:
+        return {"error": "not found"}
+    return {"nodes": list_trashed_nodes(session_id)}

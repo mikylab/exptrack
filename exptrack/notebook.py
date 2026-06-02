@@ -131,8 +131,9 @@ def reset() -> None:
     if _active is not None:
         try:
             _active.finish()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: could not finish active experiment during reset: {e}",
+                  file=sys.stderr)
         detach_notebook()
         _active = None
     from .core import close_db

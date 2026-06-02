@@ -31,16 +31,20 @@ class _TeeWriter:
         try:
             self._log.write(data)
             self._log.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            self._original.write(
+                f"[exptrack] warning: could not tee write to log: {e}\n"
+            )
         return len(data) if isinstance(data, str) else None
 
     def flush(self):
         self._original.flush()
         try:
             self._log.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            self._original.write(
+                f"[exptrack] warning: could not tee flush log: {e}\n"
+            )
 
     def fileno(self):
         return self._original.fileno()
@@ -204,8 +208,9 @@ def _restore_streams(log_files):
     for f in log_files:
         try:
             f.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: could not close log file {getattr(f, 'name', '?')}: {e}",
+                  file=sys.stderr)
 
 
 _AUTO_DETECT_EXTS = {
@@ -257,8 +262,9 @@ def _auto_detect_outputs(exp, start_ts):
                     if os.path.getmtime(fp) >= start_ts and resolved not in already_registered:
                         exp.log_file(fp)
                         already_registered.add(resolved)
-                except OSError:
-                    pass
+                except OSError as e:
+                    print(f"[exptrack] warning: could not auto-detect output {fp}: {e}",
+                          file=sys.stderr)
     except Exception as e:
         print(f"[exptrack] warning: auto-detect outputs scan failed: {e}", file=sys.stderr)
 

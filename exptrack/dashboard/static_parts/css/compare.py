@@ -24,15 +24,15 @@ CSS_COMPARE = """
   .compare-input button.primary { background: var(--blue); color: #fff; }
   .compare-input .vs-label { font-weight: 600; color: var(--muted); font-size: 16px; padding-bottom: 6px; }
   .differs { color: var(--yellow); font-weight: 600; }
-  .diff-added { color: var(--green, #3fb950); background: rgba(63,185,80,0.1); }
-  .diff-removed { color: var(--red, #f85149); background: rgba(248,81,73,0.1); }
+  .diff-added { color: var(--diff-add); background: var(--diff-add-bg); }
+  .diff-removed { color: var(--diff-del); background: var(--diff-del-bg); }
   .only-differs-toggle { font-family: inherit; font-size: 13px; margin-left: 12px; cursor: pointer; }
   .compare-charts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 16px; margin: 12px 0; }
-  .source-badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.3px; vertical-align: middle; }
-  .source-badge.auto { background: rgba(44,90,160,0.15); color: var(--blue); }
-  .source-badge.manual { background: rgba(212,130,15,0.15); color: var(--tl-metric); }
-  .source-badge.pipeline { background: rgba(63,185,80,0.15); color: var(--green); }
-  .source-badge.mixed { background: rgba(124,58,237,0.15); color: var(--purple); }
+  .source-badge { display: inline-block; font-size: var(--text-xs); font-weight: 600; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.3px; vertical-align: middle; }
+  .source-badge.auto { background: var(--accent-soft); color: var(--accent); }
+  .source-badge.manual { background: var(--status-warning-soft); color: var(--status-warning); }
+  .source-badge.pipeline { background: var(--status-success-soft); color: var(--status-success); }
+  .source-badge.mixed { background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
   .reproduce-box { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 8px 0 12px; }
   .reproduce-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
   .reproduce-cmd { font-size: 13px; word-break: break-all; white-space: pre-wrap; display: block; }

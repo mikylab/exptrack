@@ -138,6 +138,45 @@ def test_find_parent_hash_excludes_self(tmp_project):
     assert parent is None
 
 
+def test_is_magic_only():
+    """Magic-only cells are detected; mixed/code/comment-only cells are not."""
+    from exptrack.capture.cell_lineage import is_magic_only
+
+    assert is_magic_only('%exptrack checkpoint "after preprocessing clean"') is True
+    assert is_magic_only('%exptrack checkpoint "x"\n# (snapshots the diff)') is True
+    assert is_magic_only('%load_ext exptrack\n%exptrack session start "s"') is True
+    assert is_magic_only('!ls -la') is True
+    # Real code, with or without a leading magic line, is NOT magic-only
+    assert is_magic_only("results = run_pipeline(data)") is False
+    assert is_magic_only('%exptrack branch "b"\nresults = run_pipeline(data)') is False
+    # No actual magic line → not magic-only (don't suppress real comment edits)
+    assert is_magic_only("# just a comment") is False
+    assert is_magic_only("") is False
+
+
+def test_find_parent_hash_skips_magic_subject(tmp_project):
+    """A magic-only cell never gets a fuzzy-matched parent (root cause fix)."""
+    from exptrack.capture.cell_lineage import cell_hash, find_parent_hash, store_cell_lineage
+
+    # An earlier session-start magic is stored in lineage...
+    store_cell_lineage("nb.ipynb", '%load_ext exptrack\n%exptrack session start "threshold sensitivity"')
+
+    # ...a later checkpoint magic shares enough text to clear the 30% bar,
+    # but must NOT be diffed against it.
+    checkpoint = '%exptrack checkpoint "after preprocessing clean"'
+    assert find_parent_hash("nb.ipynb", checkpoint, cell_hash(checkpoint)) is None
+
+
+def test_find_parent_hash_excludes_magic_candidates(tmp_project):
+    """Magic-only cells are never offered as a parent for a real code cell."""
+    from exptrack.capture.cell_lineage import cell_hash, find_parent_hash, store_cell_lineage
+
+    store_cell_lineage("nb.ipynb", '%exptrack checkpoint "x"')
+    code = "model = train(data)"
+    # Only candidate is a magic cell → no parent
+    assert find_parent_hash("nb.ipynb", code, cell_hash(code)) is None
+
+
 def test_store_truncates_large_source(tmp_project, monkeypatch):
     """Source exceeding max_cell_source_kb is truncated on storage."""
     from exptrack import config as cfg

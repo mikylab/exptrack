@@ -222,8 +222,9 @@ def _clean_reset(conn, dry_run: bool = False):
         outputs_dir = root / conf.get("outputs_dir", "outputs")
         if outputs_dir.is_dir():
             n_output_items = sum(1 for _ in outputs_dir.iterdir())
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: could not count output items: {e}",
+              file=sys.stderr)
 
     total = n_exp + n_params + n_metrics + n_artifacts + n_timeline
     if not total and not n_output_items:
@@ -254,8 +255,9 @@ def _clean_reset(conn, dry_run: bool = False):
                   "cell_lineage", "code_baselines", "git_diffs"):
         try:
             conn.execute(f"DELETE FROM {table}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: could not clear table {table}: {e}",
+                  file=sys.stderr)
     conn.commit()
 
     # Clean outputs directory and notebook_history
@@ -272,10 +274,12 @@ def _clean_reset(conn, dry_run: bool = False):
                             shutil.rmtree(child)
                         else:
                             child.unlink()
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+                    except Exception as e:
+                        print(f"[exptrack] warning: could not remove {child}: {e}",
+                              file=sys.stderr)
+    except Exception as e:
+        print(f"[exptrack] warning: could not clean outputs directories: {e}",
+              file=sys.stderr)
 
     # VACUUM to reclaim all space
     try:
@@ -382,14 +386,17 @@ def _clean_orphans(conn, dry_run: bool = False):
                     if snap.get("exp_id") and snap["exp_id"] not in exp_ids:
                         snap_files.append(fp)
                         n_snaps += 1
-                except Exception:
+                except Exception as e:
+                    print(f"[exptrack] warning: could not read snapshot {fp}: {e}",
+                          file=sys.stderr)
                     continue
             if n_snaps:
                 print(f"  notebook_history: {n_snaps} orphaned snapshot(s)",
                       file=sys.stderr)
                 total += n_snaps
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: notebook_history scan failed: {e}",
+              file=sys.stderr)
 
     # outputs: directories not linked to any existing experiment
     import shutil
@@ -419,8 +426,9 @@ def _clean_orphans(conn, dry_run: bool = False):
                 print(f"  outputs: {len(orphan_dirs)} orphaned dir(s) "
                       f"({_fmt_bytes(dir_size)})", file=sys.stderr)
                 total += len(orphan_dirs)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: outputs scan for orphans failed: {e}",
+              file=sys.stderr)
 
     if not total:
         print(dim("No orphaned data found."), file=sys.stderr)
@@ -455,13 +463,15 @@ def _clean_orphans(conn, dry_run: bool = False):
     for fp in snap_files:
         try:
             fp.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: could not remove snapshot {fp}: {e}",
+                  file=sys.stderr)
     for d in orphan_dirs:
         try:
             shutil.rmtree(d)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[exptrack] warning: could not remove orphan dir {d}: {e}",
+                  file=sys.stderr)
     # Clean up empty notebook_history dirs
     try:
         root = cfg.project_root()
@@ -473,9 +483,10 @@ def _clean_orphans(conn, dry_run: bool = False):
                     try:
                         d.rmdir()
                     except OSError:
-                        pass
-    except Exception:
-        pass
+                        pass  # dir not empty — expected during partial cleanup
+    except Exception as e:
+        print(f"[exptrack] warning: notebook_history empty-dir sweep failed: {e}",
+              file=sys.stderr)
 
     # VACUUM to reclaim space — checkpoint WAL first so VACUUM can shrink it
     try:

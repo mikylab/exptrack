@@ -251,13 +251,7 @@ async function refreshDetail(id) {
     codeHtml = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Code Changes</h2><div class="section-body"><div class="code-changes">';
     for (const [k, v] of Object.entries(codeChanges)) {
       const label = k === '_code_changes' ? 'Script diff vs. last commit' : k.replace('_code_change/','Cell ');
-      const parts = String(v).split('; ').map(part => {
-        const trimmed = part.trim();
-        if (trimmed.startsWith('+')) return '<span class="diff-add">' + esc(trimmed) + '</span>';
-        if (trimmed.startsWith('-')) return '<span class="diff-del">' + esc(trimmed) + '</span>';
-        return esc(trimmed);
-      }).join('\n');
-      codeHtml += '<div class="change-item"><div class="change-label">' + esc(label) + '</div><div class="change-diff">' + parts + '</div></div>';
+      codeHtml += '<div class="change-item"><div class="change-label">' + esc(label) + '</div>' + _renderCodeChangeParts(v) + '</div>';
     }
     codeHtml += '</div></div>';
   }
@@ -321,12 +315,7 @@ async function refreshDetail(id) {
         + (diffData.commit ? '<br><span style="color:var(--muted);font-size:12px">To recover: git diff ' + esc(diffData.commit) + '~1 ' + esc(diffData.commit) + '</span>' : '')
         + '</div>';
     } else {
-      diffHtml = diffData.diff.split('\n').map(line => {
-        if (line.startsWith('+') && !line.startsWith('+++')) return '<span class="diff-add">' + esc(line) + '</span>';
-        if (line.startsWith('-') && !line.startsWith('---')) return '<span class="diff-del">' + esc(line) + '</span>';
-        if (line.startsWith('@@')) return '<span class="diff-hunk">' + esc(line) + '</span>';
-        return esc(line);
-      }).join('\n');
+      diffHtml = _renderUnifiedDiff(diffData.diff);
     }
   }
 

@@ -447,8 +447,9 @@ def get_stats(conn) -> dict[str, Any]:
         try:
             for t in json.loads(r["tags"] or "[]"):
                 all_tags.add(t)
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            print(f"[exptrack] warning: malformed tags row in get_stats: {e}",
+                  file=sys.stderr)
 
     try:
         total_artifacts = conn.execute(
@@ -509,8 +510,9 @@ def get_all_tags(conn) -> list[dict]:
         try:
             for t in json.loads(r["tags"] or "[]"):
                 counts[t] = counts.get(t, 0) + 1
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            print(f"[exptrack] warning: malformed tags row in get_all_tags: {e}",
+                  file=sys.stderr)
     return [{"name": t, "count": c} for t, c in sorted(counts.items(), key=lambda x: -x[1])]
 
 
@@ -782,8 +784,10 @@ def replace_notes(conn, exp_id_prefix: str, text: str) -> dict:
                 INSERT INTO timeline (exp_id, seq, event_type, key, value, prev_value, ts)
                 VALUES (?, ?, 'note_edit', 'notes', ?, ?, ?)
             """, (exp["id"], max_seq + 1, json.dumps(text), json.dumps(old_notes), now))
-        except Exception:
-            pass  # Don't fail the edit if timeline insert fails
+        except Exception as e:
+            # Don't fail the edit if timeline insert fails, but surface the cause.
+            print(f"[exptrack] warning: could not record note_edit in timeline "
+                  f"for exp {exp['id'][:8]}: {e}", file=sys.stderr)
     conn.execute(
         "UPDATE experiments SET notes=?, updated_at=? WHERE id=?",
         (text, now, exp["id"])
@@ -1042,8 +1046,9 @@ def get_all_studies(conn) -> list[dict]:
         try:
             for s in json.loads(r["studies"] or "[]"):
                 counts[s] = counts.get(s, 0) + 1
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            print(f"[exptrack] warning: malformed studies row in get_all_studies: {e}",
+                  file=sys.stderr)
     return [{"name": n, "count": c} for n, c in sorted(counts.items())]
 
 
@@ -1058,8 +1063,9 @@ def get_studies(conn) -> list[dict]:
         try:
             for s in json.loads(r["studies"] or "[]"):
                 study_data.setdefault(s, []).append(dict(r))
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            print(f"[exptrack] warning: malformed studies row in get_studies: {e}",
+                  file=sys.stderr)
 
     result = []
     for name, exps in sorted(study_data.items()):
@@ -1115,8 +1121,9 @@ def remove_study_global(conn, study_name: str) -> int:
                 studies = [s for s in studies if s != study_name]
                 update_experiment_studies(conn, r["id"], studies)
                 count += 1
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            print(f"[exptrack] warning: malformed studies row in remove_study_global: {e}",
+                  file=sys.stderr)
     return count
 
 

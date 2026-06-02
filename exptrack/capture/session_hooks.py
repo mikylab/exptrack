@@ -81,8 +81,9 @@ def _session_start(name: str):
     try:
         from ..notebook import _detect_nb_name
         nb = _detect_nb_name()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack] warning: could not detect notebook name for session: {e}",
+              file=sys.stderr)
     sm = SessionManager()
     sid = sm.start(name, notebook=nb)
     set_current_session(sm)
@@ -258,8 +259,9 @@ def _pin_magic(line: str, cell: str):
         sm = get_current_session()
         if sm is not None:
             sm.append_to_current_note(f"pinned: {label} → {fname}")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[exptrack:pin] could not append note to current session node: {e}",
+              file=sys.stderr)
 
 
 def _scratch_magic(line: str, cell: str):

@@ -26,15 +26,15 @@ CSS_TABLE = """
   .main-search-input:focus { outline: none; border-color: var(--blue); }
   /* "auto" badge: run still carries its generated name (never renamed). */
   .auto-name-badge {
-    display: inline-block; font-size: 9px; font-weight: 700;
+    display: inline-block; font-size: var(--text-xs); font-weight: 700;
     text-transform: uppercase; letter-spacing: 0.3px;
-    color: var(--yellow, #d4820f); background: rgba(212,130,15,0.12);
-    border: 1px solid rgba(212,130,15,0.35); border-radius: 3px;
+    color: var(--status-warning); background: var(--status-warning-soft);
+    border: 1px solid var(--status-warning-soft); border-radius: var(--radius-sm);
     padding: 0 4px; margin-right: 5px; vertical-align: middle; cursor: default;
   }
   /* Live count next to the "Needs naming" toggle in the group bar. */
   .auto-named-count {
-    color: var(--yellow, #d4820f); font-size: 11px; font-weight: 600;
+    color: var(--status-warning); font-size: var(--text-xs); font-weight: 600;
     margin-left: 2px;
   }
   .table-actions-bar {
@@ -66,9 +66,9 @@ CSS_TABLE = """
   .exp-card-cb { accent-color: var(--blue); width: 15px; height: 15px; }
   tr td:nth-child(2) { padding: 10px 8px; }
   tr td:nth-child(2) input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--blue); }
-  tr.highlighted-row { background: rgba(124,58,237,0.08); }
-  tr.highlighted-row:hover { background: rgba(124,58,237,0.13); }
-  tr.highlighted-row td:first-child { border-left: 3px solid var(--purple); }
+  tr.highlighted-row { background: var(--compare-bg); }
+  tr.highlighted-row:hover { background: var(--compare-bg); }
+  tr.highlighted-row td:first-child { border-left: 3px solid var(--compare-accent); }
   table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; }
   th { text-align: left; padding: 12px 16px; border-bottom: 2px solid var(--fg); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; user-select: none; }
   th.sortable { cursor: pointer; }
@@ -78,7 +78,7 @@ CSS_TABLE = """
   td { padding: 10px 16px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); font-size: 14px; }
   td:last-child { border-right: none; }
   tr:hover { background: var(--code-bg); }
-  tr.selected-row { background: rgba(44,90,160,0.08); }
+  tr.selected-row { background: var(--accent-soft); }
   .tag { background: var(--code-bg); padding: 4px 10px; font-size: 14px; margin-left: 6px; border-radius: 3px; }
   .exp-metrics-preview { font-size: 13px; color: var(--muted); margin-top: 2px; }
   h2 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }

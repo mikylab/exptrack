@@ -2,7 +2,9 @@
 
 ### Does exptrack capture print output or stdout?
 
-exptrack does not capture stdout or stderr. Only explicitly logged metrics are stored. To capture terminal output, redirect to a file and register it:
+**In notebooks, yes.** Each cell's `print()` output is captured (alongside the trailing-expression value) and shown in the dashboard Timeline's **Out** panel and on Session Trees nodes, mirroring what you saw in the notebook. It's capped at 4000 chars per cell so a chatty loop can't bloat the database.
+
+**For scripts run via `exptrack run`, no** — stdout/stderr aren't captured as a full transcript; only explicitly logged metrics are stored. To capture a script's terminal output, redirect to a file and register it:
 
 ```bash
 exptrack run train.py 2>&1 | tee train.log

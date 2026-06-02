@@ -6,23 +6,24 @@ CSS_TIMELINE = """
   .tl-event:hover { background: var(--code-bg); }
   .tl-event.tl-cell_exec { border-left-color: var(--tl-cell); border-left-width: 4px; }
   .tl-event.tl-var_set { border-left-color: var(--tl-var); border-left-width: 4px; }
-  .tl-event.tl-artifact { border-left-color: var(--tl-artifact); border-left-width: 4px; background: rgba(45,125,70,0.03); }
+  .tl-event.tl-artifact { border-left-color: var(--tl-artifact); border-left-width: 4px; }
   .tl-event.tl-metric { border-left-color: var(--tl-metric); border-left-width: 4px; }
   .tl-event.tl-observational { border-left-color: var(--tl-obs); border-left-width: 2px; opacity: 0.6; }
-  .tl-seq { color: var(--muted); min-width: 40px; font-size: 12px; }
+  .tl-seq { color: var(--muted); min-width: 40px; font-size: 12px; cursor: help; }
+  .tl-cellpos { display: inline-block; font-size: 11px; color: var(--text-3); background: var(--surface-2); border-radius: var(--radius-sm); padding: 0 6px; margin-right: 6px; }
   .tl-icon { min-width: 20px; text-align: center; font-weight: 600; }
   .tl-body { flex: 1; }
   .tl-code-preview { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: pre-wrap; }
   .tl-diff { margin-top: 4px; font-size: 12px; }
   .tl-diff .diff-add { color: var(--green); }
   .tl-diff .diff-del { color: var(--red); }
+  .tl-diff-summary { color: var(--muted); font-style: italic; margin-bottom: 3px; }
   .tl-badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px; margin-left: 6px; }
-  .tl-badge-new { background: rgba(45,125,70,0.12); color: var(--green); }
-  .tl-badge-edited { background: rgba(184,134,11,0.12); color: var(--yellow); }
-  .tl-badge-rerun { background: var(--code-bg); color: var(--muted); }
-  .tl-badge-output { background: rgba(44,90,160,0.12); color: var(--blue); }
-  .tl-badge-lineage { background: rgba(124,58,237,0.12); color: var(--purple); cursor: pointer; }
-  .tl-badge-lineage:hover { background: rgba(124,58,237,0.2); }
+  .tl-badge-new { background: var(--status-success-soft); color: var(--status-success); }
+  .tl-badge-edited { background: var(--status-warning-soft); color: var(--status-warning); }
+  .tl-badge-rerun { background: var(--surface-2); color: var(--muted); }
+  .tl-badge-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+  .tl-badge-link:hover { filter: brightness(0.95); }
   .tl-var-arrow { color: var(--muted); }
   .tl-context { font-size: 11px; color: var(--muted); margin-top: 3px; }
   .tl-filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -37,8 +38,8 @@ CSS_TIMELINE = """
   .cw-subtitle { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
   .cw-point { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 4px; background: var(--card-bg); border: 1px dashed var(--border); min-width: 140px; }
   .cw-point.active { border-style: solid; }
-  .cw-point-a.active { border-color: var(--blue); background: rgba(44,90,160,0.08); }
-  .cw-point-b.active { border-color: var(--purple); background: rgba(124,58,237,0.08); }
+  .cw-point-a.active { border-color: var(--blue); background: var(--accent-soft); }
+  .cw-point-b.active { border-color: var(--purple); background: var(--compare-bg); }
   .cw-point-label { font-weight: 700; font-size: 12px; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
   .cw-point-a .cw-point-label { background: var(--blue); }
   .cw-point-b .cw-point-label { background: var(--purple); }
@@ -51,8 +52,8 @@ CSS_TIMELINE = """
   .cw-marker-a { border-left: 3px solid var(--blue) !important; }
   .cw-marker-b { border-left: 3px solid var(--purple) !important; }
   .tl-seq-select { cursor: pointer; }
-  .tl-seq-select:hover { background: rgba(44,90,160,0.08); }
-  .tl-seq-select.selected { background: rgba(44,90,160,0.12); outline: 2px solid var(--blue); }
+  .tl-seq-select:hover { background: var(--accent-soft); }
+  .tl-seq-select.selected { background: var(--accent-soft); outline: 2px solid var(--blue); }
   .within-compare { background: var(--card-bg); border: 1px solid var(--border); padding: 20px; border-radius: 6px; margin-top: 16px; }
   .within-compare h3 { font-size: 14px; margin-bottom: 12px; }
   .cw-result-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
@@ -63,18 +64,41 @@ CSS_TIMELINE = """
   .cw-filters label { cursor: pointer; display: flex; align-items: center; gap: 4px; }
   .cw-table { font-size: 12px; }
   .cw-delta { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 3px; }
-  .cw-delta-up { color: var(--green); background: rgba(45,125,70,0.1); }
-  .cw-delta-down { color: var(--red); background: rgba(192,57,43,0.1); }
-  .cw-delta-changed { color: var(--yellow); background: rgba(184,134,11,0.1); }
+  .cw-delta-up { color: var(--green); background: var(--status-success-soft); }
+  .cw-delta-down { color: var(--red); background: var(--status-danger-soft); }
+  .cw-delta-changed { color: var(--yellow); background: var(--status-warning-soft); }
   .result-type-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; background: var(--code-bg); border: 1px solid var(--border); font-size: 12px; }
   .source-view { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; font-size: 13px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; margin-top: 6px; }
   .source-view .line-num { color: var(--muted); display: inline-block; min-width: 30px; text-align: right; margin-right: 12px; user-select: none; }
   .view-source-btn { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; margin-left: 6px; color: var(--blue); }
   .view-source-btn:hover { background: var(--code-bg); }
-  .tl-type-label { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-right: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-  .tl-type-label.tl-type-cell_exec { background: rgba(44,90,160,0.12); color: var(--tl-cell); }
-  .tl-type-label.tl-type-var_set { background: rgba(124,58,237,0.12); color: var(--tl-var); }
-  .tl-type-label.tl-type-artifact { background: rgba(45,125,70,0.12); color: var(--tl-artifact); }
-  .tl-type-label.tl-type-metric { background: rgba(212,130,15,0.12); color: var(--tl-metric); }
-  .tl-type-label.tl-type-observational { background: rgba(153,153,153,0.12); color: var(--tl-obs); }
+  .tl-type-label { display: inline-block; font-size: var(--text-xs); padding: 1px 6px; border-radius: var(--radius-sm); margin-right: 6px; font-weight: 600; letter-spacing: 0.3px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
+  .tl-type-label.tl-type-cell_exec { background: var(--accent-soft); color: var(--tl-cell); border-color: transparent; }
+  .tl-type-label.tl-type-metric { background: var(--status-warning-soft); color: var(--tl-metric); border-color: transparent; }
+  .tl-type-label.tl-type-observational { color: var(--tl-obs); }
+  /* Timeline legend: a compact key so the icons + labels are never a mystery. */
+  .tl-legend { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); font-size: var(--text-xs); }
+  .tl-legend-title { color: var(--text-2); font-weight: 600; margin-right: var(--space-1); }
+  .tl-legend-item { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); }
+  .tl-legend-icon { font-family: var(--font-mono); font-weight: 600; min-width: 16px; text-align: center; }
+  .tl-legend-meaning { color: var(--text-3); }
+  .tl-legend-badges { margin-top: calc(-1 * var(--space-2)); gap: var(--space-2); }
+  .tl-legend-badges .tl-badge { margin-left: 0; cursor: default; }
+  /* Cell output ("Out") panel — print() stdout + trailing-expression repr.
+     Mirrors the Sessions tab's .cell-output so both views read the same. */
+  .tl-cell-output { margin-top: var(--space-2); }
+  .tl-out-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-3); margin: 0 0 2px;
+  }
+  .tl-out-pre {
+    font-family: var(--font-mono); font-size: 12px;
+    white-space: pre-wrap; word-break: break-word;
+    background: var(--code-bg); border: 1px solid var(--border);
+    /* Neutral bar — green/red/blue all carry meaning elsewhere (added/removed/
+       selected); cell output has no such semantics, so it stays neutral. */
+    border-left: 3px solid var(--border-strong);
+    border-radius: var(--radius-sm); padding: 6px 8px; margin: 0;
+    max-height: 220px; overflow: auto;
+  }
 """

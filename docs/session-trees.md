@@ -57,34 +57,89 @@ the cells that already ran were attached to the previous node. Run it
 
 ## A complete example
 
+This is fully self-contained — copy it into a notebook cell-by-cell and run it
+as-is. It fabricates its own data (no `data.csv` needed), defines a trivial
+`run_pipeline`, logs real metrics, and saves a plot per branch (so the
+dashboard's **Compare branches** view has something to show), so nothing
+external is required.
+
 ```python
 %load_ext exptrack
 %exptrack session start "threshold sensitivity"
+```
 
-# ── normal cells ──
-import pandas as pd
-df = pd.read_csv("data.csv")
-df = df.dropna()
+```python
+# ── normal cells: make some data instead of reading a file ──
+import random
+import matplotlib.pyplot as plt
+from exptrack.notebook import metric, note   # log into the %load_ext-started run
 
+def make_data(n=500):
+    random.seed(0)
+    return [random.random() for _ in range(n)]
+
+def run_pipeline(data, threshold):
+    kept = [x for x in data if x >= threshold]
+    # toy "accuracy": closer to keeping half the points scores higher
+    accuracy = 1 - abs(len(kept) / len(data) - 0.5)
+    return {"kept": len(kept), "rate": len(kept) / len(data), "accuracy": accuracy}
+
+def plot_kept(data, threshold, path):
+    plt.figure()
+    plt.hist(data, bins=20)
+    plt.axvline(threshold, color="crimson", label=f"threshold={threshold}")
+    plt.legend(); plt.title(path)
+    plt.savefig(path)        # ← captured onto the active branch node (by reference)
+    plt.close()
+
+data = make_data()
+```
+
+```python
 %exptrack checkpoint "after preprocessing clean"
 # (snapshots the preprocessing diff)
+```
 
+```python
 %exptrack branch "try threshold 0.7"
-# ── try the higher threshold ──
+# ── first branch: the higher threshold ──
 threshold = 0.7
-results = run_pipeline(df, threshold=threshold)
+results = run_pipeline(data, threshold)
+metric("accuracy", results["accuracy"], step=1)
+note(f"threshold={threshold} → accuracy={results['accuracy']:.3f}")
+plot_kept(data, threshold, "kept_0.7.png")   # distinct filename per branch
+results
+```
 
+```python
 %%scratch
 # typo fix that has nothing to do with the experiment
-print(len(df))   # this cell is never logged
+print(len(data))   # this cell is never logged
+```
 
-%exptrack checkpoint "threshold 0.7 works"
-# Now run the actual experiment...
-# (start a regular Experiment via your usual exptrack flow)
+```python
+%exptrack branch "try threshold 0.5"
+# ── second branch: a sibling under the same checkpoint ──
+threshold = 0.5
+results = run_pipeline(data, threshold)
+metric("accuracy", results["accuracy"], step=2)
+note(f"threshold={threshold} → accuracy={results['accuracy']:.3f}")
+plot_kept(data, threshold, "kept_0.5.png")   # ← distinct filename; reusing
+results                                       #   "kept_0.7.png" would overwrite it
+```
 
-%exptrack promote "0.7 outperformed baseline"
-# (links that Experiment to this node)
+```python
+%exptrack checkpoint "0.5 kept closest to half"
+# The active experiment (auto-started by %load_ext exptrack) now holds the
+# metrics from both branches — nothing else to start.
+```
 
+```python
+%exptrack promote "0.5 had the higher accuracy"
+# (links the active experiment to this node — adds the → exp <id> badge)
+```
+
+```python
 %exptrack session end
 ```
 
@@ -96,9 +151,23 @@ started: 2026-05-07 09:12  •  notebook: explore.ipynb
 
 ○ session start: threshold sensitivity
 ●── checkpoint: after preprocessing clean       [09:14]  [diff: +12 −3]
-    └──○── branch: try threshold 0.7            [09:18]
-           └──●── checkpoint: threshold 0.7 works  [09:31]  [diff: +1 −1]  → exp 1a2b3c4d
+    ├──○── branch: try threshold 0.7            [09:18]   🖼 1
+    └──○── branch: try threshold 0.5            [09:24]   🖼 1
+           └──●── checkpoint: 0.5 kept closest to half  [09:31]  [diff: +1 −1]  → exp 1a2b3c4d
 ```
+
+### Comparing plots across branches
+
+The two branches above each called `plot_kept(...)` while they were the active
+node, so each figure is attached to its branch **by reference** (no copy) — note
+the `🖼 1` on both branch rows in the tree. The one rule: give each branch a
+**distinct filename** (`kept_0.7.png` vs. `kept_0.5.png`). Because the capture is
+by reference, reusing the same filename would overwrite the earlier branch's plot
+on disk and both nodes would point at the same image.
+
+Now open the dashboard → **☰ Sessions** → **⇄ Compare branches**, pick the two
+branches, and **Compare** — each column shows the branch's captured result and
+its histogram, so "which threshold kept closest to half" is a glance, not a guess.
 
 ## CLI
 
@@ -107,11 +176,36 @@ exptrack sessions                       # list sessions
 exptrack session show <id|name>         # ASCII tree (above)
 exptrack session nodes <id|name>        # flat node list (for scripting)
 exptrack session note <node_id> "..."   # annotate after the fact
-exptrack session rm <id|name>           # delete session; linked exps preserved
+exptrack session rename-node <n> "..."  # rename a node's label
+exptrack session rm <id|name>           # delete session (hard); linked exps preserved
+
+# Per-node trash (soft delete) and recovery
+exptrack session rm-node <node_id>      # → Trash (cascades to descendants)
+exptrack session trash <id|name>        # list this session's trashed nodes
+exptrack session restore-node <node_id> # bring a trashed subtree back
+exptrack session purge-node <node_id>   # delete a trashed node FOR GOOD (no undo)
+exptrack session empty-trash <id|name>  # delete ALL trashed nodes FOR GOOD (no undo)
 ```
 
 In the dashboard, every session card in the `☰ Sessions` tab has a `×`
-button in its header that does the same thing (with a confirmation prompt).
+button in its header that deletes the whole session (with a confirmation
+prompt).
+
+### Where deleted things go
+
+- **Deleting a whole session** (`session rm`, or the `×` on a session card)
+  is a **hard delete** — gone immediately, no trash.
+- **Deleting a node/branch** (`rm-node`, or the hover-`×` on a tree node) is a
+  **soft delete** → the per-session **Trash**. Restore it, or `purge-node` /
+  `empty-trash` to remove it permanently. `purge`/`empty-trash` refuse
+  anything not already trashed, so true removal is always a deliberate
+  two-step. Either way, linked experiments are preserved.
+- **Attached plot files** follow the same two-step. Soft delete leaves them on
+  disk (so Restore brings the node back intact); **permanent** removal
+  (`purge-node` / `empty-trash`) moves the node's by-reference plot files to
+  your **OS Trash** (recoverable — never `rm -rf`) and tells you how many were
+  moved. Whole-session `rm` leaves plot files untouched, the same way it keeps
+  linked experiments.
 
 Session ids accept prefix matches (e.g. `1a2b`); names accept exact match.
 
@@ -125,12 +219,25 @@ renders the tree as a vertical, indented node graph:
 - **Dashed/dimmed** = abandoned branches
 - **`→ exp <id>` badge** = a promoted experiment (click to jump to it)
 
-Click a node to inspect its label, time, cell source, diff, and note. Notes are
-editable inline.
+Click a node to inspect its label, time, cell source, **latest result**,
+diff, and note. Notes are editable inline.
+
+**Comparing branches.** Click `⇄ Compare branches` in the session header,
+then click the checkpoints/branches you want to line up — each shows a blue
+accent bar as you pick it. Hit **Compare N** to render them as side-by-side
+columns, each with its cell count, `+N −M` diff summary, promoted-experiment
+link, and captured **Result**. This is the fast way to answer "which of these
+threshold tries actually won". Toggle the button off (or **Clear**) to return
+to normal single-node inspection.
+
+**Managing trash.** The `🗑 Trash (N)` button expands the per-session trash
+panel: each trashed node has **Restore** and **Delete forever**, plus an
+**Empty trash (N)** button to purge the lot. Permanent deletes ask for
+confirmation and cannot be undone.
 
 ## What gets attached to each node
 
-A node stores three things you can use to see what was tried on that path:
+A node stores four things you can use to see what was tried on that path:
 
 - **`cell_source`** — every non-`%%scratch`, non-`%%pin`, non-`%exptrack`
   cell that runs **while this node is the active node** is appended live to
@@ -141,10 +248,38 @@ A node stores three things you can use to see what was tried on that path:
   Practically: cells run *after* `%exptrack branch "X"` show up under branch
   X immediately; cells run *after* `%exptrack checkpoint "Y"` show up under
   Y. You don't have to make a follow-up node for them to materialize.
+- **`cell_outputs`** — the **result** each of those cells produced. Both
+  `print(...)` output *and* the trailing-expression value are captured,
+  mirroring what you saw in the notebook (prints first, then the returned
+  value) — so a cell ending in a bare expression (`results`, `df.describe()`,
+  `{"acc": 0.81}`) and a cell that just `print()`s its metrics are both
+  recorded, kept aligned one-output-per-cell. This is what lets you fire off a
+  branch and *see what it produced* without promoting it to a full
+  experiment first. The dashboard shows it three ways: a one-line `⤷ result`
+  preview right on the tree node, a **Latest result** block in the node
+  detail, and an `Out` panel under each cell. Re-running the last cell
+  refreshes its captured output instead of duplicating the cell.
+
+  Output is capped at 4000 chars per cell so a chatty training loop can't
+  bloat the database; past that the blob ends in `… (output truncated)`. For
+  a full, permanent record of a cell's stdout, use `%%pin` to freeze it as an
+  artifact.
 - **`git_diff`** — `git diff` between the previous checkpoint's commit and the
   current one. Falls back to `git diff HEAD` (working-tree changes) when the
   notebook isn't being committed between checkpoints. Useful when the work
   spans `.py` files outside the notebook.
+- **plots** — any figure you `plt.savefig(...)` while the node is active is
+  recorded **by reference** (the path, not a copy). The dashboard shows the
+  plots as thumbnails in the node detail (**Plots (N)**), side-by-side in the
+  branch **Compare** view, and as a `🖼 N` count on the tree node — so you can
+  run `threshold = 0.7` / `threshold = 0.5` branches that each save a
+  train/test curve and eyeball them next to each other.
+
+  Caveat: because plots are tracked *by reference*, saving every branch to the
+  **same filename** (`roc.png`) overwrites the earlier branch's plot on disk —
+  give each branch a distinct filename (`roc_0.7.png`, `roc_0.5.png`) if you
+  want to compare them later. A plot that's since been moved or overwritten
+  shows a "⚠ image missing on disk" placeholder.
 - **`note`** — annotation you (or `%exptrack promote`) added.
 
 `%%scratch` cells and the `%exptrack ...` magics themselves are intentionally
@@ -166,6 +301,27 @@ fragmenting the tree.
 If a branch was previously closed by `%exptrack session end` (and flipped
 to *abandoned*), re-declaring it with the same label revives it back to a
 live branch. The cells you accumulated before the end are preserved.
+
+### Same label, *different* code — the auto-suffix guard
+
+Re-runs are detected by code, not just by label. If you reuse a branch label
+under the same checkpoint but the first cell you run is **different** from
+what that branch already holds (the classic "copy a branch cell, tweak the
+threshold, forget to rename" slip), exptrack assumes it's a new idea rather
+than a re-run: it forks a fresh node labelled `try 0.7 (2)`, records your new
+cells there, and prints a notice:
+
+```
+[exptrack] branch 'try 0.7' already had different code under this checkpoint —
+recording under 'try 0.7 (2)' (331d157a) instead. Rename it in the dashboard
+(double-click the node label) if you like.
+```
+
+So the two explorations stay distinct instead of silently merging. Rename the
+fork to something meaningful via the dashboard (double-click the node label),
+`exptrack session rename-node <id> "label"`, or just leave the `(2)` suffix.
+A genuine Run-All — where you replay the *same* first cell — still merges into
+the original node as before.
 
 ## Pinning results — `%%pin "label"`
 
@@ -213,6 +369,7 @@ Session Trees are cheap. Per session, you spend roughly:
 | `sessions` row (metadata) | ~120 bytes |
 | `session_nodes` row (no cells, no diff) | ~150 bytes |
 | `cell_source` per node | sum of cell source bytes between nodes (a few KB for typical exploration) |
+| `cell_outputs` per node | sum of each cell's result `repr` (usually small — a dict or number; large frames/arrays repr-truncate) |
 | `git_diff` per checkpoint | size of `git diff` output (zero if nothing's committed/changed) |
 
 A whole afternoon of exploration with ~10 checkpoints typically sits well
@@ -222,7 +379,8 @@ under 100 KB. Run `exptrack storage` to see the breakdown — there's a
 hotspots.
 
 To reclaim: `exptrack session rm <id>` deletes a whole session (linked
-experiments are preserved with their `session_node_id` cleared). There's no
+experiments are preserved with their `session_node_id` cleared), or
+`exptrack session empty-trash <id>` clears just the trashed nodes. There's no
 need for `compact` here — even an active project's session data is tiny next
 to artifacts and notebook snapshots.
 
@@ -240,8 +398,11 @@ Two new tables, one new nullable column on `experiments`:
 
 - `sessions(id, name, notebook, status, git_branch, git_commit, created_at, ended_at)`
 - `session_nodes(id, session_id, parent_id, node_type, label, note, cell_source,
-   git_diff, git_commit, seq, created_at)` — `node_type` is `'root'`,
-   `'checkpoint'`, `'branch'`, or `'abandoned'`
+   cell_outputs, images, git_diff, git_commit, seq, created_at, deleted_at)` —
+   `node_type` is `'root'`, `'checkpoint'`, `'branch'`, or `'abandoned'`;
+   `cell_outputs` mirrors `cell_source` (one result per cell); `images`
+   (nullable JSON) lists plots saved by reference while the node was active;
+   `deleted_at` (nullable) marks a node as soft-deleted (Trash)
 - `experiments.session_node_id` — nullable FK; only set by `%exptrack promote`
 
 `exptrack upgrade` is idempotent — running it on an existing project just adds

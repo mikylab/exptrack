@@ -30,6 +30,20 @@ function switchDetailTab(tab, expId) {
 
 let timelineFilter = '';
 
+// Mirror of cell_lineage.is_magic_only — true when a cell is only IPython
+// magics / shell escapes / comments / blanks (a command, not editable code).
+function _isMagicOnlyCell(src) {
+  if (!src) return false;
+  let hasMagic = false;
+  for (const line of String(src).split('\n')) {
+    const s = line.trim();
+    if (!s || s.startsWith('#')) continue;
+    if (s.startsWith('%') || s.startsWith('!')) { hasMagic = true; continue; }
+    return false;
+  }
+  return hasMagic;
+}
+
 async function loadTimeline(expId, filter) {
   if (filter !== undefined) timelineFilter = filter;
   // 'lineage' is a client-side filter — fetch all cell_exec events then filter
@@ -44,9 +58,21 @@ async function loadTimeline(expId, filter) {
   }
   const container = document.getElementById('detail-tab-timeline');
 
+  // Single source of truth for each event type's icon, plain-language label,
+  // color, and a one-line meaning (used by the filter bar, the legend, the per-event
+  // type chip, and hover tooltips) so the timeline is self-explanatory.
+  const evMeta = {
+    cell_exec:     {icon:'&#9654;', label:'Code run',      meaning:'a code cell ran',                         color:'var(--tl-cell)'},
+    var_set:       {icon:'=',       label:'Variable set',  meaning:'a tracked variable was set or changed',   color:'var(--tl-var)'},
+    artifact:      {icon:'&#8595;', label:'Output saved',  meaning:'an output file was saved',                color:'var(--tl-artifact)'},
+    metric:        {icon:'#',       label:'Metric',        meaning:'a metric value was logged',               color:'var(--tl-metric)'},
+    observational: {icon:'&#183;',  label:'Ran, no change',meaning:'a cell ran but changed no code or tracked variable', color:'var(--tl-obs)'},
+    resume:        {icon:'&#8635;', label:'Resumed',       meaning:'the experiment was resumed',              color:'var(--accent)'},
+  };
+
   let html = '<div class="tl-filters">';
   const types = ['', 'cell_exec', 'var_set', 'artifact', 'observational', 'resume', 'lineage'];
-  const labels = ['All', 'Code', 'Variables', 'Artifacts', 'Observational', 'Lineage'];
+  const labels = ['All', 'Code run', 'Variables', 'Outputs', 'Ran, no change', 'Resumed', 'Edited cells'];
   types.forEach((t, i) => {
     html += '<button class="' + (timelineFilter===t?'active':'') + '" onclick="loadTimeline(\'' + expId + '\',\'' + t + '\')">' + labels[i] + '</button>';
   });
@@ -58,6 +84,25 @@ async function loadTimeline(expId, filter) {
     return;
   }
 
+  // Legend — what each icon/label means, always one glance away.
+  const legendTypes = ['cell_exec', 'var_set', 'artifact', 'metric', 'observational'];
+  html += '<div class="tl-legend"><span class="tl-legend-title">Key:</span>';
+  for (const t of legendTypes) {
+    const m = evMeta[t];
+    html += '<span class="tl-legend-item" title="' + m.meaning + '">'
+          + '<span class="tl-legend-icon" style="color:' + m.color + '">' + m.icon + '</span>'
+          + m.label + ' <span class="tl-legend-meaning">— ' + m.meaning + '</span></span>';
+  }
+  html += '</div>';
+
+  // Badge key — what the chips on a code-run row mean. Same recipe/colors as the
+  // badges themselves so the meaning is one glance away.
+  html += '<div class="tl-legend tl-legend-badges"><span class="tl-legend-title">Badges:</span>'
+        + '<span class="tl-badge tl-badge-new" title="Brand-new code cell in this run">new</span>'
+        + '<span class="tl-badge tl-badge-edited" title="Code changed from an earlier version (click an edited badge to view it)">edited</span>'
+        + '<span class="tl-badge tl-badge-rerun" title="Ran again with no code change">rerun</span>'
+        + '</div>';
+
   html += '<p style="color:var(--muted);font-size:12px;margin-bottom:8px">' + events.length + ' events. Click "view source" on cells to see full code.</p>';
 
   const varState = {};
@@ -66,46 +111,73 @@ async function loadTimeline(expId, filter) {
   for (const ev of events) {
     const cls = 'tl-event tl-' + ev.event_type;
     const ts = fmtDt(ev.ts);
-    const icons = {cell_exec:'&gt;&gt;', var_set:'=', artifact:'&#9633;', metric:'#', observational:'..', resume:'&#8635;'};
-    const colors = {cell_exec:'var(--tl-cell)', var_set:'var(--tl-var)', artifact:'var(--tl-artifact)', metric:'var(--tl-metric)', observational:'var(--tl-obs)', resume:'var(--accent)'};
-    const typeLabels = {cell_exec:'code', var_set:'var', artifact:'artifact', metric:'metric', observational:'observe', resume:'resumed'};
-    const icon = icons[ev.event_type] || '?';
-    const iconColor = colors[ev.event_type] || 'var(--fg)';
-    const typeLabel = '<span class="tl-type-label tl-type-' + ev.event_type + '">' + (typeLabels[ev.event_type]||ev.event_type) + '</span>';
+    const meta = evMeta[ev.event_type] || {icon:'?', label:ev.event_type, meaning:'', color:'var(--fg)'};
+    const icon = meta.icon;
+    const iconColor = meta.color;
+    const typeLabel = '<span class="tl-type-label tl-type-' + ev.event_type + '" title="' + meta.meaning + '">' + meta.label + '</span>';
+    // The left number is execution order (event #N in the run), NOT a line/cell
+    // number — say so on hover and prefix with # so it reads as an index.
+    const seqHtml = '<div class="tl-seq" title="Execution order — event #' + ev.seq + ' in this run">#' + ev.seq + '</div>';
+    // Notebook cell position, when known (skips scripts / cell 0).
+    const cellNumChip = ev.cell_pos ? '<span class="tl-cellpos" title="Notebook cell position">cell ' + ev.cell_pos + '</span>' : '';
 
     if (ev.event_type === 'cell_exec' || ev.event_type === 'observational') {
       const info = ev.value || {};
       const preview = (info.source_preview || '').split('\n')[0].slice(0, 80);
+      // Magic-only cells (e.g. %exptrack checkpoint/branch) are commands, not
+      // editable code. Older runs may have a bogus fuzzy-matched parent + diff
+      // stored; suppress the edited/lineage badges and diff at render time so
+      // they read as the command they are. (New captures already skip this.)
+      const magicOnly = _isMagicOnlyCell(info.source_preview);
+      // One status chip per row. "edited" doubles as the link to the earlier
+      // version when there's a parent, so we don't need a separate lineage chip;
+      // the cell's result is shown inline below, so no "result" chip either.
       let badges = '';
-      if (info.code_is_new) badges += '<span class="tl-badge tl-badge-new">new</span>';
-      if (info.code_changed) badges += '<span class="tl-badge tl-badge-edited">edited</span>';
-      if (info.is_rerun) badges += '<span class="tl-badge tl-badge-rerun">rerun</span>';
-      if (info.has_output) badges += '<span class="tl-badge tl-badge-output">output</span>';
-      if (ev.parent_hash) badges += '<span class="tl-badge tl-badge-lineage" title="Derived from cell ' + ev.parent_hash + '" onclick="event.stopPropagation();viewCellSource(\'' + ev.parent_hash + '\',this.closest(\'.tl-body\').querySelector(\'.view-source-btn\') || this)">&#8592; ' + ev.parent_hash.slice(0,6) + '</span>';
+      if (info.code_is_new && !magicOnly) badges += '<span class="tl-badge tl-badge-new" title="Brand-new code cell in this run">new</span>';
+      else if (info.code_changed && !magicOnly) {
+        if (ev.parent_hash) badges += '<span class="tl-badge tl-badge-edited tl-badge-link" title="Code changed from an earlier version (' + ev.parent_hash.slice(0,6) + ') — click to view it" onclick="event.stopPropagation();viewCellSource(\'' + ev.parent_hash + '\',this.closest(\'.tl-body\').querySelector(\'.view-source-btn\') || this)">edited</span>';
+        else badges += '<span class="tl-badge tl-badge-edited" title="Code changed from a previous run">edited</span>';
+      }
+      else if (info.is_rerun) badges += '<span class="tl-badge tl-badge-rerun" title="Ran again with no code change">rerun</span>';
 
       // View source button - uses cell_hash to fetch from lineage
       const viewSrcBtn = ev.cell_hash ? ' <button class="view-source-btn" onclick="event.stopPropagation();viewCellSource(\'' + ev.cell_hash + '\',this)">view source</button>' : '';
 
-      html += '<div class="' + cls + '">';
-      html += '<div class="tl-seq">' + ev.seq + '</div>';
-      html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
-      html += '<div class="tl-body">';
-      html += typeLabel + '<strong>' + esc(ev.key||'') + '</strong>' + badges + viewSrcBtn;
-      html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
-      if (preview) html += '<div class="tl-code-preview">' + esc(preview) + '</div>';
-      if (info.output_preview) {
-        html += '<div style="margin-top:3px;font-size:11px;color:var(--green)">output: ' + esc(String(info.output_preview).slice(0,80)) + '</div>';
+      // Single human-readable cell label. Prefer the "cell N" position chip; fall
+      // back to the stored key reformatted ("cell_1" → "cell 1") for scripts / runs
+      // captured before cell_pos existed. The raw ev.key ("cell_1") is never shown
+      // alongside the chip — that produced the duplicate "cell 1" + "cell_1".
+      let cellLabelChip = cellNumChip;
+      if (!cellLabelChip && ev.key) {
+        cellLabelChip = '<span class="tl-cellpos" title="Cell">' + esc(String(ev.key).replace(/^cell_/, 'cell ')) + '</span>';
       }
 
-      if (ev.source_diff && ev.source_diff.length) {
-        html += '<div class="tl-diff">';
+      html += '<div class="' + cls + '">';
+      html += seqHtml;
+      html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
+      html += '<div class="tl-body">';
+      html += typeLabel + cellLabelChip + badges + viewSrcBtn;
+      html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
+      if (preview) html += '<div class="tl-code-preview">' + _highlightPy(preview) + '</div>';
+
+      if (ev.source_diff && ev.source_diff.length && !magicOnly) {
+        let summaryHtml = '', rows = [];
         for (const d of ev.source_diff.slice(0, 8)) {
-          if (d.op === 'summary') html += '<div style="color:var(--muted);font-style:italic">' + esc(d.line) + '</div>';
-          else if (d.op === '+') html += '<div class="diff-add">+ ' + esc(d.line.slice(0,80)) + '</div>';
-          else if (d.op === '-') html += '<div class="diff-del">- ' + esc(d.line.slice(0,80)) + '</div>';
+          if (d.op === 'summary') summaryHtml += '<div class="tl-diff-summary">' + esc(d.line) + '</div>';
+          else if (d.op === '+') rows.push({kind:'add', text: String(d.line).slice(0,200)});
+          else if (d.op === '-') rows.push({kind:'del', text: String(d.line).slice(0,200)});
         }
+        html += '<div class="tl-diff">' + summaryHtml + _renderDiffRows(rows);
         if (ev.source_diff.length > 8) html += '<div style="color:var(--muted)">... ' + (ev.source_diff.length - 8) + ' more lines</div>';
         html += '</div>';
+      }
+
+      // The cell's output (captured print() stdout + trailing-expression repr)
+      // renders LAST so it always sits *below* the code — including when the
+      // full source is expanded (viewCellSource inserts the source above it).
+      if (info.output_preview) {
+        html += '<div class="tl-cell-output"><div class="tl-out-label">Out</div>'
+              + '<pre class="tl-out-pre">' + esc(String(info.output_preview)) + '</pre></div>';
       }
       html += '</div></div>';
 
@@ -125,7 +197,7 @@ async function loadTimeline(expId, filter) {
         prevHtml = ' <span class="tl-var-arrow">&larr;</span> <span style="color:var(--muted);text-decoration:line-through">' + esc(cleanPrev.slice(0,40)) + '</span>';
       }
       html += '<div class="' + cls + '">';
-      html += '<div class="tl-seq">' + ev.seq + '</div>';
+      html += seqHtml;
       html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
       html += '<div class="tl-body">';
       html += typeLabel + '<strong style="color:var(--tl-var)">' + esc(ev.key) + '</strong> = ' + esc(valStr) + prevHtml;
@@ -134,7 +206,7 @@ async function loadTimeline(expId, filter) {
 
     } else if (ev.event_type === 'artifact') {
       html += '<div class="' + cls + '">';
-      html += '<div class="tl-seq">' + ev.seq + '</div>';
+      html += seqHtml;
       html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
       html += '<div class="tl-body">';
       html += typeLabel + artifactTypeBadge(String(ev.value||'')) + ' <strong>' + esc(ev.key||'') + '</strong> &rarr; ' + esc(String(ev.value||'').slice(0,60));
@@ -148,7 +220,7 @@ async function loadTimeline(expId, filter) {
 
     } else if (ev.event_type === 'metric') {
       html += '<div class="' + cls + '">';
-      html += '<div class="tl-seq">' + ev.seq + '</div>';
+      html += seqHtml;
       html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
       html += '<div class="tl-body">';
       html += typeLabel + '<strong style="color:var(--tl-metric)">' + esc(ev.key) + '</strong> = ' + ev.value;
@@ -160,11 +232,23 @@ async function loadTimeline(expId, filter) {
   container.innerHTML = html;
 }
 
+// Hide/restore the inline timeline preview (first-line + short diff) for one
+// event row. The expanded "view source" shows the full source/diff, so the short
+// preview would just duplicate it — collapse it back when the source is hidden.
+function _toggleTimelinePreview(body, hide) {
+  if (!body) return;
+  body.querySelectorAll('.tl-code-preview, .tl-diff').forEach(el => {
+    el.style.display = hide ? 'none' : '';
+  });
+}
+
 async function viewCellSource(cellHash, btnEl) {
-  // Toggle: if source is already showing, hide it
+  const body = btnEl.closest('.tl-body') || btnEl.parentElement;
+  // Toggle: if source is already showing, hide it (and restore the inline preview)
   const existing = btnEl.parentElement.querySelector('.source-view');
   if (existing) {
     existing.remove();
+    _toggleTimelinePreview(body, false);
     btnEl.textContent = 'view source';
     return;
   }
@@ -180,23 +264,42 @@ async function viewCellSource(cellHash, btnEl) {
     btnEl.parentElement.appendChild(div);
     return;
   }
-  let html = '<div class="source-view">';
-  // Show current source with line numbers
-  html += '<div style="margin-bottom:8px;color:var(--blue);font-size:11px;text-transform:uppercase">Current cell source (hash: ' + cellHash + ')</div>';
-  const lines = data.source.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    html += '<span class="line-num">' + (i+1) + '</span>' + esc(lines[i]) + '\n';
-  }
-  // If there's a parent, show it too
-  if (data.parent_source) {
-    html += '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px;color:var(--muted);font-size:11px;text-transform:uppercase">Previous version (hash: ' + data.parent_hash + ')</div>';
-    const plines = data.parent_source.split('\n');
-    for (let i = 0; i < plines.length; i++) {
-      html += '<span class="line-num">' + (i+1) + '</span><span style="color:var(--muted)">' + esc(plines[i]) + '</span>\n';
+  // When there's a parent (an edited cell), render current-vs-previous as a real
+  // diff so the changed words are spotlighted (the same word-level highlighting as
+  // the timeline preview, honoring the Settings toggle) — unchanged lines stay as
+  // context so the full source is still visible. No parent ⇒ plain highlighted source.
+  const diffRows = data.parent_source ? _lineDiffRows(data.parent_source, data.source) : null;
+  let html;
+  if (diffRows) {
+    html = '<div class="source-view diff-view">'
+      + '<div style="margin-bottom:8px;color:var(--blue);font-size:11px;text-transform:uppercase">Changes from previous version (hash: ' + cellHash + ' ← ' + data.parent_hash + ')</div>'
+      + _renderDiffRows(diffRows, true)
+      + '</div>';
+  } else {
+    html = '<div class="source-view">';
+    html += '<div style="margin-bottom:8px;color:var(--blue);font-size:11px;text-transform:uppercase">Current cell source (hash: ' + cellHash + ')</div>';
+    const lines = data.source.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      html += '<span class="line-num">' + (i+1) + '</span>' + _highlightPy(lines[i]) + '\n';
     }
+    // Parent present but too large to diff — fall back to showing it dimmed.
+    if (data.parent_source) {
+      html += '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px;color:var(--muted);font-size:11px;text-transform:uppercase">Previous version (hash: ' + data.parent_hash + ')</div>';
+      const plines = data.parent_source.split('\n');
+      html += '<span style="opacity:0.55">';
+      for (let i = 0; i < plines.length; i++) {
+        html += '<span class="line-num">' + (i+1) + '</span>' + _highlightPy(plines[i]) + '\n';
+      }
+      html += '</span>';
+    }
+    html += '</div>';
   }
-  html += '</div>';
-  btnEl.parentElement.insertAdjacentHTML('beforeend', html);
+  // Keep the cell's "Out" panel at the very bottom: insert the expanded source
+  // *before* it when present, so the result never floats above the code.
+  const outEl = btnEl.parentElement.querySelector('.tl-cell-output');
+  if (outEl) outEl.insertAdjacentHTML('beforebegin', html);
+  else btnEl.parentElement.insertAdjacentHTML('beforeend', html);
+  _toggleTimelinePreview(body, true);
 }
 
 // ── Image gallery ────────────────────────────────────────────────────────────

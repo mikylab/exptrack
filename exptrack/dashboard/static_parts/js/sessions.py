@@ -10,6 +10,8 @@ let _activeSessionId = null;
 let _selectedNodeId = null;
 let _treeCache = {};  // sessionId -> last-fetched tree (avoid re-fetch per click)
 let _lastSessionsLoad = 0;
+let _compareMode = false;          // when on, clicking nodes toggles compare set
+let _compareNodes = [];            // ordered list of node ids chosen to compare
 
 function toggleSessionsTab() {
   // If already active, refresh instead of closing — closing is rarely what the
@@ -91,22 +93,26 @@ function renderSessionsList() {
   const html = _sessionsCache.map(s => {
     const cls = (s.id === _activeSessionId) ? 'session-card active' : 'session-card';
     const status = s.status || 'active';
-    const ts = s.created_at ? new Date(s.created_at * 1000).toLocaleString() : '';
+    const rel = s.created_at ? fmtTimeAgo(s.created_at * 1000) : '';
+    const cps = s.checkpoints || 0;
+    const promoted = s.promoted || 0;
+    const promotedStr = promoted ? ` · ${promoted} exp` : '';
     return `<div class="${cls}" onclick="selectSession('${s.id}')">
       <div class="session-card-header">
         <div class="name">${escapeHtml(s.name || '(unnamed)')}</div>
+        <span class="pill pill-${status}">${status}</span>
         <button class="session-delete-btn" title="Delete session"
           onclick="event.stopPropagation();deleteSession('${s.id}','${escapeHtml(s.name||'')}')">&times;</button>
       </div>
-      <div class="meta">
-        <span class="badge ${status}">${status}</span>
-        ${s.checkpoints || 0} checkpoint${(s.checkpoints||0)===1?'':'s'} · ${s.promoted || 0} exp
+      <div class="session-card-sub">
+        <span class="sc-notebook" title="${escapeHtml(s.notebook || '')}">${escapeHtml(s.notebook || '(no notebook)')}</span>
+        <span class="sc-meta-tail">${cps} checkpoint${cps===1?'':'s'}${promotedStr}${rel ? ' · ' + rel : ''}</span>
       </div>
-      <div class="meta">${escapeHtml(s.notebook || '')} ${ts ? '· ' + ts : ''}</div>
     </div>`;
   }).join('');
   root.innerHTML = html;
 }
+
 
 async function deleteSession(id, name) {
   if (!confirm(`Delete session "${name || id}"?\n\nLinked experiments are preserved (their session_node_id is cleared).`)) return;
@@ -127,6 +133,10 @@ async function deleteSession(id, name) {
 function selectSession(id) {
   _activeSessionId = id;
   _selectedNodeId = null;
+  // Reset compare selection — node ids don't carry across sessions.
+  _compareMode = false;
+  _compareNodes = [];
+  document.body.classList.remove('session-compare-mode');
   renderSessionsList();
   renderSessionTree(id);
 }
@@ -145,7 +155,7 @@ async function renderSessionTree(sid) {
   const s = data.session || {};
   const root = data.root || null;
   const headerHtml = `
-    <div style="margin-bottom:12px">
+    <div class="session-view-header" style="margin-bottom:12px">
       <h2 style="margin:0 0 4px 0">${escapeHtml(s.name || '')}</h2>
       <div style="color:var(--muted);font-size:12px">
         ${escapeHtml(s.notebook || '(no notebook)')}
@@ -153,11 +163,142 @@ async function renderSessionTree(sid) {
         ${s.git_commit ? '· ' + escapeHtml(s.git_commit) : ''}
         ${s.status ? '· ' + escapeHtml(s.status) : ''}
       </div>
+      <div class="session-view-actions">
+        <button class="session-compare-toggle" id="session-compare-toggle" onclick="toggleCompareMode()">
+          ⇄ Compare branches
+        </button>
+        <button class="session-trash-toggle" onclick="toggleSessionTrash()">
+          🗑 Trash<span id="session-trash-count"></span>
+        </button>
+      </div>
     </div>`;
   const treeHtml = root ? renderTreeNode(root, true) : '<div style="color:var(--muted)">(empty tree)</div>';
   view.innerHTML = headerHtml +
+    '<div id="session-trash-panel" style="display:none"></div>' +
+    '<div id="session-compare-bar" style="display:none"></div>' +
     '<div id="session-tree-container">' + treeHtml + '</div>' +
+    '<div id="session-compare" style="display:none"></div>' +
     '<div id="session-detail"></div>';
+  document.body.classList.toggle('session-compare-mode', _compareMode);
+  // Refresh the count chip in the background — doesn't block tree render.
+  _refreshTrashCount();
+}
+
+async function _refreshTrashCount() {
+  if (!_activeSessionId) return;
+  const data = await api('/api/session/' + _activeSessionId + '/trash');
+  const n = (data && data.nodes && data.nodes.length) || 0;
+  const chip = document.getElementById('session-trash-count');
+  if (chip) chip.textContent = n ? ' (' + n + ')' : '';
+}
+
+async function toggleSessionTrash() {
+  const panel = document.getElementById('session-trash-panel');
+  if (!panel || !_activeSessionId) return;
+  if (panel.style.display !== 'none') {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+  renderTrashPanel();
+}
+
+// Fetch + render the trash panel in place (no toggle side effects), so
+// mutations like purge/empty can refresh the list directly.
+async function renderTrashPanel() {
+  const panel = document.getElementById('session-trash-panel');
+  if (!panel || !_activeSessionId) return;
+  panel.innerHTML = '<div style="color:var(--muted);padding:8px">Loading trash…</div>';
+  const data = await api('/api/session/' + _activeSessionId + '/trash');
+  const nodes = (data && data.nodes) || [];
+  if (!nodes.length) {
+    panel.innerHTML = `<div class="session-trash-empty">
+      Trash is empty for this session.
+    </div>`;
+    return;
+  }
+  const rows = nodes.map(n => {
+    const rel = n.deleted_at ? fmtTimeAgo(n.deleted_at * 1000) : '';
+    const cellBytes = n.cell_bytes || 0;
+    const sizeBits = cellBytes ? ` · ${cellBytes} B of cells` : '';
+    return `<div class="trash-row" data-trash-id="${escapeHtml(n.id)}">
+      <div class="trash-row-main">
+        <span class="trash-type trash-type-${escapeHtml(n.node_type)}">${escapeHtml(n.node_type)}</span>
+        <span class="trash-label">${escapeHtml(n.label || '(unlabeled)')}</span>
+      </div>
+      <div class="trash-row-meta">
+        deleted ${escapeHtml(rel)}${sizeBits}
+      </div>
+      <div class="trash-row-actions">
+        <button class="trash-restore-btn" onclick="restoreNode('${n.id}')">Restore</button>
+        <button class="trash-purge-btn" onclick="purgeNode('${n.id}','${escapeHtml(n.label||'')}')">Delete forever</button>
+      </div>
+    </div>`;
+  }).join('');
+  panel.innerHTML = `
+    <div class="session-trash-head">
+      <span class="section-title">Session trash</span>
+      <button class="trash-empty-btn" onclick="emptySessionTrash()">Empty trash (${nodes.length})</button>
+      <span class="trash-help">Restore brings the node and its trashed subtree back. <b>Delete forever</b> / Empty trash permanently removes nodes — no undo. Linked experiments are preserved either way.</span>
+    </div>
+    <div class="trash-rows">${rows}</div>`;
+}
+
+async function purgeNode(nodeId, label) {
+  if (!_activeSessionId) return;
+  if (!confirm(`Permanently delete "${label || nodeId}" and its trashed subtree?\n\nThis cannot be undone. Linked experiments are preserved; any attached plot files are moved to your OS Trash.`)) return;
+  const r = await postApi('/api/session/' + _activeSessionId + '/purge-node', {node_id: nodeId});
+  if (!r || r.error) {
+    alert('Could not delete node: ' + ((r && r.error) || 'unknown error'));
+    return;
+  }
+  _reportTrashedImages(r.images);
+  _refreshTrashCount();
+  renderTrashPanel();
+}
+
+// Surface how many by-reference plot files were moved to the OS Trash.
+function _reportTrashedImages(images) {
+  if (!images) return;
+  const moved = (images.os_trash || 0) + (images.local_trash || 0);
+  const failed = images.failed || 0;
+  if (moved) {
+    alert(`Moved ${moved} attached plot file${moved === 1 ? '' : 's'} to your OS Trash` +
+      (failed ? ` (${failed} could not be removed and were left in place).` : '.'));
+  } else if (failed) {
+    alert(`${failed} attached plot file${failed === 1 ? '' : 's'} could not be removed and were left in place.`);
+  }
+}
+
+async function emptySessionTrash() {
+  if (!_activeSessionId) return;
+  if (!confirm('Permanently delete EVERY node in the session trash?\n\nThis cannot be undone. Linked experiments are preserved; any attached plot files are moved to your OS Trash.')) return;
+  const r = await postApi('/api/session/' + _activeSessionId + '/empty-trash', {});
+  if (!r || r.error) {
+    alert('Could not empty trash: ' + ((r && r.error) || 'unknown error'));
+    return;
+  }
+  _reportTrashedImages(r.images);
+  _refreshTrashCount();
+  const panel = document.getElementById('session-trash-panel');
+  if (panel) panel.innerHTML = `<div class="session-trash-empty">Trash is empty for this session.</div>`;
+}
+
+async function restoreNode(nodeId) {
+  if (!_activeSessionId) return;
+  const r = await postApi('/api/session/' + _activeSessionId + '/restore-node',
+    {node_id: nodeId});
+  if (!r || r.error) {
+    alert('Could not restore node: ' + ((r && r.error) || 'unknown error'));
+    return;
+  }
+  delete _treeCache[_activeSessionId];
+  // Re-render tree + reload trash panel + refresh card counts.
+  renderSessionTree(_activeSessionId);
+  loadSessionsList();
+  // The tree render replaces the panel container; reopen it so the user
+  // sees the row vanish from the trash list.
+  setTimeout(() => toggleSessionTrash(), 0);
 }
 
 function renderTreeNode(node, isRoot) {
@@ -167,23 +308,53 @@ function renderTreeNode(node, isRoot) {
   const diffSummary = summarizeDiff(node.git_diff);
   const cellCount = node.cell_source
     ? node.cell_source.split(/\n\n# ── cell ──\n\n/).length : 0;
-  const cellsBadge = cellCount
-    ? `<span class="node-diff">${cellCount} cell${cellCount===1?'':'s'}</span>` : '';
   const expBadge = node.exp_id
-    ? `<a class="node-exp-badge" href="#" onclick="event.stopPropagation();showDetail('${node.exp_id}');return false">exp ${escapeHtml(node.exp_id.slice(0,8))}</a>`
+    ? `<a class="node-exp-badge" href="#" onclick="event.stopPropagation();showDetail('${node.exp_id}');return false">→ exp ${escapeHtml(node.exp_id.slice(0,8))}</a>`
     : '';
-  const note = node.note ? `<span class="node-note-mini">${escapeHtml(truncate(node.note, 60))}</span>` : '';
+  const abandonedPill = t === 'abandoned'
+    ? '<span class="pill pill-abandoned">abandoned</span>' : '';
+  const note = node.note ? `<div class="node-note-mini">${escapeHtml(truncate(node.note, 120))}</div>` : '';
+  const _latest = _getLatestOutput(node);
+  const resultMini = _latest
+    ? `<div class="node-result-mini" title="${escapeHtml(_latest)}">⤷ ${escapeHtml(truncate(_latest.replace(/\s+/g, ' '), 100))}</div>`
+    : '';
   const childrenHtml = (node.children || []).map(ch => renderTreeNode(ch, false)).join('');
-  const labelText = isRoot ? ('session start: ' + (node.label || '')) : (node.label || '');
-  return `<div class="${cls}">
+  const labelText = isRoot ? ('session start: ' + (node.label || '')) : (node.label || '(unlabeled)');
+  const imgCount = _validImages(node).length;
+  const metaBits = [];
+  if (time) metaBits.push(`<span class="nm-time">${time}</span>`);
+  if (cellCount) metaBits.push(`<span class="nm-cells">${cellCount} cell${cellCount===1?'':'s'}</span>`);
+  if (imgCount) metaBits.push(`<span class="nm-imgs" title="${imgCount} plot${imgCount===1?'':'s'}">🖼 ${imgCount}</span>`);
+  if (diffSummary) metaBits.push(`<span class="nm-diff">${diffSummary}</span>`);
+  const metaLine = metaBits.length
+    ? `<div class="node-meta">${metaBits.join('<span class="nm-sep">·</span>')}</div>` : '';
+  const isEmpty = !cellCount && !(node.children && node.children.length)
+    && (t === 'branch' || t === 'checkpoint');
+  const awaitingLine = isEmpty
+    ? '<div class="node-awaiting">awaiting first cell…</div>' : '';
+  // While comparing, suppress the single-select highlight so it can't be
+  // mistaken for a pick — the only blue accent in compare mode is a pick.
+  const pickIdx = _compareNodes.indexOf(node.id);
+  const selectedCls = (!_compareMode && node.id === _selectedNodeId ? ' selected' : '')
+    + (pickIdx >= 0 ? ' compare-picked' : '');
+  const pickBadge = pickIdx >= 0
+    ? `<span class="compare-pick-num">${pickIdx + 1}</span>` : '';
+  const deleteBtn = isRoot ? '' :
+    `<button class="node-delete-btn" title="Delete this node and all descendants"
+       onclick="event.stopPropagation();confirmDeleteNode('${node.id}')">&times;</button>`;
+  return `<div class="${cls}" data-node-id="${escapeHtml(node.id)}">
     ${isRoot ? '' : '<span class="node-marker"></span>'}
-    <div class="node-row" onclick="selectNode('${node.id}')">
-      <span class="node-type">${escapeHtml(t)}</span>
-      <span class="node-label">${escapeHtml(labelText)}</span>
-      ${time ? `<span class="node-time">${time}</span>` : ''}
-      ${diffSummary ? `<span class="node-diff">${diffSummary}</span>` : ''}
-      ${cellsBadge}
-      ${expBadge}
+    <div class="node-row${selectedCls}" data-node-id="${escapeHtml(node.id)}" onclick="selectNode('${node.id}')">
+      <div class="node-row-main">
+        ${pickBadge}
+        <span class="node-label">${escapeHtml(labelText)}</span>
+        ${abandonedPill}
+        ${expBadge}
+        ${deleteBtn}
+      </div>
+      ${metaLine}
+      ${awaitingLine}
+      ${resultMini}
       ${note}
     </div>
     ${childrenHtml}
@@ -208,17 +379,114 @@ function truncate(s, n) {
 }
 
 function selectNode(nodeId) {
+  if (_compareMode) { toggleCompareNode(nodeId); return; }
   _selectedNodeId = nodeId;
-  // Find node in cached tree
   const view = document.getElementById('session-tree-view');
   if (!view || !_activeSessionId) return;
   document.querySelectorAll('.node-row.selected').forEach(el => el.classList.remove('selected'));
-  document.querySelectorAll('.node-row').forEach(el => {
-    if (el.getAttribute('onclick') && el.getAttribute('onclick').indexOf(nodeId) !== -1) {
-      el.classList.add('selected');
-    }
-  });
+  const target = view.querySelector('.node-row[data-node-id="' + CSS.escape(nodeId) + '"]');
+  if (target) target.classList.add('selected');
   renderSelectedNodeDetail(nodeId);
+}
+
+// ── Branch comparison ──────────────────────────────────────────────────────
+
+// Re-render the tree from the cached data so picked/selected marks and the
+// pick-order badges all reflect current state in one pass (removing a middle
+// pick renumbers the rest, which a per-row class toggle can't do).
+function _rerenderTreeContainer() {
+  const data = _treeCache[_activeSessionId];
+  const container = document.getElementById('session-tree-container');
+  if (container && data && data.root) {
+    container.innerHTML = renderTreeNode(data.root, true);
+  }
+}
+
+function toggleCompareMode() {
+  _compareMode = !_compareMode;
+  _compareNodes = [];
+  const btn = document.getElementById('session-compare-toggle');
+  if (btn) btn.classList.toggle('active', _compareMode);
+  document.body.classList.toggle('session-compare-mode', _compareMode);
+  // Hide single-node detail while comparing; re-render so the prior selection
+  // accent and any pick marks reset together.
+  const detail = document.getElementById('session-detail');
+  if (detail) detail.classList.remove('visible');
+  _rerenderTreeContainer();
+  _renderCompareBar();
+  const panel = document.getElementById('session-compare');
+  if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+}
+
+function toggleCompareNode(nodeId) {
+  const i = _compareNodes.indexOf(nodeId);
+  if (i >= 0) _compareNodes.splice(i, 1);
+  else _compareNodes.push(nodeId);
+  _rerenderTreeContainer();  // renumber badges across all rows
+  _renderCompareBar();
+}
+
+function _renderCompareBar() {
+  const bar = document.getElementById('session-compare-bar');
+  if (!bar) return;
+  if (!_compareMode) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  bar.style.display = 'flex';
+  const n = _compareNodes.length;
+  bar.innerHTML = `
+    <span class="compare-bar-hint">${n
+      ? n + ' node' + (n === 1 ? '' : 's') + ' selected — pick checkpoints/branches to compare'
+      : 'Click nodes to add them to the comparison'}</span>
+    <span class="compare-bar-actions">
+      <button onclick="runCompare()" ${n < 2 ? 'disabled' : ''}>Compare ${n || ''}</button>
+      <button class="ghost" onclick="clearCompare()" ${n ? '' : 'disabled'}>Clear</button>
+    </span>`;
+}
+
+function clearCompare() {
+  _compareNodes = [];
+  _rerenderTreeContainer();
+  _renderCompareBar();
+  const panel = document.getElementById('session-compare');
+  if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+}
+
+function runCompare() {
+  const data = _treeCache[_activeSessionId];
+  if (!data || _compareNodes.length < 2) return;
+  const nodes = _compareNodes
+    .map(id => findNodeInTree(data.root, id))
+    .filter(Boolean);
+  const panel = document.getElementById('session-compare');
+  if (!panel) return;
+  const cols = nodes.map(node => {
+    const latest = _getLatestOutput(node);
+    const cellCount = node.cell_source ? node.cell_source.split(_CELL_SEP_RE).length : 0;
+    const diff = summarizeDiff(node.git_diff);
+    const expBadge = node.exp_id
+      ? `<a href="#" onclick="showDetail('${node.exp_id}');return false">→ exp ${escapeHtml(node.exp_id.slice(0,8))}</a>`
+      : '<span class="cmp-noexp">not promoted</span>';
+    const ci = _imgThumbs(node);
+    const imgRow = ci.count
+      ? `<div class="cmp-result-label">Plots</div>${ci.html}` : '';
+    return `<div class="cmp-col">
+      <div class="cmp-col-head">
+        <span class="cmp-type cmp-type-${escapeHtml(node.node_type)}">${escapeHtml(node.node_type)}</span>
+        <span class="cmp-label">${escapeHtml(node.label || '(unlabeled)')}</span>
+      </div>
+      <div class="cmp-meta">${cellCount} cell${cellCount===1?'':'s'}${diff ? ' · ' + diff : ''} · ${expBadge}</div>
+      <div class="cmp-result-label">Result</div>
+      <pre class="cmp-result">${latest ? escapeHtml(latest) : '<span class="cmp-empty">(no captured output)</span>'}</pre>
+      ${imgRow}
+    </div>`;
+  }).join('');
+  panel.innerHTML = `
+    <div class="cmp-head">
+      <span class="section-title">Comparing ${nodes.length} nodes</span>
+      <button class="ghost" onclick="clearCompare()">Close</button>
+    </div>
+    <div class="cmp-grid" style="grid-template-columns:repeat(${nodes.length}, minmax(220px, 1fr))">${cols}</div>`;
+  panel.style.display = 'block';
+  panel.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 }
 
 async function renderSelectedNodeDetail(nodeId) {
@@ -237,39 +505,136 @@ async function renderSelectedNodeDetail(nodeId) {
     ? `<div><span class="section-title">Promoted experiment</span>
         <a href="#" onclick="showDetail('${node.exp_id}');return false">${escapeHtml(node.exp_id)}</a></div>`
     : '';
+  const latest = _getLatestOutput(node);
+  const resultBlock = latest
+    ? `<div><span class="section-title">Latest result</span>
+        <pre class="node-latest-result">${escapeHtml(latest)}</pre></div>`
+    : '';
+  const _imgs = _imgThumbs(node);
+  const imgBlock = _imgs.count
+    ? `<div><span class="section-title">Plots (${_imgs.count})</span>${_imgs.html}</div>`
+    : '';
+  const renameable = node.node_type !== 'root';
+  const labelHtml = renameable
+    ? `<span class="node-label-text" id="node-label-text" title="Double-click to rename"
+         ondblclick="startNodeRename('${node.id}')">${escapeHtml(node.label || '')}</span>`
+    : escapeHtml(node.label || '');
   detail.innerHTML = `
-    <div><span class="section-title">${escapeHtml(node.node_type || '')}: ${escapeHtml(node.label || '')}</span></div>
+    <div><span class="section-title">${escapeHtml(node.node_type || '')}: ${labelHtml}</span></div>
     ${expLink}
+    ${resultBlock}
+    ${imgBlock}
     <div><span class="section-title">Note</span>
       <textarea class="note-edit" id="node-note-input" placeholder="(no note)">${escapeHtml(noteVal)}</textarea>
-      <button onclick="saveNodeNote('${node.id}')">Save note</button>
+      <div class="note-actions">
+        <button id="node-note-save" onclick="saveNodeNote('${node.id}')" disabled>Save note</button>
+        <span class="note-save-status" id="node-note-status"></span>
+      </div>
     </div>
     ${renderNodeCells(node)}
     ${renderDiffSection(node.git_diff, _diffTitleForNode(node))}
   `;
+  const ta = document.getElementById('node-note-input');
+  const btn = document.getElementById('node-note-save');
+  if (ta && btn) {
+    const orig = ta.value;
+    ta.addEventListener('input', () => {
+      btn.disabled = (ta.value === orig);
+      const s = document.getElementById('node-note-status');
+      if (s) s.textContent = '';
+    });
+  }
 }
+
+const _CELL_SEP_RE = /\n\n# ── cell ──\n\n/;
+
+// Split the SEP-joined outputs blob into a list aligned 1:1 with cells.
+function _nodeOutputs(node) {
+  if (!node.cell_outputs) return [];
+  return node.cell_outputs.split(_CELL_SEP_RE);
+}
+
+// The most recent non-empty cell output for a node, or '' if none.
+function _getLatestOutput(node) {
+  const outs = _nodeOutputs(node).map(o => (o || '').trim()).filter(Boolean);
+  return outs.length ? outs[outs.length - 1] : '';
+}
+
+// Images attached to a node that can actually be served (have a url).
+function _validImages(node) {
+  return (node.images || []).filter(im => im && im.url);
+}
+
+// Render a node's attached plots (captured by reference from savefig) as a
+// thumbnail grid. Returns {count, html}; count excludes images outside the
+// project root (can't be served). Missing-on-disk images degrade to a caption.
+function _imgThumbs(node) {
+  const all = node.images || [];
+  const imgs = _validImages(node);
+  if (!imgs.length) return {count: 0, html: ''};
+  const thumbs = imgs.map(im => {
+    const src = fileUrl(im.url);
+    const cap = im.label || im.url.split('/').pop();
+    return `<figure class="node-img">
+      <a href="${src}" target="_blank" rel="noopener" title="${escapeHtml(im.path || im.url)}">
+        <img src="${src}" alt="${escapeHtml(cap)}" loading="lazy"
+          onerror="this.closest('.node-img').classList.add('img-missing')">
+      </a>
+      <figcaption>${escapeHtml(truncate(cap, 40))}</figcaption>
+    </figure>`;
+  }).join('');
+  const missing = all.length - imgs.length;
+  const note = missing
+    ? `<div class="node-img-note">${missing} plot file${missing === 1 ? '' : 's'} outside the project root (not shown)</div>`
+    : '';
+  return {count: imgs.length, html: `<div class="node-img-grid">${thumbs}</div>${note}`};
+}
+
+// Python syntax highlighting (_highlightPy) + word-level diff helpers now live
+// in the shared js/highlight.py module — used here and by the experiment view.
 
 function renderNodeCells(node) {
   if (!node.cell_source) return '';
-  const cells = node.cell_source.split(/\n\n# ── cell ──\n\n/);
+  const cells = node.cell_source.split(_CELL_SEP_RE);
+  const outputs = _nodeOutputs(node);
+  const collapseThreshold = 3;
+  const hiddenCount = cells.length > collapseThreshold ? cells.length - collapseThreshold : 0;
   const blocks = cells.map((c, i) => {
     const srcLines = c.split('\n');
-    const open = !(cells.length > 3 && i < cells.length - 3);
+    const open = !(cells.length > collapseThreshold && i < cells.length - collapseThreshold);
     const numbered = srcLines.map((ln, k) =>
-      `<span class="ln">${k + 1}</span>${escapeHtml(ln)}`
-    ).join('\n');
+      `<span class="cl"><span class="ln">${k + 1}</span>${_highlightPy(ln)}</span>`
+    ).join('');
+    const out = (outputs[i] || '').trim();
+    const outHtml = out
+      ? `<div class="cell-output-label">Out</div><pre class="cell-output">${escapeHtml(out)}</pre>`
+      : '';
     return `<details class="cell-block"${open ? ' open' : ''}>
       <summary>
         <span class="cell-idx">cell ${i + 1}${cells.length > 1 ? ' / ' + cells.length : ''}</span>
-        <span class="cell-meta">${srcLines.length} line${srcLines.length === 1 ? '' : 's'}</span>
+        <span class="cell-meta">${srcLines.length} line${srcLines.length === 1 ? '' : 's'}${out ? ' · has output' : ''}</span>
       </summary>
       <pre class="cell-code">${numbered}</pre>
+      ${outHtml}
     </details>`;
   }).join('');
+  const collapseHint = hiddenCount
+    ? `<div class="cells-collapsed-hint" onclick="_expandAllCells(this)">
+         <span class="cch-chevron">▸</span>
+         ${hiddenCount} earlier cell${hiddenCount === 1 ? '' : 's'} collapsed — expand all
+       </div>`
+    : '';
   const heading = cells.length > 1
     ? `Cells run since previous node (${cells.length})`
     : 'Cell run since previous node';
-  return `<div><span class="section-title">${heading}</span>${blocks}</div>`;
+  return `<div><span class="section-title">${heading}</span>${collapseHint}${blocks}</div>`;
+}
+
+function _expandAllCells(el) {
+  const parent = el.parentNode;
+  if (!parent) return;
+  parent.querySelectorAll('details.cell-block').forEach(d => { d.open = true; });
+  el.remove();
 }
 
 function _diffTitleForNode(node) {
@@ -436,11 +801,130 @@ function findNodeInTree(root, id) {
 async function saveNodeNote(nodeId) {
   const ta = document.getElementById('node-note-input');
   if (!ta || !_activeSessionId) return;
+  const btn = document.getElementById('node-note-save');
+  const status = document.getElementById('node-note-status');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = 'Saving…';
   const r = await postApi('/api/session/' + _activeSessionId + '/note-node',
     {node_id: nodeId, text: ta.value});
   if (r && r.ok) {
     delete _treeCache[_activeSessionId];
+    if (status) {
+      const t = new Date().toTimeString().slice(0, 5);
+      status.textContent = 'Saved · ' + t;
+      status.classList.add('ok');
+    }
+    // Refresh the tree silently — but keep the detail open with the new value.
+    const data = await api('/api/session/' + _activeSessionId);
+    if (data && !data.error) {
+      _treeCache[_activeSessionId] = data;
+      // Re-render just the tree, not the detail (preserves saved indicator).
+      const container = document.getElementById('session-tree-container');
+      if (container && data.root) {
+        container.innerHTML = renderTreeNode(data.root, true);
+      }
+    }
+  } else {
+    if (status) {
+      status.textContent = 'Error: ' + ((r && r.error) || 'save failed');
+      status.classList.remove('ok');
+      status.classList.add('err');
+    }
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Inline-rename a node label from the detail header (double-click). Mirrors
+// the experiment inline-edit pattern: Enter/blur saves, Escape cancels.
+function startNodeRename(nodeId) {
+  const span = document.getElementById('node-label-text');
+  if (!span) return;
+  const cur = span.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = cur;
+  input.className = 'node-label-input';
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const val = input.value.trim();
+    if (!save || !val || val === cur) { renderSelectedNodeDetail(nodeId); return; }
+    const r = await postApi('/api/session/' + _activeSessionId + '/rename-node',
+      {node_id: nodeId, label: val});
+    if (!r || r.error) {
+      alert('Could not rename node: ' + ((r && r.error) || 'unknown error'));
+      renderSelectedNodeDetail(nodeId);
+      return;
+    }
+    // Refresh the cached tree so both the tree and detail show the new label.
+    delete _treeCache[_activeSessionId];
+    const data = await api('/api/session/' + _activeSessionId);
+    if (data && !data.error) _treeCache[_activeSessionId] = data;
+    _rerenderTreeContainer();
+    renderSelectedNodeDetail(nodeId);
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+async function confirmDeleteNode(nodeId) {
+  if (!_activeSessionId) return;
+  const preview = await postApi('/api/session/' + _activeSessionId + '/delete-node-preview',
+    {node_id: nodeId});
+  if (!preview || preview.error) {
+    alert('Could not preview delete: ' + ((preview && preview.error) || 'unknown error'));
+    return;
+  }
+  if (preview.is_root) {
+    alert('Cannot delete the session root — use the session delete button instead.');
+    return;
+  }
+  const label = preview.label || '(unlabeled)';
+  const nodes = preview.nodes || 0;
+  const desc = preview.descendants || 0;
+  const exps = preview.experiments || 0;
+  const lines = [];
+  lines.push(`Delete ${preview.node_type} "${label}"?`);
+  lines.push('');
+  if (desc > 0) {
+    lines.push(`This will also remove ${desc} descendant node${desc === 1 ? '' : 's'} ` +
+               `(${nodes} total).`);
+  } else {
+    lines.push('This node has no descendants.');
+  }
+  if (exps > 0) {
+    lines.push(`${exps} linked experiment${exps === 1 ? '' : 's'} will be preserved ` +
+               '(their session_node_id is cleared).');
+  }
+  const imgs = preview.images || 0;
+  if (imgs > 0) {
+    lines.push(`${imgs} attached plot file${imgs === 1 ? '' : 's'} stay on disk for now — ` +
+               'they move to your OS Trash only if you later permanently delete (purge) the node.');
+  }
+  lines.push('');
+  lines.push('Moves the node(s) to this session\'s Trash — restore from the Trash panel.');
+  if (!confirm(lines.join('\n'))) return;
+  const r = await postApi('/api/session/' + _activeSessionId + '/delete-node',
+    {node_id: nodeId});
+  if (r && r.ok) {
+    if (_selectedNodeId === nodeId) {
+      _selectedNodeId = null;
+      const detail = document.getElementById('session-detail');
+      if (detail) { detail.innerHTML = ''; detail.classList.remove('visible'); }
+    }
+    delete _treeCache[_activeSessionId];
     renderSessionTree(_activeSessionId);
+    // Refresh session card counts (checkpoint/exp totals).
+    loadSessionsList();
+  } else {
+    alert('Could not delete node: ' + ((r && r.error) || 'unknown error'));
   }
 }
 

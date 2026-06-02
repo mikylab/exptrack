@@ -171,6 +171,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/session/") and path.endswith("/nodes"):
             sid = path.split("/")[3]
             self._json(read_routes.api_session_nodes(conn, sid))
+        elif path.startswith("/api/session/") and path.endswith("/trash"):
+            sid = path.split("/")[3]
+            self._json(read_routes.api_session_trash(conn, sid))
         elif path.startswith("/api/session/"):
             sid = path.split("/")[-1]
             self._json(read_routes.api_session_tree(conn, sid))
@@ -249,9 +252,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 sid = parts[-2]
                 action = parts[-1]
                 sess_dispatch = {
-                    "note-node": lambda: write_routes.api_session_note_node(conn, sid, body),
-                    "end":       lambda: write_routes.api_session_end(conn, sid, body),
-                    "delete":    lambda: write_routes.api_session_delete(conn, sid, body),
+                    "note-node":            lambda: write_routes.api_session_note_node(conn, sid, body),
+                    "rename-node":          lambda: write_routes.api_session_rename_node(conn, sid, body),
+                    "end":                  lambda: write_routes.api_session_end(conn, sid, body),
+                    "delete":               lambda: write_routes.api_session_delete(conn, sid, body),
+                    "delete-node":          lambda: write_routes.api_session_delete_node(conn, sid, body),
+                    "delete-node-preview":  lambda: write_routes.api_session_preview_delete_node(conn, sid, body),
+                    "restore-node":         lambda: write_routes.api_session_restore_node(conn, sid, body),
+                    "purge-node":           lambda: write_routes.api_session_purge_node(conn, sid, body),
+                    "empty-trash":          lambda: write_routes.api_session_empty_trash(conn, sid, body),
                 }
                 handler = sess_dispatch.get(action)
                 if handler:

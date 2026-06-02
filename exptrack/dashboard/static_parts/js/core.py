@@ -447,10 +447,21 @@ async function saveOrDownload(text, filename, mime) {
 function setExportToFolder(checked) {
   _storageSet('exptrack-export-to-folder', checked ? 'true' : 'false');
 }
-// Sync settings checkbox to persisted state on first paint.
+
+// Word-level diff spotlighting (default on). Persisted so the renderer
+// (_wordDiffEnabled in highlight.py) picks it up; re-render the open detail
+// view so the change is immediate rather than waiting for the next refresh.
+function setWordDiff(checked) {
+  _storageSet('exptrack-word-diff', checked ? 'true' : 'false');
+  if (typeof currentDetailId !== 'undefined' && currentDetailId) refreshDetail(currentDetailId);
+}
+
+// Sync settings checkboxes to persisted state on first paint.
 {
   const el = document.getElementById('settings-export-to-folder');
   if (el) el.checked = _storageGet('exptrack-export-to-folder') === 'true';
+  const wd = document.getElementById('settings-word-diff');
+  if (wd) wd.checked = _storageGet('exptrack-word-diff') !== 'false';
 }
 
 let _authToken = (function() {

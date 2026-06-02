@@ -10,6 +10,7 @@ from .compare import JS_COMPARE
 from .core import JS_CORE
 from .detail import JS_DETAIL
 from .experiments import JS_EXPERIMENTS
+from .highlight import JS_HIGHLIGHT
 from .image_compare import JS_IMAGE_COMPARE
 from .init import JS_INIT
 from .inline_edit import JS_INLINE_EDIT
@@ -30,7 +31,7 @@ from .trash import JS_TRASH
 
 def get_all_js() -> str:
     """Concatenate all JavaScript sections in the correct order."""
-    return (JS_CORE + JS_OWL + JS_SIDEBAR + JS_TABLE +
+    return (JS_CORE + JS_HIGHLIGHT + JS_OWL + JS_SIDEBAR + JS_TABLE +
             JS_EXPERIMENTS + JS_INLINE_EDIT + JS_DETAIL + JS_CHARTS +
             JS_COMPARE + JS_MUTATIONS + JS_TIMELINE +
             JS_IMAGE_COMPARE + JS_STUDIES + JS_STAGE + JS_MANUAL +
@@ -44,6 +45,7 @@ __all__ = [
     "JS_CORE",
     "JS_DETAIL",
     "JS_EXPERIMENTS",
+    "JS_HIGHLIGHT",
     "JS_IMAGE_COMPARE",
     "JS_INIT",
     "JS_INLINE_EDIT",
