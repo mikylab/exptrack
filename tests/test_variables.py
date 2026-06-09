@@ -111,6 +111,62 @@ def test_fp_large_collection():
 
 
 # ---------------------------------------------------------------------------
+# var_fingerprint — DataFrame / object-array stability (regression)
+# ---------------------------------------------------------------------------
+
+def test_fp_dataframe_object_cols_stable():
+    """An untouched DataFrame with string columns must fingerprint identically
+    across calls (regression: .values.tobytes() on object cols hashed pointer
+    addresses and churned every cell)."""
+    pd = __import__("pytest").importorskip("pandas")
+    df = pd.DataFrame({
+        "DateId": ["2025-08-01", "2025-08-02", "2025-08-03"],
+        "DiningCenter": ["a", "b", "c"],
+        "count": [1, 2, 3],
+    })
+    fp1 = var_fingerprint(df)
+    fp2 = var_fingerprint(df)
+    fp3 = var_fingerprint(df.copy())  # no-op copy → same content
+    assert fp1 == fp2 == fp3
+    assert str(id(df)) not in fp1  # never identity-based
+
+
+def test_fp_dataframe_content_change_detected():
+    """Changing a value must change the fingerprint (hash_pandas_object path)."""
+    pd = __import__("pytest").importorskip("pandas")
+    df = pd.DataFrame({"x": [1, 2, 3], "label": ["a", "b", "c"]})
+    fp1 = var_fingerprint(df)
+    df.loc[0, "x"] = 99
+    fp2 = var_fingerprint(df)
+    assert fp1 != fp2
+
+
+def test_fp_dataframe_fallback_no_id(monkeypatch):
+    """When pandas hashing is unavailable, the fallback uses shape/dtypes —
+    never id() — so untouched frames stay stable."""
+    pd = __import__("pytest").importorskip("pandas")
+    import exptrack.capture.variables as v
+    # Force the no-pandas fallback path.
+    monkeypatch.setattr(v, "_hash_pandas", lambda val: None)
+    df = pd.DataFrame({"x": [1, 2, 3], "label": ["a", "b", "c"]})
+    fp = var_fingerprint(df)
+    assert fp.startswith("DataFrame:")
+    assert str(id(df)) not in fp
+    assert var_fingerprint(df) == fp  # stable
+
+
+def test_fp_object_ndarray_stable():
+    """Object-dtype numpy arrays fingerprint by content, stable across calls,
+    not by pointer addresses."""
+    np = __import__("pytest").importorskip("numpy")
+    arr = np.array(["foo", "bar", "baz"], dtype=object)
+    fp1 = var_fingerprint(arr)
+    fp2 = var_fingerprint(arr)
+    assert fp1 == fp2
+    assert str(id(arr)) not in fp1
+
+
+# ---------------------------------------------------------------------------
 # extract_assignments
 # ---------------------------------------------------------------------------
 

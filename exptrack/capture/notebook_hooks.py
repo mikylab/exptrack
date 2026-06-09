@@ -10,6 +10,7 @@ import sys
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from .. import config as cfg
 from .cell_lineage import (
     cell_hash,
     find_parent_hash,
@@ -382,6 +383,12 @@ def _capture_variables(ip, cell_assignments):
     ns = ip.user_ns
     prev_snap = _nb_state["var_snapshot"]
     new_vars, changed_vars = {}, {}
+    new_snap = {}
+    # Read the content-hash size cap once per cell (config is cached). Hashing
+    # every DataFrame/array in the namespace on every cell is the dominant
+    # per-cell cost, so this single pass computes each fingerprint exactly once
+    # (it used to run twice — detect + snapshot).
+    max_bytes = int(cfg.load().get("var_fingerprint_max_mb", 100)) * 1024 * 1024
 
     for name, val in list(ns.items()):
         if name.startswith("_") or name in _SKIP_NAMES:
@@ -390,26 +397,30 @@ def _capture_variables(ip, cell_assignments):
             summary = var_summary(val)
             tname = type(val).__name__
 
+            # `display` is the rich form shown on the timeline var_set event
+            # (may include the `name = expr` assignment). `param` is the stable
+            # value stored as the `_var/<name>` param — always the bare summary
+            # (never the assignment prefix), so re-logging an unchanged var is
+            # idempotent and never trips the "param overwritten" warning.
             if summary is None:
                 if name not in cell_assignments:
                     continue
                 expr = cell_assignments[name]
-                summary = f"{tname}()"
-                if len(expr) <= 500:
-                    display = f"{name} = {expr}  # {tname}"
-                else:
-                    display = f"{tname}()"
                 fp = f"{tname}:{name}:{cell_hash(expr)}"
+                display = (f"{name} = {expr}  # {tname}"
+                           if len(expr) <= 500 else f"{tname}()")
+                param = display
             else:
-                fp = var_fingerprint(val)
+                fp = var_fingerprint(val, max_bytes=max_bytes)
                 display = summary
+                param = summary
                 if not isinstance(val, _SCALAR) and name in cell_assignments:
                     expr = cell_assignments[name]
                     if len(expr) <= 500:
                         display = f"{name} = {expr}  # {summary}"
 
             if name not in prev_snap:
-                new_vars[name] = display
+                new_vars[name] = {"display": display, "param": param}
             else:
                 prev_entry = prev_snap[name]
                 if isinstance(prev_entry, str):
@@ -421,38 +432,13 @@ def _capture_variables(ip, cell_assignments):
                     changed_vars[name] = {
                         "from": prev_disp,
                         "to": display,
+                        "param": param,
                     }
+            new_snap[name] = {"fp": fp, "display": display}
         except Exception as e:
             print(f"[exptrack] warning: could not capture variable '{name}': {e}",
                   file=sys.stderr)
 
-    new_snap = {}
-    for name, val in list(ns.items()):
-        if name.startswith("_") or name in _SKIP_NAMES:
-            continue
-        try:
-            summary = var_summary(val)
-            if summary is not None:
-                display = summary
-                if not isinstance(val, _SCALAR) and name in cell_assignments:
-                    expr = cell_assignments[name]
-                    if len(expr) <= 500:
-                        display = f"{name} = {expr}  # {summary}"
-                new_snap[name] = {
-                    "fp": var_fingerprint(val),
-                    "display": display,
-                }
-            elif name in cell_assignments:
-                tname = type(val).__name__
-                expr = cell_assignments[name]
-                new_snap[name] = {
-                    "fp": f"{tname}:{name}:{cell_hash(expr)}",
-                    "display": f"{name} = {expr}  # {tname}"
-                        if len(expr) <= 500 else f"{tname}()",
-                }
-        except Exception as e:
-            print(f"[exptrack] warning: could not snapshot variable '{name}': {e}",
-                  file=sys.stderr)
     _nb_state["var_snapshot"] = new_snap
 
     return new_vars, changed_vars
@@ -504,7 +490,7 @@ def _emit_timeline_events(exp, ch, exec_num, source, source_diff, output,
 
     max_vars = _conf.get("max_vars_per_cell", 50)
     var_count = 0
-    for name, display in new_vars.items():
+    for name, info in new_vars.items():
         var_count += 1
         if max_vars and var_count > max_vars:
             overflow = len(new_vars) + len(changed_vars) - max_vars
@@ -520,7 +506,7 @@ def _emit_timeline_events(exp, ch, exec_num, source, source_diff, output,
             cell_hash=ch,
             cell_pos=exec_num,
             key=name,
-            value=display,
+            value=info["display"],
             prev_value=None,
         )
 
@@ -560,8 +546,8 @@ def _log_hp_params(exp, ns, new_vars, changed_vars, source_diff,
         from ..core import make_run_name
         exp._rename(make_run_name(exp.script, exp._params))
 
-    all_new_var = {f"_var/{k}": v for k, v in new_vars.items()}
-    all_changed_var = {f"_var/{k}": d["to"] for k, d in changed_vars.items()}
+    all_new_var = {f"_var/{k}": v["param"] for k, v in new_vars.items()}
+    all_changed_var = {f"_var/{k}": d["param"] for k, d in changed_vars.items()}
     if all_new_var or all_changed_var:
         exp.log_params({**all_new_var, **all_changed_var})
 
@@ -649,16 +635,18 @@ def _post_run_cell(result=None):
 
         _nb_state["first_run"] = False
 
-        # ── 6. Emit timeline events ──────────────────────────────────────────
-        _emit_timeline_events(
-            exp, ch, exec_num, source, source_diff, output,
-            code_is_new, code_changed, parent_hash,
-            already_seen, is_obs, new_vars, changed_vars)
+        # ── 6-7. Emit timeline events + log params, committed as one batch ───
+        # A single cell emits cell_exec + up to max_vars_per_cell var_set events
+        # plus the _var/ params; batching collapses ~52 commits into one fsync.
+        with exp.batched_writes():
+            _emit_timeline_events(
+                exp, ch, exec_num, source, source_diff, output,
+                code_is_new, code_changed, parent_hash,
+                already_seen, is_obs, new_vars, changed_vars)
 
-        # ── 7. Log HP variables as top-level params ──────────────────────────
-        _log_hp_params(
-            exp, ip.user_ns, new_vars, changed_vars, source_diff,
-            code_is_new, code_changed, already_seen, exec_num)
+            _log_hp_params(
+                exp, ip.user_ns, new_vars, changed_vars, source_diff,
+                code_is_new, code_changed, already_seen, exec_num)
 
         # ── 8. Save snapshot to .exptrack/notebook_history/ ───────────────────
         _save_cell_snapshot(exp, exec_num, ch, source,
