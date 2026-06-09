@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.21.1] - 2026-06-09
+
+### Changed
+
+- **Per-cell timeline writes are batched into one transaction** — a single notebook cell used to issue up to ~52 separate SQLite commits (one fsync each: `cell_exec` + every `var_set` event + the `_var/` params). They now commit once per cell via a new `Experiment.batched_writes()` context, cutting per-cell write latency sharply on large notebooks.
+
+### Fixed
+
+- **Stable DataFrame / object-array fingerprints** — `var_fingerprint` hashed a DataFrame via `df.values.tobytes()`, which for object/string columns serializes Python *pointer addresses* (not content). The hash therefore changed every cell even when the data was untouched, falsely flagging the variable as "changed". DataFrames/Series are now content-hashed with `pandas.util.hash_pandas_object` (object-column safe and stable), object-dtype arrays avoid `tobytes()`, and every fallback uses a stable shape/dtype signature instead of `id()`.
+- **No more spurious `_var/` "param overwritten" warning** — the false "changed" detection above re-logged the `_var/<name>` param each cell, and the stored value flipped between the assignment-form display and the bare summary, printing a noisy `[exptrack] warning: param '_var/df_model' overwritten` line. The warning is now suppressed for internal bookkeeping keys (`_var/`, `_code_change/`, `_cells_ran`), and the `_var/` param value is normalized to the bare summary so re-logging an unchanged variable is idempotent.
+
+## [1.21.0] - 2026-06-08
+
+### Added
+
+- **`var_fingerprint_max_mb` config knob** — caps how large a DataFrame/array/Tensor exptrack will content-hash for per-cell change detection (default 100 MB). Lower it (e.g. to `5`) if a notebook namespace full of medium DataFrames makes every cell feel slow — bigger objects then fingerprint by shape+id instead of a full hash.
+
+### Changed
+
+- **`auto_capture.notebook` is now honored** — the flag was documented but ignored; `%load_ext exptrack` always auto-created an experiment from your first code cell. Setting `"auto_capture": {"notebook": false}` now registers the magics and Session-Trees/cell hooks **without** auto-creating a run, so you can use `%exptrack session ...` on its own and start runs explicitly with `%exp_start` / `start()`.
+
+### Fixed
+
+- **Per-cell capture no longer hashes every DataFrame twice** — `_capture_variables` walked the whole notebook namespace and content-hashed each variable in *two* passes (change-detection + snapshot) on every cell. It now computes each fingerprint exactly once per cell, roughly halving the dominant per-cell overhead in DataFrame-heavy notebooks.
+
+## [1.20.1] - 2026-06-08
+
+### Fixed
+
+- **`%exptrack checkpoint` / `branch` no longer hang on git** — the git subprocess helper now redirects stdin from `/dev/null` and disables interactive prompts (`GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS`) so a misconfigured credential helper or terminal prompt can't freeze a notebook cell on the kernel's inherited stdin, and sets `GIT_OPTIONAL_LOCKS=0` so read-only `rev-parse`/`diff` calls skip waiting on a contended `index.lock`. Session-tree magics (and any other git capture) now fail fast instead of blocking.
+
 ## [1.20.0] - 2026-05-29
 
 ### Added

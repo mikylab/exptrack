@@ -58,6 +58,38 @@ def _reset_nb_state():
     _nb_state["hash_to_last_exec_hash"] = {}
 
 
+# ── Tests for _capture_variables (param/display split) ───────────────────────
+
+def test_var_param_is_bare_summary_not_assignment_form():
+    """The stored _var/ param value is the bare summary even when the var was
+    assigned in this cell — so re-logging a read-only var later is idempotent
+    and never flips between assignment-form and summary (the spurious-warning
+    regression)."""
+    from exptrack.capture.notebook_hooks import _capture_variables, _nb_state
+
+    _reset_nb_state()
+    ip = MockShell()
+    ip.user_ns["nums"] = [1, 2, 3]
+
+    # Cell 1: nums is assigned here → display carries the assignment prefix,
+    # but the param value must be the bare summary.
+    from exptrack.capture.variables import var_summary
+
+    new_vars, _ = _capture_variables(ip, {"nums": "[1, 2, 3]"})
+    info = new_vars["nums"]
+    assert info["display"].startswith("nums = [1, 2, 3]  # ")
+    # param is the bare summary — no `nums =` assignment prefix.
+    assert not info["param"].startswith("nums =")
+    assert info["param"] == var_summary([1, 2, 3])
+
+    # Cell 2: nums read-only (not in cell_assignments), unchanged content →
+    # stable fingerprint means it isn't re-flagged as changed at all.
+    new_vars2, changed2 = _capture_variables(ip, {})
+    assert "nums" not in new_vars2
+    assert "nums" not in changed2
+    assert _nb_state["var_snapshot"]["nums"]["fp"]  # snapshot kept
+
+
 # ── Tests for _is_magic_only ─────────────────────────────────────────────────
 
 def test_is_magic_only_true():

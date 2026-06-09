@@ -116,6 +116,75 @@ def test_log_params_batch(tmp_project):
     exp.finish()
 
 
+def test_internal_param_no_overwrite_warning(tmp_project, capsys):
+    """Internal bookkeeping params (_var/, _code_change/, _cells_ran) must not
+    print the 'param overwritten' warning when re-logged with a new value,
+    but a real user param still warns."""
+    from exptrack.core import Experiment
+
+    exp = Experiment(script="train.py")
+    capsys.readouterr()  # clear
+
+    exp.log_params({"_var/df": "DataFrame(shape=(3, 2))"})
+    exp.log_params({"_var/df": "DataFrame(shape=(4, 2))"})
+    exp.log_params({"_code_change/cell_1": "+ a"})
+    exp.log_params({"_code_change/cell_1": "+ b"})
+    exp.log_params({"_cells_ran": "[1]"})
+    exp.log_params({"_cells_ran": "[1, 2]"})
+    err = capsys.readouterr().err
+    assert "overwritten" not in err
+
+    # A real hyperparameter still warns on overwrite.
+    exp.log_params({"lr": 0.01})
+    exp.log_params({"lr": 0.02})
+    err = capsys.readouterr().err
+    assert "param 'lr' overwritten" in err
+
+    exp.finish()
+
+
+def test_batched_writes_single_commit(tmp_project, monkeypatch):
+    """batched_writes defers commits and writes everything once on exit."""
+    from exptrack.core import Experiment, get_db
+    import exptrack.core.experiment as expmod
+
+    exp = Experiment(script="train.py")
+    conn = get_db()
+
+    class CommitCountingProxy:
+        def __init__(self, real):
+            self._real = real
+            self.commits = 0
+        def commit(self):
+            self.commits += 1
+            return self._real.commit()
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    proxy = CommitCountingProxy(conn)
+    monkeypatch.setattr(expmod, "get_db", lambda: proxy)
+
+    with exp.batched_writes():
+        exp.log_event(event_type="cell_exec", key="cell_1", value={"a": 1})
+        exp.log_event(event_type="var_set", key="x", value="1")
+        exp.log_params({"_var/x": "1"})
+        assert proxy.commits == 0  # nothing committed mid-batch
+    assert proxy.commits == 1  # exactly one commit on exit
+
+    monkeypatch.undo()
+
+    rows = conn.execute(
+        "SELECT COUNT(*) AS c FROM timeline WHERE exp_id=?", (exp.id,)
+    ).fetchone()
+    assert rows["c"] == 2
+    p = conn.execute(
+        "SELECT value FROM params WHERE exp_id=? AND key=?", (exp.id, "_var/x")
+    ).fetchone()
+    assert p is not None
+
+    exp.finish()
+
+
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ import socket
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,7 @@ class Experiment:
         except Exception as e:
             print(f"[exptrack] warning: GPU detection failed: {e}", file=sys.stderr)
         self._finished  = False
+        self._defer_commit = False
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.project    = conf.get("project", cfg.project_root().name)
 
@@ -255,9 +257,41 @@ class Experiment:
         except Exception as e:
             print(f"[exptrack] warning: could not log output_dir artifact: {e}", file=sys.stderr)
 
+    def _maybe_commit(self, conn):
+        """Commit unless we're inside a batched_writes() block."""
+        if not self._defer_commit:
+            conn.commit()
+
+    @contextmanager
+    def batched_writes(self):
+        """Defer per-write commits, committing once when the block exits.
+
+        `get_db()` returns one cached per-thread connection, so wrapping a burst
+        of `log_event`/`log_params` calls in this collapses many commits (one
+        fsync each) into a single commit. Nesting-safe: only the outermost block
+        performs the final commit.
+        """
+        prev = self._defer_commit
+        self._defer_commit = True
+        try:
+            yield
+        finally:
+            self._defer_commit = prev
+            if not prev:
+                try:
+                    get_db().commit()
+                except Exception as e:
+                    print(f"[exptrack] warning: batched commit failed: {e}",
+                          file=sys.stderr)
+
     def _write_params(self, conn, params: dict):
-        # Warn on param overwrites with different values
+        # Warn on param overwrites with different values. Skip exptrack-internal
+        # bookkeeping params (any "_"-prefixed key: _var/…, _code_change/…,
+        # _cells_ran, _confusion_matrices) — same convention as naming.py — since
+        # they legitimately change every cell; the warning is for real user HPs.
         for k, v in params.items():
+            if k.startswith("_"):
+                continue
             existing = conn.execute(
                 "SELECT value FROM params WHERE exp_id=? AND key=?",
                 (self.id, k)
@@ -296,9 +330,9 @@ class Experiment:
             return
         params = _redact_params(params)
         self._params.update(params)
-        with get_db() as conn:
-            self._write_params(conn, params)
-            conn.commit()
+        conn = get_db()
+        self._write_params(conn, params)
+        self._maybe_commit(conn)
 
     def log_param(self, key: str, value: Any):
         self.log_params({key: value})
@@ -533,18 +567,18 @@ class Experiment:
             self._timeline_seq += 1
             seq = self._timeline_seq
         ts = datetime.now(timezone.utc).isoformat()
-        with get_db() as conn:
-            conn.execute(
-                """INSERT INTO timeline
-                   (exp_id, seq, event_type, cell_hash, cell_pos,
-                    key, value, prev_value, source_diff, ts)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (self.id, seq, event_type, cell_hash, cell_pos, key,
-                 json.dumps(value, default=str) if value is not None else None,
-                 json.dumps(prev_value, default=str) if prev_value is not None else None,
-                 source_diff, ts)
-            )
-            conn.commit()
+        conn = get_db()
+        conn.execute(
+            """INSERT INTO timeline
+               (exp_id, seq, event_type, cell_hash, cell_pos,
+                key, value, prev_value, source_diff, ts)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (self.id, seq, event_type, cell_hash, cell_pos, key,
+             json.dumps(value, default=str) if value is not None else None,
+             json.dumps(prev_value, default=str) if prev_value is not None else None,
+             source_diff, ts)
+        )
+        self._maybe_commit(conn)
         return seq
 
     def log_artifact(self, path: str | Path, label: str = "",

@@ -111,34 +111,106 @@ def var_summary(val) -> str | None:
         return f"{tname}(?)"
 
 
-def var_fingerprint(val) -> str:
+def _stable_sig(val) -> str:
+    """A churn-free fingerprint based on shape/dtype only — never `id()`.
+
+    Used as the fallback when content hashing is skipped (over the size cap) or
+    unavailable. It won't detect a pure in-place content edit that leaves shape
+    and dtype unchanged, but — unlike an `id()`-based signature — it stays
+    stable across cells for an untouched object, so it never produces a false
+    "changed".
+    """
+    tname = type(val).__name__
+    if tname == "DataFrame":
+        try:
+            return f"DataFrame:{val.shape}:{tuple(str(d) for d in val.dtypes)}"
+        except Exception:
+            return f"DataFrame:{getattr(val, 'shape', '?')}"
+    if tname == "Series":
+        try:
+            return f"Series:{len(val)}:{val.dtype}"
+        except Exception:
+            return "Series:?"
+    # ndarray (and anything array-like with shape/dtype)
+    return f"{tname}:{getattr(val, 'shape', '?')}:{getattr(val, 'dtype', '?')}"
+
+
+def _hash_pandas(val) -> str | None:
+    """Content-based, object-column-safe fingerprint for DataFrame/Series.
+
+    Uses `pandas.util.hash_pandas_object`, which is vectorized and hashes the
+    *values* (correctly for object/string columns) rather than buffer pointers.
+    Returns None when pandas isn't importable or anything goes wrong, so the
+    caller can fall back to `_stable_sig`. Pandas is resolved from
+    `sys.modules` (never imported here — it's an optional user lib).
+    """
+    pd = sys.modules.get("pandas")
+    if pd is None:
+        return None
+    try:
+        hpo = getattr(getattr(pd, "util", None), "hash_pandas_object", None)
+        if hpo is None:
+            return None
+        h = hpo(val, index=True)
+        # `h` is a uint64 Series; .tobytes() is real content, not pointers.
+        digest = hashlib.md5(h.values.tobytes()).hexdigest()[:8]
+        return f"{type(val).__name__}:{val.shape}:{digest}"
+    except Exception:
+        return None
+
+
+def var_fingerprint(val, max_bytes: int = 100 * 1024 * 1024) -> str:
     """
     Return a fingerprint string used for change detection.
-    For large objects we use id+type, for scalars the repr.
+    For large objects we use a stable shape/dtype signature, for scalars the repr.
+
+    `max_bytes` caps content hashing: arrays/DataFrames/Tensors whose buffer
+    exceeds it are fingerprinted by a stable shape/dtype signature (cheap, but
+    won't detect in-place content edits). Lower it via the
+    `var_fingerprint_max_mb` config knob when a namespace full of medium
+    DataFrames makes per-cell capture slow.
+
+    DataFrames/Series are content-hashed via `pandas.util.hash_pandas_object`
+    (object/string-column safe and stable across cells); object-dtype ndarrays
+    avoid `.tobytes()` (which would hash pointer addresses, not content, and
+    churn every cell). Both fall back to `_stable_sig` — never `id()` — so an
+    untouched object keeps the same fingerprint.
     """
     if isinstance(val, _SCALAR):
         return repr(val)
     tname = type(val).__name__
     if tname == "ndarray":
         try:
-            # Guard against OOM: skip .tobytes() for arrays larger than 100MB
-            if hasattr(val, 'nbytes') and val.nbytes > 100 * 1024 * 1024:
-                return f"ndarray:{val.shape}:{val.dtype}:{id(val)}"
+            # Object-dtype arrays hold Python pointers — .tobytes() would hash
+            # addresses (unstable across cells), so content-hash a bounded repr
+            # of the values instead, falling back to the stable signature.
+            if getattr(val, "dtype", None) is not None and val.dtype.kind == "O":
+                if getattr(val, "size", 0) <= 10000:
+                    r = repr(val.tolist())
+                    return f"ndarray:{val.shape}:O:{hashlib.md5(r.encode()).hexdigest()[:8]}"
+                return _stable_sig(val)
+            # Guard against OOM / slow hashing: skip .tobytes() for big arrays
+            if hasattr(val, 'nbytes') and val.nbytes > max_bytes:
+                return _stable_sig(val)
             return f"ndarray:{val.shape}:{val.dtype}:{hashlib.md5(val.tobytes()).hexdigest()[:8]}"
         except (MemoryError, TypeError, ValueError):
-            return f"ndarray:{id(val)}"
+            return _stable_sig(val)
     if tname in ("DataFrame", "Series"):
         try:
             nbytes = val.values.nbytes if hasattr(val.values, 'nbytes') else 0
-            if nbytes > 100 * 1024 * 1024:
-                return f"{tname}:{val.shape}:{id(val)}"
-            return f"{tname}:{val.shape}:{hashlib.md5(val.values.tobytes()).hexdigest()[:8]}"
+            if nbytes > max_bytes:
+                return _stable_sig(val)
+            hashed = _hash_pandas(val)
+            if hashed is not None:
+                return hashed
+            return _stable_sig(val)
         except (MemoryError, TypeError, ValueError, AttributeError):
-            return f"{tname}:{id(val)}"
+            return _stable_sig(val)
     if tname == "Tensor":
         try:
+            elem = val.element_size() if hasattr(val, 'element_size') else 4
             numel = val.numel() if hasattr(val, 'numel') else 0
-            if numel > 25_000_000:  # ~100MB for float32
+            if numel * elem > max_bytes:
                 return f"Tensor:{list(val.shape)}:{id(val)}"
             return f"Tensor:{list(val.shape)}:{hashlib.md5(val.cpu().numpy().tobytes()).hexdigest()[:8]}"
         except (MemoryError, TypeError, RuntimeError, AttributeError):

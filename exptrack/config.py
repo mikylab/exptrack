@@ -37,6 +37,7 @@ DEFAULTS: dict = {
         "accuracy", "loss", "auroc", "f1", "precision", "recall",
         "mse", "mae", "r2", "perplexity", "bleu",
     ],
+    "var_fingerprint_max_mb": 100,   # cap content-hashing of vars for change detection; lower if per-cell capture is slow with big DataFrames
     "metric_keep_every":     1,      # store every Nth metric point (1=all, 10=every 10th)
     "max_cell_source_kb":    50,     # hard cap on cell source in cell_lineage
     "max_source_diff_kb":    20,     # hard cap on source_diff in timeline events

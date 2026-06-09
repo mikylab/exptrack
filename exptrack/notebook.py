@@ -282,11 +282,20 @@ def _detect_nb_name() -> str:
 def load_ipython_extension(ip: Any) -> None:
     """Called by %load_ext exptrack"""
     from .capture import attach_notebook_deferred
+    from . import config as _cfg
 
     # Don't create an experiment yet — defer until the first real cell runs.
     # This prevents %load_ext exptrack from being counted as its own run.
+    #
+    # Honor `auto_capture.notebook`: when false, we still register the magics
+    # and the session/cell hooks, but never auto-create an experiment from the
+    # first code cell. This lets Session Trees (which require %load_ext) be used
+    # on their own without an unsolicited run appearing — start runs explicitly
+    # with %exp_start / start() instead.
     nb_file = _detect_nb_name()
-    attach_notebook_deferred(nb_file=nb_file, ip=ip, start_fn=_auto_start)
+    auto_nb = _cfg.load().get("auto_capture", {}).get("notebook", True)
+    start_fn = _auto_start if auto_nb else None
+    attach_notebook_deferred(nb_file=nb_file, ip=ip, start_fn=start_fn)
 
     def exp_start(line):
         """Start or restart experiment. Optional: %exp_start my_run_name"""
