@@ -47,4 +47,24 @@ CSS_DETAIL = """
   .summary-card .summary-item { text-align: center; }
   .summary-card .summary-item .val { font-size: 18px; font-weight: 600; }
   .summary-card .summary-item .lbl { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .session-origin-banner { display: flex; align-items: center; gap: 8px; margin: 0 0 14px 0; padding: 8px 12px; font-size: 13px; cursor: pointer; border-radius: var(--radius-sm, 4px); border: 1px solid var(--compare-accent, var(--purple)); background: var(--compare-bg, rgba(124,77,255,0.08)); color: var(--text-1, var(--fg)); }
+  .session-origin-banner:hover { filter: brightness(0.97); }
+  .session-origin-banner .so-icon { font-size: 14px; opacity: 0.85; }
+  .session-origin-banner .so-text { flex: 1; min-width: 0; }
+  .session-origin-banner .so-type { text-transform: capitalize; opacity: 0.9; }
+  .session-origin-banner .so-go { font-size: 12px; color: var(--compare-accent, var(--purple)); white-space: nowrap; }
+
+  /* Branch context: the sibling experiments tried from the same checkpoint. */
+  .branch-context { margin: -6px 0 14px 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm, 4px); background: var(--surface-2, var(--card-bg)); }
+  .branch-context .bc-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
+  .branch-context .bc-sib { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 12.5px; border-top: 1px solid var(--border); }
+  .branch-context .bc-sib:first-of-type { border-top: none; }
+  .branch-context .bc-sib.this { background: var(--accent-soft, var(--code-bg)); margin: 0 -8px; padding: 3px 8px; border-radius: 3px; border-top: none; }
+  .branch-context .bc-sib-name { color: var(--blue); text-decoration: none; cursor: pointer; font-weight: 600; }
+  .branch-context .bc-sib-name:hover { text-decoration: underline; }
+  .branch-context .bc-sib-tag { font-size: 10.5px; border-radius: 8px; padding: 0 6px; white-space: nowrap; }
+  .branch-context .bc-sib-tag.this { color: var(--accent); border: 1px solid var(--accent); }
+  .branch-context .bc-sib-tag.ab { color: var(--branch-ab); border: 1px solid rgba(217,119,6,0.5); }
+  .branch-context .bc-sib-res { font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .branch-context .bc-sib-exp { font-size: 11px; color: var(--blue); text-decoration: none; border: 1px solid var(--blue); padding: 0 6px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
 """

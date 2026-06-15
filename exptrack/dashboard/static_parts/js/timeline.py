@@ -68,11 +68,12 @@ async function loadTimeline(expId, filter) {
     metric:        {icon:'#',       label:'Metric',        meaning:'a metric value was logged',               color:'var(--tl-metric)'},
     observational: {icon:'&#183;',  label:'Ran, no change',meaning:'a cell ran but changed no code or tracked variable', color:'var(--tl-obs)'},
     resume:        {icon:'&#8635;', label:'Resumed',       meaning:'the experiment was resumed',              color:'var(--accent)'},
+    setup:         {icon:'&#128295;', label:'Setup / prep', meaning:'a %%setup prep cell ran (recorded but secondary)', color:'var(--tl-obs)'},
   };
 
   let html = '<div class="tl-filters">';
-  const types = ['', 'cell_exec', 'var_set', 'artifact', 'observational', 'resume', 'lineage'];
-  const labels = ['All', 'Code run', 'Variables', 'Outputs', 'Ran, no change', 'Resumed', 'Edited cells'];
+  const types = ['', 'cell_exec', 'var_set', 'artifact', 'observational', 'setup', 'resume', 'lineage'];
+  const labels = ['All', 'Code run', 'Variables', 'Outputs', 'Ran, no change', 'Setup', 'Resumed', 'Edited cells'];
   types.forEach((t, i) => {
     html += '<button class="' + (timelineFilter===t?'active':'') + '" onclick="loadTimeline(\'' + expId + '\',\'' + t + '\')">' + labels[i] + '</button>';
   });
@@ -139,6 +140,12 @@ async function loadTimeline(expId, filter) {
         else badges += '<span class="tl-badge tl-badge-edited" title="Code changed from a previous run">edited</span>';
       }
       else if (info.is_rerun) badges += '<span class="tl-badge tl-badge-rerun" title="Ran again with no code change">rerun</span>';
+
+      // Flag a print() with a hardcoded number (e.g. print("accuracy 98")) —
+      // often a stale value the author meant to interpolate from a variable.
+      if (!magicOnly && (info.source_preview || '').split('\n').some(_isStalePrintLine)) {
+        badges += _stalePrintBadge();
+      }
 
       // View source button - uses cell_hash to fetch from lineage
       const viewSrcBtn = ev.cell_hash ? ' <button class="view-source-btn" onclick="event.stopPropagation();viewCellSource(\'' + ev.cell_hash + '\',this)">view source</button>' : '';
@@ -226,6 +233,30 @@ async function loadTimeline(expId, filter) {
       html += typeLabel + '<strong style="color:var(--tl-metric)">' + esc(ev.key) + '</strong> = ' + ev.value;
       html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
       html += '</div></div>';
+
+    } else if (ev.event_type === 'setup') {
+      // %%setup prep cell — recorded but secondary: the full source collapses
+      // into a <details>, with its captured output below.
+      const info = ev.value || {};
+      const src = info.source || info.source_preview || '';
+      const srcLines = src.split('\n');
+      const numbered = srcLines.map((ln, k) =>
+        '<span class="cl"><span class="ln">' + (k + 1) + '</span>' + _highlightPy(ln) + '</span>').join('');
+      html += '<div class="' + cls + ' tl-setup">';
+      html += seqHtml;
+      html += '<div class="tl-icon" style="color:' + iconColor + '">' + icon + '</div>';
+      html += '<div class="tl-body">';
+      html += typeLabel;
+      html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
+      html += '<details class="cell-block setup-cell"><summary>'
+            + '<span class="cell-meta">' + srcLines.length + ' line'
+            + (srcLines.length === 1 ? '' : 's') + ' of prep code</span></summary>'
+            + '<pre class="cell-code">' + numbered + '</pre></details>';
+      if (info.output_preview) {
+        html += '<div class="tl-cell-output"><div class="tl-out-label">Out</div>'
+              + '<pre class="tl-out-pre">' + esc(String(info.output_preview)) + '</pre></div>';
+      }
+      html += '</div></div>';
     }
   }
   html += '</div>';
@@ -280,7 +311,11 @@ async function viewCellSource(cellHash, btnEl) {
     html += '<div style="margin-bottom:8px;color:var(--blue);font-size:11px;text-transform:uppercase">Current cell source (hash: ' + cellHash + ')</div>';
     const lines = data.source.split('\n');
     for (let i = 0; i < lines.length; i++) {
-      html += '<span class="line-num">' + (i+1) + '</span>' + _highlightPy(lines[i]) + '\n';
+      const stale = _isStalePrintLine(lines[i]);
+      html += '<span class="line-num">' + (i+1) + '</span>'
+        + (stale ? '<span class="stale-line">' : '') + _highlightPy(lines[i])
+        + (stale ? ' <span class="stale-print-mark" title="' + STALE_PRINT_TITLE + '">⚠</span></span>' : '')
+        + '\n';
     }
     // Parent present but too large to diff — fall back to showing it dimmed.
     if (data.parent_source) {

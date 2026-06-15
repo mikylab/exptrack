@@ -12,6 +12,7 @@ Two capture modes:
                   Stores snapshots in .exptrack/notebook_history/<nb_name>/
 """
 from .argparse_patch import capture_argv, patch_argparse
+from .dataset import capture_dataset_manifest
 from .matplotlib_patch import patch_savefig
 from .notebook_hooks import (
     _nb_state,
@@ -26,6 +27,7 @@ __all__ = [
     "attach_notebook",
     "attach_notebook_deferred",
     "capture_argv",
+    "capture_dataset_manifest",
     "capture_script_snapshot",
     "detach_notebook",
     "patch_argparse",

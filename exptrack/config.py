@@ -43,6 +43,7 @@ DEFAULTS: dict = {
     "max_source_diff_kb":    20,     # hard cap on source_diff in timeline events
     "max_vars_per_cell":     50,     # max var_set events per cell execution
     "max_cell_output_chars": 2000,   # output truncation limit for cell snapshots
+    "max_assignment_expr_len": 500,  # max chars of an assignment RHS kept in var displays
     "notebook_history":      False,  # write snapshot JSON files to disk
     "plugins": {
         "enabled": [],

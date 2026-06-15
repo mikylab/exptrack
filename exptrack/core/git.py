@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from .. import config as cfg
+from .utils import debug_log
 
 
 # Env that prevents git from ever blocking interactively. Inside a Jupyter
@@ -43,7 +44,7 @@ def _git(*cmd) -> str:
                            stdin=subprocess.DEVNULL, env=_git_env())
         return r.stdout.strip() if r.returncode == 0 else ""
     except Exception as e:
-        print(f"[exptrack] warning: git command failed: {e}", file=sys.stderr)
+        debug_log(f"git command failed: {e}")
         return ""
 
 

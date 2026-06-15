@@ -35,44 +35,11 @@ def api_experiment(conn, exp_id: str) -> dict:
     return result if result else {"error": "not found"}
 
 
-def api_trash(conn) -> list:
-    """Return trashed experiments (most recently trashed first) with quick scope info."""
-    import json as _json
-
-    from ...core.db import list_trashed_experiments
-    rows = list_trashed_experiments(conn)
-    out: list[dict] = []
-    for r in rows:
-        eid = r["id"]
-        try:
-            tags = _json.loads(r["tags"] or "[]")
-        except (ValueError, TypeError):
-            tags = []
-        try:
-            studies = _json.loads(r["studies"] or "[]")
-        except (ValueError, TypeError):
-            studies = []
-        n_metrics = conn.execute(
-            "SELECT COUNT(*) AS n FROM metrics WHERE exp_id=?", (eid,)
-        ).fetchone()["n"]
-        n_artifacts = conn.execute(
-            "SELECT COUNT(*) AS n FROM artifacts WHERE exp_id=?", (eid,)
-        ).fetchone()["n"]
-        out.append({
-            "id": eid,
-            "name": r["name"] or "",
-            "status": r["status"],
-            "created_at": r["created_at"],
-            "deleted_at": r["deleted_at"],
-            "git_branch": r["git_branch"],
-            "git_commit": r["git_commit"],
-            "output_dir": r["output_dir"] or "",
-            "tags": tags,
-            "studies": studies,
-            "metrics_count": n_metrics,
-            "artifacts_count": n_artifacts,
-        })
-    return out
+def api_trash(conn) -> dict:
+    """Return the unified trash: trashed experiments AND trashed session nodes
+    (grouped by session). Shape: {experiments: [...], sessions: [...], counts}."""
+    from ...core.trash import list_unified_trash
+    return list_unified_trash(conn)
 
 
 def api_delete_preview(conn, exp_id: str) -> dict:
@@ -193,6 +160,16 @@ def api_get_metric_settings() -> dict:
     return {
         "metric_keep_every": conf.get("metric_keep_every", 1),
         "metric_max_points": conf.get("metric_max_points", 500),
+    }
+
+
+def api_get_capture_settings() -> dict:
+    from ...config import load
+    conf = load()
+    auto = conf.get("auto_capture", {}) or {}
+    return {
+        "notebook_capture": bool(auto.get("notebook", True)),
+        "var_fingerprint_max_mb": int(conf.get("var_fingerprint_max_mb", 100)),
     }
 
 

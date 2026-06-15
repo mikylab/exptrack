@@ -394,6 +394,61 @@ class TestRunFinish:
         with pytest.raises(SystemExit):
             _finish_exp("nonexistent123")
 
+    def test_finish_is_atomic(self, tmp_project, monkeypatch):
+        """If the finish write fails partway, no metrics/params/status leak.
+
+        Forces the status UPDATE (last statement in the atomic block) to raise
+        and asserts metrics + params from the same call were rolled back and the
+        run is still 'running'.
+        """
+        import pytest
+        from exptrack.core.db import get_db
+        import exptrack.cli.pipeline_cmds as pcmds
+
+        exp_id, _ = _start_exp()
+        metrics_file = tmp_project / "results.json"
+        metrics_file.write_text(json.dumps({"accuracy": 0.95}))
+
+        conn = get_db()
+
+        class CrashOnFinishProxy:
+            """Delegates to the real connection but raises on the status UPDATE.
+
+            __enter__/__exit__ delegate so the real connection still rolls back
+            the transaction when the body raises.
+            """
+            def __init__(self, real):
+                self._real = real
+            def execute(self, sql, *a, **k):
+                if sql.strip().startswith("UPDATE experiments SET status='done'"):
+                    raise RuntimeError("simulated crash")
+                return self._real.execute(sql, *a, **k)
+            def __enter__(self):
+                self._real.__enter__()
+                return self
+            def __exit__(self, *exc):
+                return self._real.__exit__(*exc)
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        monkeypatch.setattr(pcmds, "get_db", lambda: CrashOnFinishProxy(conn))
+        with pytest.raises(RuntimeError):
+            _finish_exp(exp_id, metrics=str(metrics_file),
+                        params=["best_epoch=42"])
+        monkeypatch.undo()
+
+        row = conn.execute(
+            "SELECT status FROM experiments WHERE id=?", (exp_id,)
+        ).fetchone()
+        assert row["status"] == "running"  # status update rolled back
+        assert conn.execute(
+            "SELECT COUNT(*) FROM metrics WHERE exp_id=?", (exp_id,)
+        ).fetchone()[0] == 0  # metrics rolled back
+        assert conn.execute(
+            "SELECT COUNT(*) FROM params WHERE exp_id=? AND key='best_epoch'",
+            (exp_id,)
+        ).fetchone()[0] == 0  # params rolled back
+
 
 # ---------------------------------------------------------------------------
 # run-fail
@@ -900,3 +955,86 @@ class TestFlattenDict:
         from exptrack.cli.pipeline_cmds import _flatten_dict
         result = _flatten_dict({"a": {"b": {"c": 1}}})
         assert result == {"a/b/c": 1}
+
+
+# ---------------------------------------------------------------------------
+# run-start / run-finish helper units (extracted in the Item 1 split)
+# ---------------------------------------------------------------------------
+
+
+class TestRunStartHelpers:
+    """Unit tests for the focused helpers cmd_run_start orchestrates."""
+
+    def test_parse_freeform_params_value_equals_flag(self):
+        from exptrack.cli.pipeline_cmds import _parse_freeform_params
+        got = _parse_freeform_params(
+            ["--lr", "0.01", "--batch=32", "--use-gpu", "--name", "ignored"])
+        # space-separated, =-separated, bare flag all parsed; reserved key dropped
+        assert got == {"lr": 0.01, "batch": 32, "use-gpu": True}
+
+    def test_parse_freeform_params_drops_reserved(self):
+        from exptrack.cli.pipeline_cmds import _parse_freeform_params
+        got = _parse_freeform_params(["--study", "s", "--stage", "1", "--lr", "5"])
+        assert got == {"lr": 5}
+
+    def test_collect_env_context_slurm(self, monkeypatch):
+        from exptrack.cli.pipeline_cmds import _collect_env_context
+        monkeypatch.setenv("SLURM_JOB_ID", "12345")
+        monkeypatch.setenv("SLURM_JOB_NAME", "trainjob")
+        ctx = _collect_env_context()
+        assert ctx["_slurm"]["SLURM_JOB_ID"] == "12345"
+        assert ctx["_slurm"]["SLURM_JOB_NAME"] == "trainjob"
+
+    def test_collect_env_context_none(self, monkeypatch):
+        from exptrack.cli.pipeline_cmds import _collect_env_context
+        for k in ("SLURM_JOB_ID", "SLURM_JOB_NAME", "SLURM_NODELIST",
+                  "SLURM_CPUS_ON_NODE", "SLURM_MEM_PER_NODE", "SLURM_GPUS"):
+            monkeypatch.delenv(k, raising=False)
+        # No SLURM and (typically) no GPU on CI → empty or {_gpu: ...} only.
+        assert "_slurm" not in _collect_env_context()
+
+    def test_apply_study_stage_inherits_and_increments(self, tmp_project, monkeypatch):
+        from exptrack.cli.pipeline_cmds import _apply_study_stage
+        from exptrack.core import Experiment, get_db
+        exp = Experiment(script="train.py")
+        conn = get_db()
+        monkeypatch.setenv("EXP_STUDY", "sweep-1")
+        monkeypatch.setenv("EXP_STAGE", "2")
+        args = SimpleNamespace(study="", stage=None, stage_name="eval")
+        study, stage = _apply_study_stage(conn, exp, args)
+        assert study == "sweep-1"
+        assert stage == 3  # auto-incremented from EXP_STAGE=2
+        exp.finish()
+
+    def test_emit_run_env_writes_file_and_prints(self, tmp_project, capsys):
+        from exptrack.cli.pipeline_cmds import _emit_run_env
+        from exptrack.core import Experiment
+        exp = Experiment(script="train.py")
+        out_dir = tmp_project / "outdir"
+        out_dir.mkdir()
+        _emit_run_env(out_dir, exp, study="s1", stage=2)
+        stdout = capsys.readouterr().out
+        assert f'export EXP_ID="{exp.id}"' in stdout
+        assert 'export EXP_STUDY="s1"' in stdout
+        env_text = (out_dir / ".exptrack_run.env").read_text()
+        assert f"EXP_ID={exp.id}" in env_text
+        assert "EXP_STAGE=2" in env_text
+        assert f"EXP_CREATED={exp.created_at}" in env_text
+        exp.finish()
+
+    def test_gather_finish_params_coerces(self):
+        from exptrack.cli.pipeline_cmds import _gather_finish_params
+        import json as _json
+        args = SimpleNamespace(params=["best_epoch=42", "converged=true", "skip"])
+        rows = _gather_finish_params(args, "exp1")
+        decoded = {k: _json.loads(v) for (_e, k, v) in rows}
+        assert decoded == {"best_epoch": 42, "converged": True}  # "skip" has no =
+
+    def test_gather_finish_metrics_filters_non_numeric(self, tmp_project):
+        from exptrack.cli.pipeline_cmds import _gather_finish_metrics
+        mfile = tmp_project / "m.json"
+        mfile.write_text(json.dumps({"acc": 0.9, "name": "run", "ok": True}))
+        args = SimpleNamespace(metrics=str(mfile))
+        rows, count = _gather_finish_metrics(args, "exp1", step=5, ts="T")
+        assert count == 1
+        assert rows == [("exp1", "acc", 0.9, 5, "T")]  # str + bool dropped

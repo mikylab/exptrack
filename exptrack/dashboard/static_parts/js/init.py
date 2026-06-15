@@ -11,6 +11,7 @@ renderTableHeader();
 function _bootDashboard() {
   loadTimezoneConfig();
   loadMetricSettings();
+  loadCaptureSettings();
   loadAllTags();
   loadAllStudies();
   loadResultTypes();

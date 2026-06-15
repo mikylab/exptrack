@@ -145,6 +145,37 @@ function renderExpRow(e) {
   return '<tr class="' + rowCls + '"' + rowStyle + ' onclick="onRowClick(\'' + e.id + '\')">' + tds + '</tr>';
 }
 
+function _emptyStateHtml() {
+  const total = (allExperiments || []).length;
+  if (!total) {
+    return '<div class="empty-state">' +
+      '<div class="empty-state-icon">🦉</div>' +
+      '<div class="empty-state-title">No experiments yet</div>' +
+      '<div class="empty-state-msg">Run a script with <code>exptrack run train.py</code>, ' +
+      'or start one from a notebook, to see it here.</div></div>';
+  }
+  const hasFilters = !!(currentFilter || searchQuery || tagFilter || studyFilter ||
+    autoNamedOnly || (dateRange && dateRange !== 'all' && dateRange !== ''));
+  return '<div class="empty-state">' +
+    '<div class="empty-state-icon">🔍</div>' +
+    '<div class="empty-state-title">No experiments match your filters</div>' +
+    '<div class="empty-state-msg">' + total + ' run' + (total > 1 ? 's' : '') +
+    ' hidden by the current filters.' +
+    (hasFilters ? ' <button class="action-btn" onclick="clearAllFilters()">Clear filters</button>' : '') +
+    '</div></div>';
+}
+
+function clearAllFilters() {
+  currentFilter = ''; searchQuery = ''; tagFilter = ''; studyFilter = '';
+  autoNamedOnly = false; dateRange = '';
+  localStorage.setItem('exptrack-auto-named-only', 'false');
+  localStorage.setItem('exptrack-date-range', '');
+  const si = document.getElementById('search-input'); if (si) si.value = '';
+  if (typeof syncFilterControls === 'function') syncFilterControls();
+  renderStatusChips();
+  loadExperiments();
+}
+
 function renderExperiments() {
   const restoreRename = _preserveActiveRename();
   const exps = getFilteredExperiments();
@@ -153,6 +184,13 @@ function renderExperiments() {
   renderFilterBar();
   updateSortHeaders();
   renderTableActionsBar();
+
+  if (!exps.length) {
+    tbody.innerHTML = '<tr class="exp-empty-row"><td colspan="' + visibleCols.length + '">' +
+      _emptyStateHtml() + '</td></tr>';
+    restoreRename();
+    return;
+  }
 
   if (!groupBy) {
     tbody.innerHTML = exps.map(renderExpRow).join('');

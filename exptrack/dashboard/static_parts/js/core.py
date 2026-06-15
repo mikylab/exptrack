@@ -901,6 +901,33 @@ async function saveMetricSettings() {
   } catch(e) { alert('Failed to save settings'); }
 }
 
+async function loadCaptureSettings() {
+  try {
+    const data = await api('/api/config/capture');
+    const nbEl = document.getElementById('settings-notebook-capture');
+    const mbEl = document.getElementById('settings-var-fp-mb');
+    if (nbEl) nbEl.checked = data.notebook_capture !== false;
+    if (mbEl) mbEl.value = data.var_fingerprint_max_mb || 100;
+  } catch(e) {}
+}
+
+async function saveCaptureSettings() {
+  const nbEl = document.getElementById('settings-notebook-capture');
+  const mbEl = document.getElementById('settings-var-fp-mb');
+  try {
+    const res = await postApi('/api/config/capture', {
+      notebook_capture: nbEl ? nbEl.checked : true,
+      var_fingerprint_max_mb: mbEl ? parseInt(mbEl.value, 10) : 100
+    });
+    if (res.ok) {
+      if (mbEl) mbEl.value = res.var_fingerprint_max_mb;
+      owlSay('Capture settings saved! (restart the notebook kernel to apply)');
+    } else {
+      alert(res.error || 'Failed to save');
+    }
+  } catch(e) { alert('Failed to save settings'); }
+}
+
 async function loadAllTags() {
   try {
     const data = await api('/api/all-tags');
@@ -985,7 +1012,7 @@ async function settingsVacuumDb() {
 }
 
 async function settingsResetDb() {
-  if (!confirm('DELETE ALL EXPERIMENTS AND DATA?\\n\\nThis cannot be undone!')) return;
+  if (!confirm('DELETE ALL EXPERIMENTS AND DATA?\n\nThis cannot be undone!')) return;
   if (!confirm('Are you really sure? This will permanently erase everything.')) return;
   try {
     const res = await postApi('/api/reset-db');

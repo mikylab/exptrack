@@ -8,6 +8,8 @@ import sys
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 
+from ..core.utils import debug_log
+
 
 def cell_hash(source: str) -> str:
     """Content hash for a cell — this IS the cell's identity."""
@@ -55,7 +57,7 @@ def find_parent_hash(notebook: str, source: str, current_hash: str) -> str | Non
             (notebook,)
         ).fetchall()
     except Exception as e:
-        print(f"[exptrack] warning: could not query cell lineage: {e}", file=sys.stderr)
+        debug_log(f"could not query cell lineage: {e}")
         return None
 
     if not rows:
@@ -110,7 +112,7 @@ def store_cell_lineage(notebook: str, source: str, parent_hash: str | None = Non
                 )
                 conn.commit()
     except Exception as e:
-        print(f"[exptrack] warning: could not store cell lineage: {e}", file=sys.stderr)
+        debug_log(f"could not store cell lineage: {e}")
 
 
 def get_cell_source(cell_hash_val: str) -> str | None:
@@ -128,7 +130,7 @@ def get_cell_source(cell_hash_val: str) -> str | None:
             return row["source"]
         return None
     except Exception as e:
-        print(f"[exptrack] warning: could not get cell source: {e}", file=sys.stderr)
+        debug_log(f"could not get cell source: {e}")
         return None
 
 
@@ -145,7 +147,7 @@ def get_cell_baseline(notebook: str, cell_seq: int) -> str | None:
         ).fetchone()
         return row["source"] if row else None
     except Exception as e:
-        print(f"[exptrack] warning: could not get cell baseline: {e}", file=sys.stderr)
+        debug_log(f"could not get cell baseline: {e}")
         return None
 
 
@@ -164,7 +166,7 @@ def update_cell_baseline(notebook: str, cell_seq: int, source: str):
             )
             conn.commit()
     except Exception as e:
-        print(f"[exptrack] warning: could not update cell baseline: {e}", file=sys.stderr)
+        debug_log(f"could not update cell baseline: {e}")
 
 
 def simple_diff(old: str, new: str) -> list[dict]:

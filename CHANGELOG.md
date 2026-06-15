@@ -4,6 +4,184 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.32.1] - 2026-06-14
+
+### Fixed
+- **Settings UI** - fixed settings box, where vacuum and delete db were cut off. Settings now scrollable.
+
+## [1.32.0] - 2026-06-14
+
+### Added
+
+- **Dataset / input versioning** — a run isn't reproducible if you don't know *what data* trained it, so exptrack now fingerprints dataset paths passed as params and records them as a `_dataset_manifest` param when a run finishes (wired into `Experiment.finish()`, so scripts, notebooks, and programmatic runs are all covered). Detection is zero-friction (it piggybacks on the params already captured by the argparse/argv patches): any value that is an existing data file (`.csv`/`.parquet`/`.npy`/`.h5`/…) or a dataset-shaped key (`--data_dir`, `--train`, …) pointing at an existing path is fingerprinted — files via a partial content hash, directories via their `(relpath, size)` listing (no byte reads, so huge datasets stay fast). The dashboard surfaces it as a **Datasets** section in the experiment detail (path · size · fingerprint), so a changed hash makes "the data changed between runs" visible. New module `exptrack/capture/dataset.py` (`build_manifest`, `capture_dataset_manifest`); never raises (a capture failure can't crash your run).
+- **Chart PNG export** — the Charts tab has a **⬇ PNG** button that downloads the visible chart(s) as PNG (composited onto a theme-matched background so the export isn't transparent); in "Show All" mode it downloads one PNG per metric.
+- **Dashboard loading, empty, and error states** — the experiment detail panel now shows a shimmer **skeleton** while its three API calls are in flight (first entry only, so in-place refreshes don't flicker) and a friendly **error card with Retry / Back** if a fetch fails or the run is gone (previously a failed load silently left stale content). The experiment table renders a real **empty state** — distinguishing "no experiments yet" (with a getting-started hint) from "no matches" (with a **Clear filters** button) instead of a blank table.
+
+### Changed
+
+- **Compare view metric deltas** — pair-compare metric deltas now include a **% change** alongside the absolute delta, and the multi-compare table highlights the **highest (green) / lowest (red)** value per metric row so the spread across runs is scannable at a glance.
+
+### Internal
+
+- **`refreshDetail` slimmed** — the dashboard's ~400-line detail builder now delegates its Code Changes / Variables / Datasets blocks (and loading/error states) to small named helpers, and a pre-existing dead `summaryHtml` block was removed.
+- **Tests** — added `tests/test_hashing.py`, `tests/test_git.py`, `tests/test_gpu.py`, and `tests/test_dataset.py` covering previously-untested modules (file hashing incl. partial, git capture incl. outside-a-repo and exclude patterns, GPU info / `nvidia-smi` absence, and the new dataset manifest), plus query-layer tests for the batched list helpers and the `datasets` detail key.
+
+## [1.31.1] - 2026-06-14
+
+### Changed
+
+- **Experiment list no longer does N+1 queries** — `list_experiments` (the dashboard's hottest path) previously issued three queries *per* experiment (latest metrics, sparklines, params), so a 50-run list fired 150+ queries. It now batch-loads all three in three queries total via `get_latest_metrics_with_source_batch` / `get_metrics_sparkline_batch` / `get_params_batch`, so the list scales with one round-trip per data kind instead of per row. Malformed param JSON now degrades to the raw string instead of crashing the whole listing.
+- **`cmd_stale` commits once per batch** — marking timed-out runs previously opened a transaction (and fsync) per experiment; it now wraps the whole batch in a single transaction.
+- **Unified-trash counts batched** — the Trash view's per-experiment metric/artifact counts are now one grouped `COUNT` each instead of two queries per trashed run.
+
+### Removed
+
+- **Duplicated orphan-sweep logic** — `_sweep_orphans` (internal) and `sweep_orphans` (public) were near-identical; both now delegate to one `_sweep_orphans_counts` helper driven by an `_ORPHAN_SPECS` table, so future schema changes touch one place.
+
+## [1.31.0] - 2026-06-14
+
+### Added
+
+- **`EXPTRACK_DEBUG` diagnostics for silent capture failures** — exptrack runs inside your training process and deliberately swallows capture errors so a hiccup never crashes a run, but that historically left failures invisible. Set `EXPTRACK_DEBUG=1` (or `true`/`on`) to surface those swallowed exceptions on stderr (tagged `[exptrack:debug]`), so when a variable, diff, or DB reconnect silently fails you can actually see why. The flag is read fresh each time, so you can toggle it mid-notebook-session without restarting the kernel.
+- **`core/utils.py` shared safety helpers** — `debug_enabled()` / `debug_log()` (the `EXPTRACK_DEBUG` gate) and `safe_call(fn, …, default=…, context=…)`, a one-liner for the `try/except: <fallback>` idiom that recurs across the capture and db layers. The stale-DB-connection reconnect path in `core/db.py:get_db()` now reports via `debug_log` instead of swallowing the error entirely.
+- **`max_assignment_expr_len` config key** (default `500`) — the cap on how many characters of an assignment right-hand side are kept in a variable's timeline/`_var/` display before falling back to a bare `Type()` form. Previously hardcoded in two places; lower it if long inline literals bloat your timeline.
+
+### Changed
+
+- **Capture diagnostics unified on `debug_log` / `safe_call`** — the per-cell and per-savefig warning prints scattered across `cell_lineage.py`, `notebook_hooks.py`, `matplotlib_patch.py`, `script_tracking.py`, `session_hooks.py`, and `core/git.py` previously wrote to stderr unconditionally, so a recoverable capture hiccup could spam the notebook on every cell. They now route through `debug_log` (silent unless `EXPTRACK_DEBUG` is set), and `variables.var_summary` builds its summaries through `safe_call` — so capture failures are quiet by default but fully visible, with a `context` label, when you turn the debug flag on.
+- **Atomic `run-finish`** — `exptrack run-finish` now gathers metrics, extra params, and newly-discovered artifacts via reads first, then writes them together with the `status='done'` / duration update in a **single transaction**. Previously each piece committed separately, so a crash mid-finish could leave a run with metrics logged but status still `running` (or artifacts registered against an unfinished run). Now a finish either fully lands or not at all.
+- **Tag / note writes honor `batched_writes()`** — `Experiment.add_tag`/`remove_tag`/`set_note`/`add_note` now defer their commit inside a `batched_writes()` block (matching `log_params`/`log_event`) instead of always committing immediately, so a burst of metadata edits collapses into one fsync.
+- **`_ensure_schema()` split into focused, individually-testable migration helpers** — the ~270-line schema function is now an orchestrator that calls `_create_base_schema()` plus one `_migrate_*` helper per table (`_migrate_session_nodes`, `_migrate_artifacts`, `_migrate_metrics`, `_migrate_params`, `_migrate_experiments`, `_migrate_experiment_session_link`). Behavior is identical — each helper still checks column existence before `ALTER`, so the whole thing stays idempotent — but migrations are now readable and unit-tested for idempotency.
+- **Giant capture/CLI functions split into focused, unit-tested helpers** — `cmd_run_start` is now an orchestrator over `_parse_freeform_params` / `_collect_env_context` / `_resolve_run_start_experiment` / `_apply_study_stage` / `_emit_run_env`, and the notebook `_post_run_cell` hook over `_handle_scratch_or_setup` / `_record_cell_on_session` / `_process_tracked_cell`. Behavior is unchanged; the pieces are now small enough to read and have direct unit tests (param parsing, SLURM context, study/stage inheritance, env emission, finish-row gathering, scratch-cell gating).
+- **Generalized column migrations via `_add_columns(conn, table, {col: ddl})`** — every `_migrate_*` helper now declares its columns as a `{name: ddl}` map and calls the shared `_add_columns` primitive (built on `_table_columns`), which adds only the absent ones and returns the set it actually added. One-time backfills (e.g. `name_is_auto`, `params.source`) and index creation are gated on that return set, so the repetitive per-column `PRAGMA`/`if not in cols`/`ALTER` boilerplate is gone and an already-migrated DB is a provable no-op (now unit-tested).
+
+## [1.30.0] - 2026-06-13
+
+### Changed
+
+- **Unified Trash — one place for trashed experiments *and* trashed session nodes** — the global Trash view (Settings → Database → **🗑 Open Trash**) now shows two sections: **Experiments** (as before, with bulk select / restore / permanent-delete) and **Session nodes**, grouped by session, each node with **Restore** / **Delete forever** and a per-session **Empty (N)** button. The per-session trash *panel* that used to live inside each session's view is gone; the session header's `🗑 Trash` button now opens the unified Trash (its `(N)` chip still reflects that session's trashed-node count), and a session group header links back to the session in the Sessions tab. So a node soft-deleted from the tree (the hover `×`) and an experiment moved to Trash are now managed side by side instead of in two disconnected places. The Trash badge count in Settings now reflects the **combined** total (experiments + nodes).
+
+### Added
+
+- **`core/trash.py` shared aggregation module** — `list_unified_trash(conn)` and `count_unified_trash(conn)` gather both soft-delete domains (`experiments.deleted_at` and `session_nodes.deleted_at`) into one payload, so the dashboard has a single source of truth for "what's in the trash." Backed by a new cross-session `list_all_trashed_nodes(conn)` in `sessions/manager.py` (each trashed node annotated with its owning session's id/name/status). The destructive-file primitive (`_trash_or_local`) was already shared between the two domains; this completes the consolidation at the listing layer. `GET /api/trash` now returns `{experiments, sessions, counts}` instead of a bare experiment array (the dashboard tolerates both), and `get_stats` exposes `trashed_nodes` / `trashed_total` alongside the existing experiment-only `trashed`.
+
+### Fixed
+
+- **Closing the Trash returns you to the Sessions tab if that's where you opened it from** — opening Trash from a session's `🗑 Trash` button and then closing it used to dump you on the main/welcome page; Trash now remembers it was opened from the Sessions tab and restores it on close (other origins still fall back to the welcome screen as before).
+- **Clicking an experiment's name in the sidebar now opens it (and double-click-to-rename no longer mis-fires)** — the sidebar card name span used to swallow the click entirely (`stopPropagation` with no action), so the name was a dead zone for opening a run; it now uses the same debounced single-vs-double-click pattern as the main table (`onRowClick` on single click, `cancelRowClick()` before `startInlineRename` on double click), so a single click opens the run and a double click renames without also opening it.
+
+## [1.29.0] - 2026-06-13
+
+### Fixed
+
+- **Promoting a session node now carries its code over so you can retrace and rerun** — when a session node is promoted to a standalone experiment (the dashboard's **＋ Promote to experiment** / `materialize_experiment`), each replayed cell now writes its **full source** to the content-addressed `cell_lineage` table and sets the timeline event's `cell_hash`. Before, only a one-line preview survived the promotion and the Timeline's "view source" button never appeared (it's gated on `cell_hash`), so the session's code looked like it didn't transition at all — now the whole cell is viewable and copyable on the promoted run, which stays linked to its session node.
+- **Clicking a just-promoted experiment in the sidebar no longer needs two clicks** — `showDetail()` only toggles back to the welcome screen when the experiment's detail is the view actually on screen. While the Sessions (or Trash) tab overlays the canvas, `currentDetailId` could already equal the clicked run from an earlier visit, so the first click was read as "close" and silently did nothing; it now opens on the first click. Promoting also refreshes the experiment list immediately so the new run is clickable without waiting for an auto-refresh.
+
+## [1.28.1] - 2026-06-13
+
+### Changed
+
+- **Calmer, clearer session-tree rail** — readability fixes to the branch graph: (1) **the palette no longer grows with the number of branches** — the per-branch rainbow (a djb2 hash into `--branch-c0..c5`) is replaced by bounded, state-based color: a neutral spine, one teal for *every* branch line, and amber for abandoned. A tree's lanes never merge, so lane *position* already tells branches apart and color is free to carry meaning instead of identity. (2) **Dot fill is now consistent** — a node's dot is colored by its **type**, independent of the lane color, so a checkpoint is *always* a neutral filled dot (even when it sits on a colored branch line), a branch is always an open ring, abandoned always a dashed ring; the legend spells out "dot shape = node type · line color = spine vs. branch." (3) **Fork curves fan apart immediately** at a divergence (control points lead horizontally right out of the dot) instead of sharing a near-vertical run near the origin, so two sibling branches no longer read as overlapping lines.
+
+### Fixed
+
+- **Tree dots now line up with their own node, and fork lines no longer overshoot** — the node dot (and every line junction) is pixel-anchored to the title line instead of the vertical middle of a stretched, variable-height row, so on tall rows (a node with a param + result line) the dot no longer floats down toward the next node and read as "between" two nodes. The rail's verticals are now position-anchored CSS divs and each fork is a small fixed-height (20px) elbow followed by a straight vertical, so a fork curve can no longer stretch long or run *past* its own dot and dangle (a leaf/abandoned branch's line used to overshoot below its dot).
+- **Legend dots no longer doubled** — the legend was rendering both a styled swatch *and* a literal `●`/`○`/`◌` glyph next to each label; removed the redundant glyph so each key shows one mark.
+- **Divergence halo is neutral, not violet** — a forking checkpoint's ring halo used the compare-pick purple (`--compare-bg`), which clashed with "purple = a compare pick"; it's now a neutral grey so purple stays reserved for picks.
+
+## [1.28.0] - 2026-06-13
+
+### Changed
+
+- **Session trees now render as a branch graph, not a flat list** — the Sessions tab draws each session as a git-graph-style lane rail: the **checkpoint chain is the neutral dark spine** and **every branch forks into its own color-coded lane that descends straight from the checkpoint dot it came from**, so two experiments tried from the same checkpoint read as equal siblings instead of a main-line + offshoot (the old "first child sits on the trunk" layout made a dead-end branch look like the primary path, with a stray parallel spine-line reaching down to the lower branch). Promoting a branch to a checkpoint makes it rejoin the spine as the main line on the next render. A `⑂ N` divergence badge marks a fork, the most-recent live node is tagged `← latest`, any node with children can be collapsed (persisted per session in localStorage), and a compact **legend** explains the spine/branch-color/dot-shape/`⑂`/`← latest` marks so the graph is self-describing. Lane color is bounded and state-based — neutral spine, one teal for every branch, amber for abandoned (`--branch-c0/c1/ab` in `css/reset.py`, redeclared for dark mode, clear of the violet compare-accent); branches are told apart by lane *position*, not color.
+
+### Added
+
+- **Trace code straight from the tree** — every node now shows a one-line **defining change** (`✎ threshold = 0.7 → 0.5`, pulled from its diff-vs-parent or first cell line) so you can read what made a branch different at a glance, plus a `⟨⟩` toggle that expands the node's **full cell source, syntax-highlighted, inline in the row** — no detour to the detail pane to see what a branch actually ran.
+- **Branch context on a converted experiment** — a promoted/materialized run's detail view now shows the **other branches tried from the same checkpoint** (each with its captured result and a link to its own experiment, the current run highlighted), so a run keeps the exploratory context it came out of instead of arriving as an orphan. Backed by `_sibling_branches` on the experiment's `session_origin`.
+- **Clickable lineage breadcrumb in the node detail** — selecting a node now shows its ancestor path (`root › checkpoint › branch › …`) as clickable crumbs that jump to any ancestor, so you can orient yourself and retrace where a node sits in the tree. Built from an id-bearing lineage now attached to every node by `build_tree` (no new endpoint).
+- **Per-session outcome summary in the tree header** — a **Produced** strip lists the experiments a session generated (clickable chips that open the run) plus checkpoint/branch/abandoned counts, answering "what did this session give me?" at a glance.
+
+### Fixed
+
+- **Session "→ exp" links now actually open the experiment** — clicking a node's `→ exp` badge (or the node-detail Linked-experiment link) previously appeared to do nothing: the Sessions tab overlay hides the detail view with `display:none !important`, and the navigation never dropped that overlay. `showDetailView()` now closes the Sessions tab first, so the experiment detail opens and its sidebar card highlights as expected.
+
+## [1.27.1] - 2026-06-13
+
+### Fixed
+
+- **Dashboard failed to load (blank experiment list)** — a mis-escaped apostrophe in the new experiment→session "From session" back-link (`title="Open this run\'s session node"` inside a raw JS string) closed the JS string early, a syntax error that broke the *entire* dashboard script so nothing past the static header rendered. Replaced the apostrophe with the `&#39;` HTML entity.
+
+## [1.27.0] - 2026-06-13
+
+### Added
+
+- **Link an experiment to a session node from the dashboard ("UI promote")** — the node-detail **Linked experiment** row now lets you point a node at an existing run, **Change** it, or **Unlink** it (the dashboard equivalent of `%exptrack promote`), sitting alongside the existing **＋ Promote to experiment** (materialize a new run) action. Linking is 1:1 with the node so its `→ exp` badge is unambiguous, and only the session pointer is touched — the experiment is never modified or deleted. Backed by `manager.link_experiment` and `POST /api/session/<sid>/link-experiment`.
+- **End a session from the dashboard** — an **⏹ End session** button in the Sessions header (UI equivalent of `%exptrack session end`) closes the session and marks any open branches abandoned; ended sessions show a `session ended` tag instead. (The `/api/session/<sid>/end` route already existed; this adds the missing UI.)
+
+### Fixed
+
+- **Copy a single line from a session cell without it snapping shut** — releasing a drag-selection on a cell block's header no longer collapses the `<details>`, so you can select and copy one line (line numbers excluded) with a normal select + copy.
+
+## [1.26.0] - 2026-06-11
+
+### Added
+
+- **`exptrack notebook-guard` — portable notebooks** — prints a paste-able guard cell for the top of a notebook so the same notebook runs with OR without exptrack installed. When exptrack is present it loads normally (full tracking); when it isn't, the `%%scratch` / `%%setup` / `%%pin` / `%exptrack` magics are registered as harmless no-ops that still run the cell body, instead of raising an "unknown magic" error (which, for a cell magic, would silently skip the whole cell). Solves the "it's hard to remove the inline magics" friction when sharing a notebook with collaborators who don't have exptrack.
+
+### Documented
+
+- **`%%setup` in the Session Trees guide** — `docs/session-trees.md` previously documented only `%%scratch` and `%%pin`; it now covers the `%%setup` demoted-prep tier throughout (a three-tiers table, the timing guide, the runnable example, the per-node "what gets attached" section, and the schema), including the positional-scoping gotcha (a `%%setup` cell lands on whichever node is active, and promote/materialize replays only a node's *own* setup, not an ancestor checkpoint's). Added a new **portability** section documenting the guard cell, the `auto_capture.notebook: false` opt-out, and how to strip the magics.
+
+## [1.25.0] - 2026-06-10
+
+### Added
+
+- **Trace an experiment back to its session** — the experiment detail view now shows a "From session" back-link banner whenever a run came from (or is linked to) a Session Trees node, with the session name, the node type (checkpoint/branch), and a `checkpoint → branch` lineage breadcrumb. Clicking it opens the Sessions tab focused on that exact node. Previously the link only worked one way (tree → exp); now you can navigate exp → tree, so a promoted/materialized run is no longer orphaned from the exploration it came from. (`get_experiment_detail` exposes a new `session_origin` field.)
+- **Capture settings in the dashboard** — Settings → Capture now exposes two config knobs that previously required hand-editing `.exptrack/config.json`. **Notebook auto-capture** (a checkbox for `auto_capture.notebook`) lets you turn off the per-cell auto-experiment so Session Trees can be used standalone with runs started explicitly. **Variable fingerprint cap (MB)** (`var_fingerprint_max_mb`) controls how large a DataFrame/array is content-hashed for per-cell change detection — lower it if notebook cells are slow to *finish* (objects over the cap fall back to a cheap shape/dtype signature, so the post-cell hook stops re-hashing big frames every run). Both persist to project config via `GET`/`POST /api/config/capture`; a note reminds you to restart the notebook kernel to apply.
+
+### Fixed
+
+- **Promote-to-experiment now carries plots and prep cells** — materializing a session node into an experiment (the `＋ Promote to experiment` button) previously dropped the node's saved plots and its `%%setup` prep cells, so the resulting run was hard to understand. It now registers the node's by-reference plots as artifacts (they appear in the Images tab) and replays `%%setup` cells as muted `setup` Timeline events, and prepends a lineage breadcrumb (`From session 'X' (branch): checkpoint → branch`) to the run's notes.
+
+## [1.24.0] - 2026-06-10
+
+### Added
+
+- **Promote a session node to a real experiment** — a `＋ Promote to experiment` button in the Sessions node detail (for any branch/checkpoint not already linked to a run) materializes a first-class experiment from that node: it copies the node's label as the name, its git commit/diff/branch and note, and replays the node's cells as Timeline events, then links it so the node shows its `→ exp` badge and the run appears in the main list. This is the dashboard equivalent of `%exptrack promote` when there's no live notebook run to attach.
+- **Per-line copy in session cells** — every code line in a Session Trees cell block now has a hover-revealed `⧉` button that copies just that one line to the clipboard. No more dragging a selection (which picks up the line-number gutter and can snap the `<details>` cell shut) when you only want a single line.
+- **Stale-print flag** — `print()` statements that emit a hardcoded number (e.g. `print("accuracy 98")` instead of `print(f"accuracy {acc}")`) are flagged with an amber `⚠ stale?` marker, since a hardcoded result is usually a value you meant to interpolate from a variable. Surfaced both on the Sessions-tab cell blocks (per-line ⚠ + a per-cell count chip) and in the experiment Timeline (a badge on the cell row + per-line marks in the expanded source). Numbers inside f-string `{…}` placeholders and format specs like `%.4f` are ignored, so it only fires on genuinely hardcoded literals.
+
+### Changed
+
+- **Sticky branch-compare bar** — the Compare / Clear bar in the Sessions tab now sticks to the top of the view while you scroll, and gained a **Done** button to exit Compare-branches mode. Combined with the existing per-node `⇄` pin (start) you can now start and stop a comparison anywhere in a long tree without scrolling back to the header toggle.
+- **Expanded session cells survive a re-render** — expanding a cell block in the node detail no longer collapses when the panel re-renders (e.g. saving a note or toggling the diff Split/Unified mode); open cells are remembered and restored.
+
+## [1.23.0] - 2026-06-09
+
+### Added
+
+- **Copy buttons on session cells, outputs & results** — every cell source block, `Out` panel, **Latest result**, and **Compare** column in the Sessions tab now has a small `⧉ Copy` button that copies the full raw text (newlines intact, line-number gutter stripped) to the clipboard in one click. No more fighting scroll, soft-wrap, or a `<details>` block snapping shut mid-selection when you just want to grab a few lines or an output.
+- **Per-node compare pin (`⇄`)** — every checkpoint/branch node in the tree gets a hover `⇄` button that adds it straight to the branch comparison, enabling Compare-branches mode on demand. You no longer have to find and toggle the global Compare mode first before clicking nodes — handy when the tree is long and the toggle has scrolled out of view. Picked nodes show the pin filled in the comparison's violet accent.
+
+### Changed
+
+- **Session cell source & output no longer cut off** — the node-detail cell-code (was capped at 360px) and output/result blocks (latest result was capped at 200px) now expand fully so nothing is hidden behind an inner scrollbar; drag the bottom edge to shrink a huge block. Makes reading and copying long cells/outputs straightforward.
+
+### Added
+
+- **`%%setup` cells — recorded but secondary (Session Trees)** — a new cell magic for prep code (e.g. building a `df`) that you'll want to recover later but don't weight like real cells. Unlike `%%scratch` (thrown away), a `%%setup` cell is recorded onto the active session node's *own* byte-budgeted store (`setup_source`/`setup_outputs`), kept out of the tracked-cell lineage/variable churn, and attached to the active run as a muted `setup` timeline event so a promoted experiment stays self-contained. The dashboard shows them dimmed under a collapsed **Setup / prep** section in the node detail (and a 🛠 count on the tree node), so promoting a branch keeps the provenance of your `df` with no rerun and no giant git diff.
+- **Promote a branch to a checkpoint from the UI/CLI** — a hover `↑ checkpoint` button on every branch node (and `exptrack session promote-checkpoint <node>`, `POST /api/session/<id>/promote-to-checkpoint`) converts a branch into a checkpoint, freezing its current diff so later branches attach under it.
+
+### Changed
+
+- **Session cells collapse by default** — node-detail cell blocks now all start collapsed (previously the last three stayed open); the "N cells collapsed — expand all" hint reveals them. Keeps long branches scannable.
+- **A session groups under one experiment** — while a Session-Trees session is active, the notebook's auto-created run is linked to the current session node the first time a real cell runs (an explicit `%exptrack promote` still re-targets it), instead of floating as a separate, unconnected experiment. `%%scratch`, `%%setup`, and `%exptrack` magic cells never trigger run creation, so a session full of prep/exploration no longer spawns an empty run.
+
+### Fixed
+
+- **`%%scratch` / `%%setup` now display a trailing expression** — these cell magics ran their body with `exec()`, which swallows a bare final expression, so a DataFrame on the last line produced no output unless you added a `print`. Both now split off and route the trailing expression through IPython's display hook, so a final `df` renders normally.
+
 ## [1.21.1] - 2026-06-09
 
 ### Changed

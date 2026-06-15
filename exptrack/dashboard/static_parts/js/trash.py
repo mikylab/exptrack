@@ -254,8 +254,10 @@ function _afterMutation(id) {
   if (document.body.classList.contains('trash-active')) loadTrashList();
 }
 
-// ── Trash view ──────────────────────────────────────────────────────────────
-let _trashCache = [];
+// ── Trash view (unified: experiments + session nodes) ───────────────────────
+// _trashCache holds the whole unified payload: {experiments:[...], sessions:[...]}.
+// _trashSelected tracks the bulk selection for the Experiments section only.
+let _trashCache = { experiments: [], sessions: [] };
 let _trashSelected = new Set();
 
 function toggleTrashView() {
@@ -266,7 +268,12 @@ function toggleTrashView() {
   }
 }
 
+// Remember where Trash was opened from so closing returns there (not always
+// the welcome screen). Currently only the Sessions tab needs restoring.
+let _trashReturnView = null;
+
 function openTrashView() {
+  _trashReturnView = document.body.classList.contains('sessions-active') ? 'sessions' : null;
   document.body.classList.add('trash-active');
   document.body.classList.remove('sessions-active');
   const tv = document.getElementById('trash-view');
@@ -293,23 +300,37 @@ function openTrashView() {
 function closeTrashView() {
   document.body.classList.remove('trash-active');
   const tv = document.getElementById('trash-view');
-  const welcome = document.getElementById('welcome-state');
   if (tv) tv.style.display = 'none';
+  // Return to the view Trash was opened from. The Sessions tab needs its own
+  // teardown undone (openTrashView hid #sessions-tab + dropped sessions-active);
+  // toggleSessionsTab() re-shows it (it opens, since the class was removed).
+  if (_trashReturnView === 'sessions' && typeof toggleSessionsTab === 'function') {
+    _trashReturnView = null;
+    toggleSessionsTab();
+    return;
+  }
+  const welcome = document.getElementById('welcome-state');
   if (welcome) welcome.style.display = '';
 }
 
 async function loadTrashList() {
   const container = document.getElementById('trash-view');
   if (!container) return;
-  let rows;
+  let data;
   try {
-    rows = await api('/api/trash');
+    data = await api('/api/trash');
   } catch (e) {
     container.innerHTML = '<div class="trash-empty">Could not load Trash: ' + esc(String(e)) + '</div>';
     return;
   }
-  _trashCache = Array.isArray(rows) ? rows : [];
-  _trashSelected = new Set([..._trashSelected].filter(id => _trashCache.find(r => r.id === id)));
+  // New unified shape {experiments, sessions}; tolerate the old bare-array shape.
+  if (Array.isArray(data)) data = { experiments: data, sessions: [] };
+  _trashCache = {
+    experiments: (data && data.experiments) || [],
+    sessions: (data && data.sessions) || [],
+  };
+  _trashSelected = new Set([..._trashSelected].filter(
+    id => _trashCache.experiments.find(r => r.id === id)));
   _renderTrashView();
   _refreshTrashCount();
 }
@@ -317,27 +338,50 @@ async function loadTrashList() {
 function _renderTrashView() {
   const container = document.getElementById('trash-view');
   if (!container) return;
-  const rows = _trashCache;
+  const exps = _trashCache.experiments || [];
+  const sessions = _trashCache.sessions || [];
+  const nodeTotal = sessions.reduce((a, g) => a + (g.nodes ? g.nodes.length : 0), 0);
+  const grandTotal = exps.length + nodeTotal;
+
   let html = '<div class="trash-header">' +
-    '<h2>Trash <span style="color:var(--muted);font-weight:400;font-size:14px">(' + rows.length + ')</span></h2>' +
+    '<h2>Trash <span style="color:var(--muted);font-weight:400;font-size:14px">(' + grandTotal + ')</span></h2>' +
     '<div class="trash-actions">' +
-      (rows.length ? '<button class="dc-button" onclick="_trashSelectAll(this)">' +
-        (_trashSelected.size === rows.length ? 'Deselect all' : 'Select all') + '</button>' : '') +
-      (_trashSelected.size ? '<button class="dc-button primary" onclick="trashBulkRestore()">Restore (' + _trashSelected.size + ')</button>' : '') +
-      (_trashSelected.size ? '<button class="dc-button danger" onclick="trashBulkPermanent()">Permanently delete (' + _trashSelected.size + ')</button>' : '') +
       '<button class="dc-button" onclick="closeTrashView()">Close</button>' +
     '</div>' +
   '</div>' +
-  '<p class="trash-blurb">Soft-deleted experiments live here. They are hidden from the dashboard and stats, ' +
-    'but their database rows and files are untouched. Restore them, or use <b>Permanently delete</b> to remove the DB record. ' +
-    'A checkbox in the permanent-delete confirm lets you also remove files on disk.</p>';
+  '<p class="trash-blurb">Soft-deleted items live here — both experiments and session-tree nodes. ' +
+    'They are hidden from the dashboard and stats, but their database rows and files are untouched. ' +
+    'Restore them, or use <b>Permanently delete</b> / <b>Delete forever</b> to remove the record. ' +
+    'A checkbox in the experiment permanent-delete confirm lets you also remove files on disk; ' +
+    'purging a session node moves its by-reference plot files to your OS Trash.</p>';
 
-  if (!rows.length) {
+  if (!grandTotal) {
     html += '<div class="trash-empty">Trash is empty.</div>';
     container.innerHTML = html;
     return;
   }
 
+  html += _renderTrashExpSection(exps);
+  html += _renderTrashNodeSection(sessions, nodeTotal);
+  container.innerHTML = html;
+}
+
+// ── Experiments section ───────────────────────────────────────────────────
+function _renderTrashExpSection(rows) {
+  let html = '<div class="trash-section">' +
+    '<div class="trash-section-head">' +
+      '<span class="trash-section-title">Experiments <span class="trash-section-count">(' + rows.length + ')</span></span>' +
+      '<div class="trash-actions">' +
+        (rows.length ? '<button class="dc-button" onclick="_trashSelectAll(this)">' +
+          (_trashSelected.size === rows.length ? 'Deselect all' : 'Select all') + '</button>' : '') +
+        (_trashSelected.size ? '<button class="dc-button primary" onclick="trashBulkRestore()">Restore (' + _trashSelected.size + ')</button>' : '') +
+        (_trashSelected.size ? '<button class="dc-button danger" onclick="trashBulkPermanent()">Permanently delete (' + _trashSelected.size + ')</button>' : '') +
+      '</div>' +
+    '</div>';
+  if (!rows.length) {
+    html += '<div class="trash-empty">No trashed experiments.</div></div>';
+    return html;
+  }
   html += '<table class="trash-table">' +
     '<thead><tr>' +
       '<th class="trash-row-checkbox"></th>' +
@@ -367,8 +411,114 @@ function _renderTrashView() {
       '</div></td>' +
     '</tr>';
   }
-  html += '</tbody></table>';
-  container.innerHTML = html;
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ── Session-nodes section (grouped by session) ─────────────────────────────
+function _renderTrashNodeSection(sessions, nodeTotal) {
+  let html = '<div class="trash-section">' +
+    '<div class="trash-section-head">' +
+      '<span class="trash-section-title">Session nodes <span class="trash-section-count">(' + nodeTotal + ')</span></span>' +
+    '</div>';
+  if (!nodeTotal) {
+    html += '<div class="trash-empty">No trashed session nodes.</div></div>';
+    return html;
+  }
+  for (const g of sessions) {
+    const nodes = g.nodes || [];
+    if (!nodes.length) continue;
+    const sid = g.session.id;
+    const sname = g.session.name || '(unnamed session)';
+    html += '<div class="trash-session-group">' +
+      '<div class="trash-session-head">' +
+        '<span class="trash-session-name" onclick="openSessionsTabFor(\'' + sid + '\')" title="Open this session">' +
+          esc(sname) + '</span>' +
+        (g.session.status ? '<span class="trash-session-status">' + esc(g.session.status) + '</span>' : '') +
+        '<button class="dc-button danger" onclick="emptyTrashSession(\'' + sid + '\',\'' +
+          esc(sname).replace(/\'/g, "\\\\'") + '\')">Empty (' + nodes.length + ')</button>' +
+      '</div>' +
+      '<div class="trash-rows">';
+    for (const n of nodes) {
+      const rel = n.deleted_at ? _fmtNodeTime(n.deleted_at) : '';
+      const cb = n.cell_bytes ? ' · ' + n.cell_bytes + ' B of cells' : '';
+      html += '<div class="trash-row">' +
+        '<div class="trash-row-main">' +
+          '<span class="trash-type trash-type-' + esc(n.node_type) + '">' + esc(n.node_type) + '</span>' +
+          '<span class="trash-label">' + esc(n.label || '(unlabeled)') + '</span>' +
+        '</div>' +
+        '<div class="trash-row-meta">deleted ' + esc(rel) + cb + '</div>' +
+        '<div class="trash-row-actions">' +
+          '<button class="trash-restore-btn" onclick="restoreTrashNode(\'' + sid + '\',\'' + n.id + '\')">Restore</button>' +
+          '<button class="trash-purge-btn" onclick="purgeTrashNode(\'' + sid + '\',\'' + n.id + '\',\'' +
+            esc(n.label || '').replace(/\'/g, "\\\\'") + '\')">Delete forever</button>' +
+        '</div>' +
+      '</div>';
+    }
+    html += '</div></div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function _fmtNodeTime(unixSecs) {
+  try {
+    if (typeof fmtTimeAgo === 'function') return fmtTimeAgo(unixSecs * 1000);
+    return new Date(unixSecs * 1000).toLocaleString();
+  } catch (e) { return ''; }
+}
+
+// Jump from a trashed-node row to its session in the Sessions tab. The trashed
+// node itself won't be in the (live) tree, so we just open the session.
+function openSessionsTabFor(sessionId) {
+  closeTrashView();
+  if (typeof openSessionNode === 'function') openSessionNode(sessionId, null);
+}
+
+// ── Session-node actions (call the existing per-session endpoints) ──────────
+async function restoreTrashNode(sid, nodeId) {
+  const r = await postApi('/api/session/' + encodeURIComponent(sid) + '/restore-node', { node_id: nodeId });
+  if (!r || r.error) { alert('Could not restore node: ' + ((r && r.error) || 'unknown error')); return; }
+  _afterNodeTrashMutation(sid);
+}
+
+async function purgeTrashNode(sid, nodeId, label) {
+  if (!confirm('Permanently delete "' + (label || nodeId) + '" and its trashed subtree?\n\n' +
+    'This cannot be undone. Linked experiments are preserved; any attached plot files are moved to your OS Trash.')) return;
+  const r = await postApi('/api/session/' + encodeURIComponent(sid) + '/purge-node', { node_id: nodeId });
+  if (!r || r.error) { alert('Could not delete node: ' + ((r && r.error) || 'unknown error')); return; }
+  _reportTrashedImages(r.images);
+  _afterNodeTrashMutation(sid);
+}
+
+async function emptyTrashSession(sid, name) {
+  if (!confirm('Permanently delete EVERY trashed node in session "' + (name || sid) + '"?\n\n' +
+    'This cannot be undone. Linked experiments are preserved; any attached plot files are moved to your OS Trash.')) return;
+  const r = await postApi('/api/session/' + encodeURIComponent(sid) + '/empty-trash', {});
+  if (!r || r.error) { alert('Could not empty trash: ' + ((r && r.error) || 'unknown error')); return; }
+  _reportTrashedImages(r.images);
+  _afterNodeTrashMutation(sid);
+}
+
+function _afterNodeTrashMutation(sid) {
+  // The node trees may be showing; drop the cache so a later open re-fetches.
+  if (typeof _treeCache === 'object' && _treeCache) delete _treeCache[sid];
+  loadTrashList();
+  if (typeof loadStats === 'function') loadStats();
+  if (typeof loadSessionsList === 'function') loadSessionsList();
+}
+
+// Surface how many by-reference plot files were moved to the OS Trash on purge.
+function _reportTrashedImages(images) {
+  if (!images) return;
+  const moved = (images.os_trash || 0) + (images.local_trash || 0);
+  const failed = images.failed || 0;
+  if (moved) {
+    alert('Moved ' + moved + ' attached plot file' + (moved === 1 ? '' : 's') + ' to your OS Trash' +
+      (failed ? ' (' + failed + ' could not be removed and were left in place).' : '.'));
+  } else if (failed) {
+    alert(failed + ' attached plot file' + (failed === 1 ? '' : 's') + ' could not be removed and were left in place.');
+  }
 }
 
 function _fmtTrashTime(iso) {
@@ -386,8 +536,9 @@ function _trashToggle(id, on) {
 }
 
 function _trashSelectAll(btn) {
-  if (_trashSelected.size === _trashCache.length) _trashSelected.clear();
-  else _trashSelected = new Set(_trashCache.map(r => r.id));
+  const exps = _trashCache.experiments || [];
+  if (_trashSelected.size === exps.length) _trashSelected.clear();
+  else _trashSelected = new Set(exps.map(r => r.id));
   _renderTrashView();
 }
 
@@ -549,7 +700,7 @@ async function _refreshTrashCount() {
     const stats = await api('/api/stats');
     const btn = document.getElementById('trash-toggle-btn');
     if (!btn) return;
-    const n = (stats && stats.trashed) || 0;
+    const n = (stats && (stats.trashed_total != null ? stats.trashed_total : stats.trashed)) || 0;
     if (n > 0) {
       btn.classList.add('has-items');
       btn.innerHTML = '\u{1F5D1} Open Trash <span class="trash-btn-count">' + n + '</span>';

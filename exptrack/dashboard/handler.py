@@ -144,6 +144,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(read_routes.api_get_timezone())
         elif path == "/api/config/metrics":
             self._json(read_routes.api_get_metric_settings())
+        elif path == "/api/config/capture":
+            self._json(read_routes.api_get_capture_settings())
         elif path == "/api/result-types":
             self._json(read_routes.api_result_types())
         elif path == "/api/studies":
@@ -259,6 +261,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "delete-node":          lambda: write_routes.api_session_delete_node(conn, sid, body),
                     "delete-node-preview":  lambda: write_routes.api_session_preview_delete_node(conn, sid, body),
                     "restore-node":         lambda: write_routes.api_session_restore_node(conn, sid, body),
+                    "promote-to-checkpoint": lambda: write_routes.api_session_promote_to_checkpoint(conn, sid, body),
+                    "materialize-experiment": lambda: write_routes.api_session_materialize_experiment(conn, sid, body),
+                    "link-experiment":      lambda: write_routes.api_session_link_experiment(conn, sid, body),
                     "purge-node":           lambda: write_routes.api_session_purge_node(conn, sid, body),
                     "empty-trash":          lambda: write_routes.api_session_empty_trash(conn, sid, body),
                 }
@@ -279,6 +284,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/bulk-export":          lambda: write_routes.api_bulk_export(conn, body),
             "/api/config/timezone":      lambda: write_routes.api_set_timezone(body),
             "/api/config/metrics":       lambda: write_routes.api_set_metric_settings(body),
+            "/api/config/capture":       lambda: write_routes.api_set_capture_settings(body),
             "/api/studies/create":       lambda: write_routes.api_create_study(conn, body),
             "/api/studies/add":          lambda: write_routes.api_add_to_study(conn, body),
             "/api/studies/remove":       lambda: write_routes.api_remove_from_study(conn, body),

@@ -21,6 +21,18 @@ CSS_CODE = """
   .tok-bi  { color: var(--tok-bi); }
   .tok-dec { color: var(--tok-dec); }
 
+  /* Stale-print flag — a print() with a hardcoded number that's likely a value
+     the author meant to interpolate. Shared by the Sessions cell viewer and the
+     experiment Timeline. Amber = "warning / look here", distinct from add/del. */
+  .stale-print-badge {
+    display: inline-block; font-size: 10px; font-weight: 600;
+    color: var(--yellow); border: 1px solid var(--yellow);
+    border-radius: 3px; padding: 0 5px; margin-left: 6px;
+    vertical-align: middle; cursor: help; white-space: nowrap;
+  }
+  .cl.cl-stale, .stale-line { background: var(--status-warning-soft, rgba(220,160,0,0.10)); }
+  .cl-stale-mark, .stale-print-mark { color: var(--yellow); cursor: help; }
+
   /* Unified diff with tinted lines, a sign gutter, and word-level spotlights.
      Lines carry a background tint + left bar (not just colored text) so syntax
      highlighting and add/del status can coexist. */

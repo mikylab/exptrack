@@ -95,12 +95,106 @@ function filterArtifacts(expId, query) {
 }
 
 async function showDetail(id) {
-  // Toggle: clicking same experiment deselects
-  if (currentDetailId === id) {
+  // Toggle (clicking the open experiment deselects it) ONLY when that
+  // experiment's detail is the view actually on screen. While the Sessions or
+  // Trash tab overlays the canvas — e.g. right after promoting a node, when
+  // currentDetailId may still equal `id` from an earlier visit — the detail
+  // view is hidden, so a plain equality check would read the click as "close"
+  // and the user would have to click a second time to actually open it. Guard
+  // on real visibility so the first click lands.
+  const detailEl = document.getElementById('detail-view');
+  const detailVisible = detailEl && detailEl.style.display !== 'none' &&
+    !document.body.classList.contains('sessions-active') &&
+    !document.body.classList.contains('trash-active');
+  if (currentDetailId === id && detailVisible) {
     showWelcome();
     return;
   }
   return refreshDetail(id);
+}
+
+// ── Detail loading / error states ───────────────────────────────────────────
+
+function _detailLoadingHtml() {
+  return '<div class="detail-loading">' +
+    '<div class="skel skel-title"></div>' +
+    '<div class="skel skel-bar" style="width:92%"></div>' +
+    '<div class="skel skel-bar" style="width:70%"></div>' +
+    '<div class="skel skel-bar" style="width:84%"></div>' +
+    '<div class="skel skel-bar" style="width:58%"></div>' +
+    '<div class="skel skel-bar" style="width:78%"></div>' +
+    '</div>';
+}
+
+function _detailErrorHtml(id, msg) {
+  return '<div class="detail-error">' +
+    '<div style="font-size:32px">⚠️</div>' +
+    '<div style="margin-top:8px;font-weight:600">' + esc(msg) + '</div>' +
+    '<div><button class="action-btn retry-btn" onclick="refreshDetail(\'' + esc(id) + '\')">Retry</button> ' +
+    '<button class="action-btn retry-btn" onclick="showWelcome()">Back to list</button></div>' +
+    '</div>';
+}
+
+// ── Detail section builders (kept out of the big refreshDetail template) ──────
+
+function _buildCodeSection(codeChanges) {
+  if (!Object.keys(codeChanges).length) return '';
+  let html = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Code Changes</h2><div class="section-body"><div class="code-changes">';
+  for (const [k, v] of Object.entries(codeChanges)) {
+    const label = k === '_code_changes' ? 'Script diff vs. last commit' : k.replace('_code_change/', 'Cell ');
+    html += '<div class="change-item"><div class="change-label">' + esc(label) + '</div>' + _renderCodeChangeParts(v) + '</div>';
+  }
+  return html + '</div></div>';
+}
+
+function _buildVarSection(varChanges) {
+  if (!Object.keys(varChanges).length) return '';
+  const scalars = {}, arrays = {}, other = {};
+  for (const [k, v] of Object.entries(varChanges)) {
+    const sv = String(v);
+    if (sv.startsWith('ndarray(') || sv.startsWith('Tensor(') || sv.startsWith('DataFrame(') || sv.startsWith('Series(')) {
+      arrays[k] = v;
+    } else if (sv.startsWith("'") || sv.startsWith('"') || !isNaN(Number(sv)) || sv === 'True' || sv === 'False') {
+      scalars[k] = v;
+    } else {
+      other[k] = v;
+    }
+  }
+  let html = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Variables (' + Object.keys(varChanges).length + ')</h2><div class="section-body"><div class="var-changes">';
+  const renderGroup = (title, vars) => {
+    if (!Object.keys(vars).length) return '';
+    let h = '<div class="var-section-title">' + title + ' (' + Object.keys(vars).length + ')</div><table>';
+    for (const [k, v] of Object.entries(vars)) {
+      let displayVal = String(v);
+      if (displayVal.startsWith(k + ' = ')) displayVal = displayVal.slice(k.length + 3);
+      h += '<tr><td class="var-name">' + esc(k) + '</td><td>= ' + esc(displayVal) + '</td></tr>';
+    }
+    return h + '</table>';
+  };
+  html += renderGroup('Scalars', scalars);
+  html += renderGroup('Arrays & Tensors', arrays);
+  html += renderGroup('Other', other);
+  return html + '</div></div>';
+}
+
+function _buildDatasetsSection(datasets) {
+  const keys = Object.keys(datasets || {});
+  if (!keys.length) return '';
+  let html = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Datasets (' + keys.length + ') <span class="help-icon" title="Fingerprints of dataset files/dirs passed as params, captured at run end. A changed hash means the input data changed between runs.">?</span></h2><div class="section-body"><table class="params-table"><tr><th>Param</th><th>Path</th><th>Size</th><th>Fingerprint</th></tr>';
+  for (const k of keys) {
+    const m = datasets[k] || {};
+    const info = m.kind === 'dir' ? (m.n_files + ' files' + (m.truncated ? '+' : '')) : 'file';
+    const full = m.hash || '';
+    const isPartial = full.startsWith('partial:');
+    const hash = full.replace('partial:', '').slice(0, 12);
+    html += '<tr><td>' + esc(k) + '</td>' +
+      '<td class="artifact-path-cell" title="' + esc(m.path || '') + '">' + esc(m.path || '') +
+      ' <span style="color:var(--muted);font-size:11px">(' + info + ')</span></td>' +
+      '<td>' + fmtBytes(m.size || 0) + '</td>' +
+      '<td title="' + esc(full) + '" style="font-family:var(--font-mono);font-size:11px">' + esc(hash) +
+      (isPartial ? ' <span style="color:var(--muted)" title="partial hash (large file)">~</span>' : '') + '</td></tr>';
+  }
+  return html + '</table></div>';
 }
 
 async function refreshDetail(id) {
@@ -117,12 +211,26 @@ async function refreshDetail(id) {
   }
   renderExpList();
 
-  const [exp, metricsData, diffData] = await Promise.all([
-    api('/api/experiment/' + id),
-    api('/api/metrics/' + id),
-    api('/api/diff/' + id),
-  ]);
-  if (exp.error) return;
+  // Show a loading skeleton only on first entry to this experiment, so an
+  // in-place refresh (logging a metric, auto-poll) doesn't flicker the panel.
+  const _panel = document.getElementById('detail-panel');
+  if (_panel && isInitialEntry) _panel.innerHTML = _detailLoadingHtml();
+
+  let exp, metricsData, diffData;
+  try {
+    [exp, metricsData, diffData] = await Promise.all([
+      api('/api/experiment/' + id),
+      api('/api/metrics/' + id),
+      api('/api/diff/' + id),
+    ]);
+  } catch (err) {
+    if (_panel) _panel.innerHTML = _detailErrorHtml(id, 'Could not load experiment (network error).');
+    return;
+  }
+  if (!exp || exp.error) {
+    if (_panel) _panel.innerHTML = _detailErrorHtml(id, (exp && exp.error) || 'Experiment not found.');
+    return;
+  }
 
   const regularParams = {};
   const codeChanges = {};
@@ -245,64 +353,10 @@ async function refreshDetail(id) {
     <button onclick="openManageResultTypes()" style="background:transparent;color:var(--muted);border:none;font-size:16px;padding:0 4px;cursor:pointer;line-height:1" title="Manage metric types">&#9881;</button>
   </div>`;
 
-  // Code changes
-  let codeHtml = '';
-  if (Object.keys(codeChanges).length) {
-    codeHtml = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Code Changes</h2><div class="section-body"><div class="code-changes">';
-    for (const [k, v] of Object.entries(codeChanges)) {
-      const label = k === '_code_changes' ? 'Script diff vs. last commit' : k.replace('_code_change/','Cell ');
-      codeHtml += '<div class="change-item"><div class="change-label">' + esc(label) + '</div>' + _renderCodeChangeParts(v) + '</div>';
-    }
-    codeHtml += '</div></div>';
-  }
-
-  // Variable changes
-  let varHtml = '';
-  if (Object.keys(varChanges).length) {
-    const scalars = {}, arrays = {}, other = {};
-    for (const [k, v] of Object.entries(varChanges)) {
-      const sv = String(v);
-      if (sv.startsWith('ndarray(') || sv.startsWith('Tensor(') || sv.startsWith('DataFrame(') || sv.startsWith('Series(')) {
-        arrays[k] = v;
-      } else if (sv.startsWith("'") || sv.startsWith('"') || !isNaN(Number(sv)) || sv === 'True' || sv === 'False') {
-        scalars[k] = v;
-      } else {
-        other[k] = v;
-      }
-    }
-    varHtml = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Variables (' + Object.keys(varChanges).length + ')</h2><div class="section-body"><div class="var-changes">';
-    const renderGroup = (title, vars) => {
-      if (!Object.keys(vars).length) return '';
-      let h = '<div class="var-section-title">' + title + ' (' + Object.keys(vars).length + ')</div><table>';
-      for (const [k, v] of Object.entries(vars)) {
-        let displayVal = String(v);
-        // Strip "varname = " prefix if present (capture stores "x = expr  # type")
-        if (displayVal.startsWith(k + ' = ')) {
-          displayVal = displayVal.slice(k.length + 3);
-        }
-        h += '<tr><td class="var-name">' + esc(k) + '</td><td>= ' + esc(displayVal) + '</td></tr>';
-      }
-      return h + '</table>';
-    };
-    varHtml += renderGroup('Scalars', scalars);
-    varHtml += renderGroup('Arrays & Tensors', arrays);
-    varHtml += renderGroup('Other', other);
-    varHtml += '</div></div>';
-  }
-
-  // Summary card
-  const totalMetricSteps = exp.metrics.reduce((s,m) => s + m.n, 0);
-  const numVars = Object.keys(varChanges).length;
-  const numArt = exp.artifacts.length;
-  const numCodeChanges = Object.keys(codeChanges).length;
-  let summaryHtml = '<div class="summary-card"><div class="summary-grid">';
-  summaryHtml += '<div class="summary-item"><div class="val">' + Object.keys(regularParams).length + '</div><div class="lbl">Params</div></div>';
-  summaryHtml += '<div class="summary-item"><div class="val">' + exp.metrics.length + '</div><div class="lbl">Metric Keys</div></div>';
-  summaryHtml += '<div class="summary-item"><div class="val">' + totalMetricSteps + '</div><div class="lbl">Metric Points</div></div>';
-  summaryHtml += '<div class="summary-item"><div class="val">' + numVars + '</div><div class="lbl">Variables</div></div>';
-  summaryHtml += '<div class="summary-item"><div class="val">' + numArt + '</div><div class="lbl">Artifacts</div></div>';
-  summaryHtml += '<div class="summary-item"><div class="val">' + numCodeChanges + '</div><div class="lbl">Code Changes</div></div>';
-  summaryHtml += '</div>' + _compactStatusHtml(exp) + '</div>';
+  // Section blocks (built by dedicated helpers to keep this function readable)
+  const codeHtml = _buildCodeSection(codeChanges);
+  const varHtml = _buildVarSection(varChanges);
+  const datasetsHtml = _buildDatasetsSection(exp.datasets);
 
   // Diff
   let diffHtml = '';
@@ -338,6 +392,43 @@ async function refreshDetail(id) {
       : '') +
     '<span class="tag-input-area" id="detail-study-input-area"></span>' +
     '</span>';
+
+  // Session origin back-link: when a run came from (or is linked to) a Session
+  // Trees node, show a breadcrumb back to the session/checkpoint/branch so the
+  // run can be traced to its exploratory context (link was tree→exp only).
+  const so = exp.session_origin;
+  const sessionOriginHtml = so ? (
+    '<div class="session-origin-banner" onclick="openSessionNode(\'' +
+      esc(so.session_id) + '\',\'' + esc(so.node_id) + '\')" ' +
+      'title="Open this run&#39;s session node">' +
+      '<span class="so-icon">☰</span>' +
+      '<span class="so-text">From session <strong>' + esc(so.session_name) + '</strong>' +
+      (so.node_type && so.node_type !== 'root' ? ' · <span class="so-type">' + esc(so.node_type) + '</span>' : '') +
+      (so.lineage && so.lineage.length ? ' · ' + so.lineage.map(esc).join(' → ') : '') +
+      '</span><span class="so-go">view tree →</span></div>'
+  ) : '';
+
+  // Branch context: the other experiments tried from the same parent checkpoint,
+  // with their captured results — so a promoted run keeps the exploratory
+  // context it came out of (what else was tried, how it compared).
+  const _sibs = (so && so.siblings) || [];
+  const branchContextHtml = (so && _sibs.filter(x => !x.is_this).length) ? (
+    '<div class="branch-context">' +
+      '<div class="bc-title">Branches tried from the same checkpoint</div>' +
+      _sibs.map(s => {
+        const cls = 'bc-sib' + (s.is_this ? ' this' : '');
+        const nameL = '<a class="bc-sib-name" onclick="openSessionNode(\'' +
+          esc(so.session_id) + '\',\'' + esc(s.node_id) + '\');return false">' +
+          esc(s.label || '(unlabeled)') + '</a>';
+        const tag = s.is_this ? '<span class="bc-sib-tag this">this run</span>'
+          : (s.node_type === 'abandoned' ? '<span class="bc-sib-tag ab">abandoned</span>' : '');
+        const res = s.result ? '<span class="bc-sib-res" title="' + esc(s.result) + '">⤷ ' + esc(s.result) + '</span>' : '';
+        const expL = s.exp_id ? '<a class="bc-sib-exp" onclick="showDetail(\'' +
+          esc(s.exp_id) + '\');return false">→ exp ' + esc(s.exp_id.slice(0, 8)) + '</a>' : '';
+        return '<div class="' + cls + '">' + nameL + tag + res + expL + '</div>';
+      }).join('') +
+    '</div>'
+  ) : '';
 
   const _restoreRename = _preserveActiveRename();
   document.getElementById('detail-panel').innerHTML = `
@@ -387,6 +478,9 @@ async function refreshDetail(id) {
         </div>
       </div>
 
+      ${sessionOriginHtml}
+      ${branchContextHtml}
+
       <div class="tabs" id="detail-tabs">
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
         <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
@@ -419,6 +513,7 @@ async function refreshDetail(id) {
             ${paramRows ? '<table class="params-table"><tr><th>Key</th><th>Value</th><th>Source</th></tr>'+paramRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No params yet.</p>'}
             ${addParamForm}
             </div>
+            ${datasetsHtml}
             ${varHtml}
           </div>
           <!-- Right column: metrics + charts + artifacts -->

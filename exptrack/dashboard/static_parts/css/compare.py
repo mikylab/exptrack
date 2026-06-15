@@ -26,6 +26,10 @@ CSS_COMPARE = """
   .differs { color: var(--yellow); font-weight: 600; }
   .diff-added { color: var(--diff-add); background: var(--diff-add-bg); }
   .diff-removed { color: var(--diff-del); background: var(--diff-del-bg); }
+  .cmp-best-max { color: var(--diff-add); background: var(--diff-add-bg); font-weight: 600; }
+  .cmp-best-min { color: var(--diff-del); background: var(--diff-del-bg); font-weight: 600; }
+  .cmp-bestkey { font-size: var(--text-xs); font-weight: 400; margin-left: 8px; color: var(--text-3); }
+  .cmp-bestkey .cmp-best-max, .cmp-bestkey .cmp-best-min { padding: 0 4px; border-radius: 3px; }
   .only-differs-toggle { font-family: inherit; font-size: 13px; margin-left: 12px; cursor: pointer; }
   .compare-charts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 16px; margin: 12px 0; }
   .source-badge { display: inline-block; font-size: var(--text-xs); font-weight: 600; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.3px; vertical-align: middle; }

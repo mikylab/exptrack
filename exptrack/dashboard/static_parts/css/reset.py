@@ -53,6 +53,16 @@ CSS_RESET = """
     --compare-accent: #7c3aed;
     --compare-bg: rgba(124, 58, 237, 0.10);
 
+    /* --- Session-tree rail. A tree's branches never merge, so lane POSITION
+       already separates them — color carries STATE, not identity, and stays
+       bounded: --branch-c0 (neutral) = the checkpoint spine, --branch-c1 (one
+       calm teal) = every branch line, --branch-ab (amber) = abandoned. No
+       per-branch rainbow. Kept clear of accent-blue and violet --compare-accent
+       so a branch line never reads as a selection/pick. --- */
+    --branch-c0: var(--text-2);
+    --branch-c1: #0f766e;
+    --branch-ab: #d97706;
+
     /* --- Timeline event types. Distinguished primarily by icon + label;
        color is kept mostly neutral with the accent reserved. --- */
     --tl-cell: var(--accent);
@@ -131,6 +141,12 @@ CSS_RESET = """
 
     --compare-accent: #a78bfa;
     --compare-bg: rgba(167, 139, 250, 0.18);
+
+    /* Branch rail — brighter variants for the dark canvas; spine stays neutral,
+       one calm teal for every branch line, amber for abandoned. */
+    --branch-c0: var(--text-2);
+    --branch-c1: #2dd4bf;
+    --branch-ab: #f59e0b;
 
     --tl-cell: var(--accent);
     --tl-var: var(--text-2);

@@ -39,7 +39,7 @@ function _renderExpCard(e) {
     '<div class="exp-card-row1">' + cbHtml +
     '<span class="status-dot ' + statusCls + '"></span>' +
     (e.name_is_auto ? '<span class="auto-name-badge" title="Auto-generated name — double-click to rename">auto</span>' : '') +
-    '<span class="exp-card-name" data-rename-slot="' + e.id + '" onclick="event.stopPropagation()" ondblclick="event.stopPropagation();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name) + '</span></div>' +
+    '<span class="exp-card-name" data-rename-slot="' + e.id + '" onclick="event.stopPropagation();onRowClick(\'' + e.id + '\')" ondblclick="event.stopPropagation();cancelRowClick();startInlineRename(\'' + e.id + '\',this)">' + esc(e.name) + '</span></div>' +
     '<div class="exp-card-meta">' +
       esc(e.git_branch || '') + ' &middot; ' + fmtDur(e.duration_s) + ' &middot; ' + fmtDt(e.created_at) +
     '</div>' +
@@ -157,6 +157,11 @@ function showCompareView() {
 }
 
 function showDetailView() {
+  // The Sessions tab overlays the canvas and hides #detail-view with
+  // `display:none !important` while body.sessions-active is set, so a node's
+  // "→ exp" badge would fetch the experiment but never show it. Drop the
+  // overlay first (mirrors showWelcome) so exp navigation actually lands.
+  if (typeof closeSessionsTab === 'function') closeSessionsTab();
   document.getElementById('welcome-state').style.display = 'none';
   document.getElementById('detail-view').style.display = '';
   document.getElementById('compare-view').style.display = 'none';

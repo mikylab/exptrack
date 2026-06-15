@@ -14,6 +14,7 @@ import threading
 from pathlib import Path
 
 from .. import config as cfg
+from .utils import debug_log, safe_call
 
 _local = threading.local()
 
@@ -39,11 +40,12 @@ def get_db() -> sqlite3.Connection:
         try:
             conn.execute("SELECT 1")
             return conn
-        except Exception:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        except Exception as e:
+            # Cached connection went stale (db replaced, WAL reset, etc.).
+            # Drop it and reconnect below; surface under EXPTRACK_DEBUG.
+            debug_log(f"db: cached connection unusable, reconnecting: "
+                      f"{type(e).__name__}: {e}")
+            safe_call(conn.close, context="db: closing stale connection")
             _local.conn = None
 
     # Warn if WAL/SHM files are missing when DB exists (potential corruption)
@@ -103,69 +105,69 @@ def close_db() -> None:
         _local.db_path = None
 
 
-def _sweep_orphans(conn: sqlite3.Connection) -> int:
-    """Silently delete rows in child tables whose exp_id has no experiment.
+# (table, WHERE-condition) pairs identifying orphaned child rows. Table/column
+# names are fixed constants here — never user input — so the f-strings below are
+# injection-safe.
+_ORPHAN_SPECS = (
+    ("params", "exp_id NOT IN (SELECT id FROM experiments)"),
+    ("metrics", "exp_id NOT IN (SELECT id FROM experiments)"),
+    ("artifacts", "exp_id NOT IN (SELECT id FROM experiments)"),
+    ("timeline", "exp_id NOT IN (SELECT id FROM experiments)"),
+    # cell_lineage: cells no longer referenced by any timeline row
+    ("cell_lineage",
+     "cell_hash NOT IN (SELECT DISTINCT cell_hash FROM timeline "
+     "WHERE cell_hash IS NOT NULL)"),
+)
 
-    Returns the total number of orphaned rows removed.
-    Uses SELECT COUNT checks first to avoid starting implicit transactions
-    with zero-row DELETEs (which would dirty pages after VACUUM).
+
+def _sweep_orphans_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """Delete orphaned child rows, returning ``{table: rows_deleted}``.
+
+    COUNTs before each DELETE so a zero-row sweep never starts an implicit
+    transaction (which would dirty pages right after a VACUUM).
     """
-    total = 0
-    for table in ("params", "metrics", "artifacts", "timeline"):
-        n = conn.execute(
-            f"SELECT COUNT(*) FROM {table} "
-            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
-        ).fetchone()[0]
+    counts: dict[str, int] = {}
+    for table, cond in _ORPHAN_SPECS:
+        n = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {cond}").fetchone()[0]
         if n:
-            conn.execute(
-                f"DELETE FROM {table} "
-                f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
-            )
-            total += n
-    # cell_lineage: remove cells no longer referenced by any timeline row
-    n = conn.execute(
-        "SELECT COUNT(*) FROM cell_lineage "
-        "WHERE cell_hash NOT IN ("
-        "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
-        ")"
-    ).fetchone()[0]
-    if n:
-        conn.execute(
-            "DELETE FROM cell_lineage "
-            "WHERE cell_hash NOT IN ("
-            "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
-            ")"
-        )
-        total += n
-    if total:
-        conn.commit()
-    return total
-
-
-def sweep_orphans(conn: sqlite3.Connection) -> dict:
-    """Public API for orphan cleanup. Returns counts per table."""
-    counts = {}
-    for table in ("params", "metrics", "artifacts", "timeline"):
-        cur = conn.execute(
-            f"DELETE FROM {table} "
-            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
-        )
-        if cur.rowcount:
-            counts[table] = cur.rowcount
-    cur = conn.execute(
-        "DELETE FROM cell_lineage "
-        "WHERE cell_hash NOT IN ("
-        "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
-        ")"
-    )
-    if cur.rowcount:
-        counts["cell_lineage"] = cur.rowcount
+            conn.execute(f"DELETE FROM {table} WHERE {cond}")
+            counts[table] = n
     if counts:
         conn.commit()
     return counts
 
 
+def _sweep_orphans(conn: sqlite3.Connection) -> int:
+    """Silently delete orphaned child rows; return the total removed."""
+    return sum(_sweep_orphans_counts(conn).values())
+
+
+def sweep_orphans(conn: sqlite3.Connection) -> dict:
+    """Public API for orphan cleanup. Returns counts per table."""
+    return _sweep_orphans_counts(conn)
+
+
 def _ensure_schema(conn):
+    """Create the base schema and apply idempotent column migrations.
+
+    Each ``_migrate_*`` helper checks column existence (PRAGMA table_info)
+    before issuing an ALTER, so this is safe to run on every connection and
+    on every ``exptrack upgrade``. Helpers are individually wrapped so a
+    failure in one table's migration doesn't abort the others, and each is
+    small enough to test in isolation.
+    """
+    _create_base_schema(conn)
+    _migrate_session_nodes(conn)
+    _migrate_experiment_session_link(conn)
+    _migrate_artifacts(conn)
+    _migrate_metrics(conn)
+    _migrate_params(conn)
+    _migrate_experiments(conn)
+    conn.commit()
+
+
+def _create_base_schema(conn):
+    """Create all tables and indexes if they don't already exist (idempotent)."""
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS experiments (
             id          TEXT PRIMARY KEY,
@@ -280,6 +282,8 @@ def _ensure_schema(conn):
             note        TEXT,
             cell_source TEXT,
             cell_outputs TEXT,
+            setup_source TEXT,
+            setup_outputs TEXT,
             images      TEXT,
             git_diff    TEXT,
             git_commit  TEXT,
@@ -292,58 +296,92 @@ def _ensure_schema(conn):
             ON session_nodes(parent_id);
     """)
 
+
+def _table_columns(conn, table):
+    """Return the set of existing column names for *table*."""
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _add_columns(conn, table, columns, existing=None):
+    """Idempotently add any missing *columns* to *table*.
+
+    *columns* maps column name → the DDL fragment that follows
+    ``ADD COLUMN <name>`` (e.g. ``"TEXT"``, ``"INTEGER DEFAULT 0"``). Only
+    columns absent from the table are added. Returns the set of column names
+    actually added, so callers can gate one-time backfills / index creation on
+    a *real* migration (an already-migrated DB returns an empty set, the
+    property the idempotency tests assert).
+
+    Pass *existing* (a pre-fetched column-name set) when the caller already
+    snapshotted the table, to avoid a redundant ``PRAGMA table_info`` query.
+    """
+    if existing is None:
+        existing = _table_columns(conn, table)
+    added = set()
+    for name, ddl in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+            added.add(name)
+    return added
+
+
+def _migrate_session_nodes(conn):
     # Soft-delete column + per-cell output capture for session_nodes.
+    #   deleted_at    — soft-delete / Trash marker
+    #   cell_outputs  — mirrors cell_source: one SEP-joined output per cell, so
+    #                   the dashboard can show "what the branch produced"
+    #   setup_source / setup_outputs — *demoted* parallel to cell_source for
+    #                   %%setup prep cells (own byte budget, kept out of lineage)
+    #   images        — JSON list of by-reference plot paths saved on the node
     try:
-        ncols = {row[1] for row in conn.execute("PRAGMA table_info(session_nodes)").fetchall()}
-        if "deleted_at" not in ncols:
-            conn.execute("ALTER TABLE session_nodes ADD COLUMN deleted_at REAL")
+        added = _add_columns(conn, "session_nodes", {
+            "deleted_at": "REAL",
+            "cell_outputs": "TEXT",
+            "setup_source": "TEXT",
+            "setup_outputs": "TEXT",
+            "images": "TEXT",
+        })
+        if "deleted_at" in added:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_session_nodes_deleted "
                 "ON session_nodes(session_id, deleted_at)"
             )
-        # cell_outputs mirrors cell_source: one SEP-joined output segment per
-        # recorded cell, so the dashboard can show "what the branch produced".
-        if "cell_outputs" not in ncols:
-            conn.execute("ALTER TABLE session_nodes ADD COLUMN cell_outputs TEXT")
-        # images: JSON list of {path, label, ts} for plots saved (by reference,
-        # no copy) while the node was active — lets branches show/compare plots.
-        if "images" not in ncols:
-            conn.execute("ALTER TABLE session_nodes ADD COLUMN images TEXT")
     except sqlite3.OperationalError:
         pass
     except Exception as e:
         print(f"[exptrack] warning: session_nodes migration error: {e}",
               file=sys.stderr)
 
+
+def _migrate_experiment_session_link(conn):
     # Add session_node_id to experiments if missing
     try:
-        ecols = {row[1] for row in conn.execute("PRAGMA table_info(experiments)").fetchall()}
-        if "session_node_id" not in ecols:
-            conn.execute("ALTER TABLE experiments ADD COLUMN session_node_id TEXT")
+        _add_columns(conn, "experiments", {"session_node_id": "TEXT"})
     except sqlite3.OperationalError:
         pass
     except Exception as e:
         print(f"[exptrack] warning: session_node_id migration error: {e}", file=sys.stderr)
 
+
+def _migrate_artifacts(conn):
     # Add timeline_seq, content_hash, size_bytes to artifacts if missing
     try:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(artifacts)").fetchall()}
-        if "timeline_seq" not in cols:
-            conn.execute("ALTER TABLE artifacts ADD COLUMN timeline_seq INTEGER")
-        if "content_hash" not in cols:
-            conn.execute("ALTER TABLE artifacts ADD COLUMN content_hash TEXT")
-        if "size_bytes" not in cols:
-            conn.execute("ALTER TABLE artifacts ADD COLUMN size_bytes INTEGER")
+        _add_columns(conn, "artifacts", {
+            "timeline_seq": "INTEGER",
+            "content_hash": "TEXT",
+            "size_bytes": "INTEGER",
+        })
     except sqlite3.OperationalError:
         pass  # column may already exist
     except Exception as e:
         print(f"[exptrack] warning: artifact migration error: {e}", file=sys.stderr)
 
+
+def _migrate_metrics(conn):
     # Add source column to metrics and migrate _result:* params
     try:
-        mcols = {row[1] for row in conn.execute("PRAGMA table_info(metrics)").fetchall()}
-        if "source" not in mcols:
-            conn.execute("ALTER TABLE metrics ADD COLUMN source TEXT DEFAULT 'auto'")
+        added = _add_columns(conn, "metrics", {"source": "TEXT DEFAULT 'auto'"})
+        if "source" in added:
             # Migrate existing _result:* params into metrics table
             result_params = conn.execute(
                 "SELECT exp_id, key, value FROM params WHERE key LIKE '_result:%'"
@@ -363,12 +401,13 @@ def _ensure_schema(conn):
     except Exception as e:
         print(f"[exptrack] warning: metrics source migration error: {e}", file=sys.stderr)
 
+
+def _migrate_params(conn):
     # Add source column to params (auto vs manual). Backfill existing params
     # on manually-created experiments (hostname/python_ver are NULL there).
     try:
-        pcols = {row[1] for row in conn.execute("PRAGMA table_info(params)").fetchall()}
-        if "source" not in pcols:
-            conn.execute("ALTER TABLE params ADD COLUMN source TEXT DEFAULT 'auto'")
+        added = _add_columns(conn, "params", {"source": "TEXT DEFAULT 'auto'"})
+        if "source" in added:
             conn.execute(
                 "UPDATE params SET source='manual' WHERE exp_id IN "
                 "(SELECT id FROM experiments "
@@ -379,30 +418,28 @@ def _ensure_schema(conn):
     except Exception as e:
         print(f"[exptrack] warning: params source migration error: {e}", file=sys.stderr)
 
+
+def _migrate_experiments(conn):
     # Add output_dir, studies, stage columns to experiments if missing
     try:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(experiments)").fetchall()}
-        if "output_dir" not in cols:
-            conn.execute("ALTER TABLE experiments ADD COLUMN output_dir TEXT")
-        if "studies" not in cols:
-            conn.execute("ALTER TABLE experiments ADD COLUMN studies TEXT")
-            # Migrate data from old 'groups' column if it exists
-            if "groups" in cols:
-                conn.execute("UPDATE experiments SET studies = groups WHERE groups IS NOT NULL")
-        if "stage" not in cols:
-            conn.execute("ALTER TABLE experiments ADD COLUMN stage INTEGER")
-        if "stage_name" not in cols:
-            conn.execute("ALTER TABLE experiments ADD COLUMN stage_name TEXT")
-        if "image_paths" not in cols:
-            conn.execute("ALTER TABLE experiments ADD COLUMN image_paths TEXT")
-        if "log_paths" not in cols:
-            conn.execute("ALTER TABLE experiments ADD COLUMN log_paths TEXT")
-        if "deleted_at" not in cols:
-            conn.execute("ALTER TABLE experiments ADD COLUMN deleted_at TEXT")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_exp_deleted_at ON experiments(deleted_at)")
-        if "name_is_auto" not in cols:
+        cols = _table_columns(conn, "experiments")  # snapshot for the 'groups' checks
+        added = _add_columns(conn, "experiments", {
+            "output_dir": "TEXT",
+            "studies": "TEXT",
+            "stage": "INTEGER",
+            "stage_name": "TEXT",
+            "image_paths": "TEXT",
+            "log_paths": "TEXT",
+            "deleted_at": "TEXT",
             # 1 = run still carries its generated name (never renamed by the user).
-            conn.execute("ALTER TABLE experiments ADD COLUMN name_is_auto INTEGER DEFAULT 0")
+            "name_is_auto": "INTEGER DEFAULT 0",
+        }, existing=cols)
+        # Migrate data from old 'groups' column into the new 'studies' column
+        if "studies" in added and "groups" in cols:
+            conn.execute("UPDATE experiments SET studies = groups WHERE groups IS NOT NULL")
+        if "deleted_at" in added:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_exp_deleted_at ON experiments(deleted_at)")
+        if "name_is_auto" in added:
             # Backfill the existing backlog: flag rows whose name still matches
             # the generated-name fingerprint so old un-renamed runs surface too.
             try:
@@ -425,8 +462,6 @@ def _ensure_schema(conn):
         pass  # column may already exist
     except Exception as e:
         print(f"[exptrack] warning: experiment migration error: {e}", file=sys.stderr)
-
-    conn.commit()
 
 
 # ── Git diff deduplication ────────────────────────────────────────────────────

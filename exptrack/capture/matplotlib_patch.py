@@ -9,6 +9,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from .notebook_hooks import _nb_state
+from ..core.utils import debug_log
 
 if TYPE_CHECKING:
     from ..core import Experiment
@@ -67,7 +68,7 @@ def patch_savefig(exp: Experiment | None = None):
                         import matplotlib as _mpl
                         fmt = _mpl.rcParams.get("savefig.format", "png")
                     except Exception as e:
-                        print(f"[exptrack] warning: could not detect savefig format: {e}", file=sys.stderr)
+                        debug_log(f"could not detect savefig format: {e}")
                         fmt = "png"
                 candidate = orig_path.with_suffix("." + fmt)
                 if candidate.exists():
@@ -125,7 +126,7 @@ def patch_savefig(exp: Experiment | None = None):
             if fig_title:
                 _nb_state["_last_fig_title"] = fig_title
         except Exception as e:
-            print(f"[exptrack] warning: could not extract figure title: {e}", file=sys.stderr)
+            debug_log(f"could not extract figure title: {e}")
         return _namespace_and_save(fname, lambda f, *a, **kw: _orig_fig_savefig(self_fig, f, *a, **kw), *args, **kwargs)
 
     plt.savefig = _hooked_plt_savefig
@@ -144,7 +145,7 @@ def _register_and_protect(exp, orig_path, fig_title=""):
             value=str(orig_path),
         )
     except Exception as e:
-        print(f"[exptrack] warning: could not log artifact event: {e}", file=sys.stderr)
+        debug_log(f"could not log artifact event: {e}")
 
     # Copy the file to the experiment's output directory so it survives
     # across experiments (each exp gets its own outputs/<name>/ folder).

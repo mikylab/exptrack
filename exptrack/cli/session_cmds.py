@@ -250,6 +250,26 @@ def cmd_session_rename_node(args):
               f"\"{r['label']}\"", G))
 
 
+def cmd_session_promote_checkpoint(args):
+    """Promote a branch node to a checkpoint by id prefix."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, label, node_type FROM session_nodes "
+        "WHERE id LIKE ? AND deleted_at IS NULL LIMIT 1",
+        (args.node_id + "%",),
+    ).fetchone()
+    if not row:
+        print(col(f"node not found: {args.node_id}", R), file=sys.stderr)
+        sys.exit(1)
+    from ..sessions.manager import promote_to_checkpoint
+    r = promote_to_checkpoint(row["id"])
+    if not r.get("ok"):
+        print(col(f"error: {r.get('error', 'unknown')}", R), file=sys.stderr)
+        sys.exit(1)
+    print(col(f"promoted {row['id'][:8]} \"{row['label'] or ''}\" "
+              f"({row['node_type']} → checkpoint)", G))
+
+
 def cmd_session_note(args):
     """Annotate a node by id (prefix match)."""
     conn = get_db()
@@ -286,11 +306,13 @@ def cmd_session(args):
         cmd_session_trash(args)
     elif sub == "rename-node":
         cmd_session_rename_node(args)
+    elif sub == "promote-checkpoint":
+        cmd_session_promote_checkpoint(args)
     elif sub == "note":
         cmd_session_note(args)
     else:
         print("usage: exptrack session "
               "{show|nodes|rm|rm-node|restore-node|purge-node|empty-trash|"
-              "trash|rename-node|note} <id> [...]",
+              "trash|rename-node|promote-checkpoint|note} <id> [...]",
               file=sys.stderr)
         sys.exit(2)

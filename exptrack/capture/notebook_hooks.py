@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from .. import config as cfg
+from ..core.utils import debug_log
 from .cell_lineage import (
     cell_hash,
     find_parent_hash,
@@ -50,6 +51,7 @@ _nb_state: dict = {
     "last_cell_hash": None,  # hash of the last executed cell (for lineage)
     "hash_to_last_exec_hash": {},  # cell_lineage_key -> last exec's source hash
     "_stdout_buf":   None,    # StringIO capturing the running cell's stdout
+    "setup_count":   0,       # number of %%setup cells attached to the experiment
 }
 
 # Cap on captured cell output (stdout + trailing-expression repr) stored per
@@ -59,6 +61,10 @@ _MAX_CELL_OUTPUT = 4000
 # balloon memory; the headroom over _MAX_CELL_OUTPUT lets _combine_cell_output
 # still detect the overflow and add its "… (output truncated)" marker.
 _STDOUT_BUFFER_CAP = _MAX_CELL_OUTPUT * 2
+# Full %%setup source stored on the (muted) experiment event for reproduction —
+# bigger than a normal output preview since it's the prep code itself, but still
+# bounded so a giant block can't bloat the timeline.
+_SETUP_EVENT_MAX_BYTES = _MAX_CELL_OUTPUT * 2
 
 
 class _StdoutTee:
@@ -101,8 +107,7 @@ def _start_stdout_capture():
         _nb_state["_stdout_buf"] = buf
         sys.stdout = _StdoutTee(sys.stdout, buf)
     except Exception as e:
-        print(f"[exptrack] warning: could not start stdout capture: {e}",
-              file=sys.stderr)
+        debug_log(f"could not start stdout capture: {e}")
 
 
 def _collect_stdout_capture() -> str:
@@ -156,8 +161,7 @@ def _pre_run_cell(info=None, *args, **kwargs):
         try:
             _nb_state["_reserved_seq"] = exp.reserve_timeline_seq()
         except Exception as e:
-            print(f"[exptrack] warning: could not reserve timeline seq: {e}",
-                  file=sys.stderr)
+            debug_log(f"could not reserve timeline seq: {e}")
 
 
 def attach_notebook(exp: Experiment, nb_name: str = "notebook", ip=None):
@@ -263,8 +267,7 @@ def _unregister_hook(ip):
             except ValueError:
                 pass  # hook wasn't registered for this event — expected
             except Exception as e:
-                print(f"[exptrack] warning: could not unregister {event} hook: {e}",
-                      file=sys.stderr)
+                debug_log(f"could not unregister {event} hook: {e}")
 
 
 def _get_cell_source(result, ip):
@@ -285,7 +288,7 @@ def _get_cell_source(result, ip):
             elif hasattr(result, 'info') and hasattr(result.info, 'result'):
                 output = repr(result.info.result) if result.info.result is not None else None
         except Exception as e:
-            print(f"[exptrack] warning: could not capture cell output: {e}", file=sys.stderr)
+            debug_log(f"could not capture cell output: {e}")
     if not source:
         try:
             source = ip.history_manager.input_hist_raw[-1]
@@ -305,7 +308,7 @@ def _get_cell_source(result, ip):
             elif exec_count - 1 in out_dict:
                 output = repr(out_dict[exec_count - 1])
         except Exception as e:
-            print(f"[exptrack] warning: could not get cell output from Out dict: {e}", file=sys.stderr)
+            debug_log(f"could not get cell output from Out dict: {e}")
     return source, output
 
 
@@ -388,7 +391,12 @@ def _capture_variables(ip, cell_assignments):
     # every DataFrame/array in the namespace on every cell is the dominant
     # per-cell cost, so this single pass computes each fingerprint exactly once
     # (it used to run twice — detect + snapshot).
-    max_bytes = int(cfg.load().get("var_fingerprint_max_mb", 100)) * 1024 * 1024
+    _conf = cfg.load()
+    max_bytes = int(_conf.get("var_fingerprint_max_mb", 100)) * 1024 * 1024
+    # Assignment expressions longer than this are dropped from the var display
+    # (we fall back to a bare `Type()` form) so a giant inline literal can't
+    # bloat the timeline / `_var/` param.
+    max_expr_len = int(_conf.get("max_assignment_expr_len", 500))
 
     for name, val in list(ns.items()):
         if name.startswith("_") or name in _SKIP_NAMES:
@@ -408,7 +416,7 @@ def _capture_variables(ip, cell_assignments):
                 expr = cell_assignments[name]
                 fp = f"{tname}:{name}:{cell_hash(expr)}"
                 display = (f"{name} = {expr}  # {tname}"
-                           if len(expr) <= 500 else f"{tname}()")
+                           if len(expr) <= max_expr_len else f"{tname}()")
                 param = display
             else:
                 fp = var_fingerprint(val, max_bytes=max_bytes)
@@ -416,7 +424,7 @@ def _capture_variables(ip, cell_assignments):
                 param = summary
                 if not isinstance(val, _SCALAR) and name in cell_assignments:
                     expr = cell_assignments[name]
-                    if len(expr) <= 500:
+                    if len(expr) <= max_expr_len:
                         display = f"{name} = {expr}  # {summary}"
 
             if name not in prev_snap:
@@ -436,8 +444,7 @@ def _capture_variables(ip, cell_assignments):
                     }
             new_snap[name] = {"fp": fp, "display": display}
         except Exception as e:
-            print(f"[exptrack] warning: could not capture variable '{name}': {e}",
-                  file=sys.stderr)
+            debug_log(f"could not capture variable '{name}': {e}")
 
     _nb_state["var_snapshot"] = new_snap
 
@@ -564,10 +571,147 @@ def _log_hp_params(exp, ns, new_vars, changed_vars, source_diff,
         exp.log_param("_cells_ran", json.dumps(_nb_state["cells_ran"]))
 
 
-def _post_run_cell(result=None):
-    """Runs after every notebook cell. Captures diff, variables, and output.
-    Now also emits timeline events for full execution order tracking."""
+def _maybe_autolink_session(exp):
+    """Ask the active session to group this notebook's run under its current
+    node (the linking logic + one-shot guard live in SessionManager)."""
+    if exp is None:
+        return
+    try:
+        from ..sessions import get_current_session
+        sm = get_current_session()
+        if sm is not None:
+            sm.autolink_run(exp.id)
+    except Exception as e:
+        debug_log(f"could not link run to session: {e}")
 
+
+def _record_setup_cell(source, output):
+    """Record a %%setup cell: keep it on the active session node's demoted store
+    and attach a muted `setup` event to the active experiment (so a promoted run
+    is self-contained for reproduction) — but never to the tracked-cell lineage.
+
+    Best-effort on the experiment side: if no run is active yet, the code still
+    lives on the session node and travels with a branch→checkpoint promote."""
+    try:
+        from ..sessions import get_current_session
+        sm = get_current_session()
+        if sm is not None and sm.session_id:
+            sm.record_setup_cell(source, output)
+    except Exception as e:
+        debug_log(f"could not record setup cell on session: {e}")
+
+    reserved_seq = _nb_state.pop("_reserved_seq", None)
+    exp = _nb_state.get("exp")
+    if exp is None:
+        return
+    from ..sessions.manager import SessionManager
+    recorded = SessionManager._strip_setup_magic(source)
+    recorded_stored = recorded[:_SETUP_EVENT_MAX_BYTES]
+    _nb_state["setup_count"] = _nb_state.get("setup_count", 0) + 1
+    n = _nb_state["setup_count"]
+    try:
+        exp.log_event(
+            event_type="setup",
+            cell_pos=None,
+            key=f"setup_{n}",
+            value={
+                "source": recorded_stored,
+                "source_preview": recorded[:200],
+                "has_output": output is not None,
+                "output_preview": str(output) if output else None,
+            },
+            seq=reserved_seq,
+        )
+    except Exception as e:
+        debug_log(f"could not log setup event: {e}")
+
+
+def _handle_scratch_or_setup(source, captured_stdout, result_repr) -> bool:
+    """Return True if the cell must bypass normal tracking (Session Trees).
+
+    `%%scratch` cells are skipped outright; `%%setup` cells are recorded onto
+    the active node's demoted store (+ a muted experiment event) and then
+    skipped. Any check failure is swallowed so capture never breaks a cell.
+    """
+    try:
+        from .session_hooks import is_scratch_cell, is_setup_cell
+        if is_scratch_cell(source):
+            return True
+        if is_setup_cell(source):
+            from .session_hooks import take_pending_setup_output
+            setup_out = _combine_cell_output(
+                captured_stdout, take_pending_setup_output() or result_repr)
+            _record_setup_cell(source, setup_out)
+            return True
+    except Exception as e:
+        debug_log(f"scratch/setup-cell check failed: {e}")
+    return False
+
+
+def _record_cell_on_session(source, output):
+    """Buffer a non-scratch cell onto the active Session Trees node, if any."""
+    try:
+        from ..sessions import get_current_session
+        sm = get_current_session()
+        if sm is not None and sm.session_id:
+            sm.record_cell(source, output)
+    except Exception as e:
+        debug_log(f"could not record cell on active session: {e}")
+
+
+def _process_tracked_cell(exp, ip, source, output):
+    """Full capture pipeline for a real tracked cell.
+
+    Cell lineage/diff → observational detection → assignment + variable
+    diffing → timeline events and HP params (one batched commit) → snapshot.
+    """
+    _nb_state["exec_count"] += 1
+    exec_num = _nb_state["exec_count"]
+    ch = cell_hash(source)
+    notebook = _nb_state["nb_name"]
+
+    # ── 1-2b. Cell lineage and diff ──────────────────────────────────────────
+    (code_is_new, code_changed, source_diff, parent_source,
+     parent_hash, already_seen) = _process_cell_lineage(
+        source, ch, notebook, exec_num)
+
+    # ── 3-5. Observational detection + variable diffing ──────────────────────
+    is_obs = is_observational(source)
+    cell_assignments = extract_assignments(source)
+    new_vars, changed_vars = _capture_variables(ip, cell_assignments)
+
+    _nb_state["first_run"] = False
+
+    # ── 6-7. Emit timeline events + log params, committed as one batch ────────
+    # A single cell emits cell_exec + up to max_vars_per_cell var_set events
+    # plus the _var/ params; batching collapses ~52 commits into one fsync.
+    with exp.batched_writes():
+        _emit_timeline_events(
+            exp, ch, exec_num, source, source_diff, output,
+            code_is_new, code_changed, parent_hash,
+            already_seen, is_obs, new_vars, changed_vars)
+
+        _log_hp_params(
+            exp, ip.user_ns, new_vars, changed_vars, source_diff,
+            code_is_new, code_changed, already_seen, exec_num)
+
+    # ── 8. Save snapshot to .exptrack/notebook_history/ ───────────────────────
+    _save_cell_snapshot(exp, exec_num, ch, source,
+                        parent_source or "",
+                        source_diff, new_vars, changed_vars, output,
+                        is_rerun=(already_seen and not code_changed
+                                  and not new_vars and not changed_vars),
+                        is_observational=is_obs)
+
+
+def _post_run_cell(result=None):
+    """Runs after every notebook cell.
+
+    Orchestrator: fetch the cell source + combined output, gate out
+    scratch/setup and deferred-start cells, then hand a real tracked cell to
+    `_process_tracked_cell`. The body is wrapped so a capture failure prints a
+    diagnostic but never propagates into the user's cell.
+    """
     try:
         ip = _nb_state.get("ip")
         if ip is None:
@@ -587,24 +731,12 @@ def _post_run_cell(result=None):
         # mirroring what the notebook displays (prints, then the returned value).
         output = _combine_cell_output(captured_stdout, result_repr)
 
-        # ── 0a. Skip scratch cells entirely (Session Trees) ───────────────────
-        try:
-            from .session_hooks import is_scratch_cell
-            if is_scratch_cell(source):
-                return
-        except Exception as e:
-            print(f"[exptrack] warning: scratch-cell check failed: {e}",
-                  file=sys.stderr)
+        # ── 0a. Scratch/setup cells bypass tracking (Session Trees) ───────────
+        if _handle_scratch_or_setup(source, captured_stdout, result_repr):
+            return
 
         # ── 0a'. Buffer non-scratch cells onto the active session ────────────
-        try:
-            from ..sessions import get_current_session
-            sm = get_current_session()
-            if sm is not None and sm.session_id:
-                sm.record_cell(source, output)
-        except Exception as e:
-            print(f"[exptrack] warning: could not record cell on active session: {e}",
-                  file=sys.stderr)
+        _record_cell_on_session(source, output)
 
         # ── 0b. Handle deferred start ────────────────────────────────────────
         if _handle_deferred_start(source, ip):
@@ -614,47 +746,12 @@ def _post_run_cell(result=None):
         if exp is None:
             return
 
-        _nb_state["exec_count"] += 1
-        exec_num = _nb_state["exec_count"]
-        ch = cell_hash(source)
-        notebook = _nb_state["nb_name"]
+        # If a Session-Trees session is active, group this notebook's auto run
+        # under the current node instead of leaving it as a separate, unlinked
+        # experiment. One-shot; an explicit %exptrack promote can re-target it.
+        _maybe_autolink_session(exp)
 
-        # ── 1-2b. Cell lineage and diff ──────────────────────────────────────
-        (code_is_new, code_changed, source_diff, parent_source,
-         parent_hash, already_seen) = _process_cell_lineage(
-            source, ch, notebook, exec_num)
-
-        # ── 3. Detect observational cells ────────────────────────────────────
-        is_obs = is_observational(source)
-
-        # ── 4. Extract assignment expressions from cell source ───────────────
-        cell_assignments = extract_assignments(source)
-
-        # ── 5. Capture new/changed variables ─────────────────────────────────
-        new_vars, changed_vars = _capture_variables(ip, cell_assignments)
-
-        _nb_state["first_run"] = False
-
-        # ── 6-7. Emit timeline events + log params, committed as one batch ───
-        # A single cell emits cell_exec + up to max_vars_per_cell var_set events
-        # plus the _var/ params; batching collapses ~52 commits into one fsync.
-        with exp.batched_writes():
-            _emit_timeline_events(
-                exp, ch, exec_num, source, source_diff, output,
-                code_is_new, code_changed, parent_hash,
-                already_seen, is_obs, new_vars, changed_vars)
-
-            _log_hp_params(
-                exp, ip.user_ns, new_vars, changed_vars, source_diff,
-                code_is_new, code_changed, already_seen, exec_num)
-
-        # ── 8. Save snapshot to .exptrack/notebook_history/ ───────────────────
-        _save_cell_snapshot(exp, exec_num, ch, source,
-                            parent_source or "",
-                            source_diff, new_vars, changed_vars, output,
-                            is_rerun=(already_seen and not code_changed
-                                      and not new_vars and not changed_vars),
-                            is_observational=is_obs)
+        _process_tracked_cell(exp, ip, source, output)
 
     except Exception as _e:
         import traceback
