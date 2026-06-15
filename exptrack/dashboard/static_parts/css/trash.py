@@ -116,6 +116,30 @@ CSS_TRASH = """
   .trash-table .trash-row-actions { display: flex; gap: 4px; justify-content: flex-end; }
   .trash-row-checkbox { width: 16px; }
 
+  /* Unified-trash sections (Experiments + Session nodes). Node rows reuse the
+     .trash-row/.trash-type/.trash-restore-btn styles from css/sessions.py. */
+  .trash-section { margin-bottom: 22px; }
+  .trash-section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 8px;
+    padding-bottom: 4px; border-bottom: 1px solid var(--border);
+  }
+  .trash-section-title { font-size: 14px; font-weight: 600; }
+  .trash-section-count { color: var(--muted); font-weight: 400; }
+  .trash-session-group { margin: 10px 0 4px; }
+  .trash-session-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px;
+  }
+  .trash-session-name {
+    font-weight: 500; cursor: pointer; color: var(--blue);
+  }
+  .trash-session-name:hover { text-decoration: underline; }
+  .trash-session-status {
+    font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 3px; padding: 0 5px;
+  }
+  .trash-session-head .dc-button { font-size: 12px; padding: 3px 8px; }
+
   /* Trash header button */
   .trash-btn {
     font-family: inherit; font-size: 12px; padding: 4px 8px;

@@ -27,10 +27,25 @@ this — `%load_ext exptrack` alone is enough.
 %exptrack checkpoint "label"             # snapshot a stable point
 %exptrack branch     "label"             # declare intent before diverging
 %%scratch                                # cell magic — runs but is never logged
+%%setup                                  # cell magic — runs, recorded as demoted prep (not in lineage)
 %%pin "label"                            # cell magic — runs, snapshots cell + output as artifact
 %exptrack promote    "label"             # link active experiment to current node
 %exptrack session end                    # close — open branches → abandoned
 ```
+
+### Three tiers of cell
+
+Most cells in an exploratory notebook aren't the experiment itself. exptrack
+gives you three levels so the timeline shows the *story*, not every keystroke:
+
+| Cell | Logged? | Use for |
+|---|---|---|
+| normal cell | **fully** (lineage, variable diffs, timeline) | the actual model / train / eval code — the story |
+| `%%setup` | **demoted** — recorded on a side store, kept out of lineage/diffs | prep you reference later (load data, build a transform) but that isn't the experiment |
+| `%%scratch` | **never** | throwaway pokes — `df.head()`, a sanity print, a debug shape check |
+
+Reaching for `%%scratch` aggressively (it's most of your cells) and `%%setup`
+for prep is the single biggest lever for an uncluttered, traceable timeline.
 
 ## Timing — before or after a change?
 
@@ -42,6 +57,7 @@ This is the most important part to get right.
 | `checkpoint` | **after** a change that worked, that you might want to return to | "Save point. If the next thing breaks, I can come back here." Snapshots a per-checkpoint git diff (vs. the previous checkpoint commit, falling back to `git diff HEAD`). |
 | `branch` | **before** you start diverging | "I'm about to try X instead of Y. Here's why." Attaches under the most recent checkpoint. |
 | `%%scratch` | **on the first line** of a throwaway cell | "This is a typo fix / sanity check / quick print — don't pollute the timeline." |
+| `%%setup` | **on the first line** of a prep cell | "This builds something I'll use later (a `df`, a transform), but it isn't the experiment." Recorded on the active node's *demoted* setup store + a muted `setup` event on the run — kept out of cell lineage, variable tracking, and git diffs. **Scoping is positional**: a `%%setup` cell lands on whatever node is active when it runs. Run it *on the shared checkpoint, before branching*, for prep common to every branch. ⚠️ But note `materialize_experiment`/promote replay only a node's **own** setup cells, not an ancestor's — so if you want a promoted branch to be self-contained, run its `%%setup` *inside the branch*. |
 | `%%pin "label"` | **on the first line** of a cell whose output you want frozen | "This is the moment I want to remember." Runs the cell, captures stdout + the trailing expression's repr, and saves `pin_<timestamp>_<label>.md` as an artifact on the active experiment. Also annotates the current session node if one is active. |
 | `promote` | **after** a run completes (an `Experiment` is active) | "This branch is worth a real experiment record." Sets `experiments.session_node_id` and adds a `→ exp <id>` badge to the node in the dashboard. |
 | `session end` | **when you're done** | "Close the book." Any branch with no descendant checkpoint flips to *abandoned* — still visible in the tree, just dashed and dimmed. |
@@ -91,13 +107,21 @@ def plot_kept(data, threshold, path):
     plt.legend(); plt.title(path)
     plt.savefig(path)        # ← captured onto the active branch node (by reference)
     plt.close()
-
-data = make_data()
 ```
 
 ```python
 %exptrack checkpoint "after preprocessing clean"
 # (snapshots the preprocessing diff)
+```
+
+```python
+%%setup
+# Demoted prep: builds `data`, which every branch below reuses. Recorded on the
+# checkpoint's setup store + a muted `setup` event — kept out of the timeline's
+# cell lineage so the two branches stay the story. Run it here (on the shared
+# checkpoint, before branching) so all branches inherit it.
+data = make_data()
+data[:3]
 ```
 
 ```python
@@ -239,7 +263,8 @@ confirmation and cannot be undone.
 
 A node stores four things you can use to see what was tried on that path:
 
-- **`cell_source`** — every non-`%%scratch`, non-`%%pin`, non-`%exptrack`
+- **`cell_source`** — every non-`%%scratch`, non-`%%setup`, non-`%%pin`,
+  non-`%exptrack`
   cell that runs **while this node is the active node** is appended live to
   its `cell_source`. The dashboard splits them back out and shows each as
   its own block; the count appears as a "N cells" badge on the node row.
@@ -280,10 +305,18 @@ A node stores four things you can use to see what was tried on that path:
   give each branch a distinct filename (`roc_0.7.png`, `roc_0.5.png`) if you
   want to compare them later. A plot that's since been moved or overwritten
   shows a "⚠ image missing on disk" placeholder.
+- **setup cells** — `%%setup` prep is recorded on a *separate*, byte-budgeted
+  store (`setup_source` / `setup_outputs`) so a big prep block can't evict real
+  recorded cells. It shows dimmed under a collapsed **Setup / prep** section in
+  the node detail plus a `🛠 N` count on the node, and travels with a
+  branch→checkpoint promote — but it never enters cell lineage, variable
+  tracking, or git diffs. Use it for prep you reference later (a `df`, a
+  transform) that isn't the experiment itself.
 - **`note`** — annotation you (or `%exptrack promote`) added.
 
 `%%scratch` cells and the `%exptrack ...` magics themselves are intentionally
-*not* recorded into `cell_source` — they'd just be noise.
+*not* recorded into `cell_source` — they'd just be noise. `%%setup` cells go to
+the demoted setup store above, not `cell_source`.
 
 If you want fine-grained per-cell capture (variable diffs, fingerprints,
 artifacts) for a path that turned promising, that's what regular
@@ -360,6 +393,62 @@ pin (the yellow star on the experiments table). Session Trees deliberately
 don't add a separate concept here — promoted experiments inherit the same
 pin behavior.
 
+## Running a notebook without exptrack (portability)
+
+The session magics (`%%scratch`, `%%setup`, `%%pin`, `%exptrack`) only exist
+after `%load_ext exptrack` registers them. On a machine where exptrack **isn't
+installed**, IPython treats them as unknown magics and raises a `UsageError` —
+and for a *cell* magic that means the **whole cell body is skipped**, so prep
+silently doesn't run. Three ways to keep a notebook portable:
+
+**1. The guard cell (recommended).** Run `exptrack notebook-guard` and paste its
+output at the very top of your notebook:
+
+```bash
+exptrack notebook-guard
+```
+
+```python
+# ── exptrack guard ──────────────────────────────────────────────────────────
+try:
+    get_ipython().run_line_magic("load_ext", "exptrack")
+except Exception:
+    _ip = get_ipython()
+    def _exptrack_passthrough(line, cell):
+        _ip.run_cell(cell)            # run the body, ignore the magic label
+    def _exptrack_noop(line):
+        pass
+    for _name in ("scratch", "setup", "pin"):
+        _ip.register_magic_function(
+            _exptrack_passthrough, magic_kind="cell", magic_name=_name)
+    _ip.register_magic_function(
+        _exptrack_noop, magic_kind="line", magic_name="exptrack")
+    print("[exptrack-guard] exptrack not loaded — session magics are no-ops, "
+          "cells still run.")
+```
+
+When exptrack is installed it loads normally (full tracking). When it isn't, the
+four magics degrade to no-ops that **still run the cell body**, so the notebook
+runs end-to-end for a collaborator who doesn't have exptrack. You never have to
+strip the magics again.
+
+**2. Keep exptrack loaded, but turn auto-tracking off.** If exptrack *is*
+installed but you don't want it creating runs, set in `.exptrack/config.json`:
+
+```json
+"auto_capture": { "notebook": false }
+```
+
+The magics stay registered and valid (so nothing breaks), but no experiment is
+auto-created — `%%scratch`/`%%setup` just execute the cell body and the session
+magics are no-ops unless you explicitly `%exptrack session start`.
+
+**3. Strip them.** Every magic lives on its own isolated line — `%%scratch` /
+`%%setup` / `%%pin` are always *line 1 of a cell* and `%exptrack ...` is always a
+whole line — so a one-pass find/replace (`^%%(scratch|setup|pin).*\n` and
+`^%exptrack .*\n`) removes them with zero effect on your actual code. The cell
+bodies run identically as plain cells; you only lose the tier labels.
+
 ## Storage cost
 
 Session Trees are cheap. Per session, you spend roughly:
@@ -398,9 +487,12 @@ Two new tables, one new nullable column on `experiments`:
 
 - `sessions(id, name, notebook, status, git_branch, git_commit, created_at, ended_at)`
 - `session_nodes(id, session_id, parent_id, node_type, label, note, cell_source,
-   cell_outputs, images, git_diff, git_commit, seq, created_at, deleted_at)` —
+   cell_outputs, setup_source, setup_outputs, images, git_diff, git_commit, seq,
+   created_at, deleted_at)` —
    `node_type` is `'root'`, `'checkpoint'`, `'branch'`, or `'abandoned'`;
-   `cell_outputs` mirrors `cell_source` (one result per cell); `images`
+   `cell_outputs` mirrors `cell_source` (one result per cell); `setup_source` /
+   `setup_outputs` (nullable) hold the demoted `%%setup` prep cells on their own
+   byte budget; `images`
    (nullable JSON) lists plots saved by reference while the node was active;
    `deleted_at` (nullable) marks a node as soft-deleted (Trash)
 - `experiments.session_node_id` — nullable FK; only set by `%exptrack promote`

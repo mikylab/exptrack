@@ -762,6 +762,29 @@ def api_set_metric_settings(body: dict) -> dict:
             "metric_max_points": conf.get("metric_max_points", 500)}
 
 
+def api_set_capture_settings(body: dict) -> dict:
+    from ...config import load, reload, save
+    conf = load()
+    notebook_capture = body.get("notebook_capture")
+    max_mb = body.get("var_fingerprint_max_mb")
+    if notebook_capture is not None:
+        auto = dict(conf.get("auto_capture", {}) or {})
+        auto["notebook"] = bool(notebook_capture)
+        conf["auto_capture"] = auto
+    if max_mb is not None:
+        try:
+            val = max(1, min(10000, int(max_mb)))
+            conf["var_fingerprint_max_mb"] = val
+        except (ValueError, TypeError):
+            return {"error": "var_fingerprint_max_mb must be an integer (1-10000)"}
+    save(conf)
+    reload()
+    auto = conf.get("auto_capture", {}) or {}
+    return {"ok": True,
+            "notebook_capture": bool(auto.get("notebook", True)),
+            "var_fingerprint_max_mb": int(conf.get("var_fingerprint_max_mb", 100))}
+
+
 # ── Study management ─────────────────────────────────────────────────────────
 
 def api_create_study(conn, body: dict) -> dict:
@@ -1791,6 +1814,45 @@ def api_session_rename_node(conn, session_id: str, body: dict) -> dict:
     if not r.get("ok"):
         return {"error": r.get("error", "rename failed")}
     return {"ok": True, "label": r["label"]}
+
+
+def api_session_promote_to_checkpoint(conn, session_id: str, body: dict) -> dict:
+    """Promote a branch node to a checkpoint (freezing its current diff)."""
+    node_id, err = _validate_session_node(conn, session_id, body)
+    if err:
+        return err
+    from ...sessions.manager import promote_to_checkpoint
+    r = promote_to_checkpoint(node_id)
+    if not r.get("ok"):
+        return {"error": r.get("error", "promote failed")}
+    return {"ok": True, "node_type": r.get("node_type")}
+
+
+def api_session_link_experiment(conn, session_id: str, body: dict) -> dict:
+    """Link (promote) an experiment to a session node — the dashboard equivalent
+    of `%exptrack promote`. Pass an empty `exp_id` to unlink. Delegates the
+    1:1-linking logic to `manager.link_experiment`."""
+    node_id, err = _validate_session_node(conn, session_id, body)
+    if err:
+        return err
+    from ...sessions.manager import link_experiment
+    r = link_experiment(node_id, body.get("exp_id") or "")
+    if not r.get("ok"):
+        return {"error": r.get("error", "link failed")}
+    return {"ok": True, "linked": r.get("linked")}
+
+
+def api_session_materialize_experiment(conn, session_id: str, body: dict) -> dict:
+    """Create a standalone experiment from a node's captured data and link it."""
+    node_id, err = _validate_session_node(conn, session_id, body)
+    if err:
+        return err
+    from ...sessions.manager import materialize_experiment
+    r = materialize_experiment(node_id)
+    if not r.get("ok"):
+        return {"error": r.get("error", "could not create experiment"),
+                "id": r.get("id")}
+    return {"ok": True, "id": r.get("id"), "name": r.get("name")}
 
 
 def api_session_purge_node(conn, session_id: str, body: dict) -> dict:

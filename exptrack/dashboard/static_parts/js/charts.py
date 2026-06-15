@@ -151,6 +151,8 @@ function buildChartsTabContent(metricsData, viewMode) {
     html += '<label for="chart-metric-select">Metric</label>'
       + '<select id="chart-metric-select">' + options + '</select>';
   }
+  html += '<button class="action-btn" id="chart-download-png" style="margin-left:auto" '
+    + 'title="Download the visible chart(s) as PNG">⬇ PNG</button>';
   html += '</div>';
 
   // Scale controls bar (both modes)
@@ -218,6 +220,9 @@ function initChartsTab(container, metricsData, viewMode) {
   if (applyBtn) applyBtn.addEventListener('click', handleApply);
   if (resetBtn) resetBtn.addEventListener('click', handleReset);
 
+  const dlBtn = container.querySelector('#chart-download-png');
+  if (dlBtn) dlBtn.addEventListener('click', downloadChartsPng);
+
   if (viewMode === 'all') {
     renderAllCharts(container, metricsData, null);
     return;
@@ -244,6 +249,44 @@ async function loadChartsTab(expId, viewMode) {
 
   container.innerHTML = buildChartsTabContent(metricsData, mode);
   initChartsTab(container, metricsData, mode);
+}
+
+// ── Chart PNG export ─────────────────────────────────────────────────────────
+
+function _downloadCanvasPng(canvas, filename) {
+  if (!canvas) return;
+  // Chart.js canvases are transparent; composite onto a theme-matched
+  // background so the exported PNG isn't see-through.
+  const tmp = document.createElement('canvas');
+  tmp.width = canvas.width;
+  tmp.height = canvas.height;
+  const ctx = tmp.getContext('2d');
+  ctx.fillStyle = document.body.classList.contains('dark') ? '#1e1e1e' : '#ffffff';
+  ctx.fillRect(0, 0, tmp.width, tmp.height);
+  ctx.drawImage(canvas, 0, 0);
+  tmp.toBlob(blob => { if (blob) downloadBlob(blob, filename, 'image/png'); });
+}
+
+function downloadChartsPng() {
+  const safe = s => (s || 'chart').replace(/[^a-z0-9_.-]+/gi, '_');
+  if (_chartsViewMode === 'all') {
+    let n = 0;
+    for (const [k, c] of Object.entries(charts)) {
+      if (k.startsWith('all_') && c && c.canvas) {
+        _downloadCanvasPng(c.canvas, safe(k.slice(4)) + '.png');
+        n++;
+      }
+    }
+    owlSay(n ? ('Downloaded ' + n + ' chart' + (n > 1 ? 's' : '')) : 'No charts to download');
+  } else {
+    const c = charts._active;
+    if (c && c.canvas) {
+      _downloadCanvasPng(c.canvas, safe(c.data.datasets[0].label) + '.png');
+      owlSay('Chart downloaded');
+    } else {
+      owlSay('No chart to download');
+    }
+  }
 }
 
 // ── Overview mini chart preview ──────────────────────────────────────────────

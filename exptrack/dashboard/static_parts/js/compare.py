@@ -183,7 +183,8 @@ async function doCompare() {
         const d = v2 - v1;
         if (onlyDiffers && Math.abs(d) < 0.0001) continue;
         const arrow = d > 0 ? '&#x25B2;' : d < 0 ? '&#x25BC;' : '';
-        delta = '<span style="color:' + (d>0?'var(--green,#3fb950)':'var(--red,#f85149)') + '">' + arrow + ' ' + (d>0?'+':'') + d.toFixed(4) + '</span>';
+        const pct = v1 !== 0 ? ' (' + (d > 0 ? '+' : '') + (d / Math.abs(v1) * 100).toFixed(1) + '%)' : '';
+        delta = '<span style="color:' + (d>0?'var(--green,#3fb950)':'var(--red,#f85149)') + '">' + arrow + ' ' + (d>0?'+':'') + d.toFixed(4) + pct + '</span>';
       }
       const ks1 = src1[k] || 'auto', ks2 = src2[k] || 'auto';
       const source = ks1 === ks2 ? '<span class="source-badge ' + ks1 + '">' + ks1 + '</span>' : '<span class="source-badge ' + ks1 + '">' + ks1 + '</span> / <span class="source-badge ' + ks2 + '">' + ks2 + '</span>';
@@ -338,8 +339,10 @@ async function doMultiCompare(ids) {
   }
   const keys = [...allKeys].sort();
 
-  // Summary table
-  let html = '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Comparison Table</summary>';
+  // Summary table — per metric row, the highest value is tinted green and the
+  // lowest red so the spread across runs is scannable at a glance (neutral re:
+  // higher- vs lower-is-better, which exptrack can't know).
+  let html = '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Comparison Table <span class="cmp-bestkey"><span class="cmp-best-max">highest</span> / <span class="cmp-best-min">lowest</span> per row</span></summary>';
   html += '<div style="overflow-x:auto"><table class="metrics-table"><tr><th>Key</th>';
   for (const e of exps) {
     const name = e.name.length > 20 ? e.name.slice(0,17) + '...' : e.name;
@@ -348,9 +351,17 @@ async function doMultiCompare(ids) {
   html += '</tr>';
   for (const k of keys) {
     html += '<tr><td>' + esc(k) + '</td>';
+    const nums = exps.map(e => e.metrics[k]).filter(v => typeof v === 'number');
+    const mn = nums.length ? Math.min(...nums) : null;
+    const mx = nums.length ? Math.max(...nums) : null;
     for (const e of exps) {
       const v = e.metrics[k];
-      html += '<td>' + (v !== undefined ? (typeof v === 'number' ? v.toFixed(4) : esc(String(v))) : '--') + '</td>';
+      let cls = '';
+      if (typeof v === 'number' && mn !== mx) {
+        if (v === mx) cls = ' class="cmp-best-max"';
+        else if (v === mn) cls = ' class="cmp-best-min"';
+      }
+      html += '<td' + cls + '>' + (v !== undefined ? (typeof v === 'number' ? v.toFixed(4) : esc(String(v))) : '--') + '</td>';
     }
     html += '</tr>';
   }

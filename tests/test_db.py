@@ -181,3 +181,69 @@ def test_resolve_git_diff_empty(db_conn):
 
     assert resolve_git_diff(db_conn, None) == ""
     assert resolve_git_diff(db_conn, "") == ""
+
+
+# ---------------------------------------------------------------------------
+# Schema migration robustness (idempotency + split helpers)
+# ---------------------------------------------------------------------------
+
+def _cols(conn, table):
+    from exptrack.core.db import _table_columns
+    return _table_columns(conn, table)
+
+
+def test_ensure_schema_is_idempotent(db_conn):
+    """Running _ensure_schema repeatedly must not raise or alter the schema."""
+    from exptrack.core.db import _ensure_schema
+
+    before = _cols(db_conn, "experiments")
+    # Re-run several times — every migration helper checks column existence,
+    # so this is a no-op the 2nd..Nth time.
+    for _ in range(3):
+        _ensure_schema(db_conn)
+    after = _cols(db_conn, "experiments")
+    assert before == after
+
+
+def test_migrated_columns_present(db_conn):
+    """All columns added by the _migrate_* helpers exist after schema setup."""
+    assert {"session_node_id", "deleted_at", "name_is_auto", "studies",
+            "stage", "stage_name", "output_dir"} <= _cols(db_conn, "experiments")
+    assert {"timeline_seq", "content_hash", "size_bytes"} <= _cols(db_conn, "artifacts")
+    assert "source" in _cols(db_conn, "metrics")
+    assert "source" in _cols(db_conn, "params")
+    assert {"deleted_at", "cell_outputs", "setup_source", "setup_outputs",
+            "images"} <= _cols(db_conn, "session_nodes")
+
+
+def test_migration_helpers_are_individually_idempotent(db_conn):
+    """Each _migrate_* helper can be called standalone without error."""
+    from exptrack.core import db as _db
+
+    for fn in (_db._migrate_session_nodes, _db._migrate_experiment_session_link,
+               _db._migrate_artifacts, _db._migrate_metrics,
+               _db._migrate_params, _db._migrate_experiments):
+        fn(db_conn)  # must not raise on an already-migrated db
+
+
+def test_add_columns_adds_only_missing_and_is_idempotent(db_conn):
+    """_add_columns adds absent columns once and reports the empty set after."""
+    from exptrack.core.db import _add_columns, _table_columns
+
+    db_conn.execute("CREATE TABLE t_ac (a TEXT)")
+    # First pass: b and c are missing, a already exists → only b, c added.
+    added = _add_columns(db_conn, "t_ac", {"a": "TEXT", "b": "INTEGER", "c": "TEXT"})
+    assert added == {"b", "c"}
+    assert {"a", "b", "c"} <= _table_columns(db_conn, "t_ac")
+    # Second pass with the same spec is a no-op (proves idempotency).
+    assert _add_columns(db_conn, "t_ac", {"a": "TEXT", "b": "INTEGER", "c": "TEXT"}) == set()
+
+
+def test_add_columns_applies_ddl_default(db_conn):
+    """The DDL fragment (incl. DEFAULT) is applied to the new column."""
+    from exptrack.core.db import _add_columns
+
+    db_conn.execute("CREATE TABLE t_def (a TEXT)")
+    db_conn.execute("INSERT INTO t_def (a) VALUES ('x')")
+    _add_columns(db_conn, "t_def", {"src": "TEXT DEFAULT 'auto'"})
+    assert db_conn.execute("SELECT src FROM t_def").fetchone()[0] == "auto"

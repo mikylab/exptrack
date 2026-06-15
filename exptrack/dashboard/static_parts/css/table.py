@@ -101,4 +101,24 @@ CSS_TABLE = """
     font-family: inherit; font-size: 14px; border: 1px solid var(--border);
     padding: 6px 12px; border-radius: 3px; background: var(--card-bg); min-width: 200px;
   }
+  .exp-empty-row td { border: none !important; background: transparent !important; }
+  .empty-state {
+    text-align: center; padding: 48px 24px; color: var(--text-2);
+  }
+  .empty-state-icon { font-size: 40px; line-height: 1; margin-bottom: 12px; opacity: 0.8; }
+  .empty-state-title { font-size: var(--text-lg); font-weight: 600; color: var(--text-1); margin-bottom: 6px; }
+  .empty-state-msg { font-size: var(--text-sm); color: var(--text-3); max-width: 460px; margin: 0 auto; line-height: 1.5; }
+  .empty-state-msg code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  .empty-state-msg .action-btn { margin-top: 10px; }
+  /* Detail-panel loading skeleton */
+  .detail-loading { padding: 24px 16px; }
+  .detail-loading .skel {
+    background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface) 37%, var(--surface-2) 63%);
+    background-size: 400% 100%; border-radius: 5px; animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  .detail-loading .skel-bar { height: 14px; margin: 10px 0; }
+  .detail-loading .skel-title { height: 26px; width: 40%; margin: 4px 0 18px; }
+  @keyframes skel-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+  .detail-error { padding: 40px 24px; text-align: center; color: var(--status-danger); }
+  .detail-error .retry-btn { margin-top: 12px; }
 """

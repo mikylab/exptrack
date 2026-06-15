@@ -136,20 +136,15 @@ def _get_parent_cmdline(pid: int) -> tuple[int, list[str]]:
     return ppid, result.stdout.strip().split()
 
 
-def cmd_run_start(args):
-    """
-    Start an experiment from a shell script. Prints shell-sourceable env vars
-    to stdout so the caller can do:
+_RUN_START_RESERVED = {"name", "script", "tags", "study", "stage",
+                       "stage-name", "notes"}
 
-        eval $(exptrack run-start --lr 0.01 --epochs 50)
-    """
-    from ..core import Experiment
 
-    # Parse free-form --key value pairs from remaining args,
-    # skipping keys that are handled by argparse as named flags
-    _reserved = {"name", "script", "tags", "study", "stage", "stage-name", "notes"}
+def _parse_freeform_params(raw):
+    """Parse free-form ``--key value`` / ``--key=value`` / ``--flag`` pairs from
+    run-start's trailing args into a params dict, skipping argparse-reserved keys.
+    """
     params = {}
-    raw = args.params
     i = 0
     while i < len(raw):
         a = raw[i]
@@ -157,18 +152,22 @@ def cmd_run_start(args):
             key = a[2:]
             if "=" in key:
                 k, v = key.split("=", 1)
-                if k not in _reserved:
+                if k not in _RUN_START_RESERVED:
                     params[k] = _coerce_str(v)
-            elif i + 1 < len(raw) and not raw[i+1].startswith("--"):
-                if key not in _reserved:
-                    params[key] = _coerce_str(raw[i+1])
+            elif i + 1 < len(raw) and not raw[i + 1].startswith("--"):
+                if key not in _RUN_START_RESERVED:
+                    params[key] = _coerce_str(raw[i + 1])
                 i += 1
             else:
-                if key not in _reserved:
+                if key not in _RUN_START_RESERVED:
                     params[key] = True
         i += 1
+    return params
 
-    # Add SLURM context if present
+
+def _collect_env_context():
+    """Gather SLURM + GPU context as `_slurm`/`_gpu` params (empty if neither)."""
+    out = {}
     slurm_vars = {
         "SLURM_JOB_ID":       os.environ.get("SLURM_JOB_ID"),
         "SLURM_JOB_NAME":     os.environ.get("SLURM_JOB_NAME"),
@@ -179,93 +178,73 @@ def cmd_run_start(args):
     }
     slurm = {k: v for k, v in slurm_vars.items() if v}
     if slurm:
-        params["_slurm"] = slurm
-
-    # Add GPU context if available
+        out["_slurm"] = slurm
     try:
         from ..core.gpu import gpu_info
         ginfo_gpu = gpu_info()
         if ginfo_gpu.get("gpu_count", 0) > 0:
-            params["_gpu"] = ginfo_gpu
+            out["_gpu"] = ginfo_gpu
     except Exception:
         pass
+    return out
 
-    tags  = args.tags or []
-    notes = args.notes or ""
-    name  = args.name or ""
 
-    # --script is a naming hint (e.g. "train.py" → name starts with "train__")
-    # The actual script field should be the calling shell script.
-    naming_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
-    calling_script = _detect_calling_script()
-    # Fallback: use the run-start command itself (cleaned up)
-    if not calling_script:
-        calling_script = "exptrack run-start " + " ".join(args.params)
-
-    # Resume existing experiment or start a new one
+def _resolve_run_start_experiment(args, params, naming_hint, calling_script):
+    """Resume an existing experiment (``--resume [ID|latest]``) or create a new one."""
+    from ..core import Experiment
     resume_id = getattr(args, "resume", None)
-    if resume_id:
-        if resume_id == "latest":
-            # Find latest experiment for this script
-            resolved_script = str(Path(calling_script).resolve()) if Path(calling_script).is_file() else calling_script
-            row = get_db().execute(
-                "SELECT id FROM experiments WHERE script=? ORDER BY created_at DESC LIMIT 1",
-                (resolved_script,)
-            ).fetchone()
-            if not row:
-                print(f"[exptrack] No previous experiment found, starting new", file=sys.stderr)
-                resume_id = None
-            else:
-                resume_id = row["id"]
-        if resume_id:
-            exp = Experiment.resume(resume_id)
-            # Update params from this invocation
-            if params:
-                exp.log_params(params)
+    if resume_id == "latest":
+        resolved_script = (str(Path(calling_script).resolve())
+                           if Path(calling_script).is_file() else calling_script)
+        row = get_db().execute(
+            "SELECT id FROM experiments WHERE script=? ORDER BY created_at DESC LIMIT 1",
+            (resolved_script,)
+        ).fetchone()
+        if not row:
+            print("[exptrack] No previous experiment found, starting new", file=sys.stderr)
+            resume_id = None
         else:
-            resume_id = None  # fall through to new experiment
+            resume_id = row["id"]
+    if resume_id:
+        exp = Experiment.resume(resume_id)
+        if params:  # update params from this invocation
+            exp.log_params(params)
+        return exp
+    return Experiment(
+        name=args.name or make_run_name(naming_hint, params),
+        params=params,
+        tags=args.tags or [],
+        notes=args.notes or "",
+        script=calling_script,
+        _caller_depth=0,
+    )
 
-    if not resume_id:
-        exp = Experiment(
-            name=name or make_run_name(naming_hint, params),
-            params=params,
-            tags=tags,
-            notes=notes,
-            script=calling_script,
-            _caller_depth=0,
-        )
 
-    conf = cfg.load()
-    out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name
-    out_dir.mkdir(parents=True, exist_ok=True)
+def _apply_study_stage(conn, exp, args):
+    """Inherit/assign study + stage from args or EXP_STUDY/EXP_STAGE env.
 
-    conn = get_db()
-    conn.execute("UPDATE experiments SET output_dir=? WHERE id=?",
-                 (str(out_dir), exp.id))
-
-    exp.log_artifact(str(out_dir), label="output_dir")
-
-    # Inherit study/stage from env vars set by a previous run-start
+    Returns ``(study, stage)`` for env emission. Auto-increments the stage off
+    a prior run-start's EXP_STAGE so multi-step pipelines number themselves.
+    """
     study = getattr(args, "study", "") or os.environ.get("EXP_STUDY", "")
     stage = getattr(args, "stage", None)
     stage_name = getattr(args, "stage_name", None)
-
-    # Auto-increment stage from prior run-start's EXP_STAGE
     if stage is None and os.environ.get("EXP_STAGE"):
         try:
             stage = int(os.environ["EXP_STAGE"]) + 1
         except (ValueError, TypeError):
             pass
-
     if study:
         from ..core.queries import add_to_study
         add_to_study(conn, exp.id, study)
     if stage is not None:
         from ..core.queries import update_experiment_stage
         update_experiment_stage(conn, exp.id, stage, stage_name)
-    conn.commit()
+    return study, stage
 
-    # Build env vars — printed for eval $() and written to .env file
+
+def _emit_run_env(out_dir, exp, study, stage):
+    """Print `export` statements (for eval $()) and write `.exptrack_run.env`."""
     env_vars = [
         ("EXP_ID", exp.id),
         ("EXP_NAME", exp.name),
@@ -275,18 +254,120 @@ def cmd_run_start(args):
         env_vars.append(("EXP_STUDY", study))
     if stage is not None:
         env_vars.append(("EXP_STAGE", str(stage)))
-
     for k, v in env_vars:
         print(f'export {k}="{v}"')
-
-    env_file = out_dir / ".exptrack_run.env"
     env_lines = [f"{k}={v}" for k, v in env_vars]
     env_lines.append(f"EXP_CREATED={exp.created_at}")
-    env_file.write_text("\n".join(env_lines) + "\n")
+    (out_dir / ".exptrack_run.env").write_text("\n".join(env_lines) + "\n")
+
+
+def cmd_run_start(args):
+    """
+    Start an experiment from a shell script. Prints shell-sourceable env vars
+    to stdout so the caller can do:
+
+        eval $(exptrack run-start --lr 0.01 --epochs 50)
+    """
+    params = _parse_freeform_params(args.params)
+    params.update(_collect_env_context())
+
+    # --script is a naming hint (e.g. "train.py" → name starts with "train__").
+    # The actual script field is the calling shell script, falling back to the
+    # run-start command itself.
+    naming_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
+    calling_script = _detect_calling_script() or (
+        "exptrack run-start " + " ".join(args.params))
+
+    exp = _resolve_run_start_experiment(args, params, naming_hint, calling_script)
+
+    conf = cfg.load()
+    out_dir = cfg.project_root() / conf.get("outputs_dir", "outputs") / exp.name
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    conn = get_db()
+    conn.execute("UPDATE experiments SET output_dir=? WHERE id=?",
+                 (str(out_dir), exp.id))
+    exp.log_artifact(str(out_dir), label="output_dir")
+
+    study, stage = _apply_study_stage(conn, exp, args)
+    conn.commit()
+
+    _emit_run_env(out_dir, exp, study, stage)
+
+
+def _gather_finish_metrics(args, exp_id, step, ts):
+    """Parse the --metrics JSON file into metric rows. Returns (rows, count).
+
+    Read-only: never touches the DB, so it can run before the atomic write.
+    """
+    if not args.metrics:
+        return [], 0
+    mpath = Path(args.metrics)
+    if not mpath.exists():
+        print(f"[exptrack] Warning: metrics file not found: {mpath}", file=sys.stderr)
+        return [], 0
+    try:
+        raw = json.loads(mpath.read_text())
+        flat = _flatten_dict(raw)
+        numeric = {k: float(v) for k, v in flat.items()
+                   if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    except Exception as e:
+        print(f"[exptrack] Warning: could not parse metrics file: {e}", file=sys.stderr)
+        return [], 0
+    rows = [(exp_id, k, v, step, ts) for k, v in numeric.items()]
+    return rows, len(numeric)
+
+
+def _gather_finish_params(args, exp_id):
+    """Parse --params KEY=VALUE pairs into param rows (read-only)."""
+    if not args.params:
+        return []
+    params = {}
+    for pair in args.params:
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            params[k] = _coerce_str(v)
+    return [(exp_id, k, json.dumps(v)) for k, v in params.items()]
+
+
+def _gather_finish_artifacts(conn, exp_id, ts):
+    """Scan the experiment's output_dir for new files. Returns (rows, files).
+
+    Only reads the DB (dedup check); the inserts happen in the atomic write.
+    """
+    out_row = conn.execute(
+        "SELECT output_dir FROM experiments WHERE id=?", (exp_id,)
+    ).fetchone()
+    out_dir = out_row["output_dir"] if out_row else None
+    if not out_dir or not Path(out_dir).is_dir():
+        return [], []
+    hidden = {'.exptrack_run.env', '.DS_Store'}
+    candidates = [p for p in Path(out_dir).rglob('*')
+                  if p.is_file() and not p.name.startswith('.') and p.name not in hidden]
+    # Fetch already-registered paths once, then dedup in memory (vs. one
+    # SELECT per file).
+    known = {r["path"] for r in conn.execute(
+        "SELECT path FROM artifacts WHERE exp_id=?", (exp_id,)).fetchall()}
+    rows, files = [], []
+    for p in candidates:
+        try:
+            resolved = str(p.resolve())
+            if resolved not in known:
+                known.add(resolved)
+                rows.append((exp_id, p.name, resolved, ts))
+                files.append(p)
+        except Exception as e:
+            print(f"[exptrack] warning: could not register artifact: {e}", file=sys.stderr)
+    return rows, files
 
 
 def cmd_run_finish(args):
-    """Mark an experiment as done from a shell script."""
+    """Mark an experiment as done from a shell script.
+
+    Gathers metrics, params and new artifacts via reads first, then commits
+    them together with the status update in a single transaction so a run is
+    never left half-finished (e.g. metrics logged but status still 'running').
+    """
     from ..core.queries import find_experiment
     conn = get_db()
     exp_row = find_experiment(conn, args.id, "id, name")
@@ -295,87 +376,44 @@ def cmd_run_finish(args):
         sys.exit(1)
 
     exp_id = exp_row["id"]
-    step   = args.step
+    ts = datetime.now(timezone.utc).isoformat()
 
-    if args.metrics:
-        mpath = Path(args.metrics)
-        if mpath.exists():
-            try:
-                raw = json.loads(mpath.read_text())
-                flat = _flatten_dict(raw)
-                numeric = {k: float(v) for k, v in flat.items()
-                           if isinstance(v, (int, float)) and not isinstance(v, bool)}
-                if numeric:
-                    ts = datetime.now(timezone.utc).isoformat()
-                    with conn:
-                        conn.executemany(
-                            "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-                            [(exp_id, k, v, step, ts) for k, v in numeric.items()]
-                        )
-                    print(f"[exptrack] Logged {len(numeric)} metrics from {mpath.name}",
-                          file=sys.stderr)
-            except Exception as e:
-                print(f"[exptrack] Warning: could not parse metrics file: {e}", file=sys.stderr)
-        else:
-            print(f"[exptrack] Warning: metrics file not found: {mpath}", file=sys.stderr)
+    metric_rows, metric_count = _gather_finish_metrics(args, exp_id, args.step, ts)
+    param_rows = _gather_finish_params(args, exp_id)
+    artifact_rows, artifact_files = _gather_finish_artifacts(conn, exp_id, ts)
 
-    if args.params:
-        params = {}
-        for pair in args.params:
-            if "=" in pair:
-                k, v = pair.split("=", 1)
-                params[k] = _coerce_str(v)
-        if params:
-            with conn:
-                conn.executemany(
-                    "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
-                    [(exp_id, k, json.dumps(v)) for k, v in params.items()]
-                )
-
-    # Scan output_dir for artifacts before closing
-    out_row = conn.execute(
-        "SELECT output_dir FROM experiments WHERE id=?", (exp_id,)
-    ).fetchone()
-    out_dir = out_row["output_dir"] if out_row else None
-    if out_dir:
-        out_path = Path(out_dir)
-        if out_path.is_dir():
-            hidden = {'.exptrack_run.env', '.DS_Store'}
-            new_files = [p for p in out_path.rglob('*')
-                         if p.is_file() and not p.name.startswith('.') and p.name not in hidden]
-            ts = datetime.now(timezone.utc).isoformat()
-            for p in new_files:
-                try:
-                    resolved = str(p.resolve())
-                    existing = conn.execute(
-                        "SELECT 1 FROM artifacts WHERE exp_id=? AND path=?",
-                        (exp_id, resolved)
-                    ).fetchone()
-                    if not existing:
-                        conn.execute(
-                            "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
-                            (exp_id, p.name, resolved, ts)
-                        )
-                except Exception as e:
-                    print(f"[exptrack] warning: could not register artifact: {e}", file=sys.stderr)
-            if new_files:
-                conn.commit()
-                if len(new_files) <= 5:
-                    for p in new_files:
-                        print(f"[exptrack] artifact: {p}", file=sys.stderr)
-                else:
-                    print(f"[exptrack] {len(new_files)} artifacts in {out_dir}/", file=sys.stderr)
-
-    now = datetime.now(timezone.utc).isoformat()
     created = conn.execute(
         "SELECT created_at FROM experiments WHERE id=?", (exp_id,)
     ).fetchone()["created_at"]
-    duration = (datetime.fromisoformat(now) - datetime.fromisoformat(created)).total_seconds()
+    duration = (datetime.fromisoformat(ts) - datetime.fromisoformat(created)).total_seconds()
 
+    # Single atomic write: metrics + params + artifacts + status land together.
     with conn:
-        conn.execute("""
-            UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?
-        """, (now, duration, exp_id))
+        if metric_rows:
+            conn.executemany(
+                "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
+                metric_rows)
+        if param_rows:
+            conn.executemany(
+                "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+                param_rows)
+        if artifact_rows:
+            conn.executemany(
+                "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
+                artifact_rows)
+        conn.execute(
+            "UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?",
+            (ts, duration, exp_id))
+
+    if metric_count:
+        print(f"[exptrack] Logged {metric_count} metrics from {Path(args.metrics).name}",
+              file=sys.stderr)
+    if artifact_files:
+        if len(artifact_files) <= 5:
+            for p in artifact_files:
+                print(f"[exptrack] artifact: {p}", file=sys.stderr)
+        else:
+            print(f"[exptrack] {len(artifact_files)} artifacts registered", file=sys.stderr)
 
     m, s = divmod(duration, 60)
     print(f"[exptrack] done: {exp_row['name']}  ({int(m)}m {s:.0f}s)", file=sys.stderr)

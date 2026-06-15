@@ -569,3 +569,42 @@ def test_post_run_cell_multiple_cells(tmp_project):
     assert cell_events[1]["key"] == "cell_2"
 
     exp.finish()
+
+
+# ── Tests for _handle_scratch_or_setup (Item 1 split) ────────────────────────
+
+def test_handle_scratch_or_setup_skips_scratch():
+    """A %%scratch cell is gated out (returns True)."""
+    from exptrack.capture.notebook_hooks import _handle_scratch_or_setup
+    assert _handle_scratch_or_setup("%%scratch\nx = 1", "", None) is True
+
+
+def test_handle_scratch_or_setup_passes_normal_cell():
+    """A normal cell is not gated (returns False)."""
+    from exptrack.capture.notebook_hooks import _handle_scratch_or_setup
+    assert _handle_scratch_or_setup("x = 1", "", None) is False
+
+
+def test_post_run_cell_scratch_emits_no_timeline(tmp_project):
+    """A %%scratch cell runs through _post_run_cell but logs nothing."""
+    from exptrack.capture.notebook_hooks import (
+        _post_run_cell, attach_notebook
+    )
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+
+    _reset_nb_state()
+    exp = Experiment(script="test_nb.py")
+    ip = MockShell()
+    attach_notebook(exp, nb_name="test_nb", ip=ip)
+
+    _post_run_cell(MockResult("%%scratch\nthrowaway = 1"))
+
+    conn = get_db()
+    n = conn.execute(
+        "SELECT COUNT(*) FROM timeline WHERE exp_id=? AND event_type='cell_exec'",
+        (exp.id,)
+    ).fetchone()[0]
+    assert n == 0  # scratch cell left no trace
+
+    exp.finish()

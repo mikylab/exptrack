@@ -140,6 +140,254 @@ def test_scratch_cell_detection():
     assert not is_scratch_cell("")
 
 
+def test_setup_cell_detection():
+    from exptrack.capture.session_hooks import is_setup_cell, is_scratch_cell
+    assert is_setup_cell("%%setup\ndf = load()")
+    assert is_setup_cell("\n\n%%setup\nbody")
+    assert not is_setup_cell("print('hi')")
+    assert not is_setup_cell("# %%setup\nx=1")
+    assert not is_setup_cell("")
+    # scratch and setup are distinct
+    assert not is_scratch_cell("%%setup\nx=1")
+    assert not is_setup_cell("%%scratch\nx=1")
+
+
+def test_session_nodes_has_setup_columns(db_conn):
+    cols = {row[1] for row in db_conn.execute(
+        "PRAGMA table_info(session_nodes)").fetchall()}
+    assert "setup_source" in cols
+    assert "setup_outputs" in cols
+
+
+def test_record_setup_cell_stored_separately(tmp_project):
+    """%%setup cells land in setup_source/outputs, never in cell_source, and
+    keep their own segment alignment."""
+    from exptrack.sessions import SessionManager
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("s", "nb.ipynb")
+    sm.checkpoint("c1")
+    sm.record_cell("model = train()", output="acc=0.9")
+    sm.record_setup_cell("%%setup\ndf = load_csv('x.csv')\ndf", output="<DataFrame>")
+    sm.record_setup_cell("%%setup\nfeats = build(df)", output=None)
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT cell_source, setup_source, setup_outputs FROM session_nodes WHERE id=?",
+        (sm._current_node_id,),
+    ).fetchone()
+    SEP = SessionManager._CELL_SEPARATOR
+    # real cell untouched by setup
+    assert row["cell_source"].split(SEP) == ["model = train()"]
+    setup_cells = row["setup_source"].split(SEP)
+    setup_outs = row["setup_outputs"].split(SEP)
+    assert len(setup_cells) == len(setup_outs) == 2
+    # the leading %%setup line is stripped from what we store
+    assert setup_cells[0] == "df = load_csv('x.csv')\ndf"
+    assert setup_outs[0] == "<DataFrame>"
+    assert setup_outs[1] == ""
+
+
+def test_build_tree_exposes_setup_fields(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import build_tree
+
+    sm = SessionManager()
+    sid = sm.start("s", "nb.ipynb")
+    sm.checkpoint("c1")
+    sm.record_setup_cell("%%setup\ndf = 1", output="1")
+    tree = build_tree(sid)
+    cp = tree["root"]["children"][0]
+    assert "setup_source" in cp and cp["setup_source"]
+    assert "setup_outputs" in cp
+
+
+def test_promote_branch_to_checkpoint(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import promote_to_checkpoint
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("s", "nb.ipynb")
+    sm.checkpoint("c1")
+    br = sm.branch("idea-a")
+    r = promote_to_checkpoint(br)
+    assert r["ok"] and r["node_type"] == "checkpoint"
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT node_type FROM session_nodes WHERE id=?", (br,)).fetchone()
+    assert row["node_type"] == "checkpoint"
+    # promoting a checkpoint is a no-op; a root is rejected
+    assert promote_to_checkpoint(br)["ok"] is True
+    assert promote_to_checkpoint("nonexistent")["ok"] is False
+
+
+def test_materialize_carries_setup_images_and_lineage(tmp_project, tmp_path):
+    """A node promoted to an experiment carries its %%setup prep cells (as muted
+    setup events), its by-reference plots (as artifacts), and a lineage
+    breadcrumb in the notes, so the run can be traced back to its session
+    context."""
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import materialize_experiment
+    from exptrack.core.db import get_db
+
+    # a real file so file_hash() succeeds and the artifact is registered
+    img = tmp_path / "loss.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    sm = SessionManager()
+    sm.start("explore-lr", "nb.ipynb")
+    sm.checkpoint("baseline")
+    br = sm.branch("lr-0.5")
+    sm.record_cell("model.fit(lr=0.5)", output="acc=0.91")
+    sm.record_setup_cell("%%setup\ndf = load()", output="<DataFrame>")
+    sm.record_image(str(img), label="loss curve")
+
+    res = materialize_experiment(br)
+    assert res["ok"], res
+    exp_id = res["id"]
+
+    conn = get_db()
+    exp = conn.execute(
+        "SELECT notes, session_node_id FROM experiments WHERE id=?", (exp_id,)).fetchone()
+    # linked back to the node + lineage breadcrumb in notes
+    assert exp["session_node_id"] == br
+    assert "baseline" in exp["notes"] and "lr-0.5" in exp["notes"]
+
+    # setup cell replayed as a muted setup event, real cell as cell_exec
+    evs = conn.execute(
+        "SELECT event_type FROM timeline WHERE exp_id=? ORDER BY seq", (exp_id,)).fetchall()
+    types = [e["event_type"] for e in evs]
+    assert "setup" in types and "cell_exec" in types
+
+    # plot registered as an artifact (by reference — path points at the original)
+    arts = conn.execute(
+        "SELECT label, path FROM artifacts WHERE exp_id=?", (exp_id,)).fetchall()
+    assert any(a["path"] == str(img) for a in arts)
+
+    # re-materializing the same node is refused (already linked)
+    assert materialize_experiment(br)["ok"] is False
+
+
+def test_materialize_stores_full_cell_source_for_view_source(tmp_project):
+    """A promoted node's cells carry their FULL source into the experiment: each
+    cell_exec timeline event gets a cell_hash pointing at a content-addressed
+    cell_lineage row holding the whole cell, so the Timeline's "view source"
+    can show + copy the code (not just the one-line preview) and the run is
+    re-runnable. Regression test for sessions promoting with "no code"."""
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import materialize_experiment
+    from exptrack.capture.cell_lineage import get_cell_source
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("explore", "nb.ipynb")
+    sm.checkpoint("cp1")
+    br = sm.branch("try-thresh")
+    sm.record_cell("x = 1\nprint(x)", output="1")
+    sm.record_cell("threshold = 0.5\ny = x * threshold", output="")
+
+    exp_id = materialize_experiment(br)["id"]
+    conn = get_db()
+
+    evs = conn.execute(
+        "SELECT cell_hash, value FROM timeline "
+        "WHERE exp_id=? AND event_type='cell_exec' ORDER BY seq", (exp_id,)
+    ).fetchall()
+    assert len(evs) == 2
+    # every cell_exec event has a cell_hash and the lineage row holds the FULL
+    # multi-line source (get_cell_source is exactly what /api/cell-source serves)
+    sources = []
+    for e in evs:
+        assert e["cell_hash"], "cell_exec event must carry a cell_hash for view-source"
+        full = get_cell_source(e["cell_hash"])
+        assert full is not None
+        sources.append(full)
+    assert "x = 1\nprint(x)" in sources
+    assert "threshold = 0.5\ny = x * threshold" in sources
+
+
+def test_session_origin_surfaced_in_detail(tmp_project):
+    """get_experiment_detail exposes session_origin so the dashboard can render
+    the back-link from a linked experiment to its session node."""
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import materialize_experiment
+    from exptrack.core.db import get_db
+    from exptrack.core.queries import get_experiment_detail
+
+    sm = SessionManager()
+    sm.start("explore", "nb.ipynb")
+    sm.checkpoint("cp1")
+    br = sm.branch("try-this")
+    sm.record_cell("x = 1", output="1")
+    exp_id = materialize_experiment(br)["id"]
+
+    d = get_experiment_detail(get_db(), exp_id)
+    so = d["session_origin"]
+    assert so and so["node_id"] == br
+    assert so["session_name"] == "explore"
+    assert so["node_type"] == "branch"
+    assert "cp1" in so["lineage"] and "try-this" in so["lineage"]
+
+    # a run with no session origin reports None
+    from exptrack.core import Experiment
+    plain = Experiment(script="train.py")
+    assert get_experiment_detail(get_db(), plain.id)["session_origin"] is None
+
+
+def test_autolink_run_links_once_and_respects_promote(tmp_project):
+    from exptrack.sessions import SessionManager
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("s", "nb.ipynb")
+    root = sm._current_node_id
+    exp = Experiment(script="train.py")
+    sm.autolink_run(exp.id)
+
+    conn = get_db()
+    link = lambda: conn.execute(
+        "SELECT session_node_id FROM experiments WHERE id=?", (exp.id,)).fetchone()[0]
+    assert link() == root
+
+    # An explicit promote to a deeper node wins; a later autolink must not
+    # clobber it (guarded UPDATE only fills a NULL link, and the one-shot guard
+    # already fired).
+    sm.checkpoint("c1")
+    br = sm.branch("idea")
+    sm.promote("", exp.id)
+    assert link() == br
+    sm.autolink_run(exp.id)
+    assert link() == br
+    exp.finish()
+
+
+def test_run_cell_body_displays_trailing_expression():
+    """%%scratch/%%setup must show a bare trailing expression (the old exec
+    swallowed it)."""
+    from exptrack.capture.session_hooks import _run_cell_body
+
+    class FakeIP:
+        def __init__(self):
+            self.user_ns = {}
+            self.displayed = []
+        def displayhook(self, val):
+            self.displayed.append(val)
+
+    ip = FakeIP()
+    val = _run_cell_body("a = 21\nb = a * 2\nb", ip)
+    assert val == 42
+    assert ip.displayed == [42]          # trailing expr routed to display
+    assert ip.user_ns["b"] == 42         # statements executed
+    # no trailing expression → nothing displayed
+    ip2 = FakeIP()
+    assert _run_cell_body("x = 1", ip2) is None
+    assert ip2.displayed == []
+
+
 def test_session_rm_preserves_experiments(tmp_project):
     """exptrack session rm clears session_node_id but keeps the experiment."""
     from exptrack.sessions import SessionManager
@@ -869,3 +1117,60 @@ def test_purge_node_trashes_attached_images(tmp_project, monkeypatch):
     r = purge_node(b)         # permanent → trashes the file
     assert r["ok"] and r["images"]["os_trash"] == 1
     assert moved and moved[0].endswith("plot.png")
+
+
+def test_link_experiment_link_change_unlink(tmp_project):
+    """Dashboard 'promote': link_experiment points a node at a run (1:1), can be
+    re-targeted (detaching the prior run), and unlinks on a blank exp_id.
+    Linking/unlinking never deletes the experiment row."""
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import link_experiment
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sm.start("link-flow")
+    sm.checkpoint("c")
+    br = sm.branch("b")
+
+    e1 = Experiment(script="a.py", params={"lr": 0.01}); e1.finish()
+    e2 = Experiment(script="b.py", params={"lr": 0.02}); e2.finish()
+    conn = get_db()
+
+    def node_of(exp_id):
+        return conn.execute(
+            "SELECT session_node_id FROM experiments WHERE id=?", (exp_id,)
+        ).fetchone()["session_node_id"]
+
+    # Link e1 → node.
+    r = link_experiment(br, e1.id)
+    assert r["ok"] and r["linked"] == e1.id
+    assert node_of(e1.id) == br
+
+    # Re-target to e2: 1:1, so e1 is detached.
+    r = link_experiment(br, e2.id)
+    assert r["ok"] and r["linked"] == e2.id
+    assert node_of(e2.id) == br
+    assert node_of(e1.id) is None
+
+    # Unlink (blank id): e2 detached, but the experiment row survives.
+    r = link_experiment(br, "")
+    assert r["ok"] and r["linked"] is None
+    assert node_of(e2.id) is None
+    assert conn.execute(
+        "SELECT 1 FROM experiments WHERE id=?", (e2.id,)
+    ).fetchone() is not None
+
+
+def test_link_experiment_rejects_bad_ids(tmp_project):
+    """Unknown node or experiment id is reported, not silently linked."""
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import link_experiment
+
+    sm = SessionManager()
+    sm.start("bad-ids")
+    sm.checkpoint("c")
+    br = sm.branch("b")
+
+    assert link_experiment("nope", "whatever")["ok"] is False
+    assert link_experiment(br, "no-such-exp")["ok"] is False

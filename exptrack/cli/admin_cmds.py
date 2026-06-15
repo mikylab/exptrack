@@ -20,6 +20,54 @@ def cmd_init(args):
     cfg.init(project_name=args.name or "", here=args.here)
 
 
+# Paste-able guard that makes a notebook run with OR without exptrack installed.
+# If exptrack is present it loads normally; if not, the %%scratch / %%setup /
+# %%pin cell magics and %exptrack line magics are registered as harmless
+# no-ops (the cell bodies still run) so the same notebook stays portable for
+# collaborators who don't have exptrack. The fallback uses
+# ip.register_magic_function(...) — the same API exptrack itself uses — so custom
+# magic names register reliably across IPython versions.
+NOTEBOOK_GUARD = '''\
+# ── exptrack guard ──────────────────────────────────────────────────────────
+# Makes this notebook run with OR without exptrack installed. Paste at the top.
+# Installed  → loads normally (full tracking).
+# Not there  → %%scratch / %%setup / %%pin and %exptrack lines become no-ops;
+#              the cell bodies still run, so the notebook stays portable.
+try:
+    get_ipython().run_line_magic("load_ext", "exptrack")
+except Exception:
+    _ip = get_ipython()
+    def _exptrack_passthrough(line, cell):
+        _ip.run_cell(cell)            # run the body, ignore the magic label
+    def _exptrack_noop(line):
+        pass
+    for _name in ("scratch", "setup", "pin"):
+        _ip.register_magic_function(
+            _exptrack_passthrough, magic_kind="cell", magic_name=_name)
+    _ip.register_magic_function(
+        _exptrack_noop, magic_kind="line", magic_name="exptrack")
+    print("[exptrack-guard] exptrack not loaded — session magics are no-ops, "
+          "cells still run.")
+'''
+
+
+def cmd_notebook_guard(args):
+    """Print a paste-able guard cell so a notebook runs with or without exptrack.
+
+    Without it, a notebook using %%scratch / %%setup / %%pin / %exptrack raises
+    an "unknown magic" UsageError on any machine where exptrack isn't installed
+    (and for a cell magic the whole cell body is skipped). The guard degrades
+    those magics to no-ops that still run the cell body."""
+    # Snippet to stdout so it can be piped/copied; the hint goes to stderr.
+    print(NOTEBOOK_GUARD)
+    print(
+        col("Copy the cell above into the top of your notebook. ", G)
+        + dim("It loads exptrack when present and otherwise makes the session "
+              "magics harmless no-ops."),
+        file=sys.stderr,
+    )
+
+
 def cmd_run(args):
     """Hand off to __main__.py logic inline."""
     script = args.script
@@ -106,10 +154,11 @@ def cmd_stale(args):
         print(dim(f"No stale experiments (running > {args.hours}h).")); return
     print(f"Marking {len(rows)} stale experiment(s) as timed-out:")
     now = datetime.now(timezone.utc).isoformat()
-    for r in rows:
-        duration = (datetime.fromisoformat(now) -
-                    datetime.fromisoformat(r["created_at"])).total_seconds()
-        with conn:
+    # One transaction for the whole batch instead of a commit (fsync) per row.
+    with conn:
+        for r in rows:
+            duration = (datetime.fromisoformat(now) -
+                        datetime.fromisoformat(r["created_at"])).total_seconds()
             conn.execute(
                 "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
                 (r["id"], "error", json.dumps(f"timed-out after {args.hours}h"))
@@ -117,7 +166,7 @@ def cmd_stale(args):
             conn.execute("""
                 UPDATE experiments SET status='failed', updated_at=?, duration_s=? WHERE id=?
             """, (now, duration, r["id"]))
-        print(f"  {col(r['id'][:6], C)}  {r['name'][:50]}")
+            print(f"  {col(r['id'][:6], C)}  {r['name'][:50]}")
 
 
 def cmd_upgrade(args):

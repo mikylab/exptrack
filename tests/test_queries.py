@@ -165,3 +165,59 @@ def test_format_export_params_bool_flag(tmp_project):
     assert "--train" in lines
     assert "--debug" not in " ".join(lines)
     assert "--lr 0.1" in lines
+
+
+def test_list_experiments_batches_metrics_and_params(tmp_project):
+    """list_experiments returns per-exp metrics/sparklines/params (batched path)."""
+    from exptrack.core import Experiment, get_db
+    from exptrack.core.queries import list_experiments
+
+    for i in range(3):
+        e = Experiment(script="train.py", params={"lr": 0.01 * (i + 1), "run": i})
+        e.log_metric("loss", 0.5 - i * 0.1, step=1)
+        e.log_metric("loss", 0.3 - i * 0.1, step=2)
+        e.finish()
+
+    conn = get_db()
+    rows = list_experiments(conn, limit=50)
+    assert len(rows) == 3
+    for r in rows:
+        assert "loss" in r["metrics"]
+        assert r["metrics"]["loss"]["value"] is not None
+        assert r["sparklines"]["loss"] == sorted(r["sparklines"]["loss"], reverse=True) or \
+            len(r["sparklines"]["loss"]) >= 1
+        assert "lr" in r["params"] and "run" in r["params"]
+
+
+def test_batch_helpers_match_per_exp_helpers(tmp_project, sample_experiment):
+    """The batched query helpers agree with the single-exp versions."""
+    from exptrack.core import get_db
+    from exptrack.core import queries as q
+
+    conn = get_db()
+    eid = sample_experiment.id
+    assert q.get_latest_metrics_with_source_batch(conn, [eid])[eid] == \
+        q.get_latest_metrics_with_source(conn, eid)
+    assert q.get_metrics_sparkline_batch(conn, [eid])[eid] == \
+        q.get_metrics_sparkline(conn, eid)
+    # empty input is a safe no-op
+    assert q.get_params_batch(conn, []) == {}
+    assert q.get_metrics_sparkline_batch(conn, []) == {}
+
+
+def test_get_experiment_detail_exposes_datasets(tmp_project):
+    """A logged _dataset_manifest surfaces under the 'datasets' detail key."""
+    from exptrack.core import Experiment, get_db
+    from exptrack.core.queries import get_experiment_detail
+
+    exp = Experiment(script="train.py", params={"lr": 0.01})
+    manifest = {"data_dir": {"kind": "dir", "path": "data", "n_files": 2,
+                             "size": 16, "hash": "abc", "truncated": False}}
+    exp.log_params({"_dataset_manifest": manifest})
+    exp.finish()
+
+    conn = get_db()
+    detail = get_experiment_detail(conn, exp.id)
+    assert detail["datasets"] == manifest
+    # the raw underscore param is not leaked into user params
+    assert "_dataset_manifest" not in detail["params"]

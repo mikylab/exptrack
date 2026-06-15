@@ -8,6 +8,8 @@ import json
 import re
 import sys
 
+from ..core.utils import debug_log, safe_call
+
 # Heuristic: variable names that look like hyperparameters
 _HP_RE = re.compile(
     r"^(lr|learning.rate|batch.size|bs|n?_?epochs?|dropout|weight.decay|"
@@ -77,38 +79,28 @@ def var_summary(val) -> str | None:
     if tname in _SKIP_TYPES_NAMES:
         return None
     if tname == "ndarray":
-        try:
-            return f"ndarray(shape={val.shape}, dtype={val.dtype})"
-        except Exception:
-            return "ndarray(?)"
+        return safe_call(lambda: f"ndarray(shape={val.shape}, dtype={val.dtype})",
+                         default="ndarray(?)", context="var_summary.ndarray")
     if tname == "DataFrame":
-        try:
-            return f"DataFrame(shape={val.shape}, cols={list(val.columns)[:8]})"
-        except Exception:
-            return "DataFrame(?)"
+        return safe_call(lambda: f"DataFrame(shape={val.shape}, cols={list(val.columns)[:8]})",
+                         default="DataFrame(?)", context="var_summary.DataFrame")
     if tname == "Series":
-        try:
-            return f"Series(len={len(val)}, dtype={val.dtype})"
-        except Exception:
-            return "Series(?)"
+        return safe_call(lambda: f"Series(len={len(val)}, dtype={val.dtype})",
+                         default="Series(?)", context="var_summary.Series")
     if tname == "Tensor":
-        try:
-            return f"Tensor(shape={list(val.shape)}, dtype={val.dtype})"
-        except Exception:
-            return "Tensor(?)"
+        return safe_call(lambda: f"Tensor(shape={list(val.shape)}, dtype={val.dtype})",
+                         default="Tensor(?)", context="var_summary.Tensor")
     if isinstance(val, (list, tuple, set, frozenset)):
         return f"{tname}(len={len(val)})"
     if isinstance(val, dict):
         return f"dict(len={len(val)}, keys={list(val.keys())[:8]})"
     if tname == "Figure":
         return None  # skip figures, captured via savefig
-    try:
+
+    def _trunc_repr():
         s = repr(val)
-        if len(s) > 200:
-            return f"{tname}(...)"
-        return s
-    except Exception:
-        return f"{tname}(?)"
+        return f"{tname}(...)" if len(s) > 200 else s
+    return safe_call(_trunc_repr, default=f"{tname}(?)", context="var_summary.repr")
 
 
 def _stable_sig(val) -> str:
@@ -224,14 +216,15 @@ def var_fingerprint(val, max_bytes: int = 100 * 1024 * 1024) -> str:
             if len(j) < 10000:
                 return j
         except (TypeError, ValueError, MemoryError, RecursionError) as e:
-            print(f"[exptrack] warning: could not fingerprint {tname}: {e}", file=sys.stderr)
+            debug_log(f"var_fingerprint: could not fingerprint {tname}: "
+                      f"{type(e).__name__}: {e}")
         return f"{tname}:{len(val)}:{id(val)}"
     try:
         r = repr(val)
         if len(r) < 1000:
             return r
     except Exception as e:
-        print(f"[exptrack] warning: repr failed for {tname}: {e}", file=sys.stderr)
+        debug_log(f"var_fingerprint: repr failed for {tname}: {type(e).__name__}: {e}")
     return f"{tname}:{id(val)}"
 
 

@@ -77,7 +77,12 @@ def main(resume=None):
     sys.argv = sys.argv[1:]
 
     from . import config as cfg
-    from .capture import capture_argv, capture_script_snapshot, patch_argparse, patch_savefig
+    from .capture import (
+        capture_argv,
+        capture_script_snapshot,
+        patch_argparse,
+        patch_savefig,
+    )
     from .core import Experiment
 
     conf = cfg.load()

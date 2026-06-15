@@ -15,6 +15,7 @@ from ..core.db import get_db
 from ..core.git import _git as git_run, git_diff as _git_diff
 
 _NODE_CELLS_MAX_BYTES = 256 * 1024  # soft cap on per-node cell_source size
+_NODE_SETUP_MAX_BYTES = 256 * 1024  # separate soft cap for %%setup prep blocks
 _BRANCH_DIFF_THROTTLE_S = 2.0  # min seconds between branch git_diff refreshes
 _NODE_IMAGES_MAX = 30  # cap on plot paths tracked per node (most-recent kept)
 
@@ -57,6 +58,8 @@ class SessionManager:
         # this and let the next recorded cell decide by comparing first-cell
         # source. See record_cell()/branch().
         self._pending_collision: dict[str, Any] | None = None
+        # One-shot guard for auto-linking the notebook's run to this session.
+        self._auto_linked_run_id: str | None = None
 
     # ── cell capture ────────────────────────────────────────────────────────
 
@@ -82,7 +85,8 @@ class SessionManager:
             s = ln.strip()
             if not s:
                 continue
-            if s.startswith("%%scratch") or s.startswith("%%pin"):
+            if (s.startswith("%%scratch") or s.startswith("%%pin")
+                    or s.startswith("%%setup")):
                 return True
             break
         for ln in source.splitlines():
@@ -106,6 +110,81 @@ class SessionManager:
         while kept and not kept[-1].strip():
             kept.pop()
         return "\n".join(kept)
+
+    @staticmethod
+    def _strip_setup_magic(source: str) -> str:
+        """Drop the leading `%%setup` line from a setup cell so the recorded
+        version only carries the user's prep code."""
+        lines = source.splitlines()
+        out: list[str] = []
+        dropped = False
+        for ln in lines:
+            if not dropped and ln.strip().startswith("%%setup"):
+                dropped = True
+                continue
+            out.append(ln)
+        return "\n".join(out).strip()
+
+    @classmethod
+    def _append_cell_segment(cls, src_blob: str, out_blob: str, recorded: str,
+                             out_str: str, cap: int):
+        """Append one (source, output) segment to a SEP-joined pair of blobs.
+
+        Returns (new_src, new_out) or None when nothing changed (an immediate
+        re-run of the same cell whose output is unchanged). Keeps the two blobs
+        segment-aligned and elides oldest segments together once over `cap`.
+        Shared by the setup store; record_cell keeps its own inline copy because
+        it interleaves git-diff/collision bookkeeping."""
+        src_parts = src_blob.split(cls._CELL_SEPARATOR) if src_blob else []
+        out_parts = out_blob.split(cls._CELL_SEPARATOR) if out_blob else []
+        while len(out_parts) < len(src_parts):
+            out_parts.append("")
+        if src_parts and src_parts[-1].strip() == recorded.strip():
+            if out_str and out_parts and out_parts[-1] != out_str:
+                out_parts[-1] = out_str
+            else:
+                return None
+        else:
+            src_parts.append(recorded)
+            out_parts.append(out_str)
+            sep_len = len(cls._CELL_SEPARATOR)
+            total = sum(len(p) for p in src_parts) + sep_len * (len(src_parts) - 1)
+            if total > cap:
+                while len(src_parts) > 1 and total > cap:
+                    total -= len(src_parts.pop(0)) + sep_len
+                    out_parts.pop(0)
+                src_parts.insert(0, "# … earlier cells elided to bound memory …")
+                out_parts.insert(0, "")
+        return (cls._CELL_SEPARATOR.join(src_parts),
+                cls._CELL_SEPARATOR.join(out_parts))
+
+    def record_setup_cell(self, source: str, output: str | None = None) -> None:
+        """Append a `%%setup` cell to the current node's *demoted* setup store.
+
+        Setup cells are recorded but secondary: kept off the tracked-cell
+        lineage and git-diff bookkeeping, stored in their own byte-budgeted
+        columns so a big prep block can't evict real recorded cells. Used so the
+        provenance of a `df` built under a branch survives a promote without a
+        rerun or a giant diff."""
+        if not self.session_id or not source or not self._current_node_id:
+            return
+        recorded = self._strip_setup_magic(source)
+        if not recorded:
+            return
+        row = self._get_node(self._current_node_id, "setup_source, setup_outputs")
+        src_blob = row["setup_source"] if row and row["setup_source"] else ""
+        out_blob = row["setup_outputs"] if row and row["setup_outputs"] else ""
+        res = self._append_cell_segment(
+            src_blob, out_blob, recorded, output or "", _NODE_SETUP_MAX_BYTES)
+        if res is None:
+            return
+        new_src, new_out = res
+        conn = get_db()
+        conn.execute(
+            "UPDATE session_nodes SET setup_source=?, setup_outputs=? WHERE id=?",
+            (new_src, new_out or None, self._current_node_id),
+        )
+        conn.commit()
 
     def record_cell(self, source: str, output: str | None = None) -> None:
         """Append a cell's source (and its output) to the *current* node.
@@ -289,6 +368,27 @@ class SessionManager:
         self._current_cell_source = ""
         self._current_cell_outputs = ""
         self._pending_collision = None
+        self._auto_linked_run_id = None
+
+    def autolink_run(self, exp_id: str) -> None:
+        """Group a notebook's auto-created run under the current node, once.
+
+        Without this a session's run floats as a separate, unconnected
+        experiment. Called by the notebook hook on each real cell; idempotent
+        (the `_auto_linked_run_id` guard skips repeat work) and never overrides
+        an explicit `promote` — the guarded UPDATE only fills a NULL link."""
+        if not exp_id or self._auto_linked_run_id == exp_id:
+            return
+        if not self.session_id or not self._current_node_id:
+            return
+        conn = get_db()
+        conn.execute(
+            "UPDATE experiments SET session_node_id=? "
+            "WHERE id=? AND session_node_id IS NULL",
+            (self._current_node_id, exp_id),
+        )
+        conn.commit()
+        self._auto_linked_run_id = exp_id
 
     # ── nodes ────────────────────────────────────────────────────────────────
 
@@ -867,9 +967,267 @@ def rename_node(node_id: str, label: str) -> dict[str, Any]:
     return {"ok": True, "label": label}
 
 
+def link_experiment(node_id: str, exp_id: str) -> dict[str, Any]:
+    """Link (promote) an experiment to a live session node — the dashboard
+    equivalent of `%exptrack promote`.
+
+    A blank `exp_id` unlinks whatever experiment currently points at the node.
+    Linking is 1:1: any other run on the node is detached first (`_detach_experiments`)
+    so its `→ exp` badge is unambiguous. Only the `experiments.session_node_id`
+    pointer is touched — the experiment row is never modified or deleted.
+    Returns {ok, linked} (the resolved full id, or None on unlink) or
+    {ok: False, error}."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id FROM session_nodes WHERE id=? AND deleted_at IS NULL",
+        (node_id,),
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": "node not found"}
+    exp_id = (exp_id or "").strip()
+    if not exp_id:
+        _detach_experiments(conn, [node_id])
+        conn.commit()
+        return {"ok": True, "linked": None}
+    erow = conn.execute(
+        "SELECT id FROM experiments WHERE id LIKE ? AND deleted_at IS NULL",
+        (exp_id + "%",),
+    ).fetchone()
+    if not erow:
+        return {"ok": False, "error": "experiment not found"}
+    _detach_experiments(conn, [node_id])
+    conn.execute(
+        "UPDATE experiments SET session_node_id=? WHERE id=?",
+        (node_id, erow["id"]),
+    )
+    conn.commit()
+    return {"ok": True, "linked": erow["id"]}
+
+
+def promote_to_checkpoint(node_id: str) -> dict[str, Any]:
+    """Convert a branch (or abandoned branch) node into a checkpoint.
+
+    The branch's current `git_diff` — which is refreshed live as cells run — is
+    simply frozen in place (checkpoints don't refresh their diff). Returns
+    {ok, node_type} or {ok: False, error}. Keeps the live SessionManager's
+    checkpoint anchor pointed at the newest checkpoint so later branches attach
+    under it."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, session_id, node_type FROM session_nodes "
+        "WHERE id=? AND deleted_at IS NULL",
+        (node_id,),
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": "node not found"}
+    if row["node_type"] == "checkpoint":
+        return {"ok": True, "node_type": "checkpoint"}
+    if row["node_type"] not in ("branch", "abandoned"):
+        return {"ok": False, "error": "only branches can be promoted to checkpoints"}
+    conn.execute(
+        "UPDATE session_nodes SET node_type='checkpoint' WHERE id=?", (node_id,),
+    )
+    conn.commit()
+    sm = get_current_session()
+    if sm is not None and sm.session_id == row["session_id"]:
+        sm._last_checkpoint_id = node_id
+    return {"ok": True, "node_type": "checkpoint"}
+
+
+def materialize_experiment(node_id: str) -> dict[str, Any]:
+    """Create a standalone experiment from a session node's captured data and
+    link it (sets experiments.session_node_id).
+
+    This is the dashboard equivalent of `%exptrack promote` for a node that has
+    no live notebook run behind it: it turns an exploratory branch/checkpoint
+    into a first-class experiment by copying the node's name (label), git
+    commit/diff, branch, and note, and replaying its recorded cells as
+    `cell_exec` timeline events so the run's Timeline shows the code + output.
+    Refuses the root and trashed nodes, and refuses a node that already has a
+    linked run (returns the existing id)."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT n.*, s.git_branch AS sess_branch, s.name AS sess_name "
+        "FROM session_nodes n LEFT JOIN sessions s ON s.id = n.session_id "
+        "WHERE n.id=? AND n.deleted_at IS NULL",
+        (node_id,),
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": "node not found"}
+    if row["node_type"] == "root":
+        return {"ok": False, "error": "cannot promote the session root"}
+    existing = conn.execute(
+        "SELECT id FROM experiments WHERE session_node_id=? AND deleted_at IS NULL",
+        (node_id,),
+    ).fetchone()
+    if existing:
+        return {"ok": False, "id": existing["id"],
+                "error": "node already linked to experiment " + existing["id"][:8]}
+
+    import platform
+    import socket
+    from datetime import datetime, timezone
+
+    from ..config import load as load_config
+    from ..core.db import store_git_diff
+
+    exp_id = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc).isoformat()
+    # Backdate created_at to when the node ran (it's a unix float) so the run
+    # sorts with the work it came from; updated_at stays "now".
+    created_at = now
+    if row["created_at"]:
+        try:
+            created_at = datetime.fromtimestamp(
+                float(row["created_at"]), timezone.utc).isoformat()
+        except (ValueError, OSError, OverflowError):
+            pass
+    name = (row["label"] or "").strip() or f"{row['sess_name'] or 'session'} node"
+    # Dedup the git diff by hash like the canonical save path does, so a node's
+    # diff doesn't get a second inline copy in the experiments row.
+    git_diff = row["git_diff"]
+    if git_diff:
+        try:
+            git_diff = store_git_diff(conn, git_diff)
+        except Exception:
+            pass  # fall back to storing inline
+
+    # Lineage breadcrumb: walk the parent chain back to root so the materialized
+    # run records where in the tree it came from (checkpoint → branch path),
+    # which is otherwise lost once it's a standalone experiment.
+    lineage = _node_lineage_labels(conn, node_id)
+    note_parts = []
+    if lineage:
+        kind = row["node_type"] or "node"
+        note_parts.append(f"From session '{row['sess_name'] or 'session'}' "
+                          f"({kind}): {' → '.join(lineage)}")
+    if row["note"]:
+        note_parts.append(row["note"])
+    notes = "\n\n".join(note_parts) or None
+
+    conn.execute(
+        "INSERT INTO experiments (id, project, name, status, created_at, updated_at, "
+        "git_branch, git_commit, git_diff, hostname, python_ver, notes, tags, studies, "
+        "session_node_id, name_is_auto) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (exp_id, load_config().get("project", ""), name, "done", created_at, now,
+         row["sess_branch"], row["git_commit"], git_diff,
+         socket.gethostname(), platform.python_version(),
+         notes, "[]", "[]", node_id, 0),
+    )
+
+    # Replay the node's cells as cell_exec timeline events (source + output) so
+    # the materialized run is browsable on its own, not just a metadata stub.
+    # %%setup prep cells are replayed first as muted `setup` events so the code
+    # that built referenced vars/frames stays with the run.
+    #
+    # Each cell's FULL source is also written to the content-addressed
+    # `cell_lineage` table and the event's `cell_hash` set to point at it, so the
+    # Timeline's "view source" button appears and can show + copy the whole cell
+    # — otherwise only the first-line preview survives the promotion and the
+    # session code isn't really transitioned over (you can't retrace/rerun it).
+    from ..capture.cell_lineage import cell_hash as _cell_hash
+    seq = 0
+    # tuple shape: (exp_id, seq, event_type, cell_hash, cell_pos, key, value, ts)
+    events: list[tuple] = []
+    lineage_rows: list[tuple] = []  # (cell_hash, notebook, source, parent_hash, created_at)
+    notebook = (row["sess_name"] or "session")
+    setup_src = row["setup_source"] or ""
+    setup_cells = (setup_src.split(SessionManager._CELL_SEPARATOR)
+                   if setup_src else [])
+    setup_outs = ((row["setup_outputs"] or "").split(SessionManager._CELL_SEPARATOR)
+                  if row["setup_outputs"] else [])
+    for i, c in enumerate(setup_cells):
+        # Setup cells render their full source inline (no view-source button), so
+        # they don't need a cell_lineage row — store_preview carries the source.
+        events.append(
+            (exp_id, seq, "setup", None, None, f"setup_{i + 1}",
+             json.dumps({"source_preview": c,
+                         "output_preview": (setup_outs[i] if i < len(setup_outs) else "").strip()}),
+             now))
+        seq += 1
+
+    src = row["cell_source"] or ""
+    cells = src.split(SessionManager._CELL_SEPARATOR) if src else []
+    outs = ((row["cell_outputs"] or "").split(SessionManager._CELL_SEPARATOR)
+            if row["cell_outputs"] else [])
+    for i, c in enumerate(cells):
+        ch = _cell_hash(c) if c.strip() else None
+        if ch:
+            lineage_rows.append((ch, notebook, c, None, now))
+        events.append(
+            (exp_id, seq, "cell_exec", ch, i + 1, f"cell_{i + 1}",
+             json.dumps({"source_preview": c,
+                         "output_preview": (outs[i] if i < len(outs) else "").strip()}),
+             now))
+        seq += 1
+    if lineage_rows:
+        # Content-addressed: cell_hash is the PK, so OR IGNORE dedups a cell that
+        # already exists from a live capture or another promoted node.
+        conn.executemany(
+            "INSERT OR IGNORE INTO cell_lineage "
+            "(cell_hash, notebook, source, parent_hash, created_at) VALUES (?,?,?,?,?)",
+            lineage_rows,
+        )
+    conn.executemany(
+        "INSERT INTO timeline (exp_id, seq, event_type, cell_hash, cell_pos, key, value, ts) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        events,
+    )
+
+    # Register the node's by-reference plots as artifacts so they show up in the
+    # materialized run's Images tab / artifacts (capture is by reference — no
+    # copy, matching the rest of exptrack).
+    imgs = _node_images(row["images"])
+    if imgs:
+        from ..core.hashing import file_hash
+        art_rows = []
+        for im in imgs:
+            p = im.get("path")
+            if not p:
+                continue
+            try:
+                content_hash, size_bytes = file_hash(p)
+            except Exception:
+                content_hash, size_bytes = "", 0
+            label = im.get("label") or os.path.basename(p)
+            art_rows.append((exp_id, label, p, content_hash, size_bytes, None, now))
+        if art_rows:
+            conn.executemany(
+                "INSERT INTO artifacts (exp_id, label, path, content_hash, "
+                "size_bytes, timeline_seq, created_at) VALUES (?,?,?,?,?,?,?)",
+                art_rows,
+            )
+
+    conn.commit()
+    return {"ok": True, "id": exp_id, "name": name}
+
+
+def _node_lineage_labels(conn, node_id: str) -> list[str]:
+    """Walk a node's parent chain to the root and return the ordered list of
+    labels (root → … → node), skipping the synthetic root and empty labels.
+    Used to give a materialized experiment a breadcrumb of where it sits in the
+    session tree."""
+    labels: list[str] = []
+    seen: set[str] = set()
+    cur = node_id
+    while cur and cur not in seen:
+        seen.add(cur)
+        r = conn.execute(
+            "SELECT label, node_type, parent_id FROM session_nodes WHERE id=?",
+            (cur,),
+        ).fetchone()
+        if not r:
+            break
+        if r["node_type"] != "root" and (r["label"] or "").strip():
+            labels.append(r["label"].strip())
+        cur = r["parent_id"]
+    labels.reverse()
+    return labels
+
+
 def list_trashed_nodes(session_id: str) -> list[dict[str, Any]]:
     """Return the session's trashed nodes (most recently deleted first).
-    Used by the dashboard Trash panel and the CLI."""
+    Used by the per-session CLI (`exptrack session trash`)."""
     conn = get_db()
     rows = conn.execute(
         "SELECT id, parent_id, node_type, label, seq, created_at, deleted_at, "
@@ -877,6 +1235,25 @@ def list_trashed_nodes(session_id: str) -> list[dict[str, Any]]:
         "FROM session_nodes WHERE session_id=? AND deleted_at IS NOT NULL "
         "ORDER BY deleted_at DESC, seq",
         (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_all_trashed_nodes(conn=None) -> list[dict[str, Any]]:
+    """Return every trashed session node across all sessions, each annotated
+    with its owning session's id/name/status, most recently deleted first.
+
+    Backs the unified Trash view (the global Trash now shows trashed session
+    nodes alongside trashed experiments). Grouping by session happens in the
+    caller / UI; here we just return the flat, session-annotated list."""
+    conn = conn or get_db()
+    rows = conn.execute(
+        "SELECT n.id, n.session_id, n.parent_id, n.node_type, n.label, n.seq, "
+        "       n.created_at, n.deleted_at, length(n.cell_source) AS cell_bytes, "
+        "       s.name AS session_name, s.status AS session_status "
+        "FROM session_nodes n JOIN sessions s ON s.id = n.session_id "
+        "WHERE n.deleted_at IS NOT NULL "
+        "ORDER BY n.deleted_at DESC, n.seq",
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -913,6 +1290,8 @@ def build_tree(session_id: str) -> dict[str, Any]:
             "note": r["note"],
             "cell_source": r["cell_source"],
             "cell_outputs": r["cell_outputs"],
+            "setup_source": r["setup_source"],
+            "setup_outputs": r["setup_outputs"],
             "images": _node_images(r["images"]),
             "git_diff": r["git_diff"],
             "git_commit": r["git_commit"],
@@ -947,6 +1326,8 @@ def build_tree(session_id: str) -> dict[str, Any]:
             "note": None,
             "cell_source": None,
             "cell_outputs": None,
+            "setup_source": None,
+            "setup_outputs": None,
             "images": [],
             "git_diff": None,
             "git_commit": None,
@@ -959,6 +1340,48 @@ def build_tree(session_id: str) -> dict[str, Any]:
     if root is not None:
         root["children"].extend(orphans)
 
+    # Attach an id-bearing lineage (root → … → parent, excluding the node itself
+    # and the synthetic/root node) to every node so the dashboard can render a
+    # clickable breadcrumb in the node detail — rides the existing payload.
+    for n in by_id.values():
+        chain: list[dict] = []
+        seen2: set[str] = set()
+        cur = n["parent_id"]
+        while cur and cur in by_id and cur not in seen2:
+            seen2.add(cur)
+            p = by_id[cur]
+            if p["node_type"] != "root":
+                chain.append({"id": p["id"], "label": p["label"],
+                              "node_type": p["node_type"]})
+            cur = p["parent_id"]
+        chain.reverse()
+        n["lineage"] = chain
+
+    # Per-session outcome summary: the experiments this session produced plus
+    # node-type counts, surfaced in the tree header so "what did this session
+    # give me?" is answerable at a glance. Read-only aggregate.
+    exp_rows = conn.execute(
+        "SELECT e.id, e.name, e.status, e.created_at "
+        "FROM experiments e JOIN session_nodes n ON n.id = e.session_node_id "
+        "WHERE n.session_id=? AND n.deleted_at IS NULL AND e.deleted_at IS NULL "
+        "ORDER BY e.created_at DESC",
+        (session_id,),
+    ).fetchall()
+    type_counts = {"checkpoint": 0, "branch": 0, "abandoned": 0}
+    for n in by_id.values():
+        t = n["node_type"]
+        if t in type_counts:
+            type_counts[t] += 1
+    outcomes = {
+        "experiments": [
+            {"id": r["id"], "name": r["name"], "status": r["status"]}
+            for r in exp_rows
+        ],
+        "checkpoints": type_counts["checkpoint"],
+        "branches": type_counts["branch"],
+        "abandoned": type_counts["abandoned"],
+    }
+
     return {
         "session": {
             "id": s_row["id"],
@@ -969,6 +1392,7 @@ def build_tree(session_id: str) -> dict[str, Any]:
             "git_commit": s_row["git_commit"],
             "created_at": s_row["created_at"],
             "ended_at": s_row["ended_at"],
+            "outcomes": outcomes,
         },
         "root": root or {},
     }

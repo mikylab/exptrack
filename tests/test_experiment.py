@@ -7,6 +7,22 @@ import math
 import pytest
 
 
+class CommitCountingProxy:
+    """Wraps a sqlite3 connection, counting commit() calls and delegating the
+    rest, so tests can assert how many commits a batched write performed."""
+
+    def __init__(self, real):
+        self._real = real
+        self.commits = 0
+
+    def commit(self):
+        self.commits += 1
+        return self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 # ---------------------------------------------------------------------------
 # Creation
 # ---------------------------------------------------------------------------
@@ -151,16 +167,6 @@ def test_batched_writes_single_commit(tmp_project, monkeypatch):
     exp = Experiment(script="train.py")
     conn = get_db()
 
-    class CommitCountingProxy:
-        def __init__(self, real):
-            self._real = real
-            self.commits = 0
-        def commit(self):
-            self.commits += 1
-            return self._real.commit()
-        def __getattr__(self, name):
-            return getattr(self._real, name)
-
     proxy = CommitCountingProxy(conn)
     monkeypatch.setattr(expmod, "get_db", lambda: proxy)
 
@@ -181,6 +187,38 @@ def test_batched_writes_single_commit(tmp_project, monkeypatch):
         "SELECT value FROM params WHERE exp_id=? AND key=?", (exp.id, "_var/x")
     ).fetchone()
     assert p is not None
+
+    exp.finish()
+
+
+def test_batched_writes_defers_tags_and_notes(tmp_project, monkeypatch):
+    """add_tag/remove_tag/set_note/add_note honor batched_writes (one commit)."""
+    from exptrack.core import Experiment, get_db
+    import exptrack.core.experiment as expmod
+
+    exp = Experiment(script="train.py")
+    conn = get_db()
+
+    proxy = CommitCountingProxy(conn)
+    monkeypatch.setattr(expmod, "get_db", lambda: proxy)
+
+    with exp.batched_writes():
+        exp.add_tag("baseline")
+        exp.add_tag("v2")
+        exp.remove_tag("baseline")
+        exp.set_note("first")
+        exp.add_note("second")
+        assert proxy.commits == 0  # nothing committed mid-batch
+    assert proxy.commits == 1  # exactly one commit on exit
+
+    monkeypatch.undo()
+
+    row = conn.execute(
+        "SELECT tags, notes FROM experiments WHERE id=?", (exp.id,)
+    ).fetchone()
+    import json as _json
+    assert _json.loads(row["tags"]) == ["v2"]
+    assert row["notes"] == "first\nsecond"
 
     exp.finish()
 

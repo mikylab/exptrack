@@ -222,3 +222,38 @@ def test_find_comment_in_string():
 
 def test_find_comment_none():
     assert _find_comment("x = 1") == -1
+
+
+# ---------------------------------------------------------------------------
+# var_summary safe_call fallback (Item 4: EXPTRACK_DEBUG migration)
+# ---------------------------------------------------------------------------
+
+class _FakeNdarray:
+    """Masquerades as a numpy ndarray whose attribute access raises, to
+    exercise var_summary's safe_call fallback path."""
+    # var_summary dispatches on type(val).__name__
+    @property
+    def shape(self):
+        raise RuntimeError("boom")
+
+
+_FakeNdarray.__name__ = "ndarray"
+
+
+def test_var_summary_falls_back_on_attr_error():
+    """A broken ndarray-like value yields the placeholder, never raises."""
+    assert var_summary(_FakeNdarray()) == "ndarray(?)"
+
+
+def test_var_summary_fallback_is_silent_without_debug(monkeypatch, capsys):
+    monkeypatch.delenv("EXPTRACK_DEBUG", raising=False)
+    var_summary(_FakeNdarray())
+    assert capsys.readouterr().err == ""  # quiet by default
+
+
+def test_var_summary_fallback_logs_under_debug(monkeypatch, capsys):
+    monkeypatch.setenv("EXPTRACK_DEBUG", "1")
+    var_summary(_FakeNdarray())
+    err = capsys.readouterr().err
+    assert "var_summary.ndarray" in err  # context surfaced under debug
+    assert "exptrack:debug" in err

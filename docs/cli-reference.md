@@ -71,4 +71,9 @@ Admin
     --host <addr>                     Bind address (default 127.0.0.1)
   exptrack ui-stop [--port 7331]    Kill a stale dashboard still holding
                                       the port (uses fuser / lsof)
+
+Notebook
+  exptrack notebook-guard           Print a paste-able guard cell so a notebook
+                                      runs with OR without exptrack installed
+                                      (session magics degrade to no-ops)
 ```

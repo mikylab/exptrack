@@ -343,34 +343,34 @@ class Experiment:
         """Add a tag to this experiment."""
         if tag not in self.tags:
             self.tags.append(tag)
-            with get_db() as conn:
-                conn.execute("UPDATE experiments SET tags=? WHERE id=?",
-                             (json.dumps(self.tags), self.id))
-                conn.commit()
+            conn = get_db()
+            conn.execute("UPDATE experiments SET tags=? WHERE id=?",
+                         (json.dumps(self.tags), self.id))
+            self._maybe_commit(conn)
 
     def remove_tag(self, tag: str):
         """Remove a tag from this experiment."""
         self.tags = [t for t in self.tags if t != tag]
-        with get_db() as conn:
-            conn.execute("UPDATE experiments SET tags=? WHERE id=?",
-                         (json.dumps(self.tags), self.id))
-            conn.commit()
+        conn = get_db()
+        conn.execute("UPDATE experiments SET tags=? WHERE id=?",
+                     (json.dumps(self.tags), self.id))
+        self._maybe_commit(conn)
 
     def set_note(self, text: str):
         """Set (replace) the notes for this experiment."""
         self.notes = text
-        with get_db() as conn:
-            conn.execute("UPDATE experiments SET notes=? WHERE id=?",
-                         (text, self.id))
-            conn.commit()
+        conn = get_db()
+        conn.execute("UPDATE experiments SET notes=? WHERE id=?",
+                     (text, self.id))
+        self._maybe_commit(conn)
 
     def add_note(self, text: str):
         """Append to the notes for this experiment."""
         self.notes = ((self.notes or "") + "\n" + text).strip()
-        with get_db() as conn:
-            conn.execute("UPDATE experiments SET notes=? WHERE id=?",
-                         (self.notes, self.id))
-            conn.commit()
+        conn = get_db()
+        conn.execute("UPDATE experiments SET notes=? WHERE id=?",
+                     (self.notes, self.id))
+        self._maybe_commit(conn)
 
     # ── Metrics ───────────────────────────────────────────────────────────────
 
@@ -502,6 +502,12 @@ class Experiment:
             raise ValueError(
                 f"Invalid status '{status}'. Must be one of: {_VALID_STATUSES}"
             )
+        # Fingerprint any dataset-shaped params before locking the run, so it
+        # runs for every finish path (scripts, notebooks, programmatic), not just
+        # `exptrack run`. Must precede `_finished` since it calls log_params.
+        if status == "done":
+            from ..capture.dataset import capture_dataset_manifest
+            capture_dataset_manifest(self)
         self._finished = True
         self.duration_s = time.time() - self._start
         self.status = status

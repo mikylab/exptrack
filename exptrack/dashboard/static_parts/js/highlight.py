@@ -45,6 +45,29 @@ function _highlightPy(line) {
   return out;
 }
 
+// ── Stale-print detection ────────────────────────────────────────────────────
+// A print() that emits a hardcoded number (e.g. print("accuracy 98")) is often
+// a stale value the author meant to interpolate from a variable. Flag the line
+// so it's easy to spot. We scrub f-string {…} placeholders first (those numbers
+// ARE interpolated and fine) and only count a numeric literal sitting in a
+// value position (after whitespace/quote/paren/comma/=) so format specs like
+// %.4f and identifier tails like f1_score / utf8 don't trip it.
+
+const STALE_PRINT_TITLE =
+  'Possible stale value — this print() has a hardcoded number; did you mean to print a variable?';
+
+function _isStalePrintLine(line) {
+  if (!line) return false;
+  const m = /\bprint\s*\(/.exec(line);
+  if (!m) return false;
+  const scrubbed = line.slice(m.index).replace(/\{[^{}]*\}/g, '');
+  return /(^|[\s"'(,=])\d+(\.\d+)?(?![A-Za-z0-9_])/.test(scrubbed);
+}
+
+function _stalePrintBadge() {
+  return '<span class="stale-print-badge" title="' + STALE_PRINT_TITLE + '">⚠ stale?</span>';
+}
+
 // ── Word-level diff ──────────────────────────────────────────────────────────
 // When a line is edited in place (threshold=0.7 → 0.5), a plain -/+ pair makes
 // you hunt for the one token that moved. _wordDiffPair finds the changed run via

@@ -100,6 +100,14 @@ body.dark .pill-abandoned {
     background: rgba(245, 158, 11, 0.18);
     color: #fbbf24; border-color: rgba(245, 158, 11, 0.55);
 }
+.pill-setup {
+    background: var(--surface-2, #eee); color: var(--text-3, #777);
+    border: 1px solid var(--border, #ddd);
+}
+body.dark .pill-setup {
+    background: rgba(255, 255, 255, 0.06); color: var(--text-3, #999);
+    border-color: var(--border-strong, #444);
+}
 
 #session-tree-view {
     flex: 1; padding: 16px; overflow: auto; min-width: 0;
@@ -112,40 +120,69 @@ body.dark .pill-abandoned {
     font-family: 'IBM Plex Mono', monospace;
 }
 
-.tree-node {
-    position: relative; padding: 4px 0 4px 28px;
-    border-left: 3px solid var(--border); margin-left: 12px;
+/* ── Branch graph (git-graph lane rail) ──────────────────────────────────── */
+/* Each row is [rail | content]. The rail draws colored lane lines + fork curves
+   (an SVG that stretches vertically to the row) with the node marker as an
+   overlaid round dot. The content cell is the same .node-row as before, so
+   selection / compare / actions styling is unchanged. */
+/* Graph legend — explains the marks so colors/dots aren't a mystery. */
+.tree-legend {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+    margin: 0 0 10px 2px; padding: 6px 10px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface-2, var(--card-bg));
+    font-size: 11px; color: var(--muted);
 }
-.tree-node.checkpoint > .node-marker {
-    background: var(--blue); width: 12px; height: 12px;
-}
-.tree-node.branch > .node-marker {
-    background: transparent; border: 2px solid var(--blue);
-    width: 10px; height: 10px;
-}
-.tree-node.abandoned > .node-marker {
-    background: transparent; border: 2px dashed #d97706;
-    width: 10px; height: 10px;
-}
-.tree-node.abandoned > .node-row {
-    background: var(--diff-empty-bg);
-}
-.tree-node.abandoned > .node-row .node-label {
-    color: var(--muted); text-decoration: line-through;
-    text-decoration-color: rgba(217, 119, 6, 0.4);
-}
-.tree-node.abandoned { border-left-style: dashed; border-left-color: rgba(217, 119, 6, 0.45); }
-.tree-node.root { border-left: none; margin-left: 0; padding-left: 0; }
-.tree-node.root > .node-row { font-weight: 600; }
+.tree-legend .tl-k { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.tree-legend .tl-dot { width: 11px; height: 11px; border-radius: 50%; box-sizing: border-box; flex: 0 0 auto; }
+.tree-legend .tl-dot.cp { background: var(--branch-c0); }
+.tree-legend .tl-dot.br { background: transparent; border: 2px solid var(--branch-c1); }
+.tree-legend .tl-dot.ab { background: transparent; border: 2px dashed var(--branch-ab); }
+.tree-legend .tl-note { color: var(--text-3); font-style: italic; }
 
-.node-marker {
-    position: absolute; left: -7px; top: 14px;
-    border-radius: 50%;
+#session-tree-graph { display: flex; flex-direction: column; }
+.tree-row {
+    display: grid; grid-template-columns: auto 1fr; align-items: stretch;
 }
+.tree-rail { position: relative; flex: 0 0 auto; align-self: stretch; }
+/* Straight lane lines are pixel-anchored divs (junction at a fixed px from the
+   top, so it lands on the node's title line); only the fork sprout is an SVG. */
+.tree-rail .rail-v {
+    position: absolute; width: 2px; margin-left: -1px;
+    background: var(--rc, var(--border));
+}
+.tree-rail .rail-fork {
+    position: absolute; left: 0; width: 100%; overflow: visible;
+}
+.tree-rail .rail-fork .rail-line { stroke: var(--rc, var(--border)); stroke-width: 2; fill: none; }
+/* Bounded, state-based lane color: the spine is neutral, every branch shares
+   one calm teal, abandoned dead-ends are amber. Lane POSITION (not color)
+   tells branches apart, so the palette never grows with the number of branches. */
+.tc-spine  { --rc: var(--branch-c0); }
+.tc-branch { --rc: var(--branch-c1); }
+.tc-ab     { --rc: var(--branch-ab); }
+/* Dot = node TYPE (shape + fill), independent of the lane color, so a checkpoint
+   is ALWAYS a neutral filled dot — even when it sits on a colored branch line —
+   and a branch is always an open ring. (shape = what · color of line = which.)
+   Anchored to the title line via an inline top:<px>; centered with translate. */
+.rail-dot {
+    position: absolute; transform: translate(-50%, -50%);
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--branch-c0); box-sizing: border-box;
+}
+.rail-dot.checkpoint, .rail-dot.root { background: var(--branch-c0); }
+.rail-dot.branch { background: var(--bg); border: 2px solid var(--branch-c1); }
+.rail-dot.abandoned { background: var(--bg); border: 2px dashed var(--branch-ab); }
+.rail-dot.root { width: 13px; height: 13px; }
+/* A divergence point (a checkpoint that forks) gets a neutral ring halo so the
+   split is easy to spot — kept grey, not violet, so it never reads as a compare
+   pick (purple stays reserved for picks). The ⑂ badge labels it too. */
+.rail-dot.diverge { box-shadow: 0 0 0 3px var(--border-strong); }
+
 .node-row {
     display: flex; flex-direction: column; gap: 2px;
     cursor: pointer; padding: 5px 8px; border-radius: 4px;
-    border-left: 3px solid transparent; margin-left: -3px;
+    border-left: 3px solid transparent; margin-left: 2px;
     transition: background 0.1s, border-color 0.1s;
 }
 .node-row:hover { background: var(--code-bg); }
@@ -153,8 +190,60 @@ body.dark .pill-abandoned {
     background: var(--code-bg);
     border-left-color: var(--blue);
 }
-.tree-node.abandoned > .node-row.selected {
-    border-left-color: #d97706;
+.tree-row.root .node-row { font-weight: 600; }
+.tree-row.abandoned .node-row { background: var(--diff-empty-bg); }
+.tree-row.abandoned .node-row .node-label {
+    color: var(--muted); text-decoration: line-through;
+    text-decoration-color: rgba(217, 119, 6, 0.4);
+}
+.tree-row.abandoned .node-row.selected { border-left-color: var(--branch-ab); }
+
+/* Divergence badge, "← latest" frontier tag, collapse caret, hidden-count. */
+.tree-diverge-badge {
+    font-size: 10.5px; font-weight: 600; color: var(--compare-accent);
+    border: 1px solid var(--compare-accent); border-radius: 8px;
+    padding: 0 6px; white-space: nowrap;
+}
+.node-latest-tag {
+    font-size: 10.5px; font-weight: 600; color: var(--accent);
+    background: var(--accent-soft, var(--code-bg)); border-radius: 8px;
+    padding: 0 6px; white-space: nowrap;
+}
+.node-collapse-btn {
+    background: transparent; border: none; color: var(--muted);
+    cursor: pointer; font-size: 11px; line-height: 1; padding: 0 2px;
+    flex: 0 0 auto;
+}
+.node-collapse-btn:hover { color: var(--fg); }
+.node-hidden-hint { font-size: 11px; color: var(--muted); font-style: italic; }
+
+/* Inline code trace on tree nodes: the defining-change line, the ⟨⟩ toggle, and
+   the expandable full-source block. */
+.node-defining {
+    font-family: 'IBM Plex Mono', monospace; font-size: 11.5px;
+    color: var(--text-2, var(--fg)); margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.node-defining::first-letter { color: var(--accent); }
+.node-row .node-code-toggle {
+    background: transparent; border: 1px solid transparent; color: var(--muted);
+    cursor: pointer; font-size: 12px; line-height: 1.2; font-family: 'IBM Plex Mono', monospace;
+    padding: 0 5px; border-radius: 6px; flex: 0 0 auto;
+    opacity: 0; transition: opacity 0.1s, color 0.1s, border-color 0.1s, background 0.1s;
+}
+.node-row:hover .node-code-toggle,
+.node-row.selected .node-code-toggle { opacity: 0.8; }
+.node-row .node-code-toggle:hover,
+.node-row .node-code-toggle.open {
+    opacity: 1; color: var(--accent); border-color: var(--accent); background: var(--code-bg);
+}
+.node-code {
+    margin-top: 4px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--code-bg); overflow: auto; max-height: 320px; resize: vertical;
+}
+.node-code-pre {
+    margin: 0; padding: 8px 10px; font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px; line-height: 1.5; white-space: pre; color: var(--fg);
 }
 .node-row-main {
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
@@ -174,8 +263,12 @@ body.dark .pill-abandoned {
     text-decoration: none; border: 1px solid var(--blue);
     padding: 0 6px; border-radius: 8px;
 }
-.node-row .node-delete-btn {
+/* Action buttons (compare pin / promote / delete) cluster at the right edge. */
+.node-row .node-actions {
     margin-left: auto;
+    display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+}
+.node-row .node-delete-btn {
     background: transparent; border: none; color: var(--muted);
     cursor: pointer; font-size: 15px; line-height: 1;
     padding: 0 6px; border-radius: 3px;
@@ -187,6 +280,37 @@ body.dark .pill-abandoned {
     opacity: 1; color: var(--red, #c92a2a);
     background: var(--code-bg);
 }
+/* Pill-style hover buttons — promote (blue accent) and the compare pin (violet
+   compare-accent) share a base; only the hover/picked accent differs. */
+.node-row .node-promote-btn,
+.node-row .node-compare-btn {
+    background: transparent; border: 1px solid transparent; color: var(--muted);
+    cursor: pointer; font-size: 11px; line-height: 1.3;
+    padding: 1px 7px; border-radius: 10px; white-space: nowrap;
+    opacity: 0; transition: opacity 0.1s, color 0.1s, background 0.1s, border-color 0.1s;
+}
+.node-row:hover .node-promote-btn,
+.node-row.selected .node-promote-btn,
+.node-row:hover .node-compare-btn,
+.node-row.selected .node-compare-btn { opacity: 0.8; }
+.node-row .node-promote-btn:hover {
+    opacity: 1; color: var(--accent, #2563eb);
+    border-color: var(--accent, #2563eb); background: var(--code-bg);
+}
+.node-row .node-compare-btn:hover {
+    opacity: 1; color: var(--compare-accent, #7c3aed);
+    border-color: var(--compare-accent, #7c3aed); background: var(--code-bg);
+}
+.node-row .node-compare-btn.picked {
+    opacity: 1; color: #fff;
+    background: var(--compare-accent, #7c3aed);
+    border-color: var(--compare-accent, #7c3aed);
+}
+/* %%setup prep cells: recorded but dimmed so they read as secondary. */
+.setup-section { margin-top: 10px; }
+details.cell-block.setup-cell { opacity: 0.78; }
+details.cell-block.setup-cell > summary { border-left: 2px solid var(--border-strong, #bbb); }
+.nm-setup { white-space: nowrap; }
 .node-row .node-note-mini {
     font-size: 11.5px; color: var(--muted); font-style: italic;
     margin-top: 2px; line-height: 1.4;
@@ -196,6 +320,35 @@ body.dark .pill-abandoned {
     font-style: italic; margin-top: 2px;
     font-family: 'IBM Plex Mono', monospace;
 }
+
+/* Per-session outcome summary in the tree header — what this session produced. */
+.session-outcomes {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin: 8px 0 2px 0;
+}
+.session-outcomes .section-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); margin: 0;
+}
+.session-outcomes .outcome-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.session-outcomes .outcome-chip {
+    font-size: 11px; text-decoration: none; color: var(--blue);
+    border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px;
+    background: var(--card-bg); white-space: nowrap;
+}
+.session-outcomes .outcome-chip:hover { border-color: var(--blue); background: var(--code-bg); }
+.session-outcomes .outcome-none { font-size: 11px; color: var(--muted); font-style: italic; }
+.session-outcomes .outcome-counts { font-size: 11px; color: var(--muted); }
+
+/* Clickable lineage breadcrumb in the node detail header. */
+.node-lineage {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+    font-size: 11.5px; margin-bottom: 6px;
+}
+.node-lineage a { color: var(--blue); text-decoration: none; }
+.node-lineage a:hover { text-decoration: underline; }
+.node-lineage .bc-sep { color: var(--muted); opacity: 0.7; }
+.node-lineage .bc-current { color: var(--muted); font-weight: 600; }
 
 #session-detail {
     margin-top: 12px; padding: 12px;
@@ -368,7 +521,9 @@ body.dark .pill-abandoned {
 }
 #session-detail .cell-block pre.cell-code {
     margin: 0; padding: 8px 0;
-    max-height: 360px; overflow: auto;
+    /* No height cap — long cells expand fully so nothing is cut off when
+       copying or reading; drag the bottom edge to shrink if a cell is huge. */
+    overflow: auto; resize: vertical;
     background: var(--code-bg);
     font-family: 'IBM Plex Mono', monospace; font-size: 12px;
     line-height: 1.5;
@@ -386,8 +541,21 @@ body.dark .pill-abandoned {
 }
 #session-detail .cell-block pre.cell-code .cl {
     display: block; padding-left: 52px; text-indent: -52px;
+    position: relative;
 }
 #session-detail .cell-block pre.cell-code .cl .ln { text-indent: 0; }
+/* Per-line copy button — quiet until the line is hovered. Anchored at the right
+   edge with a code-bg backing so it sits over the end of the line cleanly. */
+#session-detail .cell-block pre.cell-code .cl .cl-copy {
+    position: absolute; right: 2px; top: 0;
+    opacity: 0; transition: opacity 0.12s;
+    border: none; background: var(--code-bg); color: var(--muted);
+    font-size: 11px; line-height: 1.5; padding: 0 4px;
+    cursor: pointer; text-indent: 0; border-radius: 3px;
+}
+#session-detail .cell-block pre.cell-code .cl:hover .cl-copy { opacity: 0.8; }
+#session-detail .cell-block pre.cell-code .cl .cl-copy:hover { opacity: 1; color: var(--fg); }
+#session-detail .cell-block pre.cell-code .cl .cl-copy.copied { color: var(--green); opacity: 1; }
 
 /* Python token colors (.tok-*) are defined unscoped in css/code.py so the
    Sessions cell viewer and the experiment detail view share one palette. */
@@ -435,18 +603,68 @@ body.dark .pill-abandoned {
 #session-detail button:disabled {
     opacity: 0.5; cursor: not-allowed;
 }
-#session-detail button {
+/* "Promote to experiment" — accented so it reads as a primary action on a
+   node that isn't linked to a run yet. */
+#session-detail .node-materialize-btn {
+    color: var(--accent, var(--blue)); border-color: var(--accent, var(--blue));
+}
+#session-detail .node-materialize-btn:hover {
+    color: #fff; background: var(--accent, var(--blue));
+    border-color: var(--accent, var(--blue));
+}
+/* Generic form buttons in the detail panel — excludes the quiet utility
+   copy button, which carries its own (lower-weight) styling. */
+#session-detail button:not(.sess-copy-btn) {
     font-family: inherit; font-size: 12px;
     padding: 4px 12px; border: 1px solid var(--border);
     background: var(--code-bg); color: var(--muted);
     border-radius: 4px; cursor: pointer;
 }
-#session-detail button:hover {
+#session-detail button:not(.sess-copy-btn):hover {
     color: var(--fg); border-color: var(--fg); background: var(--card-bg);
 }
 
 /* Per-session Trash panel (soft-deleted nodes). */
-.session-view-actions { margin-top: 6px; }
+.session-view-actions {
+    margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+/* End-session button (UI equivalent of `%exptrack session end`). */
+.session-end-btn {
+    font-family: inherit; font-size: 12px;
+    padding: 4px 10px; border: 1px solid var(--border);
+    background: var(--card-bg); color: var(--muted);
+    border-radius: 4px; cursor: pointer;
+}
+.session-end-btn:hover {
+    color: var(--y, #b58900); border-color: var(--y, #b58900); background: var(--code-bg);
+}
+.session-ended-tag {
+    font-size: 11px; color: var(--y, #b58900);
+    border: 1px solid var(--y, #b58900); border-radius: 4px;
+    padding: 2px 8px; background: var(--code-bg);
+}
+/* Node-detail "Linked experiment" block + inline picker. */
+.node-exp-link {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px;
+}
+.node-exp-link .section-title { margin: 0; }
+.node-exp-link .node-exp-none { font-size: 12px; color: var(--muted); }
+.node-exp-link-btn {
+    font-family: inherit; font-size: 11px;
+    padding: 2px 9px; border: 1px solid var(--border);
+    background: var(--card-bg); color: var(--accent, #2563eb);
+    border-radius: 10px; cursor: pointer;
+}
+.node-exp-link-btn:hover {
+    border-color: var(--accent, #2563eb); background: var(--code-bg);
+}
+.node-exp-link-btn.ghost { color: var(--muted); }
+.node-exp-link-btn.ghost:hover { color: var(--red, #c92a2a); border-color: var(--red, #c92a2a); }
+.link-exp-select {
+    font-family: inherit; font-size: 12px; max-width: 320px;
+    padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--card-bg); color: var(--fg);
+}
 .session-trash-toggle {
     font-family: inherit; font-size: 12px;
     padding: 4px 10px; border: 1px solid var(--border);
@@ -456,19 +674,10 @@ body.dark .pill-abandoned {
 .session-trash-toggle:hover {
     color: var(--fg); border-color: var(--blue); background: var(--code-bg);
 }
-#session-trash-panel {
-    border: 1px solid var(--border); border-radius: 6px;
-    background: var(--card-bg); padding: 10px 12px;
-    margin: 8px 0 14px 0;
-}
-.session-trash-head {
-    display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px;
-}
-.session-trash-head .section-title { margin: 0; }
+/* The trashed-node row styles below are now consumed by the unified Trash view
+   (js/trash.py); the old per-session trash *panel* container/head/empty styles
+   were removed when that panel moved into the unified Trash. */
 .trash-help { font-size: 11px; color: var(--muted); }
-.session-trash-empty {
-    color: var(--muted); font-size: 12px; padding: 4px 2px;
-}
 .trash-rows { display: flex; flex-direction: column; gap: 4px; }
 .trash-row {
     display: grid; grid-template-columns: 1fr auto;
@@ -522,6 +731,33 @@ body.dark .pill-abandoned {
 .cell-output-label, .cmp-result-label {
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
     color: var(--muted); margin: 6px 0 2px;
+    display: flex; align-items: center; gap: 8px;
+}
+/* "⧉ Copy" affordance on cell source / output / result blocks. The generic
+   `#session-detail button` rule excludes `.sess-copy-btn`, so a single-class
+   selector styles it everywhere (detail panel and compare columns alike). */
+.sess-copy-btn {
+    margin-left: auto; flex-shrink: 0;
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); cursor: pointer;
+    font-family: inherit; font-size: 10px; line-height: 1.4;
+    padding: 1px 8px; border-radius: 10px; white-space: nowrap;
+    text-transform: none; letter-spacing: 0;
+    opacity: 0.55; transition: opacity 0.1s, color 0.1s, background 0.1s, border-color 0.1s;
+}
+.sess-copy-btn:hover {
+    opacity: 1; color: var(--accent, #2563eb);
+    border-color: var(--accent, #2563eb); background: var(--code-bg);
+}
+.sess-copy-btn.copied {
+    opacity: 1; color: var(--green, #2f9e44); border-color: var(--green, #2f9e44);
+}
+/* In a cell summary the copy button sits on the right without forcing a wrap. */
+#session-detail .cell-block summary .sess-copy-btn { margin-left: auto; }
+/* A section-title holding a copy button (e.g. "Latest result") becomes a flex
+   row so the button right-aligns. */
+#session-detail .section-title:has(.sess-copy-btn) {
+    display: flex; align-items: center;
 }
 .cell-output, .node-latest-result, .cmp-result {
     font-family: 'IBM Plex Mono', monospace; font-size: 12px;
@@ -529,9 +765,11 @@ body.dark .pill-abandoned {
     background: var(--code-bg); border: 1px solid var(--border);
     /* Neutral bar — green means "added" in diffs, so don't reuse it for output. */
     border-left: 3px solid var(--border-strong);
-    border-radius: 3px; padding: 6px 8px; margin: 0; overflow-x: auto;
+    border-radius: 3px; padding: 6px 8px; margin: 0;
+    /* No height cap — output expands fully so it's never cut off; drag the
+       bottom edge to shrink a long block. */
+    overflow: auto; resize: vertical;
 }
-.node-latest-result { max-height: 200px; overflow-y: auto; }
 .node-result-mini {
     font-family: 'IBM Plex Mono', monospace; font-size: 11px;
     color: var(--text-2); margin-top: 2px;
@@ -583,6 +821,9 @@ body.dark .pill-abandoned {
     gap: 12px; padding: 6px 10px; margin-bottom: 8px;
     border: 1px dashed var(--compare-accent); border-radius: 4px;
     background: var(--compare-bg);
+    /* Sticky so you can pick nodes deep in a long tree and still reach
+       Compare / Clear / Done without scrolling back to the top. */
+    position: sticky; top: 0; z-index: 20;
 }
 .compare-bar-hint { font-size: 12px; color: var(--muted); }
 .compare-bar-actions { display: flex; gap: 6px; }

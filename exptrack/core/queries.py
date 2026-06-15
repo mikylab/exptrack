@@ -81,6 +81,11 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         (full_id,)
     ).fetchall()
 
+    all_params = {p["key"]: json.loads(p["value"]) for p in params}
+    # Surface the dataset manifest as its own key (and keep it out of the params
+    # table — it's an internal `_`-prefixed bookkeeping param).
+    datasets = all_params.pop("_dataset_manifest", {}) or {}
+
     return {
         "id": exp["id"],
         "name": exp["name"],
@@ -103,8 +108,9 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "output_dir": exp["output_dir"] or "",
         "stage": exp["stage"],
         "stage_name": exp["stage_name"],
-        "params": {p["key"]: json.loads(p["value"]) for p in params},
+        "params": all_params,
         "param_sources": {p["key"]: p["source"] for p in params},
+        "datasets": datasets,
         "metrics": [{
             "key": m["key"], "last": m["last_v"],
             "min": m["min_v"], "max": m["max_v"], "n": m["n"],
@@ -114,7 +120,77 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "artifacts": [{"label": a["label"], "path": _rel_path(a["path"]),
                        "timeline_seq": a["timeline_seq"]} for a in artifacts],
         "compact_status": _get_compact_status(conn, full_id, exp["git_diff"]),
+        "session_origin": _session_origin(conn, exp["session_node_id"]),
     }
+
+
+def _session_origin(conn, session_node_id) -> dict | None:
+    """Build the session back-link context for an experiment that came from (or
+    is linked to) a Session Trees node, so the detail view can render a
+    breadcrumb back to the session/checkpoint/branch. Returns None when the run
+    has no session origin (or the node was deleted)."""
+    if not session_node_id:
+        return None
+    node = conn.execute(
+        "SELECT n.id, n.label, n.node_type, n.parent_id, n.session_id, "
+        "s.name AS sess_name, s.status AS sess_status "
+        "FROM session_nodes n LEFT JOIN sessions s ON s.id = n.session_id "
+        "WHERE n.id=? AND n.deleted_at IS NULL",
+        (session_node_id,),
+    ).fetchone()
+    if not node:
+        return None
+    from ..sessions.manager import _node_lineage_labels
+    return {
+        "node_id": node["id"],
+        "session_id": node["session_id"],
+        "session_name": node["sess_name"] or "session",
+        "session_status": node["sess_status"],
+        "node_label": node["label"],
+        "node_type": node["node_type"],
+        "lineage": _node_lineage_labels(conn, node["id"]),
+        "siblings": _sibling_branches(conn, node["parent_id"], node["id"]),
+    }
+
+
+def _last_cell_output(blob) -> str:
+    """Last non-empty per-cell output from a node's SEP-joined cell_outputs blob."""
+    from ..sessions.manager import SessionManager
+    if not blob:
+        return ""
+    parts = [p.strip() for p in blob.split(SessionManager._CELL_SEPARATOR)]
+    parts = [p for p in parts if p]
+    return parts[-1] if parts else ""
+
+
+def _sibling_branches(conn, parent_id, this_node_id) -> list[dict]:
+    """The other branches tried from the same parent checkpoint, with each one's
+    captured result + linked experiment, so a promoted run can show the
+    exploratory context it came out of (what else was tried, how it compared)."""
+    if not parent_id:
+        return []
+    rows = conn.execute(
+        "SELECT n.id, n.label, n.node_type, n.cell_outputs, "
+        "e.id AS exp_id "
+        "FROM session_nodes n "
+        "LEFT JOIN experiments e ON e.session_node_id = n.id AND e.deleted_at IS NULL "
+        "WHERE n.parent_id=? AND n.deleted_at IS NULL ORDER BY n.seq",
+        (parent_id,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        result = _last_cell_output(r["cell_outputs"])
+        if len(result) > 120:
+            result = result[:119] + "…"
+        out.append({
+            "node_id": r["id"],
+            "label": r["label"],
+            "node_type": r["node_type"],
+            "exp_id": r["exp_id"],
+            "result": result,
+            "is_this": r["id"] == this_node_id,
+        })
+    return out
 
 
 def _get_compact_status(conn, exp_id: str, raw_git_diff) -> dict:
@@ -234,15 +310,15 @@ def list_experiments(conn, limit: int = 50, status: str = "",
         ORDER BY created_at DESC LIMIT ?
     """
     rows = conn.execute(query, params).fetchall()
+    # Batch-load metrics, sparklines, and params for every listed experiment in
+    # three queries total instead of three queries *per* experiment (the old
+    # N+1 pattern that made this — the dashboard's hottest path — scale poorly).
+    ids = [r["id"] for r in rows]
+    metrics_by_exp = get_latest_metrics_with_source_batch(conn, ids)
+    sparklines_by_exp = get_metrics_sparkline_batch(conn, ids)
+    params_by_exp = get_params_batch(conn, ids)
     result = []
     for r in rows:
-        metrics = get_latest_metrics_with_source(conn, r["id"])
-        sparklines = get_metrics_sparkline(conn, r["id"])
-        ps = conn.execute(
-            "SELECT key, value FROM params WHERE exp_id=?",
-            (r["id"],)
-        ).fetchall()
-        all_params = {p["key"]: json.loads(p["value"]) for p in ps}
         result.append({
             "id": r["id"],
             "name": r["name"],
@@ -258,9 +334,9 @@ def list_experiments(conn, limit: int = 50, status: str = "",
             "stage": r["stage"],
             "stage_name": r["stage_name"],
             "name_is_auto": bool(r["name_is_auto"]),
-            "metrics": metrics,
-            "sparklines": sparklines,
-            "params": all_params,
+            "metrics": metrics_by_exp.get(r["id"], {}),
+            "sparklines": sparklines_by_exp.get(r["id"], {}),
+            "params": params_by_exp.get(r["id"], {}),
         })
     return result
 
@@ -297,6 +373,71 @@ def get_latest_metrics_with_source(conn, exp_id: str) -> dict[str, dict]:
         "value": r["value"],
         "source": "mixed" if r["source_count"] > 1 else r["source"],
     } for r in rows}
+
+
+def get_latest_metrics_with_source_batch(conn, exp_ids: list[str]) -> dict[str, dict[str, dict]]:
+    """Batched ``get_latest_metrics_with_source`` for many experiments at once."""
+    if not exp_ids:
+        return {}
+    ph = ",".join("?" * len(exp_ids))
+    rows = conn.execute(f"""
+        SELECT exp_id, key, value, COALESCE(source, 'auto') as source,
+               (SELECT COUNT(DISTINCT COALESCE(source, 'auto')) FROM metrics m3
+                WHERE m3.exp_id=m.exp_id AND m3.key=m.key) as source_count
+        FROM metrics m WHERE exp_id IN ({ph})
+        AND COALESCE(step, 0) = (
+            SELECT MAX(COALESCE(step, 0)) FROM metrics m2
+            WHERE m2.exp_id=m.exp_id AND m2.key=m.key
+        )
+    """, exp_ids).fetchall()
+    out: dict[str, dict] = {e: {} for e in exp_ids}
+    for r in rows:
+        out[r["exp_id"]][r["key"]] = {
+            "value": r["value"],
+            "source": "mixed" if r["source_count"] > 1 else r["source"],
+        }
+    return out
+
+
+def get_metrics_sparkline_batch(conn, exp_ids: list[str],
+                                max_points: int = 10) -> dict[str, dict[str, list[float]]]:
+    """Batched ``get_metrics_sparkline`` — last N points per (exp, key) in one query."""
+    if not exp_ids:
+        return {}
+    ph = ",".join("?" * len(exp_ids))
+    rows = conn.execute(f"""
+        SELECT exp_id, key, value FROM (
+            SELECT exp_id, key, value, COALESCE(step, 0) AS s,
+                   ROW_NUMBER() OVER (PARTITION BY exp_id, key
+                                      ORDER BY COALESCE(step, 0) DESC) AS rn
+            FROM metrics WHERE exp_id IN ({ph})
+        ) WHERE rn <= ? ORDER BY exp_id, key, s
+    """, [*exp_ids, max_points]).fetchall()
+    out: dict[str, dict] = {e: {} for e in exp_ids}
+    for r in rows:
+        out[r["exp_id"]].setdefault(r["key"], []).append(r["value"])
+    return out
+
+
+def get_params_batch(conn, exp_ids: list[str]) -> dict[str, dict]:
+    """Batch-load all params for many experiments in one query.
+
+    Malformed JSON values degrade to the raw string rather than crashing the
+    whole listing.
+    """
+    if not exp_ids:
+        return {}
+    ph = ",".join("?" * len(exp_ids))
+    rows = conn.execute(
+        f"SELECT exp_id, key, value FROM params WHERE exp_id IN ({ph})", exp_ids
+    ).fetchall()
+    out: dict[str, dict] = {e: {} for e in exp_ids}
+    for r in rows:
+        try:
+            out[r["exp_id"]][r["key"]] = json.loads(r["value"])
+        except (ValueError, TypeError):
+            out[r["exp_id"]][r["key"]] = r["value"]
+    return out
 
 
 def get_metrics_sparkline(conn, exp_id: str, max_points: int = 10) -> dict[str, list[float]]:
@@ -437,6 +578,12 @@ def get_stats(conn) -> dict[str, Any]:
     failed = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE deleted_at IS NULL AND status='failed'").fetchone()["n"]
     running = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE deleted_at IS NULL AND status='running'").fetchone()["n"]
     trashed = conn.execute("SELECT COUNT(*) as n FROM experiments WHERE deleted_at IS NOT NULL").fetchone()["n"]
+    try:
+        trashed_nodes = conn.execute(
+            "SELECT COUNT(*) as n FROM session_nodes WHERE deleted_at IS NOT NULL"
+        ).fetchone()["n"]
+    except Exception:
+        trashed_nodes = 0
     avg_dur = conn.execute("SELECT AVG(duration_s) as v FROM experiments WHERE deleted_at IS NULL AND duration_s IS NOT NULL").fetchone()["v"]
     longest = conn.execute("SELECT MAX(duration_s) as v FROM experiments WHERE deleted_at IS NULL AND duration_s IS NOT NULL").fetchone()["v"]
     most_recent = conn.execute("SELECT created_at FROM experiments WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 1").fetchone()
@@ -484,6 +631,8 @@ def get_stats(conn) -> dict[str, Any]:
         "failed": failed,
         "running": running,
         "trashed": trashed,
+        "trashed_nodes": trashed_nodes,
+        "trashed_total": trashed + trashed_nodes,
         "success_rate": round(done / total * 100, 1) if total else 0,
         "avg_duration_s": round(avg_dur or 0, 1),
         "longest_run_s": round(longest or 0, 1),
@@ -679,6 +828,7 @@ def get_export_data(conn, exp_id: str) -> dict | None:
     user_params = {k: v for k, v in all_params.items() if not k.startswith("_")}
     variables = {k[5:]: v for k, v in all_params.items() if k.startswith("_var/")}
     code_changes = {k[13:]: v for k, v in all_params.items() if k.startswith("_code_change/")}
+    datasets = all_params.get("_dataset_manifest") or {}
 
     data = {
         "id": exp["id"],
@@ -702,6 +852,7 @@ def get_export_data(conn, exp_id: str) -> dict | None:
         "params": user_params,
         "variables": variables,
         "code_changes": code_changes,
+        "datasets": datasets,
         "metrics_series": {},
         "artifacts": [{"label": a["label"], "path": a["path"]} for a in artifacts],
         "timeline_summary": {

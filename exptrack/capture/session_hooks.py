@@ -18,6 +18,7 @@ import shlex
 import sys
 
 from ..sessions import SessionManager, get_current_session, set_current_session
+from ..core.utils import debug_log
 
 
 def _strip_quotes(s: str) -> str:
@@ -82,8 +83,7 @@ def _session_start(name: str):
         from ..notebook import _detect_nb_name
         nb = _detect_nb_name()
     except Exception as e:
-        print(f"[exptrack] warning: could not detect notebook name for session: {e}",
-              file=sys.stderr)
+        debug_log(f"could not detect notebook name for session: {e}")
     sm = SessionManager()
     sid = sm.start(name, notebook=nb)
     set_current_session(sm)
@@ -264,11 +264,60 @@ def _pin_magic(line: str, cell: str):
               file=sys.stderr)
 
 
+# Trailing-expression repr stashed by `%%setup` for the post_run_cell hook.
+# A cell magic returns None, so _get_cell_source can't see the cell's last
+# value — we capture it here and hand it to the setup recorder.
+_pending_setup_output: str | None = None
+
+
+def take_pending_setup_output() -> str | None:
+    """Pop the repr stashed by the most recent `%%setup` cell (or None)."""
+    global _pending_setup_output
+    v = _pending_setup_output
+    _pending_setup_output = None
+    return v
+
+
+def _run_cell_body(cell: str, ip):
+    """Execute a cell-magic body, displaying a trailing expression the way a
+    normal notebook cell would.
+
+    Plain `exec(compile(cell, ..., "exec"))` swallows a bare trailing
+    expression (e.g. a final `df`), so under `%%scratch`/`%%setup` a DataFrame
+    produced no output unless the user added a `print`. We split off the
+    trailing expression, exec the rest, then eval it and route the value through
+    IPython's display hook (which renders it and records `Out[n]`). Returns the
+    trailing value, or None."""
+    import ast
+    try:
+        tree = ast.parse(cell)
+    except SyntaxError:
+        exec(compile(cell, "<exptrack-magic>", "exec"), ip.user_ns)
+        return None
+    trailing = None
+    if tree.body and isinstance(tree.body[-1], ast.Expr):
+        trailing = tree.body.pop()
+    if tree.body:
+        body_mod = ast.Module(body=tree.body, type_ignores=[])
+        exec(compile(body_mod, "<exptrack-magic>", "exec"), ip.user_ns)
+    if trailing is None:
+        return None
+    val = eval(compile(ast.Expression(body=trailing.value),
+                       "<exptrack-magic>", "eval"), ip.user_ns)
+    if val is not None:
+        try:
+            ip.displayhook(val)
+        except Exception:
+            print(repr(val))
+    return val
+
+
 def _scratch_magic(line: str, cell: str):
     """Cell magic — execute the cell but tag it so logging is skipped.
 
     The notebook_hooks._post_run_cell handler checks the raw cell for
-    a leading `%%scratch` and bails out early. We just exec the body here.
+    a leading `%%scratch` and bails out early. We just run the body here (with
+    trailing-expression display, so a final `df` still renders).
     """
     try:
         from IPython import get_ipython
@@ -278,26 +327,63 @@ def _scratch_magic(line: str, cell: str):
     if ip is None:
         return
     try:
-        compiled = compile(cell, "<scratch>", "exec")
-        exec(compiled, ip.user_ns)
+        _run_cell_body(cell, ip)
     except Exception as e:
         print(f"[exptrack:scratch] {type(e).__name__}: {e}", file=sys.stderr)
 
 
+def _setup_magic(line: str, cell: str):
+    """Cell magic — recorded-but-secondary prep code (`%%setup`).
+
+    Runs the body (with trailing-expression display, so a final `df` renders),
+    then stashes the trailing value's repr. notebook_hooks._post_run_cell
+    detects the `%%setup` cell, records its source+output on the active session
+    node's demoted setup store and attaches a muted `setup` event to the active
+    experiment — but keeps it out of the tracked-cell lineage."""
+    global _pending_setup_output
+    try:
+        from IPython import get_ipython
+        ip = get_ipython()
+    except Exception:
+        ip = None
+    if ip is None:
+        return
+    try:
+        val = _run_cell_body(cell, ip)
+    except Exception as e:
+        print(f"[exptrack:setup] {type(e).__name__}: {e}", file=sys.stderr)
+        return
+    if val is not None:
+        try:
+            _pending_setup_output = repr(val)
+        except Exception:
+            _pending_setup_output = None
+
+
 def is_scratch_cell(source: str) -> bool:
     """Return True if a cell source begins with %%scratch."""
+    return _starts_with_magic(source, "%%scratch")
+
+
+def is_setup_cell(source: str) -> bool:
+    """Return True if a cell source begins with %%setup."""
+    return _starts_with_magic(source, "%%setup")
+
+
+def _starts_with_magic(source: str, magic: str) -> bool:
     if not source:
         return False
     for ln in source.splitlines():
         s = ln.strip()
         if not s:
             continue
-        return s.startswith("%%scratch")
+        return s.startswith(magic)
     return False
 
 
 def register_session_magics(ip) -> None:
-    """Register the %exptrack, %%scratch, and %%pin magics on the given IPython shell."""
+    """Register the %exptrack, %%scratch, %%setup, and %%pin magics."""
     ip.register_magic_function(_exptrack_magic, magic_kind="line", magic_name="exptrack")
     ip.register_magic_function(_scratch_magic, magic_kind="cell", magic_name="scratch")
+    ip.register_magic_function(_setup_magic, magic_kind="cell", magic_name="setup")
     ip.register_magic_function(_pin_magic, magic_kind="cell", magic_name="pin")

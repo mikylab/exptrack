@@ -8,6 +8,8 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
+from ..core.utils import debug_log
+
 if TYPE_CHECKING:
     from ..core import Experiment
 
@@ -25,7 +27,7 @@ def capture_script_snapshot(exp: Experiment, script_path: str):
     try:
         src = _Path(script_path).read_text()
     except Exception as e:
-        print(f"[exptrack] warning: could not read script {script_path}: {e}", file=sys.stderr)
+        debug_log(f"could not read script {script_path}: {e}")
         return
 
     src_hash = hashlib.md5(src.encode()).hexdigest()[:12]
@@ -44,7 +46,7 @@ def capture_script_snapshot(exp: Experiment, script_path: str):
         )
         script_diff = r.stdout.strip() if r.returncode == 0 else ""
     except Exception as e:
-        print(f"[exptrack] warning: git diff failed for script: {e}", file=sys.stderr)
+        debug_log(f"git diff failed for script: {e}")
         script_diff = ""
 
     changed = []

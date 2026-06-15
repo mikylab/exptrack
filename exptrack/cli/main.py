@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .admin_cmds import cmd_backup, cmd_compact, cmd_init, cmd_restore, cmd_run, cmd_stale, cmd_storage, cmd_ui, cmd_ui_stop, cmd_upgrade
+from .admin_cmds import cmd_backup, cmd_compact, cmd_init, cmd_notebook_guard, cmd_restore, cmd_run, cmd_stale, cmd_storage, cmd_ui, cmd_ui_stop, cmd_upgrade
 from .inspect_cmds import (
     cmd_compare,
     cmd_diff,
@@ -430,9 +430,18 @@ def main():
     p_srename.add_argument("node_id", help="Node id (prefix match)")
     p_srename.add_argument("label", help="New label")
 
+    p_spromote = sess_sub.add_parser("promote-checkpoint",
+        help="Promote a branch node to a checkpoint (freezes its current diff)")
+    p_spromote.add_argument("node_id", help="Branch node id (prefix match)")
+
     p_snote = sess_sub.add_parser("note", help="Annotate a node by id")
     p_snote.add_argument("node_id")
     p_snote.add_argument("text")
+
+    # ── Notebook helpers ─────────────────────────────────────────────────────
+    sub.add_parser("notebook-guard",
+        help="Print a paste-able guard cell so a notebook runs with or "
+             "without exptrack installed (magics degrade to no-ops)")
 
     args = p.parse_args()
     if not args.cmd:
@@ -482,6 +491,7 @@ def main():
         "ui-stop":      cmd_ui_stop,
         "sessions":     cmd_sessions,
         "session":      cmd_session,
+        "notebook-guard": cmd_notebook_guard,
     }
     try:
         dispatch[args.cmd](args)

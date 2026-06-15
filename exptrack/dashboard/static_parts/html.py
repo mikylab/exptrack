@@ -68,11 +68,22 @@ HTML_BODY = r"""</style>
           <div class="settings-section-title">Metrics</div>
           <div class="settings-row">
             <label title="Only store every Nth metric point during training (1 = keep all)">Save every Nth step</label>
-            <input type="number" id="settings-keep-every" min="1" value="1" style="width:70px;font-family:inherit;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--code-bg);color:var(--fg)" onchange="saveMetricSettings()">
+            <input type="number" id="settings-keep-every" min="1" value="1" onchange="saveMetricSettings()">
           </div>
           <div class="settings-row">
             <label title="Max points to show on charts (server-side downsampling)">Chart max points</label>
-            <input type="number" id="settings-max-points" min="10" max="50000" value="500" style="width:70px;font-family:inherit;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--code-bg);color:var(--fg)" onchange="saveMetricSettings()">
+            <input type="number" id="settings-max-points" min="10" max="50000" value="500" onchange="saveMetricSettings()">
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">Capture</div>
+          <div class="settings-row">
+            <label title="Auto-create an experiment from notebook cells when %load_ext exptrack is active. Turn off to use Session Trees standalone and start runs explicitly. Restart the notebook kernel to apply.">Notebook auto-capture</label>
+            <input type="checkbox" id="settings-notebook-capture" onchange="saveCaptureSettings()">
+          </div>
+          <div class="settings-row">
+            <label title="Content-hash DataFrames/arrays up to this size (MB) to detect per-cell changes. Lower it if notebook cells are slow to finish with big DataFrames in scope — larger objects fall back to a cheap shape/dtype signature. Restart the notebook kernel to apply.">Variable fingerprint cap (MB)</label>
+            <input type="number" id="settings-var-fp-mb" min="1" max="10000" value="100" onchange="saveCaptureSettings()">
           </div>
         </div>
         <div class="settings-section">
