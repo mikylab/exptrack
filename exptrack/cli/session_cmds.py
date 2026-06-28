@@ -80,15 +80,110 @@ def cmd_session_nodes(args):
 
 
 def cmd_session_rm(args):
-    """Delete a session and its nodes. Linked experiments are preserved
-    (their session_node_id is cleared)."""
+    """Move a session to the Trash (recoverable), or purge it with --permanent.
+    Linked experiments are preserved (their session_node_id is cleared on a
+    permanent delete; a session study keeps them grouped)."""
     s = find_session(args.id_or_name)
     if not s:
         print(col(f"session not found: {args.id_or_name}", R), file=sys.stderr)
         sys.exit(1)
     from ..sessions.manager import delete_session
-    delete_session(s["id"])
-    print(col(f"deleted session {s['id'][:8]} ({s['name']})", G))
+    permanent = getattr(args, "permanent", False)
+    delete_session(s["id"], permanent=permanent)
+    if permanent:
+        print(col(f"permanently deleted session {s['id'][:8]} ({s['name']})", G))
+    else:
+        print(col(f"moved session {s['id'][:8]} ({s['name']}) to Trash", G))
+        print(dim(f"restore with: exptrack session restore {s['id'][:8]}"))
+
+
+def cmd_session_restore(args):
+    """Restore a soft-deleted session from the Trash."""
+    s = find_session(args.id_or_name, include_trashed=True)
+    if not s:
+        print(col(f"session not found: {args.id_or_name}", R), file=sys.stderr)
+        sys.exit(1)
+    from ..sessions.manager import restore_session
+    if restore_session(s["id"]):
+        print(col(f"restored session {s['id'][:8]} ({s['name']})", G))
+    else:
+        print(col(f"session {s['id'][:8]} is not in the Trash", Y), file=sys.stderr)
+
+
+def cmd_session_purge(args):
+    """Permanently delete a trashed session (no undo)."""
+    s = find_session(args.id_or_name, include_trashed=True)
+    if not s:
+        print(col(f"session not found: {args.id_or_name}", R), file=sys.stderr)
+        sys.exit(1)
+    if not s.get("deleted_at"):
+        print(col(f"session {s['id'][:8]} is not in the Trash — "
+                  f"move it there first with `exptrack session rm`", Y),
+              file=sys.stderr)
+        sys.exit(1)
+    if not getattr(args, "yes", False):
+        resp = input(f"Permanently delete session '{s['name']}' and all its "
+                     f"nodes? This cannot be undone [y/N] ")
+        if resp.strip().lower() not in ("y", "yes"):
+            print(dim("aborted"))
+            return
+    from ..sessions.manager import purge_session
+    purge_session(s["id"])
+    print(col(f"permanently deleted session {s['id'][:8]} ({s['name']})", G))
+
+
+def cmd_session_finalize(args):
+    """Graduate a session into self-contained, grouped experiments, then Trash
+    it. Materializes the recommended un-promoted nodes (or just --node ones)."""
+    s = find_session(args.id_or_name)
+    if not s:
+        print(col(f"session not found: {args.id_or_name}", R), file=sys.stderr)
+        sys.exit(1)
+    from ..sessions.manager import finalize_session_preview, finalize_session
+    prev = finalize_session_preview(s["id"])
+    if not prev.get("ok"):
+        print(col(prev.get("error", "could not preview session"), R),
+              file=sys.stderr)
+        sys.exit(1)
+
+    nodes = getattr(args, "nodes", None)
+    soft_delete = not getattr(args, "keep", False)
+    study = getattr(args, "study", None) or prev.get("study")
+
+    # Show what will happen.
+    to_make = (nodes if nodes is not None
+               else [n["id"] for n in prev["nodes"] if n["recommended"]])
+    print(bold(f"Finalize session '{s['name']}':"))
+    for n in prev["nodes"]:
+        chosen = n["id"] in to_make and n["linked_exp"] is None
+        if n["linked_exp"]:
+            mark, note = col("●", G), f"→ exp {n['linked_exp'][:8]} (already promoted)"
+        elif chosen:
+            mark, note = col("＋", G), "will materialize → experiment"
+        else:
+            mark, note = dim("·"), dim("skip")
+        label = n["label"] or "(unlabeled)"
+        print(f"  {mark} {n['node_type']:10} {label:24} {note}")
+    print(dim(f"study: {study}   "
+              f"{'will move session to Trash' if soft_delete else 'session kept'}"))
+    if not getattr(args, "yes", False):
+        resp = input("Proceed? [y/N] ")
+        if resp.strip().lower() not in ("y", "yes"):
+            print(dim("aborted"))
+            return
+
+    res = finalize_session(s["id"], node_ids=nodes, study=study,
+                           soft_delete=soft_delete)
+    if not res.get("ok"):
+        print(col(res.get("error", "finalize failed"), R), file=sys.stderr)
+        sys.exit(1)
+    print(col(f"materialized {len(res['materialized'])} node(s), "
+              f"grouped {res['grouped']} run(s) under study '{res['study']}'", G))
+    for e in res.get("errors", []):
+        print(col(f"  ! {e['node_id'][:8]}: {e['error']}", Y), file=sys.stderr)
+    if res.get("deleted"):
+        print(dim(f"session moved to Trash — restore with: "
+                  f"exptrack session restore {s['id'][:8]}"))
 
 
 def cmd_session_rm_node(args):
@@ -294,6 +389,12 @@ def cmd_session(args):
         cmd_session_nodes(args)
     elif sub == "rm":
         cmd_session_rm(args)
+    elif sub == "restore":
+        cmd_session_restore(args)
+    elif sub == "purge":
+        cmd_session_purge(args)
+    elif sub == "finalize":
+        cmd_session_finalize(args)
     elif sub == "rm-node":
         cmd_session_rm_node(args)
     elif sub == "restore-node":
@@ -312,7 +413,8 @@ def cmd_session(args):
         cmd_session_note(args)
     else:
         print("usage: exptrack session "
-              "{show|nodes|rm|rm-node|restore-node|purge-node|empty-trash|"
-              "trash|rename-node|promote-checkpoint|note} <id> [...]",
+              "{show|nodes|rm|restore|purge|finalize|rm-node|restore-node|"
+              "purge-node|empty-trash|trash|rename-node|promote-checkpoint|"
+              "note} <id> [...]",
               file=sys.stderr)
         sys.exit(2)

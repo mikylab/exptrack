@@ -176,6 +176,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/session/") and path.endswith("/trash"):
             sid = path.split("/")[3]
             self._json(read_routes.api_session_trash(conn, sid))
+        elif path.startswith("/api/session/") and path.endswith("/finalize-preview"):
+            sid = path.split("/")[3]
+            self._json(read_routes.api_session_finalize_preview(conn, sid))
         elif path.startswith("/api/session/"):
             sid = path.split("/")[-1]
             self._json(read_routes.api_session_tree(conn, sid))
@@ -258,6 +261,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "rename-node":          lambda: write_routes.api_session_rename_node(conn, sid, body),
                     "end":                  lambda: write_routes.api_session_end(conn, sid, body),
                     "delete":               lambda: write_routes.api_session_delete(conn, sid, body),
+                    "restore":              lambda: write_routes.api_session_restore(conn, sid, body),
+                    "purge":                lambda: write_routes.api_session_purge(conn, sid, body),
+                    "finalize":             lambda: write_routes.api_session_finalize(conn, sid, body),
                     "delete-node":          lambda: write_routes.api_session_delete_node(conn, sid, body),
                     "delete-node-preview":  lambda: write_routes.api_session_preview_delete_node(conn, sid, body),
                     "restore-node":         lambda: write_routes.api_session_restore_node(conn, sid, body),

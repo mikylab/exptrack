@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.35.0] - 2026-06-22
+
+### Fixed
+- **Failed runs now capture the traceback (file + line), not just the error message** — when a script wrapped by `exptrack run` / `python -m exptrack` crashed, only the one-line exception message was stored (as an `error` param) and the full traceback was lost: it was printed to stderr *after* `stderr.log` had already been closed, so the log was blank and the dashboard showed nothing useful. The crash handler now prints the traceback *before* restoring streams (so it tees into `stderr.log`) and passes the full formatted traceback to `Experiment.fail(error, traceback=…)`, which stores it as the `_error_traceback` param. The experiment detail view shows it in a prominent **Run failed** panel (with a Copy button) on failed runs.
+- **`sys.exit(1)` failures no longer swallow the real error** — when a script (or a framework/library it uses) caught an exception and called `sys.exit(1)`, exptrack recorded only `SystemExit(1)` and the actual cause never appeared in the terminal, in `stderr.log`, or in the dashboard. The `SystemExit` handler now surfaces the chained cause (`SystemExit.__context__`): it prints that traceback to the terminal **and** `stderr.log` and captures it on the run, so you can see what actually failed and on which line. A deliberate bare `sys.exit(code)` with no underlying error still just records the exit code (no invented traceback).
+- **`with Experiment(...)` blocks capture the traceback too** — the context-manager failure path (`__exit__`) now records the full traceback (file + line), matching the `exptrack run` wrapper, so programmatic runs get the same **Run failed** panel instead of just the bare message.
+- **`I/O operation on closed file` tee warning** — the `_TeeWriter` that mirrors stdout/stderr into the log files now no-ops on writes/flushes after the log is closed (interpreter shutdown, or a library holding a stale stream reference) instead of printing `[exptrack] warning: could not tee flush log: I/O operation on closed file.`.
+
+## [1.34.0] - 2026-06-15
+
+### Added
+- **Materialized runs carry their own metrics** — a notebook session logs every `metric()` into one auto-started run, so a graduated branch used to have the code but not its accuracy/loss. Materializing a node now also copies the live run's metrics that were logged **while that node's cells ran** (attributed by timestamp window: `[node.created_at, next node's created_at)`), so each finalized branch experiment is self-contained for comparison — the 0.7 branch gets the 0.7 accuracy, the 0.5 branch gets the 0.5 accuracy. Best-effort and source-preserving.
+
+## [1.33.1] - 2026-06-15
+
+### Fixed
+- **Materialized / finalized runs now carry their setup code** — promoting a session node to an experiment (the Finalize action, the dashboard `＋ Promote to experiment`, or `materialize_experiment`) now replays the node's **whole ancestor chain** of cells (session root → upstream checkpoints → the node), not just the node's own fragment. A branch like `run_pipeline(data, threshold)` is meaningless without the upstream cell that defined `run_pipeline`/`data`; folding the ancestor setup code in makes each graduated experiment self-contained and re-runnable instead of "output but no code." The Finalize modal explains this, and a code-less checkpoint is labelled a *marker* (its branches carry the code) rather than implying it can be saved on its own.
+
+## [1.33.0] - 2026-06-15
+
+### Added
+- **Finalize a session** — a new `✓ Finalize` button on the session view (and `exptrack session finalize <id>`) graduates a session into self-contained, grouped experiments: it materializes the un-promoted nodes you select into standalone runs (full code, `%%setup`, plots), groups every run from the session under a study named after the session, then moves the session to the Trash. The dashboard modal shows which nodes are already promoted vs. un-promoted and lets you pick which to materialize; the CLI prints the same plan and prompts unless `-y`. So once you've finished exploring, you know exactly what to re-run and can safely delete the session.
+- **Sessions are now grouped by a study** — whenever a run is linked to a session (auto-linked notebook runs, `%exptrack promote`, dashboard promote/link, or materialize) it is added to a study named after the session. The grouping persists even after the session is deleted, so a session's runs stay together in the sidebar/table grouping.
+- **Sessions are recoverable (Trash)** — deleting a session now moves it to the Trash by default instead of permanently erasing it. A new **Sessions** section in the unified Trash (Settings → 🗑 Open Trash) lists trashed sessions with **Restore** and **Delete forever**. CLI: `exptrack session rm` soft-deletes (use `--permanent` to purge), plus `exptrack session restore <id>` and `exptrack session purge <id>`. Schema: new nullable `sessions.deleted_at` column (idempotent migration; `exptrack upgrade`-safe).
+
+### Changed
+- **`delete_session` is now soft by default** — `delete_session(session_id)` sets `deleted_at` (recoverable) and leaves nodes + linked experiments untouched; pass `permanent=True` (or use the Trash's Delete forever) to hard-delete. Live listings (`list_sessions`, `find_session`, the dashboard sessions list) filter out trashed sessions.
+
 ## [1.32.1] - 2026-06-14
 
 ### Fixed

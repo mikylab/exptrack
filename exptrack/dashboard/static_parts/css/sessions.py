@@ -674,6 +674,36 @@ details.cell-block.setup-cell > summary { border-left: 2px solid var(--border-st
 .session-trash-toggle:hover {
     color: var(--fg); border-color: var(--blue); background: var(--code-bg);
 }
+.session-finalize-btn {
+    font-family: inherit; font-size: 12px;
+    padding: 4px 10px; border: 1px solid var(--border);
+    background: var(--card-bg); color: var(--muted);
+    border-radius: 4px; cursor: pointer;
+}
+.session-finalize-btn:hover {
+    color: var(--status-success, #2e7d32);
+    border-color: var(--status-success, #2e7d32); background: var(--code-bg);
+}
+/* Finalize-session modal (reuses the .dc-overlay/.dc-dialog shell). */
+.fz-dialog { max-width: 620px; width: 92%; }
+.fz-intro { font-size: 12.5px; color: var(--text-2, var(--muted)); margin: 0 0 12px; line-height: 1.5; }
+.fz-study-row { margin-bottom: 12px; }
+.fz-study-row label { font-size: 12px; color: var(--text-2, var(--muted)); display: flex; align-items: center; gap: 8px; }
+.fz-study-row input { flex: 1; font-family: inherit; font-size: 13px; padding: 5px 8px;
+    border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--fg); }
+.fz-nodes { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow: auto;
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
+.fz-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 4px; cursor: pointer; }
+.fz-row:hover { background: var(--code-bg); }
+.fz-row input[type=checkbox] { margin: 0; }
+.fz-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.fz-label { font-size: 13px; color: var(--fg); }
+.fz-meta { font-size: 11px; color: var(--muted); font-family: var(--font-mono, monospace); }
+.fz-lineage { color: var(--text-3, var(--muted)); }
+.fz-badge { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.fz-badge-done { color: var(--status-success, #2e7d32); }
+.fz-linked { opacity: .8; }
+.fz-empty { font-size: 12px; color: var(--muted); padding: 10px; text-align: center; }
 /* The trashed-node row styles below are now consumed by the unified Trash view
    (js/trash.py); the old per-session trash *panel* container/head/empty styles
    were removed when that panel moved into the unified Trash. */

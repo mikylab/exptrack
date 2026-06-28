@@ -109,15 +109,48 @@ def test_cmd_session_nodes_not_found(tmp_project):
 # ---------------------------------------------------------------------------
 
 def test_cmd_session_rm(session_tree):
+    from exptrack.cli.session_cmds import (
+        cmd_session_rm, cmd_session_restore, cmd_session_purge)
+    from exptrack.core.db import get_db
+
+    sid = session_tree[0]
+    # Default rm = soft-delete (Trash), recoverable.
+    out, _ = _capture_output(
+        cmd_session_rm, SimpleNamespace(id_or_name=sid, permanent=False))
+    assert "moved session" in out and "Trash" in out
+    conn = get_db()
+    row = conn.execute(
+        "SELECT deleted_at FROM sessions WHERE id=?", (sid,)).fetchone()
+    assert row is not None and row["deleted_at"] is not None
+
+    # restore brings it back.
+    out, _ = _capture_output(
+        cmd_session_restore, SimpleNamespace(id_or_name=sid))
+    assert "restored session" in out
+    row = conn.execute(
+        "SELECT deleted_at FROM sessions WHERE id=?", (sid,)).fetchone()
+    assert row["deleted_at"] is None
+
+    # purge requires a trashed session; trash then purge removes it.
+    _capture_output(cmd_session_rm, SimpleNamespace(id_or_name=sid, permanent=False))
+    out, _ = _capture_output(
+        cmd_session_purge, SimpleNamespace(id_or_name=sid, yes=True))
+    assert "permanently deleted" in out
+    assert conn.execute(
+        "SELECT id FROM sessions WHERE id=?", (sid,)).fetchone() is None
+
+
+def test_cmd_session_rm_permanent(session_tree):
     from exptrack.cli.session_cmds import cmd_session_rm
     from exptrack.core.db import get_db
 
     sid = session_tree[0]
-    out, _ = _capture_output(cmd_session_rm, SimpleNamespace(id_or_name=sid))
-    assert "deleted session" in out
+    out, _ = _capture_output(
+        cmd_session_rm, SimpleNamespace(id_or_name=sid, permanent=True))
+    assert "permanently deleted session" in out
     conn = get_db()
-    row = conn.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone()
-    assert row is None
+    assert conn.execute(
+        "SELECT id FROM sessions WHERE id=?", (sid,)).fetchone() is None
 
 
 def test_cmd_session_rm_not_found(tmp_project):

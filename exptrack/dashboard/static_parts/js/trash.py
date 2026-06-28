@@ -328,6 +328,7 @@ async function loadTrashList() {
   _trashCache = {
     experiments: (data && data.experiments) || [],
     sessions: (data && data.sessions) || [],
+    trashed_sessions: (data && data.trashed_sessions) || [],
   };
   _trashSelected = new Set([..._trashSelected].filter(
     id => _trashCache.experiments.find(r => r.id === id)));
@@ -340,8 +341,9 @@ function _renderTrashView() {
   if (!container) return;
   const exps = _trashCache.experiments || [];
   const sessions = _trashCache.sessions || [];
+  const trashedSessions = _trashCache.trashed_sessions || [];
   const nodeTotal = sessions.reduce((a, g) => a + (g.nodes ? g.nodes.length : 0), 0);
-  const grandTotal = exps.length + nodeTotal;
+  const grandTotal = exps.length + nodeTotal + trashedSessions.length;
 
   let html = '<div class="trash-header">' +
     '<h2>Trash <span style="color:var(--muted);font-weight:400;font-size:14px">(' + grandTotal + ')</span></h2>' +
@@ -362,8 +364,72 @@ function _renderTrashView() {
   }
 
   html += _renderTrashExpSection(exps);
+  html += _renderTrashSessionSection(trashedSessions);
   html += _renderTrashNodeSection(sessions, nodeTotal);
   container.innerHTML = html;
+}
+
+// ── Whole-session section (sessions themselves moved to Trash) ──────────────
+function _renderTrashSessionSection(rows) {
+  let html = '<div class="trash-section">' +
+    '<div class="trash-section-head">' +
+      '<span class="trash-section-title">Sessions <span class="trash-section-count">(' + rows.length + ')</span></span>' +
+    '</div>';
+  if (!rows.length) {
+    html += '<div class="trash-empty">No trashed sessions.</div></div>';
+    return html;
+  }
+  html += '<table class="trash-table">' +
+    '<thead><tr>' +
+      '<th>Session</th>' +
+      '<th>Deleted</th>' +
+      '<th>Status</th>' +
+      '<th>Nodes</th>' +
+      '<th>Runs</th>' +
+      '<th style="text-align:right">Actions</th>' +
+    '</tr></thead><tbody>';
+  for (const r of rows) {
+    const nm = esc(r.name || '(unnamed session)').replace(/\'/g, "\\\\'");
+    html += '<tr>' +
+      '<td>' +
+        '<div class="trash-name">' + esc(r.name || '(unnamed session)') + '</div>' +
+        '<div class="trash-id">' + esc((r.id || '').slice(0, 12)) + '</div>' +
+      '</td>' +
+      '<td class="trash-deleted">' + esc(_fmtNodeTime(r.deleted_at)) + '</td>' +
+      '<td class="trash-meta">' + esc(r.status || '') + '</td>' +
+      '<td class="trash-meta">' + (r.nodes || 0) + '</td>' +
+      '<td class="trash-meta">' + (r.promoted || 0) + '</td>' +
+      '<td><div class="trash-row-actions">' +
+        '<button class="dc-button" onclick="restoreSession(\'' + r.id + '\')">Restore</button>' +
+        '<button class="dc-button danger" onclick="purgeSession(\'' + r.id + '\',\'' + nm + '\')">Delete forever</button>' +
+      '</div></td>' +
+    '</tr>';
+  }
+  html += '</tbody></table></div>';
+  return html;
+}
+
+async function restoreSession(id) {
+  const r = await postApi('/api/session/' + id + '/restore', {});
+  if (r && r.ok) {
+    owlSay('Session restored');
+    loadTrashList();
+    if (typeof loadSessionsList === 'function') loadSessionsList();
+  } else {
+    alert('Could not restore session: ' + ((r && r.error) || 'unknown error'));
+  }
+}
+
+async function purgeSession(id, name) {
+  if (!confirm('Permanently delete session "' + (name || id) + '" and all its ' +
+      'nodes?\n\nThis cannot be undone. Linked experiments are preserved.')) return;
+  const r = await postApi('/api/session/' + id + '/purge', {});
+  if (r && r.ok) {
+    owlSay('Session deleted forever');
+    loadTrashList();
+  } else {
+    alert('Could not delete session: ' + ((r && r.error) || 'unknown error'));
+  }
 }
 
 // ── Experiments section ───────────────────────────────────────────────────

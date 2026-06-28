@@ -123,19 +123,24 @@ def list_sessions() -> list[dict[str, Any]]:
         "FROM sessions s "
         "LEFT JOIN session_nodes n ON n.session_id = s.id AND n.deleted_at IS NULL "
         "LEFT JOIN experiments e ON e.session_node_id = n.id "
+        "WHERE s.deleted_at IS NULL "
         "GROUP BY s.id "
         "ORDER BY s.created_at DESC",
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def find_session(session_id_or_name: str) -> dict | None:
-    """Find a session by id prefix or by exact name."""
+def find_session(session_id_or_name: str,
+                 include_trashed: bool = False) -> dict | None:
+    """Find a session by id prefix or by exact name.
+
+    Trashed (soft-deleted) sessions are skipped by default so live operations
+    don't pick one up; pass ``include_trashed=True`` for restore/purge lookups."""
     from ..core.db import get_db
     conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM sessions WHERE id LIKE ? OR name=? "
-        "ORDER BY created_at DESC LIMIT 1",
-        (session_id_or_name + "%", session_id_or_name),
-    ).fetchone()
+    q = "SELECT * FROM sessions WHERE (id LIKE ? OR name=?)"
+    if not include_trashed:
+        q += " AND deleted_at IS NULL"
+    q += " ORDER BY created_at DESC LIMIT 1"
+    row = conn.execute(q, (session_id_or_name + "%", session_id_or_name)).fetchone()
     return dict(row) if row else None

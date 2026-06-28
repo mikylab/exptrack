@@ -430,6 +430,17 @@ async function refreshDetail(id) {
     '</div>'
   ) : '';
 
+  // Failure traceback: when a run failed, show the full captured traceback
+  // (file + line) in a prominent panel so the cause is visible without
+  // digging through the params table or the stderr.log file.
+  const errorHtml = (exp.status === 'failed' && exp.error) ? (
+    '<div class="error-panel"><div class="error-panel-head">' +
+      '<span class="error-panel-icon">✕</span> Run failed' +
+      '<button class="copy-btn" data-tb="' + esc(exp.error).replace(/"/g,'&quot;') +
+      '" onclick="navigator.clipboard.writeText(this.dataset.tb).then(()=>owlSay(\'Copied!\'))">Copy</button>' +
+      '</div><pre class="error-panel-tb">' + esc(exp.error) + '</pre></div>'
+  ) : '';
+
   const _restoreRename = _preserveActiveRename();
   document.getElementById('detail-panel').innerHTML = `
     <div class="detail" style="border:none;padding:4px 16px;margin:0">
@@ -480,6 +491,7 @@ async function refreshDetail(id) {
 
       ${sessionOriginHtml}
       ${branchContextHtml}
+      ${errorHtml}
 
       <div class="tabs" id="detail-tabs">
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>

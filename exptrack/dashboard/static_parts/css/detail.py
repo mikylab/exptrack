@@ -67,4 +67,11 @@ CSS_DETAIL = """
   .branch-context .bc-sib-tag.ab { color: var(--branch-ab); border: 1px solid rgba(217,119,6,0.5); }
   .branch-context .bc-sib-res { font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .branch-context .bc-sib-exp { font-size: 11px; color: var(--blue); text-decoration: none; border: 1px solid var(--blue); padding: 0 6px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+
+  /* Failure traceback panel: shown on failed runs with the captured traceback. */
+  .error-panel { margin: -6px 0 14px 0; border: 1px solid var(--status-danger, var(--red)); border-radius: var(--radius-sm, 4px); background: var(--status-danger-soft, rgba(220,38,38,0.06)); overflow: hidden; }
+  .error-panel-head { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--status-danger, var(--red)); border-bottom: 1px solid var(--status-danger, var(--red)); }
+  .error-panel-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: var(--status-danger, var(--red)); color: #fff; font-size: 11px; line-height: 1; }
+  .error-panel-head .copy-btn { margin-left: auto; }
+  .error-panel-tb { margin: 0; padding: 10px 12px; font-family: var(--font-mono, 'IBM Plex Mono', monospace); font-size: 12px; line-height: 1.45; color: var(--text-1, var(--fg)); white-space: pre; overflow: auto; max-height: 360px; }
 """

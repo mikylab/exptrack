@@ -630,7 +630,8 @@ def test_record_cell_skips_session_magics_and_dedupes(tmp_project):
 
 
 def test_dashboard_session_delete(tmp_project):
-    """POST /api/session/<id>/delete removes nodes, preserves linked exps."""
+    """POST /api/session/<id>/delete soft-deletes (Trash) by default; restore
+    brings it back; permanent=True hard-deletes while preserving linked exps."""
     from exptrack.sessions import SessionManager
     from exptrack.core import Experiment
     from exptrack.dashboard.routes import write_routes
@@ -644,19 +645,171 @@ def test_dashboard_session_delete(tmp_project):
     exp.finish()
 
     conn = get_db()
+    # Default = soft delete: session row survives with deleted_at set, nodes stay.
     res = write_routes.api_session_delete(conn, sid, {})
-    assert res.get("ok")
-    # Session and nodes are gone
+    assert res.get("ok") and res.get("permanent") is False
+    srow = conn.execute(
+        "SELECT deleted_at FROM sessions WHERE id=?", (sid,),
+    ).fetchone()
+    assert srow is not None and srow["deleted_at"] is not None
+    assert conn.execute(
+        "SELECT id FROM session_nodes WHERE session_id=?", (sid,),
+    ).fetchone() is not None
+    # It drops out of the live listing.
+    from exptrack.sessions.tree import list_sessions, find_session
+    assert all(s["id"] != sid for s in list_sessions())
+    assert find_session(sid) is None
+
+    # Restore brings it back.
+    assert write_routes.api_session_restore(conn, sid, {})["ok"]
+    assert conn.execute(
+        "SELECT deleted_at FROM sessions WHERE id=?", (sid,),
+    ).fetchone()["deleted_at"] is None
+
+    # Purge refuses a non-trashed session; trash then purge removes it for good.
+    assert "error" in write_routes.api_session_purge(conn, sid, {})
+    write_routes.api_session_delete(conn, sid, {})
+    res = write_routes.api_session_delete(conn, sid, {"permanent": True})
+    assert res.get("ok") and res.get("permanent") is True
     assert conn.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone() is None
     assert conn.execute(
         "SELECT id FROM session_nodes WHERE session_id=?", (sid,),
     ).fetchone() is None
-    # Experiment still exists with session_node_id cleared
+    # Experiment still exists with session_node_id cleared, grouped under study.
     erow = conn.execute(
-        "SELECT id, session_node_id FROM experiments WHERE id=?", (exp.id,),
+        "SELECT id, session_node_id, studies FROM experiments WHERE id=?", (exp.id,),
     ).fetchone()
     assert erow is not None
     assert erow["session_node_id"] is None
+    assert "dash-del" in (erow["studies"] or "")
+
+
+def test_session_finalize(tmp_project):
+    """finalize materializes un-promoted nodes, groups all runs under the
+    session's study, and soft-deletes the session."""
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import (
+        finalize_session, finalize_session_preview)
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sid = sm.start("graduate-me")
+    sm.checkpoint("baseline")
+    sm.record_cell("x = 1\nx", "1")
+    sm.branch("try-a")
+    sm.record_cell("y = 2\ny", "2")
+
+    prev = finalize_session_preview(sid)
+    assert prev["ok"]
+    # At least one un-promoted, code-bearing node is recommended.
+    assert prev["recommended_count"] >= 1
+
+    res = finalize_session(sid)
+    assert res["ok"]
+    assert len(res["materialized"]) >= 1
+    assert res["study"] == "graduate-me"
+    assert res["deleted"] is True
+
+    conn = get_db()
+    # Session is in the Trash, not gone.
+    assert conn.execute(
+        "SELECT deleted_at FROM sessions WHERE id=?", (sid,),
+    ).fetchone()["deleted_at"] is not None
+    # Materialized runs carry the study and full cell source.
+    for m in res["materialized"]:
+        erow = conn.execute(
+            "SELECT studies FROM experiments WHERE id=?", (m["exp_id"],),
+        ).fetchone()
+        assert "graduate-me" in (erow["studies"] or "")
+
+
+def test_materialize_folds_in_ancestor_code(tmp_project):
+    """A materialized branch must be self-contained: it carries the code from
+    its ancestor chain (root/checkpoint setup), not just its own fragment, so
+    the run is re-runnable on its own."""
+    import json
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import materialize_experiment
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sid = sm.start("sens")
+    # Root: the shared setup (imports / helper defs / data).
+    sm.record_cell("import random\ndef run_pipeline(d, t):\n    return [x for x in d if x>=t]\ndata=[0.1,0.9]", "")
+    sm.checkpoint("after preprocessing")
+    sm.branch("try 0.7")
+    sm.record_cell("threshold=0.7\nrun_pipeline(data, threshold)", "[0.9]")
+
+    conn = get_db()
+    bid = conn.execute(
+        "SELECT id FROM session_nodes WHERE label='try 0.7'").fetchone()["id"]
+    res = materialize_experiment(bid)
+    assert res["ok"]
+    srcs = [
+        json.loads(r["value"]).get("source_preview", "")
+        for r in conn.execute(
+            "SELECT value FROM timeline WHERE exp_id=? AND event_type='cell_exec' "
+            "ORDER BY seq", (res["id"],)).fetchall()
+    ]
+    joined = "\n".join(srcs)
+    # The ancestor's helper def AND the branch's own line are both present.
+    assert "def run_pipeline" in joined
+    assert "threshold=0.7" in joined
+    # Ordered: setup code comes before the branch code.
+    assert joined.index("def run_pipeline") < joined.index("threshold=0.7")
+
+
+def test_materialize_attributes_window_metrics(tmp_project):
+    """A notebook logs every metric() into one auto-run; materializing a branch
+    should pull the metrics logged *while that branch ran* (ts window) onto the
+    branch experiment, so each graduated run carries its own numbers."""
+    from datetime import datetime, timezone
+    from exptrack.core import Experiment
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import materialize_experiment
+    from exptrack.core.db import get_db
+
+    sm = SessionManager()
+    sid = sm.start("metric-attr")
+    sm.checkpoint("base")
+    sm.branch("hi")
+    sm.record_cell("threshold=0.7", "")
+    sm.branch("lo")
+    sm.record_cell("threshold=0.5", "")
+
+    # One auto-run holds both metrics (as a notebook session would). Link it to
+    # the root so materialize can find it via the session.
+    run = Experiment(script=None)
+    run.finish()
+
+    conn = get_db()
+    nodes = {r["label"]: r for r in conn.execute(
+        "SELECT label, id, created_at FROM session_nodes WHERE session_id=?",
+        (sid,)).fetchall()}
+    hi, lo = nodes["hi"], nodes["lo"]
+    conn.execute("UPDATE experiments SET session_node_id=? WHERE id=?",
+                 (nodes["metric-attr"]["id"], run.id))
+
+    def iso(ts):
+        return datetime.fromtimestamp(ts, timezone.utc).isoformat()
+    # 'hi' metric logged inside its window [hi, lo); 'lo' metric after lo.
+    conn.execute("INSERT INTO metrics (exp_id, key, value, step, ts, source) "
+                 "VALUES (?,?,?,?,?,?)",
+                 (run.id, "accuracy", 0.71, 1,
+                  iso((hi["created_at"] + lo["created_at"]) / 2), "auto"))
+    conn.execute("INSERT INTO metrics (exp_id, key, value, step, ts, source) "
+                 "VALUES (?,?,?,?,?,?)",
+                 (run.id, "accuracy", 0.95, 2, iso(lo["created_at"] + 1), "auto"))
+    conn.commit()
+
+    rhi = materialize_experiment(hi["id"])
+    rlo = materialize_experiment(lo["id"])
+    hi_vals = [m["value"] for m in conn.execute(
+        "SELECT value FROM metrics WHERE exp_id=?", (rhi["id"],)).fetchall()]
+    lo_vals = [m["value"] for m in conn.execute(
+        "SELECT value FROM metrics WHERE exp_id=?", (rlo["id"],)).fetchall()]
+    assert hi_vals == [0.71]
+    assert lo_vals == [0.95]
 
 
 def test_dashboard_session_routes(tmp_project):

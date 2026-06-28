@@ -17,6 +17,7 @@ The script sees sys.argv exactly as if it were called directly.
 import os
 import runpy
 import sys
+import traceback
 from pathlib import Path
 
 
@@ -28,22 +29,26 @@ class _TeeWriter:
 
     def write(self, data):
         self._original.write(data)
-        try:
-            self._log.write(data)
-            self._log.flush()
-        except Exception as e:
-            self._original.write(
-                f"[exptrack] warning: could not tee write to log: {e}\n"
-            )
+        self._tee(lambda: (self._log.write(data), self._log.flush()), "write to")
         return len(data) if isinstance(data, str) else None
 
     def flush(self):
         self._original.flush()
+        self._tee(self._log.flush, "flush")
+
+    def _tee(self, action, label):
+        # A late write after the log file has been closed (interpreter
+        # shutdown, or a library that captured a reference to this tee) is
+        # expected — skip it silently rather than warning on a closed file.
+        if getattr(self._log, "closed", False):
+            return
         try:
-            self._log.flush()
+            action()
+        except ValueError:
+            pass  # "I/O operation on closed file" — log already closed
         except Exception as e:
             self._original.write(
-                f"[exptrack] warning: could not tee flush log: {e}\n"
+                f"[exptrack] warning: could not tee {label} log: {e}\n"
             )
 
     def fileno(self):
@@ -164,19 +169,37 @@ def main(resume=None):
         _auto_detect_outputs(exp, start_ts)
         exp.finish()
     except SystemExit as e:
-        _restore_streams(log_files)
         # Normal exit — treat code 0 as success
         if e.code == 0 or e.code is None:
+            _restore_streams(log_files)
             _auto_detect_outputs(exp, start_ts)
             exp.finish()
-        else:
-            exp.fail(f"SystemExit({e.code})")
-        sys.exit(e.code or 0)
-    except Exception as e:
+            sys.exit(0)
+        # Non-zero exit. A script (or a framework/library it uses) commonly
+        # catches an exception and calls sys.exit(1); the real error is then
+        # chained on SystemExit.__context__. Surface that cause instead of
+        # swallowing it behind a bare "SystemExit(code)" — print it BEFORE
+        # restoring streams so it tees into the terminal AND stderr.log, and
+        # capture it on the run so the dashboard shows the file + line.
+        tb = None
+        cause = e.__context__
+        if cause is not None and not isinstance(cause, SystemExit):
+            tb = "".join(
+                traceback.format_exception(type(cause), cause, cause.__traceback__)
+            )
+            sys.stderr.write(tb)
         _restore_streams(log_files)
-        import traceback
+        exp.fail(f"SystemExit({e.code})", traceback=tb)
+        sys.exit(e.code)
+    except Exception as e:
+        # Print the traceback BEFORE restoring streams so it tees into
+        # stderr.log (restoring closes the log files), and capture the full
+        # formatted traceback into the run so the failure — file + line —
+        # is visible in the dashboard, not just the bare message as a param.
+        tb = traceback.format_exc()
         traceback.print_exc()
-        exp.fail(str(e))
+        _restore_streams(log_files)
+        exp.fail(str(e), traceback=tb)
         sys.exit(1)
     finally:
         # Restore sys.path[0] so exptrack's own imports aren't affected

@@ -144,7 +144,9 @@ function renderSessionsList() {
 
 
 async function deleteSession(id, name) {
-  if (!confirm(`Delete session "${name || id}"?\n\nLinked experiments are preserved (their session_node_id is cleared).`)) return;
+  if (!confirm(`Move session "${name || id}" to the Trash?\n\n` +
+      `It stays recoverable from Settings → 🗑 Open Trash. Linked experiments ` +
+      `are preserved.`)) return;
   const r = await postApi('/api/session/' + id + '/delete', {});
   if (r && r.ok) {
     if (_activeSessionId === id) {
@@ -156,6 +158,110 @@ async function deleteSession(id, name) {
     loadSessionsList();
   } else {
     alert('Could not delete session: ' + ((r && r.error) || 'unknown error'));
+  }
+}
+
+// ── Finalize a session ───────────────────────────────────────────────────────
+// Open an interactive modal: list the session's nodes (already-promoted vs not),
+// let the user pick which un-promoted nodes to materialize into standalone
+// experiments, choose the study name, and whether to move the session to Trash
+// afterwards. POSTs /api/session/<id>/finalize.
+async function openFinalizeSession(id, name) {
+  const data = await api('/api/session/' + id + '/finalize-preview');
+  if (!data || data.error) {
+    alert('Could not load session: ' + ((data && data.error) || 'unknown error'));
+    return;
+  }
+  const study = data.study || name || '';
+  const rows = (data.nodes || []).map(n => {
+    const label = escapeHtml(n.label || '(unlabeled)');
+    const lin = (n.lineage || []).join(' › ');
+    const meta = `${escapeHtml(n.node_type)}${n.cell_count ? ' · ' + n.cell_count + ' cell' + (n.cell_count===1?'':'s') : ''}` +
+                 (lin ? ' · <span class="fz-lineage">' + escapeHtml(lin) + '</span>' : '');
+    if (n.linked_exp) {
+      return `<label class="fz-row fz-linked">
+        <input type="checkbox" disabled checked>
+        <span class="fz-main"><span class="fz-label">${label}</span>
+          <span class="fz-meta">${meta}</span></span>
+        <span class="fz-badge fz-badge-done">→ exp ${escapeHtml(n.linked_exp.slice(0,8))}</span>
+      </label>`;
+    }
+    const disabled = n.cell_count ? '' : 'disabled';
+    const checked = n.recommended ? 'checked' : '';
+    const note = n.cell_count ? 'materialize → experiment'
+                              : 'marker only — its branches carry the code';
+    return `<label class="fz-row">
+      <input type="checkbox" class="fz-node" value="${n.id}" ${checked} ${disabled}>
+      <span class="fz-main"><span class="fz-label">${label}</span>
+        <span class="fz-meta">${meta}</span></span>
+      <span class="fz-badge">${note}</span>
+    </label>`;
+  }).join('');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'dc-overlay';
+  overlay.id = 'dc-overlay';
+  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) _closeDeleteModal(); });
+  overlay.innerHTML =
+    '<div class="dc-dialog fz-dialog">' +
+      '<div class="dc-header">' +
+        '<h3>Finalize session: ' + escapeHtml(name || '') + '</h3>' +
+        '<button class="dc-close" onclick="_closeDeleteModal()">&times;</button>' +
+      '</div>' +
+      '<div class="dc-body">' +
+        '<p class="fz-intro">Graduate this session into self-contained ' +
+          'experiments. Each selected node becomes a standalone run carrying ' +
+          'its <b>own code plus the setup code from its parent checkpoints</b> ' +
+          '(imports, data prep, helper defs) &amp; plots — so the run is ' +
+          'complete and re-runnable on its own. Every run is grouped under a ' +
+          'study so it stays together after the session is gone.</p>' +
+        '<div class="fz-study-row"><label>Study name ' +
+          '<input type="text" id="fz-study" value="' + escapeHtml(study) + '"></label></div>' +
+        '<div class="fz-nodes">' + (rows || '<div class="fz-empty">No nodes to graduate.</div>') + '</div>' +
+      '</div>' +
+      '<div class="dc-footer">' +
+        '<div class="dc-footer-left">' +
+          '<label class="dc-files-checkbox"><input type="checkbox" id="fz-softdel" checked>' +
+            '<span class="dc-files-checkbox-label">Move session to Trash after finalizing' +
+              '<span class="dc-files-checkbox-hint">recoverable from the unified Trash</span>' +
+            '</span></label>' +
+        '</div>' +
+        '<div class="dc-footer-right">' +
+          '<button class="dc-button" onclick="_closeDeleteModal()">Cancel</button>' +
+          '<button class="dc-button primary" onclick="confirmFinalizeSession(\'' + id + '\')">✓ Finalize</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function confirmFinalizeSession(id) {
+  const studyEl = document.getElementById('fz-study');
+  const softEl = document.getElementById('fz-softdel');
+  const study = studyEl ? studyEl.value.trim() : '';
+  const node_ids = Array.from(document.querySelectorAll('.fz-node:checked'))
+    .map(el => el.value);
+  const r = await postApi('/api/session/' + id + '/finalize', {
+    node_ids, study, soft_delete: softEl ? softEl.checked : true,
+  });
+  _closeDeleteModal();
+  if (r && r.ok) {
+    const made = (r.materialized || []).length;
+    owlSay(`Finalized: ${made} experiment${made===1?'':'s'} created, ` +
+          `${r.grouped} grouped under "${r.study}"` +
+          (r.deleted ? ' · session moved to Trash' : ''));
+    if (r.deleted && _activeSessionId === id) {
+      _activeSessionId = null;
+      _selectedNodeId = null;
+      const view = document.getElementById('session-tree-view');
+      if (view) view.innerHTML = '';
+    } else if (_activeSessionId === id) {
+      renderSessionTree(id);
+    }
+    loadSessionsList();
+    if (typeof loadExperiments === 'function') loadExperiments();
+  } else {
+    alert('Could not finalize: ' + ((r && r.error) || 'unknown error'));
   }
 }
 
@@ -227,6 +333,10 @@ async function renderSessionTree(sid) {
       <div class="session-view-actions">
         <button class="session-compare-toggle" id="session-compare-toggle" onclick="toggleCompareMode()">
           ⇄ Compare branches
+        </button>
+        <button class="session-finalize-btn" onclick="openFinalizeSession('${s.id}','${escapeHtml(s.name||'')}')"
+          title="Graduate this session: turn un-promoted nodes into experiments, group them under a study, then move the session to Trash">
+          ✓ Finalize
         </button>
         <button class="session-trash-toggle" onclick="openTrashView()"
           title="Trashed nodes now live in the unified Trash (with trashed experiments)">

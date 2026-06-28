@@ -157,6 +157,7 @@ def _ensure_schema(conn):
     small enough to test in isolation.
     """
     _create_base_schema(conn)
+    _migrate_sessions(conn)
     _migrate_session_nodes(conn)
     _migrate_experiment_session_link(conn)
     _migrate_artifacts(conn)
@@ -323,6 +324,24 @@ def _add_columns(conn, table, columns, existing=None):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
             added.add(name)
     return added
+
+
+def _migrate_sessions(conn):
+    # Soft-delete column for whole sessions (Trash + restore), mirroring the
+    # session_nodes / experiments soft-delete pattern. Non-null deleted_at = the
+    # session is trashed (recoverable); a permanent purge hard-deletes the rows.
+    try:
+        added = _add_columns(conn, "sessions", {"deleted_at": "REAL"})
+        if "deleted_at" in added:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_deleted "
+                "ON sessions(deleted_at)"
+            )
+    except sqlite3.OperationalError:
+        pass
+    except Exception as e:
+        print(f"[exptrack] warning: sessions migration error: {e}",
+              file=sys.stderr)
 
 
 def _migrate_session_nodes(conn):

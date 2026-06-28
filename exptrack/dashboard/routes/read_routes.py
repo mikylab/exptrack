@@ -426,3 +426,13 @@ def api_session_trash(conn, session_id: str) -> dict:
     if not sess:
         return {"error": "not found"}
     return {"nodes": list_trashed_nodes(session_id)}
+
+
+def api_session_finalize_preview(conn, session_id: str) -> dict:
+    """Preview what `finalize` would graduate: the session's nodes annotated
+    with promoted/un-promoted status for the Finalize checklist UI."""
+    from ...sessions.manager import finalize_session_preview
+    res = finalize_session_preview(session_id)
+    if not res.get("ok"):
+        return {"error": res.get("error", "not found")}
+    return res

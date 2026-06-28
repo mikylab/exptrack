@@ -41,7 +41,14 @@ def count_unified_trash(conn) -> dict[str, int]:
     except Exception:
         # session_nodes may not exist on a pre-Session-Trees DB.
         nodes = 0
-    return {"experiments": experiments, "nodes": nodes, "total": experiments + nodes}
+    try:
+        sessions = conn.execute(
+            "SELECT COUNT(*) AS n FROM sessions WHERE deleted_at IS NOT NULL"
+        ).fetchone()["n"]
+    except Exception:
+        sessions = 0
+    return {"experiments": experiments, "nodes": nodes, "sessions": sessions,
+            "total": experiments + nodes + sessions}
 
 
 def _count_by_exp(conn, table: str, exp_ids: list[str]) -> dict[str, int]:
@@ -130,17 +137,32 @@ def _trashed_node_groups(conn) -> list[dict[str, Any]]:
     return [groups[sid] for sid in order]
 
 
+def _trashed_whole_sessions(conn) -> list[dict[str, Any]]:
+    """Soft-deleted *whole* sessions (distinct from trashed individual nodes).
+    Restoring one brings the entire session back; purging hard-deletes it."""
+    try:
+        from ..sessions.manager import list_trashed_sessions
+        return list_trashed_sessions(conn)
+    except Exception:
+        return []
+
+
 def list_unified_trash(conn) -> dict[str, Any]:
     """Everything in the trash, shaped for the dashboard's unified Trash view:
 
         {
-          "experiments": [ {id, name, status, deleted_at, metrics_count, ...} ],
-          "sessions":     [ {session: {id, name, status}, nodes: [...]} ],
-          "counts":       {experiments, nodes, total},
+          "experiments":     [ {id, name, status, deleted_at, metrics_count, ...} ],
+          "sessions":        [ {session: {id, name, status}, nodes: [...]} ],
+          "trashed_sessions":[ {id, name, status, nodes, promoted, deleted_at} ],
+          "counts":          {experiments, nodes, sessions, total},
         }
-    """
+
+    Note the two session-shaped keys: ``sessions`` groups individually-trashed
+    *nodes* by their (live) owning session, while ``trashed_sessions`` lists
+    whole sessions that were themselves moved to the Trash."""
     return {
         "experiments": _trashed_experiments(conn),
         "sessions": _trashed_node_groups(conn),
+        "trashed_sessions": _trashed_whole_sessions(conn),
         "counts": count_unified_trash(conn),
     }
