@@ -16,6 +16,7 @@ import re as _re
 import socket
 import sys
 import time
+import traceback as _tb
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -30,6 +31,9 @@ from .gpu import gpu_info
 from .naming import make_run_name, output_path
 
 _VALID_STATUSES = {"running", "done", "failed"}
+
+# Cap on the stored failure traceback so a pathological error can't bloat the DB.
+_MAX_TRACEBACK_CHARS = 20000
 
 
 def _redact_params(params: dict) -> dict:
@@ -536,9 +540,22 @@ class Experiment:
         from .db import close_db
         close_db()
 
-    def fail(self, error: str = ""):
+    def fail(self, error: str = "", traceback: str | None = None):
+        """Mark the run as failed.
+
+        ``error`` is the short exception message (stored as the ``error``
+        param, kept for backward compat). ``traceback`` is the full formatted
+        traceback (file + line); it's stored as the ``_error_traceback`` param
+        — ``_``-prefixed so it's skipped by run-naming and the param
+        overwrite-warning — and surfaced as a dedicated panel on failed runs in
+        the dashboard. Capped so a pathological traceback can't bloat the DB.
+        """
         if error:
             self.log_param("error", error)
+        if traceback:
+            if len(traceback) > _MAX_TRACEBACK_CHARS:
+                traceback = "…(truncated)\n" + traceback[-_MAX_TRACEBACK_CHARS:]
+            self.log_param("_error_traceback", traceback)
         self.finish("failed")
 
     # ── Timeline ──────────────────────────────────────────────────────────────
@@ -683,7 +700,8 @@ class Experiment:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is not None:
-            self.fail(str(exc_val))
+            tb = "".join(_tb.format_exception(exc_type, exc_val, exc_tb))
+            self.fail(str(exc_val), traceback=tb)
             return False
         self.finish()
         return False

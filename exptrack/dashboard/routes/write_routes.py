@@ -1747,12 +1747,55 @@ def api_session_note_node(conn, session_id: str, body: dict) -> dict:
 
 
 def api_session_delete(conn, session_id: str, body: dict) -> dict:
-    """Delete a session and its nodes. Linked experiments are preserved with
-    their session_node_id cleared."""
+    """Move a session to the Trash (default) or purge it permanently.
+
+    Soft delete (`permanent` falsy) is fully recoverable via the Trash; nodes
+    and linked experiments are untouched. `permanent: true` hard-deletes the
+    session and its nodes (linked experiments preserved, session_node_id
+    cleared)."""
     from ...sessions.manager import delete_session
-    if not delete_session(session_id):
+    permanent = bool(body.get("permanent"))
+    if not delete_session(session_id, permanent=permanent):
+        return {"error": "not found"}
+    return {"ok": True, "permanent": permanent}
+
+
+def api_session_restore(conn, session_id: str, body: dict) -> dict:
+    """Restore a soft-deleted session from the Trash."""
+    from ...sessions.manager import restore_session
+    if not restore_session(session_id):
         return {"error": "not found"}
     return {"ok": True}
+
+
+def api_session_purge(conn, session_id: str, body: dict) -> dict:
+    """Permanently remove a trashed session (refuses a non-trashed session)."""
+    from ...sessions.manager import purge_session
+    if not purge_session(session_id):
+        return {"error": "not in trash"}
+    return {"ok": True}
+
+
+def api_session_finalize(conn, session_id: str, body: dict) -> dict:
+    """Graduate a session: materialize the chosen un-promoted nodes into
+    standalone experiments, group every linked run under the session's study,
+    then (by default) move the session to the Trash.
+
+    Body: {node_ids?: [..], study?: str, soft_delete?: bool}. When `node_ids`
+    is omitted, all recommended (un-promoted, code-bearing) nodes are used."""
+    from ...sessions.manager import finalize_session
+    node_ids = body.get("node_ids")
+    if node_ids is not None and not isinstance(node_ids, list):
+        return {"error": "node_ids must be a list"}
+    res = finalize_session(
+        session_id,
+        node_ids=node_ids,
+        study=body.get("study"),
+        soft_delete=bool(body.get("soft_delete", True)),
+    )
+    if not res.get("ok"):
+        return {"error": res.get("error", "finalize failed")}
+    return res
 
 
 def _validate_session_node(conn, session_id: str, body: dict):

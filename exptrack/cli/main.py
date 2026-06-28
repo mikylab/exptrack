@@ -395,8 +395,35 @@ def main():
     p_sn.add_argument("id_or_name")
 
     p_sr = sess_sub.add_parser("rm",
-        help="Delete a session and its nodes (linked experiments preserved)")
+        help="Move a session to the Trash (recoverable; linked experiments "
+             "preserved). Use --permanent to delete for good.")
     p_sr.add_argument("id_or_name")
+    p_sr.add_argument("-p", "--permanent", action="store_true",
+        help="Permanently delete the session and its nodes (no undo)")
+
+    p_srestore = sess_sub.add_parser("restore",
+        help="Restore a soft-deleted session from the Trash")
+    p_srestore.add_argument("id_or_name")
+
+    p_spurges = sess_sub.add_parser("purge",
+        help="Permanently delete a trashed session (no undo)")
+    p_spurges.add_argument("id_or_name")
+    p_spurges.add_argument("-y", "--yes", action="store_true",
+        help="Skip the confirmation prompt")
+
+    p_sfin = sess_sub.add_parser("finalize",
+        help="Graduate a session: materialize un-promoted nodes into "
+             "experiments, group them under a study, then Trash the session")
+    p_sfin.add_argument("id_or_name")
+    p_sfin.add_argument("--study", default=None,
+        help="Study name to group the runs under (default: the session name)")
+    p_sfin.add_argument("--node", dest="nodes", action="append", default=None,
+        help="Materialize only this node id (repeatable); default = all "
+             "recommended un-promoted nodes")
+    p_sfin.add_argument("--keep", action="store_true",
+        help="Keep the session after finalizing (don't move it to the Trash)")
+    p_sfin.add_argument("-y", "--yes", action="store_true",
+        help="Skip the confirmation prompt")
 
     p_srn = sess_sub.add_parser("rm-node",
         help="Cascade-delete a single branch/checkpoint and its descendants "

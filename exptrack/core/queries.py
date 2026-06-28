@@ -85,6 +85,10 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
     # Surface the dataset manifest as its own key (and keep it out of the params
     # table — it's an internal `_`-prefixed bookkeeping param).
     datasets = all_params.pop("_dataset_manifest", {}) or {}
+    # Surface the failure traceback (captured by Experiment.fail) as its own
+    # `error` key so a failed run shows file+line, not just the short `error`
+    # param. Keep it out of the params table.
+    error_traceback = all_params.pop("_error_traceback", "") or ""
 
     return {
         "id": exp["id"],
@@ -111,6 +115,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "params": all_params,
         "param_sources": {p["key"]: p["source"] for p in params},
         "datasets": datasets,
+        "error": error_traceback,
         "metrics": [{
             "key": m["key"], "last": m["last_v"],
             "min": m["min_v"], "max": m["max_v"], "n": m["n"],

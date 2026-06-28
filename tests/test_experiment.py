@@ -359,6 +359,65 @@ def test_fail_sets_failed(tmp_project):
     assert json.loads(param["value"]) == "OOM error"
 
 
+def test_fail_captures_traceback(tmp_project):
+    """fail(traceback=...) stores the full traceback as _error_traceback and
+    surfaces it as the detail `error` key (not in the params table)."""
+    from exptrack.core import Experiment, get_db
+    from exptrack.core.queries import get_experiment_detail
+
+    tb = 'Traceback (most recent call last):\n  File "t.py", line 3\nIndexError: x'
+    exp = Experiment(script="train.py")
+    exp.fail("IndexError: x", traceback=tb)
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT value FROM params WHERE exp_id=? AND key='_error_traceback'",
+        (exp.id,),
+    ).fetchone()
+    assert json.loads(row["value"]) == tb
+
+    detail = get_experiment_detail(conn, exp.id)
+    assert detail["error"] == tb
+    assert "_error_traceback" not in detail["params"]
+
+
+def test_context_manager_captures_traceback(tmp_project):
+    """A `with Experiment(...)` block that raises captures the full traceback,
+    not just the message — so the context-manager path matches the wrapper."""
+    from exptrack.core import Experiment, get_db
+    from exptrack.core.queries import get_experiment_detail
+
+    try:
+        with Experiment(script="train.py") as exp:
+            raise ValueError("boom in a with-block")
+    except ValueError:
+        pass
+
+    conn = get_db()
+    detail = get_experiment_detail(conn, exp.id)
+    assert detail["status"] == "failed"
+    assert "ValueError: boom in a with-block" in detail["error"]
+    assert "test_experiment.py" in detail["error"]
+
+
+def test_fail_traceback_capped(tmp_project):
+    """A pathologically large traceback is truncated before storage."""
+    from exptrack.core import Experiment, get_db
+    from exptrack.core.experiment import _MAX_TRACEBACK_CHARS
+
+    exp = Experiment(script="train.py")
+    exp.fail("boom", traceback="x" * (_MAX_TRACEBACK_CHARS + 5000))
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT value FROM params WHERE exp_id=? AND key='_error_traceback'",
+        (exp.id,),
+    ).fetchone()
+    stored = json.loads(row["value"])
+    assert stored.startswith("…(truncated)")
+    assert len(stored) <= _MAX_TRACEBACK_CHARS + len("…(truncated)\n")
+
+
 def test_finish_twice_raises(tmp_project):
     """Calling finish() twice raises RuntimeError."""
     from exptrack.core import Experiment

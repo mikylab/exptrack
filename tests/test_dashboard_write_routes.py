@@ -462,7 +462,12 @@ def test_session_end(session_tree):
 def test_session_delete_whole(session_tree):
     sid = session_tree[0]
     conn = get_db()
+    # Soft delete by default — session row stays (trashed), then purge removes it.
     assert wr.api_session_delete(conn, sid, {})["ok"] is True
+    assert conn.execute(
+        "SELECT deleted_at FROM sessions WHERE id=?", (sid,),
+    ).fetchone()["deleted_at"] is not None
+    assert wr.api_session_delete(conn, sid, {"permanent": True})["ok"] is True
     assert conn.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone() is None
 
 

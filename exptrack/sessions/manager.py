@@ -13,6 +13,7 @@ from typing import Any
 
 from ..core.db import get_db
 from ..core.git import _git as git_run, git_diff as _git_diff
+from ..core.utils import debug_log
 
 _NODE_CELLS_MAX_BYTES = 256 * 1024  # soft cap on per-node cell_source size
 _NODE_SETUP_MAX_BYTES = 256 * 1024  # separate soft cap for %%setup prep blocks
@@ -33,6 +34,20 @@ def set_current_session(sm: SessionManager | None) -> None:
 
 def _new_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def _unix_to_iso(ts) -> str | None:
+    """Convert a unix timestamp (float/None) to a UTC ISO string, or None.
+
+    UTC ISO strings sort chronologically, so callers can string-compare them
+    against `metrics.ts` etc. Returns None for missing/unparseable input."""
+    if ts is None:
+        return None
+    from datetime import datetime, timezone
+    try:
+        return datetime.fromtimestamp(float(ts), timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
 
 
 _git = git_run  # local alias for terseness inside this module
@@ -387,6 +402,10 @@ class SessionManager:
             "WHERE id=? AND session_node_id IS NULL",
             (self._current_node_id, exp_id),
         )
+        # Group the run under a study named after the session, so the runs from
+        # one session stay grouped even after the session itself is deleted
+        # (the session_node_id link is cleared on purge, but the study persists).
+        _group_run_into_session_study(conn, exp_id, self.session_id)
         conn.commit()
         self._auto_linked_run_id = exp_id
 
@@ -582,6 +601,7 @@ class SessionManager:
             "UPDATE experiments SET session_node_id=? WHERE id=?",
             (self._current_node_id, exp_id),
         )
+        _group_run_into_session_study(conn, exp_id, self.session_id)
         conn.commit()
         if label:
             self.append_to_current_note(f"promoted: {label}")
@@ -717,13 +737,58 @@ def _trash_node_images(conn, node_ids: list[str]) -> dict[str, int]:
     return counts
 
 
-def delete_session(session_id: str) -> bool:
-    """Delete a session and all its nodes. Linked experiments are preserved
-    with their session_node_id cleared. Returns True if a session was deleted."""
+def _session_study_name(conn, session_id: str) -> str | None:
+    """The study a session's runs are grouped under — its name (or a short id
+    fallback). Single source so autolink / materialize / finalize agree."""
+    row = conn.execute(
+        "SELECT name FROM sessions WHERE id=?", (session_id,),
+    ).fetchone()
+    if not row:
+        return None
+    name = (row["name"] or "").strip()
+    return name or f"session {session_id[:8]}"
+
+
+def _group_run_into_session_study(conn, exp_id: str, session_id: str) -> None:
+    """Add an experiment to its session's study (best-effort, no commit).
+
+    The grouping is what survives session deletion: once a run carries the
+    study, it stays grouped in the dashboard/table even after the session and
+    its node links are gone."""
+    if not exp_id or not session_id:
+        return
+    study = _session_study_name(conn, session_id)
+    if not study:
+        return
+    try:
+        from ..core.queries import add_to_study
+        add_to_study(conn, exp_id, study)
+    except Exception as e:
+        debug_log(f"could not group run {exp_id[:8]} into session study: {e}")
+
+
+def delete_session(session_id: str, *, permanent: bool = False) -> bool:
+    """Soft-delete (Trash) a session, or permanently purge it.
+
+    Default (``permanent=False``) sets ``sessions.deleted_at`` so the session
+    drops out of the live list but is fully recoverable via
+    :func:`restore_session` — nodes and linked experiments are left untouched.
+
+    ``permanent=True`` hard-deletes the session and all its nodes; linked
+    experiments are preserved with their ``session_node_id`` cleared (the
+    session study, if any, keeps them grouped). Returns True if a session was
+    found."""
     conn = get_db()
     row = conn.execute("SELECT id FROM sessions WHERE id=?", (session_id,)).fetchone()
     if not row:
         return False
+    if not permanent:
+        conn.execute(
+            "UPDATE sessions SET deleted_at=? WHERE id=? AND deleted_at IS NULL",
+            (time.time(), session_id),
+        )
+        conn.commit()
+        return True
     conn.execute(
         "UPDATE experiments SET session_node_id=NULL "
         "WHERE session_node_id IN (SELECT id FROM session_nodes WHERE session_id=?)",
@@ -733,6 +798,197 @@ def delete_session(session_id: str) -> bool:
     conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
     conn.commit()
     return True
+
+
+def restore_session(session_id: str) -> bool:
+    """Undo a soft-delete: clear ``sessions.deleted_at``. Returns True if a
+    trashed session was restored."""
+    conn = get_db()
+    cur = conn.execute(
+        "UPDATE sessions SET deleted_at=NULL "
+        "WHERE id=? AND deleted_at IS NOT NULL",
+        (session_id,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def purge_session(session_id: str) -> bool:
+    """Permanently remove a *trashed* session (hard delete). Refuses a session
+    that isn't already in the Trash, so true removal is always a deliberate
+    trash → purge two-step (matching node purge / experiment delete)."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id FROM sessions WHERE id=? AND deleted_at IS NOT NULL",
+        (session_id,),
+    ).fetchone()
+    if not row:
+        return False
+    return delete_session(session_id, permanent=True)
+
+
+def list_trashed_sessions(conn=None) -> list[dict[str, Any]]:
+    """Every soft-deleted session, most recently trashed first, with the node /
+    promoted-run counts the unified Trash view shows. Backs the Sessions section
+    of the global Trash."""
+    conn = conn or get_db()
+    rows = conn.execute(
+        "SELECT s.id, s.name, s.status, s.created_at, s.deleted_at, "
+        "  COUNT(DISTINCT n.id) AS nodes, "
+        "  COUNT(DISTINCT e.id) AS promoted "
+        "FROM sessions s "
+        "LEFT JOIN session_nodes n ON n.session_id = s.id AND n.deleted_at IS NULL "
+        "LEFT JOIN experiments e ON e.session_node_id = n.id AND e.deleted_at IS NULL "
+        "WHERE s.deleted_at IS NOT NULL "
+        "GROUP BY s.id "
+        "ORDER BY s.deleted_at DESC",
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def finalize_session_preview(session_id: str) -> dict[str, Any]:
+    """Describe what `finalize_session` would graduate, for an interactive
+    confirm UI.
+
+    Returns each non-root, non-trashed node with its lineage, cell count, and
+    whether it's *already* promoted to an experiment (`linked_exp`) or still
+    un-promoted (`recommended` to materialize). The dashboard shows these as a
+    checklist so the user can pick which exploratory nodes become standalone
+    experiments before the session is archived."""
+    conn = get_db()
+    s = conn.execute(
+        "SELECT id, name, status FROM sessions "
+        "WHERE id=? AND deleted_at IS NULL",
+        (session_id,),
+    ).fetchone()
+    if not s:
+        return {"ok": False, "error": "session not found"}
+    sep = SessionManager._CELL_SEPARATOR
+    rows = conn.execute(
+        "SELECT id, node_type, label, cell_source "
+        "FROM session_nodes "
+        "WHERE session_id=? AND deleted_at IS NULL AND node_type!='root' "
+        "ORDER BY seq",
+        (session_id,),
+    ).fetchall()
+    # One pass to map each node → its linked run (avoids a SELECT per node).
+    linked_by_node = {
+        r["session_node_id"]: r["id"]
+        for r in conn.execute(
+            "SELECT e.id, e.session_node_id FROM experiments e "
+            "JOIN session_nodes n ON n.id = e.session_node_id "
+            "WHERE n.session_id=? AND e.deleted_at IS NULL",
+            (session_id,),
+        ).fetchall()
+    }
+    nodes: list[dict[str, Any]] = []
+    for r in rows:
+        linked_exp = linked_by_node.get(r["id"])
+        src = r["cell_source"] or ""
+        cell_count = len([c for c in src.split(sep) if c.strip()]) if src else 0
+        nodes.append({
+            "id": r["id"],
+            "label": r["label"] or "",
+            "node_type": r["node_type"],
+            "lineage": _node_lineage_labels(conn, r["id"]),
+            "linked_exp": linked_exp,
+            "cell_count": cell_count,
+            # Recommend materializing an un-promoted node that actually ran code.
+            "recommended": linked_exp is None and cell_count > 0,
+        })
+    return {
+        "ok": True,
+        "session": {"id": s["id"], "name": s["name"], "status": s["status"]},
+        "study": _session_study_name(conn, session_id),
+        "nodes": nodes,
+        "linked_count": sum(1 for n in nodes if n["linked_exp"]),
+        "recommended_count": sum(1 for n in nodes if n["recommended"]),
+    }
+
+
+def finalize_session(session_id: str, node_ids: list[str] | None = None, *,
+                     study: str | None = None,
+                     soft_delete: bool = True) -> dict[str, Any]:
+    """Graduate a session into self-contained, grouped experiments.
+
+    For each selected un-promoted node (``node_ids``; defaults to every
+    recommended node from :func:`finalize_session_preview`) a standalone
+    experiment is materialized (full code, %%setup, plots — see
+    :func:`materialize_experiment`). Every experiment linked to the session —
+    the freshly materialized ones *and* any already-promoted runs — is added to
+    a study named after the session (override with ``study``) so they stay
+    grouped permanently. When ``soft_delete`` is true the session is then moved
+    to the Trash (recoverable). Returns a summary dict."""
+    conn = get_db()
+    s = conn.execute(
+        "SELECT id, name FROM sessions WHERE id=? AND deleted_at IS NULL",
+        (session_id,),
+    ).fetchone()
+    if not s:
+        return {"ok": False, "error": "session not found"}
+    study_name = (study or "").strip() or _session_study_name(conn, session_id)
+
+    # Resolve which nodes to materialize. Default = the recommended set:
+    # un-promoted, non-root nodes that actually ran code (matches the
+    # `recommended` flag in finalize_session_preview, without rebuilding it).
+    if node_ids is None:
+        sep = SessionManager._CELL_SEPARATOR
+        node_ids = [
+            r["id"] for r in conn.execute(
+                "SELECT n.id, n.cell_source FROM session_nodes n "
+                "WHERE n.session_id=? AND n.deleted_at IS NULL "
+                "AND n.node_type!='root' AND NOT EXISTS ("
+                "  SELECT 1 FROM experiments e "
+                "  WHERE e.session_node_id=n.id AND e.deleted_at IS NULL)",
+                (session_id,),
+            ).fetchall()
+            if any(c.strip() for c in (r["cell_source"] or "").split(sep))
+        ]
+
+    materialized: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+    for nid in node_ids:
+        res = materialize_experiment(nid)
+        if res.get("ok"):
+            materialized.append({"node_id": nid, "exp_id": res["id"],
+                                 "name": res.get("name", "")})
+        elif res.get("id"):
+            # Already linked — not an error, just nothing to do.
+            continue
+        else:
+            errors.append({"node_id": nid, "error": res.get("error", "failed")})
+
+    # Group *every* experiment tied to this session under the study (idempotent),
+    # covering already-promoted runs and any just materialized above.
+    exp_ids = [r["id"] for r in conn.execute(
+        "SELECT e.id FROM experiments e "
+        "JOIN session_nodes n ON n.id = e.session_node_id "
+        "WHERE n.session_id=? AND e.deleted_at IS NULL",
+        (session_id,),
+    ).fetchall()]
+    grouped = 0
+    if study_name:
+        from ..core.queries import add_to_study
+        for eid in exp_ids:
+            try:
+                add_to_study(conn, eid, study_name)
+                grouped += 1
+            except Exception:
+                pass
+    conn.commit()
+
+    deleted = False
+    if soft_delete:
+        deleted = delete_session(session_id)
+
+    return {
+        "ok": True,
+        "study": study_name,
+        "materialized": materialized,
+        "errors": errors,
+        "grouped": grouped,
+        "deleted": deleted,
+    }
 
 
 def _collect_descendants(conn, node_id: str, *,
@@ -995,11 +1251,16 @@ def link_experiment(node_id: str, exp_id: str) -> dict[str, Any]:
     ).fetchone()
     if not erow:
         return {"ok": False, "error": "experiment not found"}
+    srow = conn.execute(
+        "SELECT session_id FROM session_nodes WHERE id=?", (node_id,),
+    ).fetchone()
     _detach_experiments(conn, [node_id])
     conn.execute(
         "UPDATE experiments SET session_node_id=? WHERE id=?",
         (node_id, erow["id"]),
     )
+    if srow:
+        _group_run_into_session_study(conn, erow["id"], srow["session_id"])
     conn.commit()
     return {"ok": True, "linked": erow["id"]}
 
@@ -1041,10 +1302,12 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
     This is the dashboard equivalent of `%exptrack promote` for a node that has
     no live notebook run behind it: it turns an exploratory branch/checkpoint
     into a first-class experiment by copying the node's name (label), git
-    commit/diff, branch, and note, and replaying its recorded cells as
-    `cell_exec` timeline events so the run's Timeline shows the code + output.
-    Refuses the root and trashed nodes, and refuses a node that already has a
-    linked run (returns the existing id)."""
+    commit/diff, branch, and note, and replaying the node's **whole ancestor
+    chain** of cells (root → … → node) as `cell_exec` timeline events — so the
+    run carries the upstream setup code (imports, data prep, helper defs) it
+    depends on and is self-contained / re-runnable, not just the node's own
+    fragment. Refuses the root and trashed nodes, and refuses a node that
+    already has a linked run (returns the existing id)."""
     conn = get_db()
     row = conn.execute(
         "SELECT n.*, s.git_branch AS sess_branch, s.name AS sess_name "
@@ -1075,13 +1338,7 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     # Backdate created_at to when the node ran (it's a unix float) so the run
     # sorts with the work it came from; updated_at stays "now".
-    created_at = now
-    if row["created_at"]:
-        try:
-            created_at = datetime.fromtimestamp(
-                float(row["created_at"]), timezone.utc).isoformat()
-        except (ValueError, OSError, OverflowError):
-            pass
+    created_at = _unix_to_iso(row["created_at"]) or now
     name = (row["label"] or "").strip() or f"{row['sess_name'] or 'session'} node"
     # Dedup the git diff by hash like the canonical save path does, so a node's
     # diff doesn't get a second inline copy in the experiments row.
@@ -1115,10 +1372,14 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
          notes, "[]", "[]", node_id, 0),
     )
 
-    # Replay the node's cells as cell_exec timeline events (source + output) so
-    # the materialized run is browsable on its own, not just a metadata stub.
-    # %%setup prep cells are replayed first as muted `setup` events so the code
-    # that built referenced vars/frames stays with the run.
+    # Replay cells as cell_exec timeline events (source + output) so the
+    # materialized run is browsable AND re-runnable on its own — not just a
+    # metadata stub. We replay the node's whole ANCESTOR CHAIN (root → … →
+    # node), not only the node's own cells: a branch cell like
+    # `run_pipeline(data, threshold)` needs the upstream cells that defined
+    # `run_pipeline`/`data` to make sense, so a self-contained experiment must
+    # carry them. %%setup prep cells of each ancestor are replayed (as muted
+    # `setup` events) right before that ancestor's code.
     #
     # Each cell's FULL source is also written to the content-addressed
     # `cell_lineage` table and the event's `cell_hash` set to point at it, so the
@@ -1126,40 +1387,44 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
     # — otherwise only the first-line preview survives the promotion and the
     # session code isn't really transitioned over (you can't retrace/rerun it).
     from ..capture.cell_lineage import cell_hash as _cell_hash
+    SEP = SessionManager._CELL_SEPARATOR
     seq = 0
+    cell_pos = 0
+    setup_pos = 0
     # tuple shape: (exp_id, seq, event_type, cell_hash, cell_pos, key, value, ts)
     events: list[tuple] = []
     lineage_rows: list[tuple] = []  # (cell_hash, notebook, source, parent_hash, created_at)
     notebook = (row["sess_name"] or "session")
-    setup_src = row["setup_source"] or ""
-    setup_cells = (setup_src.split(SessionManager._CELL_SEPARATOR)
-                   if setup_src else [])
-    setup_outs = ((row["setup_outputs"] or "").split(SessionManager._CELL_SEPARATOR)
-                  if row["setup_outputs"] else [])
-    for i, c in enumerate(setup_cells):
-        # Setup cells render their full source inline (no view-source button), so
-        # they don't need a cell_lineage row — store_preview carries the source.
-        events.append(
-            (exp_id, seq, "setup", None, None, f"setup_{i + 1}",
-             json.dumps({"source_preview": c,
-                         "output_preview": (setup_outs[i] if i < len(setup_outs) else "").strip()}),
-             now))
-        seq += 1
 
-    src = row["cell_source"] or ""
-    cells = src.split(SessionManager._CELL_SEPARATOR) if src else []
-    outs = ((row["cell_outputs"] or "").split(SessionManager._CELL_SEPARATOR)
-            if row["cell_outputs"] else [])
-    for i, c in enumerate(cells):
-        ch = _cell_hash(c) if c.strip() else None
-        if ch:
-            lineage_rows.append((ch, notebook, c, None, now))
-        events.append(
-            (exp_id, seq, "cell_exec", ch, i + 1, f"cell_{i + 1}",
-             json.dumps({"source_preview": c,
-                         "output_preview": (outs[i] if i < len(outs) else "").strip()}),
-             now))
-        seq += 1
+    def _split(blob):
+        return blob.split(SEP) if blob else []
+
+    for anc in _node_ancestor_chain(conn, node_id):
+        setup_cells = _split(anc["setup_source"])
+        setup_outs = _split(anc["setup_outputs"])
+        for i, c in enumerate(setup_cells):
+            setup_pos += 1
+            # Setup cells render their full source inline (no view-source
+            # button), so they don't need a cell_lineage row.
+            events.append(
+                (exp_id, seq, "setup", None, None, f"setup_{setup_pos}",
+                 json.dumps({"source_preview": c,
+                             "output_preview": (setup_outs[i] if i < len(setup_outs) else "").strip()}),
+                 now))
+            seq += 1
+        cells = _split(anc["cell_source"])
+        outs = _split(anc["cell_outputs"])
+        for i, c in enumerate(cells):
+            ch = _cell_hash(c) if c.strip() else None
+            if ch:
+                lineage_rows.append((ch, notebook, c, None, now))
+            cell_pos += 1
+            events.append(
+                (exp_id, seq, "cell_exec", ch, cell_pos, f"cell_{cell_pos}",
+                 json.dumps({"source_preview": c,
+                             "output_preview": (outs[i] if i < len(outs) else "").strip()}),
+                 now))
+            seq += 1
     if lineage_rows:
         # Content-addressed: cell_hash is the PK, so OR IGNORE dedups a cell that
         # already exists from a live capture or another promoted node.
@@ -1198,8 +1463,95 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
                 art_rows,
             )
 
+    # Attribute the session's metrics to this node by execution window. A
+    # notebook session has ONE live auto-run that all `metric()` calls log into
+    # (steps/ts but no node tag), so a materialized branch otherwise has the
+    # code but not its own accuracy/loss. We copy the live run's metrics whose
+    # timestamp falls in [this node's created_at, the next node's created_at) —
+    # i.e. the metrics logged while this branch's cells were running — so each
+    # graduated experiment is self-contained for comparison too.
+    _copy_node_window_metrics(conn, row, exp_id)
+
+    # Group the new run under the session's study so it stays with its siblings
+    # (and survives the session being deleted).
+    _group_run_into_session_study(conn, exp_id, row["session_id"])
     conn.commit()
     return {"ok": True, "id": exp_id, "name": name}
+
+
+def _copy_node_window_metrics(conn, node_row, new_exp_id: str) -> int:
+    """Copy the session's live-run metrics that were logged while this node's
+    cells ran (ts in [node.created_at, next node's created_at)) onto the newly
+    materialized run. Best-effort, returns the number copied.
+
+    Notebook sessions log every `metric()` into one auto-created run; this
+    re-attributes those points to the branch/checkpoint they belong to so a
+    graduated experiment carries its own metrics, not just its code."""
+    try:
+        lower = float(node_row["created_at"])
+    except (TypeError, ValueError):
+        return 0
+    session_id = node_row["session_id"]
+    nxt = conn.execute(
+        "SELECT MIN(created_at) AS c FROM session_nodes "
+        "WHERE session_id=? AND deleted_at IS NULL AND created_at > ?",
+        (session_id, lower),
+    ).fetchone()
+    lower_iso = _unix_to_iso(lower)
+    upper_iso = _unix_to_iso(nxt["c"]) if nxt else None
+    # Pull from every run linked to this session (the live auto-run), except the
+    # run we're building. Window-filter on the ISO ts (UTC ISO sorts chronologically).
+    rows = conn.execute(
+        "SELECT m.key, m.value, m.step, m.ts, m.source FROM metrics m "
+        "JOIN experiments e ON e.id = m.exp_id "
+        "JOIN session_nodes n ON n.id = e.session_node_id "
+        "WHERE n.session_id=? AND e.deleted_at IS NULL AND e.id != ? "
+        "AND m.ts >= ? AND (? IS NULL OR m.ts < ?)",
+        (session_id, new_exp_id, lower_iso, upper_iso, upper_iso),
+    ).fetchall()
+    if not rows:
+        return 0
+    conn.executemany(
+        "INSERT INTO metrics (exp_id, key, value, step, ts, source) "
+        "VALUES (?,?,?,?,?,?)",
+        [(new_exp_id, r["key"], r["value"], r["step"], r["ts"],
+          r["source"] or "auto") for r in rows],
+    )
+    return len(rows)
+
+
+def _node_ancestor_chain(conn, node_id: str) -> list:
+    """Return the node rows from root → … → node (inclusive, oldest first).
+
+    A materialized experiment must be *self-contained* — runnable on its own.
+    A branch cell like ``threshold = 0.7; run_pipeline(data, threshold)`` is
+    meaningless without the ancestor cells that defined ``run_pipeline`` and
+    ``data`` (typically on the session root / an upstream checkpoint). So
+    materialization replays the whole ancestor chain's code, not just the
+    node's own cells. Trashed ancestors are skipped."""
+    # Fetch the node's whole (live) session in one query, then walk parent_id
+    # pointers in memory — avoids a SELECT per hop (which `finalize` would
+    # multiply across every materialized node).
+    by_id = {
+        r["id"]: r
+        for r in conn.execute(
+            "SELECT id, parent_id, node_type, label, setup_source, setup_outputs, "
+            "cell_source, cell_outputs FROM session_nodes "
+            "WHERE session_id = (SELECT session_id FROM session_nodes WHERE id=?) "
+            "AND deleted_at IS NULL",
+            (node_id,),
+        ).fetchall()
+    }
+    chain: list = []
+    seen: set[str] = set()
+    cur = node_id
+    while cur and cur not in seen and cur in by_id:
+        seen.add(cur)
+        r = by_id[cur]
+        chain.append(r)
+        cur = r["parent_id"]
+    chain.reverse()
+    return chain
 
 
 def _node_lineage_labels(conn, node_id: str) -> list[str]:

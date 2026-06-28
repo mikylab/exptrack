@@ -201,7 +201,10 @@ exptrack session show <id|name>         # ASCII tree (above)
 exptrack session nodes <id|name>        # flat node list (for scripting)
 exptrack session note <node_id> "..."   # annotate after the fact
 exptrack session rename-node <n> "..."  # rename a node's label
-exptrack session rm <id|name>           # delete session (hard); linked exps preserved
+exptrack session finalize <id|name>     # graduate → experiments + study, then Trash
+exptrack session rm <id|name>           # → Trash (soft); --permanent to purge
+exptrack session restore <id|name>      # bring a trashed session back
+exptrack session purge <id|name>        # delete a trashed session FOR GOOD (no undo)
 
 # Per-node trash (soft delete) and recovery
 exptrack session rm-node <node_id>      # → Trash (cascades to descendants)
@@ -212,13 +215,46 @@ exptrack session empty-trash <id|name>  # delete ALL trashed nodes FOR GOOD (no 
 ```
 
 In the dashboard, every session card in the `☰ Sessions` tab has a `×`
-button in its header that deletes the whole session (with a confirmation
-prompt).
+button in its header that moves the whole session to the Trash (with a
+confirmation prompt), and the session view has a `✓ Finalize` button.
+
+### Finishing a session: Finalize
+
+When you're done exploring, **Finalize** graduates the session into
+self-contained, grouped experiments so you know exactly what to re-run — then
+gets the session out of your way:
+
+- Each un-promoted node you select is **materialized** into a standalone
+  experiment (full cell code, `%%setup` prep, and by-reference plots), so the
+  code travels with the run and survives the session being deleted.
+- **Every** run tied to the session (the freshly materialized ones *and* any
+  already-promoted runs) is added to a **study named after the session**, so
+  they stay grouped in the sidebar/table.
+- The session is then **moved to the Trash** (recoverable), unless you opt to
+  keep it.
+
+The dashboard modal shows which nodes are already promoted vs. un-promoted and
+lets you pick which to materialize; `exptrack session finalize <id>` prints the
+same plan and prompts unless `-y` (`--keep` to skip the Trash step, `--study`
+to override the study name, `--node ID` to pick specific nodes).
+
+### Session ⇄ experiment grouping
+
+Even without Finalize, any run linked to a session (auto-linked notebook runs,
+`%exptrack promote`, dashboard promote/link) is automatically added to a study
+named after the session. The study lives on the experiment, not the session
+link, so a session's runs stay grouped together **even after the session is
+deleted**.
 
 ### Where deleted things go
 
 - **Deleting a whole session** (`session rm`, or the `×` on a session card)
-  is a **hard delete** — gone immediately, no trash.
+  is now a **soft delete** → the unified **Trash** (Settings → 🗑 Open Trash
+  has a **Sessions** section). Restore it, or `session purge` /
+  **Delete forever** to remove it permanently (`purge` refuses a non-trashed
+  session, so removal is a deliberate two-step). Use `session rm --permanent`
+  to skip the Trash and delete immediately. Either way, linked experiments are
+  preserved (and stay grouped under the session's study).
 - **Deleting a node/branch** (`rm-node`, or the hover-`×` on a tree node) is a
   **soft delete** → the per-session **Trash**. Restore it, or `purge-node` /
   `empty-trash` to remove it permanently. `purge`/`empty-trash` refuse
@@ -467,8 +503,9 @@ under 100 KB. Run `exptrack storage` to see the breakdown — there's a
 (`session_nodes.cell_source`, `session_nodes.git_diff`) under storage
 hotspots.
 
-To reclaim: `exptrack session rm <id>` deletes a whole session (linked
-experiments are preserved with their `session_node_id` cleared), or
+To reclaim: `exptrack session rm <id> --permanent` (or `session purge` after a
+soft delete) removes a whole session for good (linked experiments are preserved
+with their `session_node_id` cleared), or
 `exptrack session empty-trash <id>` clears just the trashed nodes. There's no
 need for `compact` here — even an active project's session data is tiny next
 to artifacts and notebook snapshots.
