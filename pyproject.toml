@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "exptrack"
-version = "1.35.0"
+version = "1.52.1"
 description = "Local-first ML experiment tracker — zero friction, zero cloud"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [{name = "Mikyla Bowen", email = "mikyla.bowen@colostate.edu"}]
 readme = "README.md"
@@ -16,7 +16,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -37,6 +36,12 @@ exptrack = "exptrack.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov", "ruff"]
+# The libraries exptrack monkey-patches. NOT required to run exptrack — the
+# package itself stays stdlib-only. Installing these is what un-skips the
+# capture tests (test_capture_matplotlib, test_capture_tensorboard, the
+# ndarray/DataFrame paths in test_variables), so CI can catch an upstream
+# change to a patched API instead of a user reporting it.
+integrations = ["matplotlib", "numpy", "pandas"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -68,8 +73,18 @@ ignore = [
     "B905",   # zip without strict= (needs 3.10+)
     "RUF012", # mutable class attributes (false positives on class-level constants)
     "SIM115", # open without context manager (intentional in __main__.py)
-    "RUF001", # ambiguous unicode (intentional × character in UI)
+    # Ambiguous-unicode: intentional throughout — the × character in UI
+    # strings, and set notation (∪) in comments describing the orphan sweep.
+    "RUF001", # ...in strings
+    "RUF002", # ...in docstrings
+    "RUF003", # ...in comments
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests unpack shared fixture tuples and often use only some of the elements
+# (e.g. `root, cp = _session(...)` where only cp is asserted on). Renaming
+# every one to _root buys nothing here.
+"tests/*" = ["RUF059"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["exptrack"]
@@ -80,3 +95,7 @@ quote-style = "double"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["exptrack*"]
+
+[tool.setuptools.package-data]
+"exptrack.dashboard.vendor" = ["*.js"]
+"exptrack.dashboard" = ["static/js/*.js", "static/css/*.css"]

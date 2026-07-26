@@ -78,6 +78,13 @@ def main(resume=None):
         print(f"[exptrack] Error: {script_path} is not a file")
         sys.exit(1)
 
+    # Build a reproducible command for the Reproduce box BEFORE we mutate argv.
+    # sys.argv[1] is the script (resolved to an absolute path above), sys.argv[2:]
+    # its args. Store the plain, runnable form — `python <abs-path> <args>` — so
+    # the dashboard shows a real command with an interpreter, not the bare script
+    # basename that _build_command() would produce once argv[0] becomes the script.
+    run_command = " ".join(["python", str(script_path), *sys.argv[2:]])
+
     # Strip 'exptrack' from argv so the script sees its own args
     sys.argv = sys.argv[1:]
 
@@ -87,6 +94,7 @@ def main(resume=None):
         capture_script_snapshot,
         patch_argparse,
         patch_savefig,
+        patch_tensorboard,
     )
     from .core import Experiment
 
@@ -108,7 +116,13 @@ def main(resume=None):
         else:
             exp = Experiment.resume(resume)
     else:
-        exp = Experiment(script=str(script_path), _caller_depth=0)
+        exp = Experiment(script=str(script_path), command=run_command, _caller_depth=0)
+
+    # Publish this run so a wrapped script that creates its OWN Experiment()
+    # (one written for plain `python script.py`) adopts it instead of spawning a
+    # redundant second run for the same script. See core.experiment for details.
+    from .core.experiment import publish_run_wrapper
+    publish_run_wrapper(exp)
 
     # Snapshot the script source and diff against previous runs
     capture_script_snapshot(exp, str(script_path))
@@ -123,6 +137,11 @@ def main(resume=None):
 
     # Patch matplotlib.savefig so saved plots auto-register as artifacts
     patch_savefig(exp)
+
+    # Patch TensorBoard's SummaryWriter so scalars/losses/activation histograms
+    # logged during training mirror into exptrack's metrics automatically
+    if conf.get("auto_capture", {}).get("tensorboard", True):
+        patch_tensorboard(exp)
 
     # Record start time for auto-detecting new output files
     start_ts = exp._start
@@ -166,14 +185,21 @@ def main(resume=None):
             init_globals={"__exptrack__": exp},  # script can access via globals()
         )
         _restore_streams(log_files)
-        _auto_detect_outputs(exp, start_ts)
-        exp.finish()
+        # A self-tracking script may have adopted this run and already finished
+        # it (its own `with Experiment()` block, or an explicit finish); don't
+        # finish twice (Experiment.finish raises on a double-finish).
+        if not exp._finished:
+            _auto_detect_outputs(exp, start_ts)
+            exp.finish()
+        _maybe_trash_phantom_wrapper(exp, resume)
     except SystemExit as e:
         # Normal exit — treat code 0 as success
         if e.code == 0 or e.code is None:
             _restore_streams(log_files)
-            _auto_detect_outputs(exp, start_ts)
-            exp.finish()
+            if not exp._finished:
+                _auto_detect_outputs(exp, start_ts)
+                exp.finish()
+            _maybe_trash_phantom_wrapper(exp, resume)
             sys.exit(0)
         # Non-zero exit. A script (or a framework/library it uses) commonly
         # catches an exception and calls sys.exit(1); the real error is then
@@ -189,7 +215,10 @@ def main(resume=None):
             )
             sys.stderr.write(tb)
         _restore_streams(log_files)
-        exp.fail(f"SystemExit({e.code})", traceback=tb)
+        # If the script adopted this run and already finished it, leave that
+        # outcome in place rather than double-finishing (which would raise).
+        if not exp._finished:
+            exp.fail(f"SystemExit({e.code})", traceback=tb)
         sys.exit(e.code)
     except Exception as e:
         # Print the traceback BEFORE restoring streams so it tees into
@@ -199,7 +228,10 @@ def main(resume=None):
         tb = traceback.format_exc()
         traceback.print_exc()
         _restore_streams(log_files)
-        exp.fail(str(e), traceback=tb)
+        # If the script adopted this run and already finished it, leave that
+        # outcome in place rather than double-finishing (which would raise).
+        if not exp._finished:
+            exp.fail(str(e), traceback=tb)
         sys.exit(1)
     finally:
         # Restore sys.path[0] so exptrack's own imports aren't affected
@@ -225,6 +257,45 @@ def _find_latest_experiment(script_path: str):
               file=sys.stderr)
         return Experiment(script=script_path, _caller_depth=0)
     return Experiment.resume(row["id"])
+
+
+def _maybe_trash_phantom_wrapper(exp, resume):
+    """Soft-delete a metrics-less phantom wrapper left by a self-tracking sweep.
+
+    A script written for plain `python script.py` that builds its own
+    Experiment(s) with explicit identity (a param sweep, e.g.
+    ``Experiment(name=..., params=...)`` per iteration) doesn't adopt the
+    `exptrack run` wrapper — adopting would silently drop each run's distinct
+    name/params. Those runs get their own rows (correct), but the wrapper is
+    then left with the code snapshot and no metrics of its own: a phantom row
+    that clutters the experiment list and floods same-script comparisons.
+
+    When the wrapper saw such a foreign-built run AND logged no metrics itself,
+    move it to Trash (soft-delete — fully recoverable, no files touched). A
+    resumed run is never touched (it's a deliberate continuation), and a hybrid
+    wrapper that logged its own metrics is kept.
+    """
+    if resume or exp._adopted:
+        return
+    if not exp._had_foreign_child:
+        return
+    try:
+        from .core.db import get_db, trash_experiment
+        with get_db() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) AS n FROM metrics WHERE exp_id=?", (exp.id,)
+            ).fetchone()["n"]
+            if n:
+                return  # wrapper logged its own metrics — a real run, keep it
+            if trash_experiment(conn, exp.id):
+                conn.commit()
+                print(
+                    f"[exptrack] wrapper run {exp.id[:6]} logged no metrics of its own "
+                    "(the script created its own experiments) — moved to Trash",
+                    file=sys.stderr,
+                )
+    except Exception as e:
+        print(f"[exptrack] warning: could not trash phantom wrapper: {e}", file=sys.stderr)
 
 
 def _restore_streams(log_files):

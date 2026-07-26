@@ -10,7 +10,6 @@ from exptrack.capture.variables import (
     var_summary,
 )
 
-
 # ---------------------------------------------------------------------------
 # is_observational
 # ---------------------------------------------------------------------------
@@ -182,9 +181,20 @@ def test_extract_tuple():
     assert result["b"] == "1, 2"
 
 
-def test_extract_augmented_skip():
-    """Augmented assignments (+=) are NOT captured."""
-    assert extract_assignments("x += 1") == {}
+def test_extract_augmented():
+    """Augmented assignments (+=) ARE captured; the name is the LHS and the
+    RHS reconstructs as `name <op> value` so it reads as `x = x + 1`."""
+    assert extract_assignments("x += 1") == {"x": "x + 1"}
+    assert extract_assignments("total *= 2") == {"total": "total * 2"}
+    assert extract_assignments("acc **= 3") == {"acc": "acc ** 3"}
+
+
+def test_extract_augmented_not_observational():
+    """A cell doing an augmented assignment changes state, so it is not
+    observational."""
+    from exptrack.capture.variables import is_observational
+    assert is_observational("x += 1") is False
+    assert is_observational("counts[k] -= 1") is False
 
 
 def test_extract_comparison_skip():

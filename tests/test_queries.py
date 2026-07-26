@@ -52,6 +52,50 @@ def test_list_experiments(tmp_project, sample_experiment):
     assert results[0]["id"] == sample_experiment.id
 
 
+def test_list_experiments_offset_paginates(tmp_project):
+    """limit + offset page through experiments in created_at DESC order."""
+    import time
+
+    from exptrack.core import Experiment, get_db
+    from exptrack.core.queries import list_experiments
+
+    for i in range(5):
+        Experiment(script=f"s{i}.py").finish()
+        time.sleep(0.005)  # distinct created_at ordering
+
+    conn = get_db()
+    full = list_experiments(conn, limit=10)
+    assert len(full) == 5
+
+    page1 = list_experiments(conn, limit=2, offset=0)
+    page2 = list_experiments(conn, limit=2, offset=2)
+    page3 = list_experiments(conn, limit=2, offset=4)
+    assert [e["id"] for e in page1] == [e["id"] for e in full[:2]]
+    assert [e["id"] for e in page2] == [e["id"] for e in full[2:4]]
+    assert [e["id"] for e in page3] == [e["id"] for e in full[4:]]
+    # No overlap across pages.
+    ids = [e["id"] for e in page1 + page2 + page3]
+    assert len(set(ids)) == 5
+
+
+def test_api_experiments_offset_param(tmp_project):
+    """api_experiments threads the offset query param into list_experiments."""
+    import time
+
+    from exptrack.core import Experiment, get_db
+    from exptrack.dashboard.routes.read_routes import api_experiments
+
+    for i in range(3):
+        Experiment(script=f"r{i}.py").finish()
+        time.sleep(0.005)
+
+    conn = get_db()
+    first = api_experiments(conn, {"limit": "1", "offset": "0"})
+    second = api_experiments(conn, {"limit": "1", "offset": "1"})
+    assert len(first) == 1 and len(second) == 1
+    assert first[0]["id"] != second[0]["id"]
+
+
 def test_list_experiments_status_filter(tmp_project):
     """list_experiments filters by status."""
     from exptrack.core import Experiment, get_db
@@ -116,6 +160,7 @@ def test_format_export_params_flags(tmp_project, sample_experiment):
 def test_format_export_params_json(tmp_project, sample_experiment):
     """format_export_params(style='json') emits a JSON object."""
     import json as _json
+
     from exptrack.core import get_db
     from exptrack.core.queries import format_export_params, get_export_data
 
@@ -221,3 +266,70 @@ def test_get_experiment_detail_exposes_datasets(tmp_project):
     assert detail["datasets"] == manifest
     # the raw underscore param is not leaked into user params
     assert "_dataset_manifest" not in detail["params"]
+
+
+# ── Malformed tags/studies resilience ────────────────────────────────────────
+# A bare string or garbage in the tags/studies JSON columns used to raise out of
+# list_experiments and kill the whole request — the dashboard rendered an empty
+# table with no error while the stats cards still reported a run count.
+
+
+def test_json_list_salvages_bare_string():
+    """A bare, unquoted string becomes a one-element list rather than raising."""
+    from exptrack.core.queries import _json_list
+
+    assert _json_list('baseline') == ["baseline"]
+    assert _json_list('["a", "b"]') == ["a", "b"]
+    assert _json_list('"solo"') == ["solo"]
+
+
+def test_json_list_handles_empty_and_bad_types():
+    """Empty/None/garbage and non-list JSON all degrade to a list, never raise."""
+    from exptrack.core.queries import _json_list
+
+    assert _json_list(None) == []
+    assert _json_list("") == []
+    assert _json_list("[]") == []
+    assert _json_list("{bad") == ["{bad"]
+    assert _json_list("123") == []           # a number is not a label list
+    assert _json_list('{"k": 1}') == []      # an object is not a label list
+    # Non-string members are dropped rather than leaking into the UI.
+    assert _json_list('["ok", 5, null]') == ["ok"]
+
+
+def test_list_experiments_survives_malformed_tags(tmp_project, sample_experiment):
+    """One bad row must not blank the entire experiment list."""
+    from exptrack.core import get_db
+    from exptrack.core.queries import list_experiments
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE experiments SET tags='{bad', studies='oops' WHERE id=?",
+        (sample_experiment.id,),
+    )
+    conn.commit()
+
+    rows = list_experiments(conn)
+    assert len(rows) >= 1
+    row = next(r for r in rows if r["id"] == sample_experiment.id)
+    # Salvaged, not crashed — and still a list so the UI can render it.
+    assert row["tags"] == ["{bad"]
+    assert row["studies"] == ["oops"]
+
+
+def test_get_experiment_detail_survives_malformed_tags(tmp_project, sample_experiment):
+    """The detail view tolerates the same corruption as the list."""
+    from exptrack.core import get_db
+    from exptrack.core.queries import get_experiment_detail
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE experiments SET tags='nope', studies='{' WHERE id=?",
+        (sample_experiment.id,),
+    )
+    conn.commit()
+
+    detail = get_experiment_detail(conn, sample_experiment.id)
+    assert detail is not None
+    assert detail["tags"] == ["nope"]
+    assert detail["studies"] == ["{"]

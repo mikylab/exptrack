@@ -8,8 +8,8 @@ import sys
 import threading
 from typing import TYPE_CHECKING
 
-from .notebook_hooks import _nb_state
 from ..core.utils import debug_log
+from .notebook_hooks import _nb_state
 
 if TYPE_CHECKING:
     from ..core import Experiment

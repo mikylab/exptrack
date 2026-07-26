@@ -1,0 +1,13 @@
+{
+  "name": "exptrack-dashboard-lint",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only ESLint config for the exptrack dashboard JS. Python package stays stdlib-only; Node is not required to run exptrack.",
+  "scripts": {
+    "lint": "eslint exptrack/dashboard/static/js"
+  },
+  "devDependencies": {
+    "eslint": "^9.15.0"
+  }
+}

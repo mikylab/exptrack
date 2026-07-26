@@ -11,7 +11,7 @@ HTML_HEAD = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>exptrack</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="/vendor/chart.umd.min.js"></script>
 <style>
 """
 
@@ -297,8 +297,8 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
   <div id="exp-sidebar">
     <div class="sidebar-content">
       <div class="sidebar-header">
-        <input type="text" id="search-input" placeholder="Search name, params, tags…" oninput="searchQuery=this.value;renderExpList()">
-        <button class="collapse-btn" id="sidebar-group-study-btn" onclick="toggleSidebarStudyGroup()" title="Group by study">&#9783;</button>
+        <input type="text" id="search-input" placeholder="Search name, params, tags…" oninput="onSidebarSearch(this.value)">
+        <button class="collapse-btn" id="sidebar-group-btn" onclick="cycleSidebarGroupBy()" title="Group by study">&#9783;</button>
         <button class="collapse-btn" onclick="toggleSidebar()" title="Collapse sidebar">&#8249;</button>
       </div>
       <div class="status-chips" id="status-chips"></div>
@@ -317,7 +317,7 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
     <div id="welcome-state">
       <div class="stats" id="stats"></div>
       <div class="table-toolbar">
-        <input type="text" id="main-search" class="main-search-input" placeholder="Search name, params, tags, notes…" oninput="searchQuery=this.value;renderExperiments();renderExpList()">
+        <input type="text" id="main-search" class="main-search-input" placeholder="Search name, params, tags, notes…" oninput="onMainSearch(this.value)">
         <div class="toolbar-btn-group">
           <button class="toolbar-btn compare-main-btn" onclick="showCompareView()" title="Compare two experiments">&#x2194; Compare</button>
           <button class="toolbar-btn" onclick="toggleManageDrawer()" title="Manage tags &amp; studies">&#x2699; Manage</button>
@@ -326,24 +326,40 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
         <div class="tag-filter-bar" id="filter-bar"></div>
       </div>
       <div class="group-bar" id="group-bar">
-        <span>Group by:</span>
-        <button data-group="git_commit" onclick="setGroup('git_commit')" class="active">Git Commit</button>
-        <button data-group="git_branch" onclick="setGroup('git_branch')">Branch</button>
-        <button data-group="status" onclick="setGroup('status')">Status</button>
-        <button data-group="day" onclick="setGroup('day')">Day</button>
-        <button data-group="study" onclick="setGroup('study')">Study</button>
-        <button data-group="" onclick="setGroup('')">None</button>
-        <span style="margin-left:12px;border-left:1px solid var(--border);padding-left:12px;color:var(--muted)">Show:</span>
-        <button data-range="" onclick="setDateRange('')" class="active">All time</button>
-        <button data-range="today" onclick="setDateRange('today')">Today</button>
-        <button data-range="7d" onclick="setDateRange('7d')">7d</button>
-        <button data-range="30d" onclick="setDateRange('30d')">30d</button>
-        <span style="margin-left:12px;border-left:1px solid var(--border);padding-left:12px" class="highlight-toggle">
+        <!-- Each label stays glued to its own control (.gb-group is nowrap), so a
+             narrow window wraps between groups instead of orphaning a label from
+             the select it names. -->
+        <span class="gb-group">
+          <span>Group by:</span>
+          <select id="group-by-select" class="group-select" onchange="setGroup(this.value)" title="Group experiments by a field">
+            <option value="script">Script</option>
+            <option value="git_commit">Git Commit</option>
+            <option value="git_branch">Branch</option>
+            <option value="status">Status</option>
+            <option value="day">Day</option>
+            <option value="study">Study</option>
+            <option value="">None</option>
+          </select>
+        </span>
+        <span class="gb-group gb-sep">
+          <span class="gb-label">Show:</span>
+          <button data-range="" onclick="setDateRange('')" class="active">All time</button>
+          <button data-range="today" onclick="setDateRange('today')">Today</button>
+          <button data-range="7d" onclick="setDateRange('7d')">7d</button>
+          <button data-range="30d" onclick="setDateRange('30d')">30d</button>
+        </span>
+        <span class="gb-sep highlight-toggle">
           <label><input type="checkbox" id="auto-named-toggle" onchange="setAutoNamedOnly(this.checked)"> Needs naming <span class="auto-named-count" id="auto-named-count"></span></label>
+          <label style="margin-left:10px"><input type="checkbox" id="show-failed-toggle" onchange="setShowFailed(this.checked)"> Show failed <span class="auto-named-count" id="failed-count"></span></label>
           <label style="margin-left:10px"><input type="checkbox" id="highlight-toggle" onchange="toggleHighlightMode(this.checked)"> Highlight by study</label>
+        </span>
+        <span class="gb-group gb-sep">
+          <span class="gb-label">Sort by metric:</span>
+          <select id="metric-sort-select" onchange="setMetricSort(this.value)" title="Sort the table by a metric value"><option value="">—</option></select>
         </span>
         <span class="highlight-legend" id="highlight-legend"></span>
       </div>
+      <div id="trunc-notice" class="trunc-notice" style="display:none"></div>
       <div id="table-actions-bar" class="table-actions-bar" style="display:none"></div>
       <div class="col-settings-bar"><button class="col-settings-btn" onclick="toggleColumnSettings()" title="Show/hide columns">&#x2699; Columns</button><div class="col-settings-panel" id="col-settings-panel"></div></div>
       <div class="table-scroll-wrap"><table id="exp-table"><thead id="exp-thead"></thead><tbody id="exp-body"></tbody></table></div>
@@ -391,6 +407,13 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
       <div class="tabs" style="margin-bottom:12px">
         <button class="tab active" id="compare-pair-tab" onclick="switchCompareTab('pair')">Pair Compare</button>
         <button class="tab" id="compare-multi-tab" onclick="switchCompareTab('multi')">Multi Compare</button>
+      </div>
+      <!-- Auto-named runs are near-identical in a dropdown; narrow by name, id,
+           param value, status or date before picking. Shared by both tabs. -->
+      <div class="cmp-filter-row">
+        <input type="search" id="cmp-filter" class="cmp-filter" oninput="onCompareFilter()"
+               placeholder="Filter runs — name, id, param (lr=0.01), status, date">
+        <div id="cmp-trunc" class="trunc-notice cmp-trunc" style="display:none"></div>
       </div>
       <div id="compare-pair-content">
         <div class="compare-input">

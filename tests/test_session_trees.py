@@ -1,8 +1,6 @@
 """Tests for Session Trees: schema, SessionManager, tree rendering, scratch detection."""
 from __future__ import annotations
 
-import pytest
-
 
 def test_session_schema_tables_exist(db_conn):
     """Migration creates sessions and session_nodes tables."""
@@ -23,8 +21,8 @@ def test_experiments_has_session_node_id(db_conn):
 
 
 def test_session_manager_start_creates_root(tmp_project):
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sid = sm.start("explore-1", notebook="x.ipynb")
@@ -41,9 +39,9 @@ def test_session_manager_start_creates_root(tmp_project):
 
 
 def test_checkpoint_branch_promote_flow(tmp_project):
-    from exptrack.sessions import SessionManager
     from exptrack.core import Experiment
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("flow")
@@ -73,8 +71,8 @@ def test_branch_without_checkpoint_is_rejected(tmp_project):
 
 
 def test_session_end_marks_open_branches_abandoned(tmp_project):
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("end-test")
@@ -141,7 +139,7 @@ def test_scratch_cell_detection():
 
 
 def test_setup_cell_detection():
-    from exptrack.capture.session_hooks import is_setup_cell, is_scratch_cell
+    from exptrack.capture.session_hooks import is_scratch_cell, is_setup_cell
     assert is_setup_cell("%%setup\ndf = load()")
     assert is_setup_cell("\n\n%%setup\nbody")
     assert not is_setup_cell("print('hi')")
@@ -162,8 +160,8 @@ def test_session_nodes_has_setup_columns(db_conn):
 def test_record_setup_cell_stored_separately(tmp_project):
     """%%setup cells land in setup_source/outputs, never in cell_source, and
     keep their own segment alignment."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("s", "nb.ipynb")
@@ -199,14 +197,14 @@ def test_build_tree_exposes_setup_fields(tmp_project):
     sm.record_setup_cell("%%setup\ndf = 1", output="1")
     tree = build_tree(sid)
     cp = tree["root"]["children"][0]
-    assert "setup_source" in cp and cp["setup_source"]
+    assert cp.get("setup_source")
     assert "setup_outputs" in cp
 
 
 def test_promote_branch_to_checkpoint(tmp_project):
+    from exptrack.core.db import get_db
     from exptrack.sessions import SessionManager
     from exptrack.sessions.manager import promote_to_checkpoint
-    from exptrack.core.db import get_db
 
     sm = SessionManager()
     sm.start("s", "nb.ipynb")
@@ -229,9 +227,9 @@ def test_materialize_carries_setup_images_and_lineage(tmp_project, tmp_path):
     setup events), its by-reference plots (as artifacts), and a lineage
     breadcrumb in the notes, so the run can be traced back to its session
     context."""
+    from exptrack.core.db import get_db
     from exptrack.sessions import SessionManager
     from exptrack.sessions.manager import materialize_experiment
-    from exptrack.core.db import get_db
 
     # a real file so file_hash() succeeds and the artifact is registered
     img = tmp_path / "loss.png"
@@ -277,10 +275,10 @@ def test_materialize_stores_full_cell_source_for_view_source(tmp_project):
     cell_lineage row holding the whole cell, so the Timeline's "view source"
     can show + copy the code (not just the one-line preview) and the run is
     re-runnable. Regression test for sessions promoting with "no code"."""
-    from exptrack.sessions import SessionManager
-    from exptrack.sessions.manager import materialize_experiment
     from exptrack.capture.cell_lineage import get_cell_source
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import materialize_experiment
 
     sm = SessionManager()
     sm.start("explore", "nb.ipynb")
@@ -312,10 +310,10 @@ def test_materialize_stores_full_cell_source_for_view_source(tmp_project):
 def test_session_origin_surfaced_in_detail(tmp_project):
     """get_experiment_detail exposes session_origin so the dashboard can render
     the back-link from a linked experiment to its session node."""
-    from exptrack.sessions import SessionManager
-    from exptrack.sessions.manager import materialize_experiment
     from exptrack.core.db import get_db
     from exptrack.core.queries import get_experiment_detail
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import materialize_experiment
 
     sm = SessionManager()
     sm.start("explore", "nb.ipynb")
@@ -338,9 +336,9 @@ def test_session_origin_surfaced_in_detail(tmp_project):
 
 
 def test_autolink_run_links_once_and_respects_promote(tmp_project):
-    from exptrack.sessions import SessionManager
     from exptrack.core import Experiment
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("s", "nb.ipynb")
@@ -349,8 +347,9 @@ def test_autolink_run_links_once_and_respects_promote(tmp_project):
     sm.autolink_run(exp.id)
 
     conn = get_db()
-    link = lambda: conn.execute(
-        "SELECT session_node_id FROM experiments WHERE id=?", (exp.id,)).fetchone()[0]
+    def link():
+        return conn.execute(
+            "SELECT session_node_id FROM experiments WHERE id=?", (exp.id,)).fetchone()[0]
     assert link() == root
 
     # An explicit promote to a deeper node wins; a later autolink must not
@@ -390,9 +389,9 @@ def test_run_cell_body_displays_trailing_expression():
 
 def test_session_rm_preserves_experiments(tmp_project):
     """exptrack session rm clears session_node_id but keeps the experiment."""
-    from exptrack.sessions import SessionManager
     from exptrack.core import Experiment
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sid = sm.start("rm-test")
@@ -422,8 +421,8 @@ def test_session_rm_preserves_experiments(tmp_project):
 
 def test_record_cell_writes_to_current_node(tmp_project):
     """Cells run while a node is active are appended to that node's cell_source."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("live")
@@ -445,8 +444,8 @@ def test_branch_magic_inline_with_code(tmp_project):
         threshold = 0.7
     must record `threshold = 0.7` under branch X — the magic line on top
     should not cause the whole cell to be dropped."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("inline")
@@ -474,8 +473,8 @@ def test_branch_magic_alone_then_code_cells(tmp_project):
     """User's reported workflow: %exptrack branch "X" sits alone in its own
     cell. Cells run AFTER it (in their own cells, no inline magic) must each
     record under branch X — this is the most natural notebook pattern."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("alone")
@@ -497,8 +496,8 @@ def test_branch_magic_alone_then_code_cells(tmp_project):
 
 def test_pure_magic_cell_is_skipped(tmp_project):
     """A cell that's only %exptrack magics (and blanks) should not record."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("pure")
@@ -515,8 +514,8 @@ def test_pure_magic_cell_is_skipped(tmp_project):
 def test_branch_captures_cells_run_under_it(tmp_project):
     """User's reported bug: cells run AFTER `branch` should appear under
     that branch, not require a follow-up checkpoint to materialize."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("branchtest")
@@ -536,8 +535,8 @@ def test_branch_captures_cells_run_under_it(tmp_project):
 def test_branch_idempotent_by_label(tmp_project):
     """Re-running %exptrack branch "X" reuses the existing branch instead
     of creating a duplicate."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("idem")
@@ -575,8 +574,8 @@ def test_checkpoint_idempotent_by_label(tmp_project):
 def test_branch_reactivates_abandoned(tmp_project):
     """If session end abandoned a branch, re-declaring it with branch() flips
     it back to 'branch' (avoids losing the open exploration)."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sid = sm.start("revive")
@@ -606,8 +605,8 @@ def test_branch_reactivates_abandoned(tmp_project):
 
 
 def test_record_cell_skips_session_magics_and_dedupes(tmp_project):
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("magic")
@@ -632,10 +631,10 @@ def test_record_cell_skips_session_magics_and_dedupes(tmp_project):
 def test_dashboard_session_delete(tmp_project):
     """POST /api/session/<id>/delete soft-deletes (Trash) by default; restore
     brings it back; permanent=True hard-deletes while preserving linked exps."""
-    from exptrack.sessions import SessionManager
     from exptrack.core import Experiment
-    from exptrack.dashboard.routes import write_routes
     from exptrack.core.db import get_db
+    from exptrack.dashboard.routes import write_routes
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sid = sm.start("dash-del")
@@ -656,7 +655,7 @@ def test_dashboard_session_delete(tmp_project):
         "SELECT id FROM session_nodes WHERE session_id=?", (sid,),
     ).fetchone() is not None
     # It drops out of the live listing.
-    from exptrack.sessions.tree import list_sessions, find_session
+    from exptrack.sessions.tree import find_session, list_sessions
     assert all(s["id"] != sid for s in list_sessions())
     assert find_session(sid) is None
 
@@ -687,10 +686,9 @@ def test_dashboard_session_delete(tmp_project):
 def test_session_finalize(tmp_project):
     """finalize materializes un-promoted nodes, groups all runs under the
     session's study, and soft-deletes the session."""
-    from exptrack.sessions import SessionManager
-    from exptrack.sessions.manager import (
-        finalize_session, finalize_session_preview)
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import finalize_session, finalize_session_preview
 
     sm = SessionManager()
     sid = sm.start("graduate-me")
@@ -728,12 +726,13 @@ def test_materialize_folds_in_ancestor_code(tmp_project):
     its ancestor chain (root/checkpoint setup), not just its own fragment, so
     the run is re-runnable on its own."""
     import json
+
+    from exptrack.core.db import get_db
     from exptrack.sessions import SessionManager
     from exptrack.sessions.manager import materialize_experiment
-    from exptrack.core.db import get_db
 
     sm = SessionManager()
-    sid = sm.start("sens")
+    sm.start("sens")
     # Root: the shared setup (imports / helper defs / data).
     sm.record_cell("import random\ndef run_pipeline(d, t):\n    return [x for x in d if x>=t]\ndata=[0.1,0.9]", "")
     sm.checkpoint("after preprocessing")
@@ -764,10 +763,11 @@ def test_materialize_attributes_window_metrics(tmp_project):
     should pull the metrics logged *while that branch ran* (ts window) onto the
     branch experiment, so each graduated run carries its own numbers."""
     from datetime import datetime, timezone
+
     from exptrack.core import Experiment
+    from exptrack.core.db import get_db
     from exptrack.sessions import SessionManager
     from exptrack.sessions.manager import materialize_experiment
-    from exptrack.core.db import get_db
 
     sm = SessionManager()
     sid = sm.start("metric-attr")
@@ -813,9 +813,9 @@ def test_materialize_attributes_window_metrics(tmp_project):
 
 
 def test_dashboard_session_routes(tmp_project):
-    from exptrack.sessions import SessionManager
-    from exptrack.dashboard.routes import read_routes
     from exptrack.core.db import get_db
+    from exptrack.dashboard.routes import read_routes
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sid = sm.start("dash")
@@ -834,11 +834,13 @@ def test_dashboard_session_routes(tmp_project):
 
 
 def test_delete_node_cascades_to_descendants(tmp_project):
+    from exptrack.core.db import get_db
     from exptrack.sessions import SessionManager
     from exptrack.sessions.manager import (
-        delete_node, preview_node_delete, build_tree,
+        build_tree,
+        delete_node,
+        preview_node_delete,
     )
-    from exptrack.core.db import get_db
 
     sm = SessionManager()
     sid = sm.start("cascade")
@@ -894,9 +896,9 @@ def test_delete_node_refuses_root(tmp_project):
 
 
 def test_delete_node_preserves_linked_experiment(tmp_project):
+    from exptrack.core.db import get_db
     from exptrack.sessions import SessionManager
     from exptrack.sessions.manager import delete_node
-    from exptrack.core.db import get_db
 
     sm = SessionManager()
     sm.start("exp-preserve")
@@ -926,7 +928,10 @@ def test_delete_node_preserves_linked_experiment(tmp_project):
 def test_restore_node_brings_back_subtree(tmp_project):
     from exptrack.sessions import SessionManager
     from exptrack.sessions.manager import (
-        build_tree, delete_node, list_trashed_nodes, restore_node,
+        build_tree,
+        delete_node,
+        list_trashed_nodes,
+        restore_node,
     )
 
     sm = SessionManager()
@@ -976,7 +981,9 @@ def test_restore_node_revives_trashed_parent(tmp_project):
     back too — otherwise the child renders as an orphan."""
     from exptrack.sessions import SessionManager
     from exptrack.sessions.manager import (
-        build_tree, delete_node, restore_node,
+        build_tree,
+        delete_node,
+        restore_node,
     )
 
     sm = SessionManager()
@@ -1005,11 +1012,11 @@ def test_restore_node_revives_trashed_parent(tmp_project):
 
 def test_record_cell_captures_output_aligned(tmp_project):
     """cell_outputs stays segment-aligned with cell_source, refreshes on rerun."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
-    sid = sm.start("s", "nb.ipynb")
+    sm.start("s", "nb.ipynb")
     sm.checkpoint("c1")
     sm.record_cell("x = f(0.5)", output="{'acc': 0.98}")
     sm.record_cell("print(x)", output=None)        # no trailing-expr output
@@ -1031,8 +1038,8 @@ def test_record_cell_captures_output_aligned(tmp_project):
 
 def test_record_cell_rerun_refreshes_output(tmp_project):
     """Immediate re-run of the same cell refreshes its output, no duplicate."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("s", "nb.ipynb")
@@ -1052,7 +1059,7 @@ def test_record_cell_rerun_refreshes_output(tmp_project):
 
 def test_purge_node_requires_trashed(tmp_project):
     from exptrack.sessions import SessionManager
-    from exptrack.sessions.manager import purge_node, delete_node
+    from exptrack.sessions.manager import delete_node, purge_node
 
     sm = SessionManager()
     sm.start("s", "nb.ipynb")
@@ -1068,10 +1075,9 @@ def test_purge_node_requires_trashed(tmp_project):
 
 
 def test_purge_node_removes_row_for_good(tmp_project):
-    from exptrack.sessions import SessionManager
-    from exptrack.sessions.manager import (purge_node, delete_node,
-                                            list_trashed_nodes)
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import delete_node, list_trashed_nodes, purge_node
 
     sm = SessionManager()
     sid = sm.start("s", "nb.ipynb")
@@ -1088,8 +1094,7 @@ def test_purge_node_removes_row_for_good(tmp_project):
 
 def test_empty_trash_clears_only_trashed(tmp_project):
     from exptrack.sessions import SessionManager
-    from exptrack.sessions.manager import (empty_trash, delete_node,
-                                            list_trashed_nodes, build_tree)
+    from exptrack.sessions.manager import build_tree, delete_node, empty_trash, list_trashed_nodes
 
     sm = SessionManager()
     sid = sm.start("s", "nb.ipynb")
@@ -1115,10 +1120,10 @@ def test_empty_trash_clears_only_trashed(tmp_project):
 
 
 def test_purge_preserves_linked_experiment(tmp_project):
-    from exptrack.sessions import SessionManager
-    from exptrack.sessions.manager import purge_node, delete_node
     from exptrack.core import Experiment
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import delete_node, purge_node
 
     sm = SessionManager()
     sm.start("s", "nb.ipynb")
@@ -1140,8 +1145,8 @@ def test_branch_collision_forks_on_different_code(tmp_project):
     """Re-declaring an existing branch label and then running DIFFERENT code
     (the copy-paste-and-edit footgun) forks to a suffixed node instead of
     silently merging the two explorations."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("collide")
@@ -1172,8 +1177,8 @@ def test_branch_collision_forks_on_different_code(tmp_project):
 def test_branch_collision_merges_on_identical_rerun(tmp_project):
     """Re-running the same branch with the SAME first cell (a genuine Run-All)
     merges into the existing node — no spurious fork."""
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("rerun")
@@ -1192,9 +1197,9 @@ def test_branch_collision_merges_on_identical_rerun(tmp_project):
 
 
 def test_rename_node(tmp_project):
-    from exptrack.sessions import SessionManager
-    from exptrack.sessions.manager import rename_node, delete_node
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import delete_node, rename_node
 
     sm = SessionManager()
     sm.start("s")
@@ -1215,8 +1220,9 @@ def test_record_image_attaches_and_dedups(tmp_project):
     dedups by path (refreshing the label), and resolves to absolute."""
     import json
     from pathlib import Path
-    from exptrack.sessions import SessionManager
+
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sm.start("imgs")
@@ -1276,10 +1282,10 @@ def test_link_experiment_link_change_unlink(tmp_project):
     """Dashboard 'promote': link_experiment points a node at a run (1:1), can be
     re-targeted (detaching the prior run), and unlinks on a blank exp_id.
     Linking/unlinking never deletes the experiment row."""
-    from exptrack.sessions import SessionManager
-    from exptrack.sessions.manager import link_experiment
     from exptrack.core import Experiment
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import link_experiment
 
     sm = SessionManager()
     sm.start("link-flow")

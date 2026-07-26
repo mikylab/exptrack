@@ -1,6 +1,7 @@
-"""Tests for exptrack/capture/dataset.py — dataset detection + manifest capture."""
-from __future__ import annotations
+"""Tests for exptrack/core/dataset.py — dataset detection + manifest capture.
 
+(Imported here via the ``exptrack.capture.dataset`` back-compat shim.)"""
+from __future__ import annotations
 
 # ---------------------------------------------------------------------------
 # _looks_like_dataset
@@ -71,7 +72,7 @@ def test_build_manifest_selects_only_data_entries(tmp_path):
 
     file_entry = manifest["train_file"]
     assert file_entry["kind"] == "file"
-    assert "hash" in file_entry and file_entry["hash"]
+    assert file_entry.get("hash")
 
     dir_entry = manifest["data_dir"]
     assert dir_entry["kind"] == "dir"

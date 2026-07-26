@@ -12,12 +12,8 @@ which fails the security check in _serve_file.
 from __future__ import annotations
 
 import io
-import json
 import os
 import urllib.parse
-from pathlib import Path
-from unittest.mock import MagicMock
-
 
 # ── _rel_path helper ─────────────────────────────────────────────────────────
 
@@ -223,7 +219,7 @@ def _make_mock_handler(tmp_project):
     def mock_send_header(key, value):
         sent["headers"][key] = value
 
-    def mock_end_headers():
+    def mock_end_headers(csp=None):   # real end_headers takes an optional CSP
         pass
 
     def mock_send_error(code, msg=""):
@@ -239,7 +235,6 @@ def _make_mock_handler(tmp_project):
 
 def test_serve_file_with_relative_path(tmp_project):
     """_serve_file correctly serves a file given a relative path."""
-    from exptrack.dashboard.handler import DashboardHandler
 
     # Create a test image
     img_dir = tmp_project / "outputs" / "exp1"

@@ -103,7 +103,13 @@ def _trashed_experiments(conn) -> list[dict[str, Any]]:
 
 def _trashed_node_groups(conn) -> list[dict[str, Any]]:
     """Trashed session nodes grouped by their owning session, newest-deleted
-    session first. Each group is {session: {id, name, status}, nodes: [...]}."""
+    session first. Each group is
+    {session: {id, name, status, session_deleted}, nodes: [...]}.
+
+    ``session.session_deleted`` marks a group whose session is itself in the Trash (and
+    therefore also listed in the Sessions section). Restoring one of those nodes
+    on its own restores nothing visible, so the view says to restore the session
+    instead."""
     try:
         from ..sessions.manager import list_all_trashed_nodes
         nodes = list_all_trashed_nodes(conn)
@@ -119,6 +125,7 @@ def _trashed_node_groups(conn) -> list[dict[str, Any]]:
                     "id": sid,
                     "name": n.get("session_name") or "",
                     "status": n.get("session_status") or "",
+                    "session_deleted": bool(n.get("session_deleted")),
                 },
                 "nodes": [],
             }

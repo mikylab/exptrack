@@ -1,0 +1,101 @@
+
+  .timeline { padding: 0; margin: 16px 0; }
+  .tl-event { display: flex; gap: 12px; padding: 8px 12px; border-left: 3px solid var(--border); margin-left: 8px; font-size: 13px; position: relative; }
+  .tl-event:hover { background: var(--code-bg); }
+  .tl-event.tl-cell_exec { border-left-color: var(--tl-cell); border-left-width: 4px; }
+  .tl-event.tl-var_set { border-left-color: var(--tl-var); border-left-width: 4px; }
+  .tl-event.tl-artifact { border-left-color: var(--tl-artifact); border-left-width: 4px; }
+  .tl-event.tl-metric { border-left-color: var(--tl-metric); border-left-width: 4px; }
+  .tl-event.tl-observational { border-left-color: var(--tl-obs); border-left-width: 2px; opacity: 0.6; }
+  .tl-seq { color: var(--muted); min-width: 40px; font-size: 12px; cursor: help; }
+  .tl-cellpos { display: inline-block; font-size: 11px; color: var(--text-3); background: var(--surface-2); border-radius: var(--radius-sm); padding: 0 6px; margin-right: 6px; }
+  .tl-icon { min-width: 20px; text-align: center; font-weight: 600; }
+  .tl-body { flex: 1; }
+  .tl-code-preview { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: pre-wrap; }
+  .tl-diff { margin-top: 4px; font-size: 12px; }
+  .tl-diff .diff-add { color: var(--green); }
+  .tl-diff .diff-del { color: var(--red); }
+  .tl-diff-summary { color: var(--muted); font-style: italic; margin-bottom: 3px; }
+  .tl-badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px; margin-left: 6px; }
+  .tl-badge-new { background: var(--status-success-soft); color: var(--status-success); }
+  .tl-badge-edited { background: var(--status-warning-soft); color: var(--status-warning); }
+  .tl-badge-rerun { background: var(--surface-2); color: var(--muted); }
+  .tl-badge-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+  .tl-badge-link:hover { filter: brightness(0.95); }
+  .tl-var-arrow { color: var(--muted); }
+  .tl-context { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .tl-filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tl-filters button { font-family: inherit; font-size: 13px; background: var(--card-bg); border: 1px solid var(--border); padding: 5px 12px; cursor: pointer; border-radius: 4px; }
+  .tl-filters button:hover { background: var(--code-bg); }
+  .tl-filters button.active { background: var(--fg); color: var(--bg); }
+  .tl-compare-bar { background: var(--code-bg); padding: 12px 16px; margin-bottom: 12px; border-radius: 6px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; border: 1px solid var(--border); }
+  .tl-compare-bar button { font-family: inherit; font-size: 13px; background: var(--blue); color: #fff; border: none; padding: 6px 14px; cursor: pointer; border-radius: 4px; }
+  .tl-compare-bar button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .tl-compare-bar button.cw-clear { background: var(--muted); }
+  .cw-header h3 { font-size: 16px; margin-bottom: 4px; }
+  .cw-subtitle { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+  .cw-point { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 4px; background: var(--card-bg); border: 1px dashed var(--border); min-width: 140px; }
+  .cw-point.active { border-style: solid; }
+  .cw-point-a.active { border-color: var(--blue); background: var(--accent-soft); }
+  .cw-point-b.active { border-color: var(--purple); background: var(--compare-bg); }
+  .cw-point-label { font-weight: 700; font-size: 12px; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
+  .cw-point-a .cw-point-label { background: var(--blue); }
+  .cw-point-b .cw-point-label { background: var(--purple); }
+  .cw-point-desc { font-size: 12px; color: var(--fg); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cw-arrow { color: var(--muted); font-size: 18px; }
+  .cw-actions { display: flex; gap: 6px; margin-left: auto; }
+  .cw-badge { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; font-size: 10px; font-weight: 700; color: #fff; }
+  .cw-badge-a { background: var(--blue); }
+  .cw-badge-b { background: var(--purple); }
+  .cw-marker-a { border-left: 3px solid var(--blue) !important; }
+  .cw-marker-b { border-left: 3px solid var(--purple) !important; }
+  .tl-seq-select { cursor: pointer; }
+  .tl-seq-select:hover { background: var(--accent-soft); }
+  .tl-seq-select.selected { background: var(--accent-soft); outline: 2px solid var(--blue); }
+  .within-compare { background: var(--card-bg); border: 1px solid var(--border); padding: 20px; border-radius: 6px; margin-top: 16px; }
+  .within-compare h3 { font-size: 14px; margin-bottom: 12px; }
+  .cw-result-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .cw-result-point { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .cw-section-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .cw-change-count { font-size: 11px; font-weight: 400; color: var(--muted); }
+  .cw-filters { margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+  .cw-filters label { cursor: pointer; display: flex; align-items: center; gap: 4px; }
+  .cw-table { font-size: 12px; }
+  .cw-delta { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 3px; }
+  .cw-delta-up { color: var(--green); background: var(--status-success-soft); }
+  .cw-delta-down { color: var(--red); background: var(--status-danger-soft); }
+  .cw-delta-changed { color: var(--yellow); background: var(--status-warning-soft); }
+  .result-type-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; background: var(--code-bg); border: 1px solid var(--border); font-size: 12px; }
+  .source-view { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; font-size: 13px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; margin-top: 6px; }
+  .source-view .line-num { color: var(--muted); display: inline-block; min-width: 30px; text-align: right; margin-right: 12px; user-select: none; }
+  .view-source-btn { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; margin-left: 6px; color: var(--blue); }
+  .view-source-btn:hover { background: var(--code-bg); }
+  .tl-type-label { display: inline-block; font-size: var(--text-xs); padding: 1px 6px; border-radius: var(--radius-sm); margin-right: 6px; font-weight: 600; letter-spacing: 0.3px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
+  .tl-type-label.tl-type-cell_exec { background: var(--accent-soft); color: var(--tl-cell); border-color: transparent; }
+  .tl-type-label.tl-type-metric { background: var(--status-warning-soft); color: var(--tl-metric); border-color: transparent; }
+  .tl-type-label.tl-type-observational { color: var(--tl-obs); }
+  /* Timeline legend: a compact key so the icons + labels are never a mystery. */
+  .tl-legend { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); font-size: var(--text-xs); }
+  .tl-legend-title { color: var(--text-2); font-weight: 600; margin-right: var(--space-1); }
+  .tl-legend-item { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); }
+  .tl-legend-icon { font-family: var(--font-mono); font-weight: 600; min-width: 16px; text-align: center; }
+  .tl-legend-meaning { color: var(--text-3); }
+  .tl-legend-badges { margin-top: calc(-1 * var(--space-2)); gap: var(--space-2); }
+  .tl-legend-badges .tl-badge { margin-left: 0; cursor: default; }
+  /* Cell output ("Out") panel — print() stdout + trailing-expression repr.
+     Mirrors the Sessions tab's .cell-output so both views read the same. */
+  .tl-cell-output { margin-top: var(--space-2); }
+  .tl-out-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-3); margin: 0 0 2px;
+  }
+  .tl-out-pre {
+    font-family: var(--font-mono); font-size: 12px;
+    white-space: pre-wrap; word-break: break-word;
+    background: var(--code-bg); border: 1px solid var(--border);
+    /* Neutral bar — green/red/blue all carry meaning elsewhere (added/removed/
+       selected); cell output has no such semantics, so it stays neutral. */
+    border-left: 3px solid var(--border-strong);
+    border-radius: var(--radius-sm); padding: 6px 8px; margin: 0;
+    max-height: 220px; overflow: auto;
+  }

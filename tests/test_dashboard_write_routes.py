@@ -11,10 +11,6 @@ Routes take a sqlite3 connection as the first arg, so they're called directly.
 """
 from __future__ import annotations
 
-import io
-import sys
-from types import SimpleNamespace
-
 import pytest
 
 from exptrack.core import Experiment, get_db

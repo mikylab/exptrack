@@ -148,7 +148,7 @@ def test_dashed_long_flags_normalize_to_underscores(tmp_project):
     and also goes through the raw argv fallback ends up with both keys in its params.
     """
     import exptrack.capture.argparse_patch as ap_mod
-    from exptrack.capture.argparse_patch import capture_argv, patch_argparse
+    from exptrack.capture.argparse_patch import capture_argv
     from exptrack.core import Experiment
 
     ap_mod._patched = False
@@ -198,3 +198,51 @@ def test_no_duplicate_with_argparse_plus_argv(tmp_project):
     assert "batch-size" not in exp._params
 
     exp.finish()
+    ap_mod._patched = False
+
+
+def test_second_experiment_retargets_capture(tmp_project):
+    """A second experiment created in the same process (without resetting the
+    patch flag) must receive its own params — the hooks are installed once but
+    retarget to the currently active experiment on each patch_argparse() call.
+
+    Regression for M4: the old code closed over the first Experiment, so every
+    later run leaked its params onto exp1.
+    """
+    import exptrack.capture.argparse_patch as ap_mod
+    from exptrack.capture.argparse_patch import patch_argparse
+    from exptrack.core import Experiment
+
+    ap_mod._patched = False
+
+    # First run patches argparse and captures its own params.
+    exp1 = Experiment(script="train.py")
+    patch_argparse(exp1)
+    p1 = argparse.ArgumentParser()
+    p1.add_argument("--lr", type=float)
+    old_argv = sys.argv
+    sys.argv = ["train.py", "--lr", "0.1"]
+    try:
+        p1.parse_args()
+    finally:
+        sys.argv = old_argv
+    assert exp1._params.get("lr") == 0.1
+    exp1.finish()
+
+    # Second run: the class is ALREADY patched (do NOT reset _patched), yet its
+    # params must land on exp2, not exp1.
+    exp2 = Experiment(script="train.py")
+    patch_argparse(exp2)  # retargets without re-patching
+    p2 = argparse.ArgumentParser()
+    p2.add_argument("--lr", type=float)
+    sys.argv = ["train.py", "--lr", "0.9"]
+    try:
+        p2.parse_args()
+    finally:
+        sys.argv = old_argv
+
+    assert exp2._params.get("lr") == 0.9, "params must go to the active experiment"
+    assert exp1._params.get("lr") == 0.1, "earlier experiment must be untouched"
+
+    exp2.finish()
+    ap_mod._patched = False

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
-import sys
 from typing import TYPE_CHECKING
 
 from ..core.utils import debug_log
@@ -32,6 +31,27 @@ def capture_script_snapshot(exp: Experiment, script_path: str):
 
     src_hash = hashlib.md5(src.encode()).hexdigest()[:12]
     exp.log_param("_script_hash", src_hash)
+
+    # Store the full script source, content-addressed + deduped, so the code
+    # that ran is recoverable even when it was untracked / the project isn't a
+    # git repo / the diff was excluded. Never .ipynb (handled by cell records).
+    # Size-capped so a pathological file can't bloat the DB.
+    try:
+        conf = _cfg.load()
+        cap_kb = int(conf.get("snapshot_max_kb", 512))
+        if not str(script_path).endswith(".ipynb") and len(src.encode("utf-8", "replace")) <= cap_kb * 1024:
+            from ..core.db import get_db, store_code_snapshot
+            conn = get_db()
+            h = store_code_snapshot(conn, src, kind="script", path=str(script_path))
+            conn.commit()
+            if h:
+                # Hand log_param the native list — it JSON-encodes values once.
+                # (Pre-encoding here would double-wrap the column.)
+                exp.log_param("_code_snapshot",
+                              [{"hash": h, "kind": "script",
+                                "path": str(script_path)}])
+    except Exception as e:
+        debug_log(f"could not store code snapshot: {e}")
 
     root = _cfg.project_root()
     try:

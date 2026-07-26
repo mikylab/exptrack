@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .. import config as cfg
 from ..core import get_db
-from .formatting import STATUS_C, STATUS_I, C, G, M, R, W, Y, bold, col, dim, fmt_dt, fmt_dur
+from .formatting import STATUS_C, STATUS_I, C, G, M, R, W, Y, bold, col, die, dim, fmt_dt, fmt_dur
 
 
 def cmd_ls(args):
@@ -93,7 +93,7 @@ def cmd_show(args):
     conn = get_db()
     exp = get_experiment_detail(conn, args.id)
     if not exp:
-        print(col(f"Not found: {args.id}", R), file=sys.stderr); return
+        die(f"Not found: {args.id}")
 
     if getattr(args, "json_output", False):
         # Strip large git_diff from JSON output, keep diff_lines count
@@ -173,7 +173,7 @@ def cmd_timeline(args):
     exp = conn.execute("SELECT id, name FROM experiments WHERE id LIKE ?",
                        (args.id + "%",)).fetchone()
     if not exp:
-        print(col(f"Not found: {args.id}", R)); return
+        die(f"Not found: {args.id}")
     print()
     print(bold(f"  Timeline: {exp['name']}"))
     _print_timeline(conn, exp["id"], verbose=not args.compact,
@@ -302,9 +302,18 @@ def cmd_diff(args):
     from ..core.queries import find_experiment
     exp = find_experiment(conn, args.id, "name, git_diff, git_commit, git_branch")
     if not exp:
-        print(col(f"Not found: {args.id}", R), file=sys.stderr); return
+        die(f"Not found: {args.id}")
     from ..core.db import resolve_git_diff
     diff = resolve_git_diff(conn, exp["git_diff"])
+    from ..core.db import DIFF_UNAVAILABLE
+    from ..core.git import CAPTURE_FAILED
+    if diff == CAPTURE_FAILED:
+        print(col("  Uncommitted changes could not be captured for this run.", Y))
+        print(dim("  (git diff failed at capture time — this is NOT the same as a clean tree.)")); return
+    if diff == DIFF_UNAVAILABLE:
+        print(col("  The stored diff for this run is no longer available.", Y))
+        print(dim("  (The run references a deduplicated diff whose body is gone — "
+                  "again, NOT the same as a clean tree.)")); return
     if not diff:
         print(dim("No uncommitted changes were captured for this run."))
         print(dim(f"  (All changes were committed at {exp['git_commit'] or '???'})")); return
@@ -335,8 +344,8 @@ def cmd_compare(args):
 
     e1 = get_experiment_detail(conn, args.id1)
     e2 = get_experiment_detail(conn, args.id2)
-    if not e1: print(col(f"Not found: {args.id1}", R), file=sys.stderr); return
-    if not e2: print(col(f"Not found: {args.id2}", R), file=sys.stderr); return
+    if not e1: die(f"Not found: {args.id1}")
+    if not e2: die(f"Not found: {args.id2}")
 
     p1, p2 = e1["params"], e2["params"]
     m1 = get_latest_metrics(conn, e1["id"])
@@ -386,7 +395,7 @@ def _compare_within(conn, exp_id_prefix, seq1, seq2):
     from ..core.queries import find_experiment, get_timeline_events, get_vars_at_seq
     exp = find_experiment(conn, exp_id_prefix, "id, name")
     if not exp:
-        print(col(f"Not found: {exp_id_prefix}", R)); return
+        die(f"Not found: {exp_id_prefix}")
 
     eid = exp["id"]
     lo, hi = min(seq1, seq2), max(seq1, seq2)
@@ -483,8 +492,9 @@ def cmd_history(args):
     elif exp_id:
         _history_from_db(nb, exp_id)
     else:
-        print(col(f"No history found for notebook '{nb}'", R))
-        print(dim("  Hint: provide an experiment ID to reconstruct from DB"))
+        print(dim("  Hint: provide an experiment ID to reconstruct from DB"),
+              file=sys.stderr)
+        die(f"No history found for notebook '{nb}'")
 
 
 def _history_from_snapshots(files, nb, exp_id):
@@ -511,7 +521,7 @@ def _history_from_db(nb, exp_id):
     from ..core.queries import find_experiment as _find
     exp = _find(conn, exp_id, "id")
     if not exp:
-        print(col(f"Experiment not found: {exp_id}", R)); return
+        die(f"Experiment not found: {exp_id}")
 
     full_id = exp["id"]
 
@@ -637,7 +647,7 @@ def cmd_watch(args):
     conn = get_db()
     exp = find_experiment(conn, args.id, "id, name, status")
     if not exp:
-        print(col(f"Not found: {args.id}", R), file=sys.stderr); return
+        die(f"Not found: {args.id}")
 
     interval = getattr(args, "interval", 5)
     exp_id = exp["id"]
@@ -709,12 +719,11 @@ def cmd_export(args):
         return
 
     if not args.id:
-        print(col("Error: experiment ID required (or use --all for batch export)", R))
-        return
+        die("Error: experiment ID required (or use --all for batch export)")
 
     data = get_export_data(conn, args.id)
     if not data:
-        print(col(f"Not found: {args.id}", R)); return
+        die(f"Not found: {args.id}")
 
     if fmt == "markdown":
         print(format_export_markdown(data))
@@ -728,8 +737,14 @@ def cmd_export(args):
 
 
 def _export_batch(conn, fmt, export_all, exp_id_prefix):
-    """Export one or all experiments in CSV/TSV/JSON/markdown batch format."""
-    from ..core.queries import format_export_csv, format_export_markdown, get_batch_export_data
+    """Export one or all experiments in CSV/TSV/JSON/markdown/params batch format."""
+    from ..core.queries import (
+        PARAMS_EXPORT_FORMATS,
+        format_export_csv,
+        format_export_markdown,
+        format_export_params,
+        get_batch_export_data,
+    )
 
     exp_ids = None
     if not export_all and exp_id_prefix:
@@ -739,12 +754,11 @@ def _export_batch(conn, fmt, export_all, exp_id_prefix):
         ).fetchall()
         exp_ids = [r["id"] for r in rows]
     elif not export_all:
-        print(col("Error: provide experiment ID or use --all", R), file=sys.stderr)
-        return
+        die("Error: provide experiment ID or use --all")
 
     batch = get_batch_export_data(conn, exp_ids=exp_ids, export_all=export_all)
     if not batch:
-        print(dim("No experiments found.")); return
+        print(dim("No experiments found."), file=sys.stderr); return
 
     if fmt in ("csv", "tsv"):
         delimiter = "\t" if fmt == "tsv" else ","
@@ -754,6 +768,19 @@ def _export_batch(conn, fmt, export_all, exp_id_prefix):
             if i > 0:
                 print("\n---\n")
             print(format_export_markdown(data))
+    elif fmt in PARAMS_EXPORT_FORMATS:
+        style = PARAMS_EXPORT_FORMATS[fmt]
+        if style == "json":
+            # Keep valid JSON: an array of {id, name, params} objects.
+            out = [{"id": d["id"], "name": d["name"], "params": d.get("params", {})}
+                   for d in batch]
+            print(json.dumps(out, indent=2, default=str))
+        else:
+            for i, data in enumerate(batch):
+                if i > 0:
+                    print()
+                print(f"# {data['id'][:8]}  {data['name']}")
+                print(format_export_params(data, style=style))
     else:
         print(json.dumps(batch, indent=2, default=str))
 

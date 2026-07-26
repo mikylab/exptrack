@@ -7,6 +7,10 @@ import os
 import sys
 from datetime import datetime
 
+# Re-exported so CLI modules have one import site for formatting helpers;
+# the implementation is layer-neutral because the dashboard needs it too.
+from ..core.utils import fmt_bytes  # noqa: F401
+
 # ── Color control ─────────────────────────────────────────────────────────────
 # Respect NO_COLOR (https://no-color.org/), --no-color flag, and non-TTY output
 _no_color = (
@@ -27,6 +31,16 @@ STATUS_I = {"done": "+", "running": "~", "failed": "x"}
 def col(t, c): return f"{c}{t}{RST}" if c else str(t)
 def dim(t): return f"{DIM}{t}{RST}" if DIM else str(t)
 def bold(t): return f"{B}{t}{RST}" if B else str(t)
+
+
+def die(msg: str, code: int = 1):
+    """Print an error to stderr (red) and exit with a non-zero code.
+
+    Standard exit path for hard-error / not-found cases so scripts can detect
+    failure (`exptrack show $ID || ...`).
+    """
+    print(col(msg, R), file=sys.stderr)
+    sys.exit(code)
 
 
 def fmt_dt(iso):

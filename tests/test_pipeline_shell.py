@@ -402,8 +402,9 @@ class TestRunFinish:
         run is still 'running'.
         """
         import pytest
-        from exptrack.core.db import get_db
+
         import exptrack.cli.pipeline_cmds as pcmds
+        from exptrack.core.db import get_db
 
         exp_id, _ = _start_exp()
         metrics_file = tmp_project / "results.json"
@@ -498,8 +499,9 @@ class TestRunFail:
 
     def test_fail_missing_experiment(self, tmp_project):
         """run-fail exits with error for non-existent experiment."""
-        from exptrack.cli.pipeline_cmds import cmd_run_fail
         import pytest
+
+        from exptrack.cli.pipeline_cmds import cmd_run_fail
 
         with pytest.raises(SystemExit):
             _capture(cmd_run_fail, SimpleNamespace(id="nonexistent", reason=""))
@@ -1023,8 +1025,9 @@ class TestRunStartHelpers:
         exp.finish()
 
     def test_gather_finish_params_coerces(self):
-        from exptrack.cli.pipeline_cmds import _gather_finish_params
         import json as _json
+
+        from exptrack.cli.pipeline_cmds import _gather_finish_params
         args = SimpleNamespace(params=["best_epoch=42", "converged=true", "skip"])
         rows = _gather_finish_params(args, "exp1")
         decoded = {k: _json.loads(v) for (_e, k, v) in rows}

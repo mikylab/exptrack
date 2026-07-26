@@ -423,8 +423,9 @@ def test_api_save_export_no_overwrite():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
-        from exptrack.dashboard.routes.write_routes import api_save_export
         from pathlib import Path
+
+        from exptrack.dashboard.routes.write_routes import api_save_export
 
         r1 = api_save_export({"filename": "todos_2026-05-06.md", "content": "first"})
         assert r1["ok"] and r1["filename"] == "todos_2026-05-06.md"
@@ -537,7 +538,6 @@ def test_api_restore():
 
 def test_api_delete_permanent_keeps_files_by_default():
     """api_delete_permanent removes the DB row; with delete_files=False, files are kept."""
-    import json
     from pathlib import Path
     with tempfile.TemporaryDirectory() as tmp:
         os.chdir(tmp)
@@ -546,7 +546,8 @@ def test_api_delete_permanent_keeps_files_by_default():
         cfg.init("test")
         from exptrack.core import get_db
         from exptrack.dashboard.routes.write_routes import (
-            api_delete, api_delete_permanent,
+            api_delete,
+            api_delete_permanent,
         )
 
         exp = _make_experiment()
@@ -571,7 +572,6 @@ def test_api_delete_permanent_keeps_files_by_default():
 
         # File preserved
         assert art.exists(), "delete_files=False should leave the artifact on disk"
-        json  # quiet linter
 
         print("  [PASS] test_api_delete_permanent_keeps_files_by_default")
 
@@ -587,7 +587,8 @@ def test_api_delete_permanent_sends_files_to_trash():
         from exptrack.core import db as core_db
         from exptrack.core import get_db
         from exptrack.dashboard.routes.write_routes import (
-            api_delete, api_delete_permanent,
+            api_delete,
+            api_delete_permanent,
         )
 
         # Force the local-trash fallback so this test doesn't touch Finder/XDG.

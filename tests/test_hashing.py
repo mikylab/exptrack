@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import re
 
-
 _HEX64 = re.compile(r"^[a-f0-9]{64}$")
 
 

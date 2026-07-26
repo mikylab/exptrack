@@ -21,9 +21,10 @@ DEFAULTS: dict = {
     "hash_max_mb":           500,            # partial-hash files larger than this
     "protect_on_rerun":      True,           # archive old artifacts on path conflict
     "auto_capture": {
-        "argparse": True,
-        "argv":     True,
-        "notebook": True,
+        "argparse":    True,
+        "argv":        True,
+        "notebook":    True,
+        "tensorboard": True,   # mirror SummaryWriter scalars/histograms into metrics
     },
     "naming": {
         "max_param_keys": 4,
@@ -45,6 +46,8 @@ DEFAULTS: dict = {
     "max_cell_output_chars": 2000,   # output truncation limit for cell snapshots
     "max_assignment_expr_len": 500,  # max chars of an assignment RHS kept in var displays
     "notebook_history":      False,  # write snapshot JSON files to disk
+    "auto_trash_failed":     False,  # soft-trash a run when it finishes 'failed'
+    "snapshot_max_kb":       512,    # cap on a single stored script/source snapshot
     "plugins": {
         "enabled": [],
     },
@@ -108,6 +111,66 @@ def reload() -> dict:
     return load()
 
 
+def token_file_path() -> Path:
+    """Path of the dashboard auth token (``.exptrack/dashboard_token``).
+
+    Deliberately *not* ``config.json``: `init` tells users config.json is safe to
+    commit and leaves it out of .gitignore, so persisting an auth secret there
+    put it one ``git add -A`` from being published.
+    """
+    return exptrack_dir() / "dashboard_token"
+
+
+def write_token(token: str) -> Path:
+    """Persist the dashboard token 0600 and guarantee it is gitignored.
+
+    The ignore rule is *established here*, not merely assumed: `init` writes the
+    rule list, so a project initialized before the token moved out of
+    config.json would otherwise have no rule for it — the write path must not
+    claim a protection it didn't put in place.
+    """
+    ensure_gitignore_rules()
+    p = token_file_path()
+    p.write_text(token + "\n")
+    try:
+        p.chmod(0o600)
+    except OSError:
+        pass  # best-effort on filesystems without POSIX modes
+    return p
+
+
+# Paths exptrack writes that must never be committed: the DB and its sidecars,
+# notebook snapshots, the auth token, the local OS-Trash fallback (deleted
+# artifacts/checkpoints), and run outputs. config.json is intentionally absent —
+# it is meant to be committed, which is why no secret may live in it.
+GITIGNORE_RULES = (
+    "# exptrack — local only (db + snapshots); config.json is safe to commit",
+    ".exptrack/experiments.db",
+    ".exptrack/experiments.db-wal",
+    ".exptrack/experiments.db-shm",
+    ".exptrack/notebook_history/",
+    ".exptrack/dashboard_token",
+    ".exptrack/trash/",
+    "outputs/",
+)
+
+
+def ensure_gitignore_rules() -> bool:
+    """Append any missing exptrack rules to the project's .gitignore.
+
+    Idempotent and additive — never rewrites or reorders existing content.
+    Returns True if anything was added.
+    """
+    gitignore = project_root() / ".gitignore"
+    existing = gitignore.read_text() if gitignore.exists() else ""
+    to_add = [r for r in GITIGNORE_RULES if r not in existing]
+    if not to_add:
+        return False
+    with gitignore.open("a") as f:
+        f.write("\n" + "\n".join(to_add) + "\n")
+    return True
+
+
 def init(project_name: str = "", here: bool = False) -> None:
     """Called by `exptrack init` — writes config + .gitignore rules.
 
@@ -144,21 +207,7 @@ def init(project_name: str = "", here: bool = False) -> None:
         print(f"[exptrack] Config already exists at {p.relative_to(root)}")
 
     # Patch .gitignore — DB and history are local-only, config is committable
-    gitignore = root / ".gitignore"
-    rules = [
-        "",
-        "# exptrack — local only (db + snapshots); config.json is safe to commit",
-        ".exptrack/experiments.db",
-        ".exptrack/experiments.db-wal",
-        ".exptrack/experiments.db-shm",
-        ".exptrack/notebook_history/",
-        "outputs/",
-    ]
-    existing = gitignore.read_text() if gitignore.exists() else ""
-    to_add = [r for r in rules if r not in existing]
-    if to_add:
-        with gitignore.open("a") as f:
-            f.write("\n".join(to_add) + "\n")
+    if ensure_gitignore_rules():
         print("[exptrack] Updated .gitignore")
 
     print(f"\n  Project root : {root}")

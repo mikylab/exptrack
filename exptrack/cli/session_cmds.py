@@ -21,7 +21,7 @@ from datetime import datetime
 from ..core.db import get_db
 from ..sessions.manager import build_tree
 from ..sessions.tree import find_session, list_sessions, render_ascii
-from .formatting import C, DIM, G, R, RST, Y, bold, col, dim
+from .formatting import G, R, Y, bold, col, dim
 
 
 def cmd_sessions(args):
@@ -139,7 +139,7 @@ def cmd_session_finalize(args):
     if not s:
         print(col(f"session not found: {args.id_or_name}", R), file=sys.stderr)
         sys.exit(1)
-    from ..sessions.manager import finalize_session_preview, finalize_session
+    from ..sessions.manager import finalize_session, finalize_session_preview
     prev = finalize_session_preview(s["id"])
     if not prev.get("ok"):
         print(col(prev.get("error", "could not preview session"), R),

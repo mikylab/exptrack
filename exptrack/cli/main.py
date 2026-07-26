@@ -22,7 +22,19 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .admin_cmds import cmd_backup, cmd_compact, cmd_init, cmd_notebook_guard, cmd_restore, cmd_run, cmd_stale, cmd_storage, cmd_ui, cmd_ui_stop, cmd_upgrade
+from .admin_cmds import (
+    cmd_backup,
+    cmd_compact,
+    cmd_init,
+    cmd_notebook_guard,
+    cmd_restore,
+    cmd_run,
+    cmd_stale,
+    cmd_storage,
+    cmd_ui,
+    cmd_ui_stop,
+    cmd_upgrade,
+)
 from .inspect_cmds import (
     cmd_compare,
     cmd_diff,
@@ -49,7 +61,6 @@ from .mutate_cmds import (
     cmd_unstudy,
     cmd_untag,
 )
-from .session_cmds import cmd_session, cmd_sessions
 from .pipeline_cmds import (
     cmd_create,
     cmd_link_dir,
@@ -61,29 +72,37 @@ from .pipeline_cmds import (
     cmd_run_finish,
     cmd_run_start,
 )
+from .session_cmds import cmd_session, cmd_sessions
 
 
-def main():
-    # run-start accepts arbitrary --key value user params — handle before argparse
-    # consumes them as unknown flags.
-    if len(sys.argv) > 1 and sys.argv[1] == "run-start":
-        p_rs = argparse.ArgumentParser(prog="exptrack run-start")
-        p_rs.add_argument("--name",       default="")
-        p_rs.add_argument("--script",     default="")
-        p_rs.add_argument("--tags",       nargs="*")
-        p_rs.add_argument("--study",      default="")
-        p_rs.add_argument("--stage",      type=int, default=None)
-        p_rs.add_argument("--stage-name", default=None)
-        p_rs.add_argument("--notes",      default="")
-        known, unknown = p_rs.parse_known_args(sys.argv[2:])
-        known.params = unknown
-        try:
-            cmd_run_start(known)
-        finally:
-            from ..core.db import close_db
-            close_db()
-        return
+def _add_run_start_args(parser):
+    """Register run-start's optional flags on *parser*.
 
+    Single source of truth shared by the pre-argparse mini-parser (which runs
+    for a plain `exptrack run-start ...`) and the real subparser (reached only
+    via a global flag before the subcommand), so the two can never drift. The
+    positional `params` REMAINDER is added by the subparser only — the
+    pre-parse path collects trailing args via parse_known_args instead.
+    """
+    parser.add_argument("--name",       default="", help="Override run name")
+    parser.add_argument("--script",     default="", help="Script/pipeline name for naming")
+    parser.add_argument("--tags",       nargs="*", help="Tags")
+    parser.add_argument("--study",      default="", help="Add to study (groups related pipeline steps)")
+    parser.add_argument("--stage",      type=int, default=None, help="Stage number (e.g. 1, 2, 3)")
+    parser.add_argument("--stage-name", default=None, help="Stage label (e.g. preprocess, train, eval)")
+    parser.add_argument("--notes",      default="", help="Notes")
+    parser.add_argument("--cmd",        default="", metavar="COMMAND",
+                        help="The real command this run executes (e.g. "
+                             "'python train.py --lr 0.01'); recorded so the "
+                             "Reproduce box shows what actually ran, not the "
+                             "run-start wrapper")
+    parser.add_argument("--resume",     nargs="?", const="latest", default=None,
+                        metavar="EXP_ID",
+                        help="Resume a previous experiment instead of starting new")
+
+
+def _build_parser():
+    """Construct the top-level argparse parser (all subcommands)."""
     p = argparse.ArgumentParser(
         prog="exptrack",
         description="Experiment tracker -- scripts, notebooks, and SLURM pipelines",
@@ -114,21 +133,15 @@ def main():
         "run-start",
         help="Start experiment from shell. Use: eval $(exptrack run-start --lr 0.01)"
     )
-    p_rs.add_argument("--name",   default="", help="Override run name")
-    p_rs.add_argument("--script", default="", help="Script/pipeline name for naming")
-    p_rs.add_argument("--tags",   nargs="*",  help="Tags")
-    p_rs.add_argument("--study",  default="", help="Add to study (groups related pipeline steps)")
-    p_rs.add_argument("--stage",  type=int, default=None, help="Stage number (e.g. 1, 2, 3)")
-    p_rs.add_argument("--stage-name", default=None, help="Stage label (e.g. preprocess, train, eval)")
-    p_rs.add_argument("--notes",  default="", help="Notes")
-    p_rs.add_argument("--resume", nargs="?", const="latest", default=None,
-                        metavar="EXP_ID",
-                        help="Resume a previous experiment instead of starting new")
+    _add_run_start_args(p_rs)
     p_rs.add_argument("params",   nargs=argparse.REMAINDER,
                       help="Params as --key value pairs, e.g. --lr 0.01 --epochs 50")
 
     p_rf = sub.add_parser("run-finish", help="Finish experiment from shell")
     p_rf.add_argument("id",        help="EXP_ID from run-start")
+    p_rf.add_argument("--cmd",     default="",
+                      help="The real command this run executed (recorded so "
+                           "Reproduce shows what actually ran)")
     p_rf.add_argument("--metrics", help="Path to JSON file with final metrics")
     p_rf.add_argument("--step",    type=int, default=None)
     p_rf.add_argument("--params",  nargs="*", metavar="KEY=VALUE",
@@ -470,60 +483,81 @@ def main():
         help="Print a paste-able guard cell so a notebook runs with or "
              "without exptrack installed (magics degrade to no-ops)")
 
+    return p
+
+
+# Subcommand → handler. Module-level so main() stays a thin dispatch.
+_DISPATCH = {
+    "init":         cmd_init,
+    "run":          cmd_run,
+    "run-start":    cmd_run_start,
+    "run-finish":   cmd_run_finish,
+    "run-fail":     cmd_run_fail,
+    "log-metric":   cmd_log_metric,
+    "log-artifact": cmd_log_artifact,
+    "log-output":   cmd_log_output,
+    "link-dir":     cmd_link_dir,
+    "log-result":   cmd_log_result,
+    "create":       cmd_create,
+    "stale":        cmd_stale,
+    "upgrade":      cmd_upgrade,
+    "storage":      cmd_storage,
+    "backup":       cmd_backup,
+    "restore":      cmd_restore,
+    "compact":      cmd_compact,
+    "finish":       cmd_finish,
+    "ls":           cmd_ls,
+    "show":         cmd_show,
+    "diff":         cmd_diff,
+    "compare":      cmd_compare,
+    "timeline":     cmd_timeline,
+    "history":      cmd_history,
+    "tag":          cmd_tag,
+    "untag":        cmd_untag,
+    "delete-tag":   cmd_delete_tag,
+    "note":         cmd_note,
+    "edit-note":    cmd_edit_note,
+    "study":        cmd_study,
+    "unstudy":      cmd_unstudy,
+    "studies":      cmd_studies,
+    "delete-study": cmd_delete_study,
+    "stage":        cmd_stage,
+    "export":       cmd_export,
+    "watch":        cmd_watch,
+    "verify":       cmd_verify,
+    "rm":           cmd_rm,
+    "clean":        cmd_clean,
+    "ui":           cmd_ui,
+    "ui-stop":      cmd_ui_stop,
+    "sessions":     cmd_sessions,
+    "session":      cmd_session,
+    "notebook-guard": cmd_notebook_guard,
+}
+
+
+def main():
+    # run-start accepts arbitrary --key value user params — handle before argparse
+    # consumes them as unknown flags.
+    if len(sys.argv) > 1 and sys.argv[1] == "run-start":
+        p_rs = argparse.ArgumentParser(prog="exptrack run-start")
+        _add_run_start_args(p_rs)
+        known, unknown = p_rs.parse_known_args(sys.argv[2:])
+        known.params = unknown
+        try:
+            cmd_run_start(known)
+        finally:
+            from ..core.db import close_db
+            close_db()
+        return
+
+    p = _build_parser()
     args = p.parse_args()
     if not args.cmd:
         p.print_help(); return
-
-    dispatch = {
-        "init":         cmd_init,
-        "run":          cmd_run,
-        "run-start":    cmd_run_start,
-        "run-finish":   cmd_run_finish,
-        "run-fail":     cmd_run_fail,
-        "log-metric":   cmd_log_metric,
-        "log-artifact": cmd_log_artifact,
-        "log-output":   cmd_log_output,
-        "link-dir":     cmd_link_dir,
-        "log-result":   cmd_log_result,
-        "create":       cmd_create,
-        "stale":        cmd_stale,
-        "upgrade":      cmd_upgrade,
-        "storage":      cmd_storage,
-        "backup":       cmd_backup,
-        "restore":      cmd_restore,
-        "compact":      cmd_compact,
-        "finish":       cmd_finish,
-        "ls":           cmd_ls,
-        "show":         cmd_show,
-        "diff":         cmd_diff,
-        "compare":      cmd_compare,
-        "timeline":     cmd_timeline,
-        "history":      cmd_history,
-        "tag":          cmd_tag,
-        "untag":        cmd_untag,
-        "delete-tag":   cmd_delete_tag,
-        "note":         cmd_note,
-        "edit-note":    cmd_edit_note,
-        "study":        cmd_study,
-        "unstudy":      cmd_unstudy,
-        "studies":      cmd_studies,
-        "delete-study": cmd_delete_study,
-        "stage":        cmd_stage,
-        "export":       cmd_export,
-        "watch":        cmd_watch,
-        "verify":       cmd_verify,
-        "rm":           cmd_rm,
-        "clean":        cmd_clean,
-        "ui":           cmd_ui,
-        "ui-stop":      cmd_ui_stop,
-        "sessions":     cmd_sessions,
-        "session":      cmd_session,
-        "notebook-guard": cmd_notebook_guard,
-    }
     try:
-        dispatch[args.cmd](args)
+        _DISPATCH[args.cmd](args)
     finally:
-        # Checkpoint WAL and close the DB so the WAL file doesn't bloat
+        # Checkpoint WAL and close the DB so the WAL file does not bloat
         from ..core.db import close_db
         close_db()
 

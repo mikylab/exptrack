@@ -4,7 +4,6 @@ Creates throwaway git repos with subprocess. Skips when git is unavailable.
 """
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 

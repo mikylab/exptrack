@@ -34,7 +34,7 @@ def _fmt_time(ts: float | None) -> str:
 
 def render_ascii(tree: dict[str, Any]) -> str:
     """Render a session tree as ANSI-colored ASCII art."""
-    from ..cli.formatting import C, DIM, G, R, Y, bold, col, dim
+    from ..cli.formatting import DIM, C, G, R, Y, bold, col, dim
     if not tree or "session" not in tree:
         return "(no session)"
     s = tree["session"]

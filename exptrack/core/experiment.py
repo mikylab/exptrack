@@ -35,6 +35,46 @@ _VALID_STATUSES = {"running", "done", "failed"}
 # Cap on the stored failure traceback so a pathological error can't bloat the DB.
 _MAX_TRACEBACK_CHARS = 20000
 
+# The run created by `exptrack run` / `python -m exptrack`, published here so a
+# wrapped script that creates its OWN Experiment() — e.g. one written for plain
+# `python script.py` with `with Experiment() as exp:` — adopts this wrapper
+# instead of spawning a redundant second run for the same script (the "phantom
+# run": the wrapper gets the code snapshot but no metrics, and the script's own
+# run gets the metrics, so a same-script comparison then floods with None→value
+# changes). Only a bare, first `Experiment()` adopts it; a script that passes its
+# own identity (name/params/…) or creates additional runs gets independent rows.
+_run_wrapper: Experiment | None = None
+
+
+def publish_run_wrapper(exp: Experiment | None) -> None:
+    """Register the `exptrack run` wrapper as adoptable (see ``_run_wrapper``)."""
+    global _run_wrapper
+    _run_wrapper = exp
+
+
+def _claim_run_wrapper() -> Experiment | None:
+    """Hand out the adoptable wrapper exactly once, marking it adopted so its
+    ``__init__`` is skipped when the script's ``Experiment()`` re-enters it."""
+    global _run_wrapper
+    w = _run_wrapper
+    if w is not None:
+        _run_wrapper = None
+        w._adopted = True
+    return w
+
+
+def mark_wrapper_foreign_child(exp: Experiment) -> None:
+    """Flag the published wrapper that a *different* Experiment was built under it.
+
+    A script running under ``exptrack run`` that constructs its own
+    ``Experiment(...)`` with explicit identity (a sweep) — instead of adopting the
+    wrapper — leaves the wrapper metrics-less, a phantom row ``__main__`` Trashes at
+    finish. No-op outside ``exptrack run`` (no wrapper published) and for the
+    wrapper's own construction (it runs before ``publish_run_wrapper``, so
+    ``_run_wrapper`` is still ``None`` — it never flags itself)."""
+    if _run_wrapper is not None and _run_wrapper is not exp:
+        _run_wrapper._had_foreign_child = True
+
 
 def _redact_params(params: dict) -> dict:
     """Redact parameter values matching configured sensitive patterns."""
@@ -75,6 +115,37 @@ class Experiment:
     Notebook — use exptrack.notebook helpers instead (they wrap this).
     """
 
+    # Class-level safety net for instances built via object.__new__ (see
+    # resume()), which bypass __init__ where this is normally set. Without it,
+    # _maybe_commit()'s `if not self._defer_commit` raises AttributeError.
+    _defer_commit = False
+    # Default so the resume path (object.__new__, skips __init__) and any early
+    # reader never AttributeError on the explicit-command override.
+    _command = ""
+    # True only on a wrapper adopted by a script's bare Experiment() (see
+    # __new__); its __init__ then short-circuits so it isn't re-created.
+    _adopted = False
+    # Set on the published `exptrack run` wrapper when a script constructs its
+    # OWN Experiment(s) with explicit identity (a param sweep) instead of
+    # adopting the wrapper — the tell-tale of a metrics-less phantom wrapper
+    # row that `__main__` then Trashes at finish. Class default for the resume
+    # path (object.__new__, skips __init__) and early readers.
+    _had_foreign_child = False
+
+    def __new__(cls, *args, **kwargs):
+        # A bare ``Experiment()`` created by a script running under
+        # ``exptrack run`` adopts the run ``exptrack run`` already started,
+        # rather than creating a redundant second run for the same script. Only
+        # a no-argument construction adopts — a script passing its own
+        # name/params/… clearly wants its own run and is never silently merged —
+        # and only the first one (a later ``Experiment(...)``, e.g. a sweep
+        # iteration, gets its own row because the wrapper is claimed once).
+        if not args and not kwargs:
+            wrapper = _claim_run_wrapper()
+            if wrapper is not None:
+                return wrapper
+        return super().__new__(cls)
+
     def __init__(
         self,
         name: str = "",
@@ -83,10 +154,24 @@ class Experiment:
         notes: str = "",
         script: str = "",
         thin_every: int | None = None,
+        command: str = "",
         _caller_depth: int = 1,
     ):
+        if self._adopted:
+            # This instance is the `exptrack run` wrapper, adopted by a script's
+            # bare Experiment() (see __new__). It's already fully initialized —
+            # re-running __init__ would insert a second run for the same script.
+            return
+        # A script running under `exptrack run` that builds its own Experiment(s)
+        # with explicit identity (a sweep) — rather than adopting the wrapper —
+        # leaves the wrapper metrics-less: a phantom row. Flag the still-published
+        # wrapper so `__main__` can Trash it at finish (no-op off the wrapper path).
+        mark_wrapper_foreign_child(self)
         conf          = cfg.load()
         self._start   = time.time()
+        # Explicit reproduce command (e.g. from `exptrack run`); when empty we
+        # fall back to _build_command() which reconstructs it from sys.argv.
+        self._command = command
         self._params: dict[str, Any] = dict(params or {})
         self.tags     = list(tags or [])
         self.notes    = notes
@@ -155,7 +240,7 @@ class Experiment:
         print(f"[exptrack] {self.name}  ({self.id[:6]})", file=sys.stderr)
 
     @classmethod
-    def resume(cls, exp_id: str) -> "Experiment":
+    def resume(cls, exp_id: str) -> Experiment:
         """Reopen a finished/failed experiment to continue it."""
         from .queries import find_experiment
         conn = get_db()
@@ -175,6 +260,10 @@ class Experiment:
         exp.status, exp._finished, exp._start = "running", False, time.time()
         exp._resumed = True
         exp._thin_every = exp._snapshot_hash = None
+        # __init__-only attrs the lifecycle methods read but object.__new__ skips.
+        # (_defer_commit is covered by the class-level default.)
+        exp.name_is_auto = False        # resumed runs already have a chosen name
+        exp.duration_s = None           # set by finish(); default so it's never unset
 
         exp._params = {r["key"]: json.loads(r["value"]) for r in conn.execute(
             "SELECT key, value FROM params WHERE exp_id=?", (exp.id,)).fetchall()}
@@ -242,7 +331,7 @@ class Experiment:
             """, (
                 self.id, self.project, self.name, self.status,
                 self.created_at, self.created_at,
-                self.script, self._build_command(),
+                self.script, self._command or self._build_command(),
                 self.git_branch, self.git_commit, diff_for_db,
                 self.hostname, self.python_ver,
                 self.notes, json.dumps(self.tags),
@@ -305,8 +394,12 @@ class Experiment:
                 if old_val != v:
                     print(f"[exptrack] warning: param '{k}' overwritten: "
                           f"{old_val!r} -> {v!r}", file=sys.stderr)
+        # Upsert (not INSERT OR REPLACE) so re-logging a key keeps its existing
+        # `source` — OR REPLACE deletes the row and re-inserts, resetting a
+        # 'manual' param back to the 'auto' column default.
         conn.executemany(
-            "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO params (exp_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT(exp_id, key) DO UPDATE SET value=excluded.value",
             [(self.id, k, json.dumps(v)) for k, v in params.items()]
         )
 
@@ -397,6 +490,7 @@ class Experiment:
         if self._finished:
             print(f"[exptrack] warning: logging metric '{key}' after experiment finished",
                   file=sys.stderr)
+            return
         fval = float(value)
         if not math.isfinite(fval):
             print(f"[exptrack] warning: metric '{key}' has non-finite value: {fval} — skipping",
@@ -417,6 +511,7 @@ class Experiment:
         if self._finished:
             print("[exptrack] warning: logging metrics after experiment finished",
                   file=sys.stderr)
+            return
         if not self._should_store_metric(step):
             return
         ts = datetime.now(timezone.utc).isoformat()
@@ -441,13 +536,10 @@ class Experiment:
 
     def last_metrics(self) -> dict:
         """Latest value of every metric key for this run."""
-        with get_db() as conn:
-            rows = conn.execute("""
-                SELECT key, value FROM metrics
-                WHERE exp_id=?
-                GROUP BY key HAVING MAX(COALESCE(step, 0))
-            """, (self.id,)).fetchall()
-        return {r["key"]: r["value"] for r in rows}
+        from .queries import last_metrics
+        # Read-only: use the shared connection directly (no `with`, which would
+        # commit an empty transaction on exit for a SELECT-only body).
+        return last_metrics(get_db(), self.id)
 
     # ── Artifacts / outputs ───────────────────────────────────────────────────
 
@@ -510,7 +602,7 @@ class Experiment:
         # runs for every finish path (scripts, notebooks, programmatic), not just
         # `exptrack run`. Must precede `_finished` since it calls log_params.
         if status == "done":
-            from ..capture.dataset import capture_dataset_manifest
+            from .dataset import capture_dataset_manifest
             capture_dataset_manifest(self)
         self._finished = True
         self.duration_s = time.time() - self._start
@@ -529,16 +621,53 @@ class Experiment:
         m, s = divmod(self.duration_s, 60)
         icon = "done" if status == "done" else "FAILED"
         print(f"[exptrack] {icon}: {self.name}  ({int(m)}m {s:.1f}s)", file=sys.stderr)
+        # "What changed since last time" — compare to the previous run of the
+        # same script and print a one-line delta. Best-effort; never blocks
+        # finishing a run.
+        try:
+            self._print_delta_vs_previous()
+        except Exception as e:
+            from .utils import debug_log
+            debug_log(f"delta-vs-previous failed: {e}")
         if status == "done":
             plugins.on_finish(self)
         else:
             plugins.on_fail(self, self._params.get("error", ""))
+            # Optionally move a broken run straight to Trash so it never needs
+            # remembering to delete. Soft (recoverable); opt-in via config.
+            if cfg.load().get("auto_trash_failed", False):
+                try:
+                    with get_db() as conn:
+                        from .db import trash_experiment
+                        trash_experiment(conn, self.id)
+                        conn.commit()
+                    print(f"[exptrack] moved failed run to Trash ({self.id[:6]})",
+                          file=sys.stderr)
+                except Exception as e:
+                    print(f"[exptrack] warning: could not auto-trash failed run: {e}",
+                          file=sys.stderr)
 
         # Checkpoint and close the DB connection so the WAL doesn't grow
         # unbounded across runs (especially in notebooks and scripts).
         # Done after plugin hooks so they can still write to the DB.
+        # sweep=False: finishing a run can't orphan rows, and the orphan
+        # sweep's anti-join scans grow with metrics/timeline size — skip it
+        # on this per-run hot path (CLI exit / `exptrack clean` still sweep).
         from .db import close_db
-        close_db()
+        close_db(sweep=False)
+
+    def _print_delta_vs_previous(self):
+        """Print a one-line 'what changed vs the previous run of this script'
+        summary to stderr. Silent when there's no previous run or no change."""
+        from .queries import diff_runs, format_run_delta, get_previous_run
+        conn = get_db()
+        prev = get_previous_run(conn, self.id)
+        if not prev:
+            return
+        diff = diff_runs(conn, prev["id"], self.id)
+        line = format_run_delta(diff, prev)
+        if line:
+            print(f"[exptrack] {line}", file=sys.stderr)
 
     def fail(self, error: str = "", traceback: str | None = None):
         """Mark the run as failed.

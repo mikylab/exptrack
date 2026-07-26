@@ -101,7 +101,7 @@ class GitHubSyncPlugin(Plugin):
                 "X-GitHub-Api-Version": "2022-11-28",
             }
         )
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read())
 
     def _get_file(self, tok: str) -> tuple[str, str | None]:

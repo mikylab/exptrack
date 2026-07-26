@@ -17,8 +17,8 @@ from __future__ import annotations
 import shlex
 import sys
 
-from ..sessions import SessionManager, get_current_session, set_current_session
 from ..core.utils import debug_log
+from ..sessions import SessionManager, get_current_session, set_current_session
 
 
 def _strip_quotes(s: str) -> str:
