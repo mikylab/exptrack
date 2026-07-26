@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import math
 
 import pytest
 
@@ -161,8 +160,8 @@ def test_internal_param_no_overwrite_warning(tmp_project, capsys):
 
 def test_batched_writes_single_commit(tmp_project, monkeypatch):
     """batched_writes defers commits and writes everything once on exit."""
-    from exptrack.core import Experiment, get_db
     import exptrack.core.experiment as expmod
+    from exptrack.core import Experiment, get_db
 
     exp = Experiment(script="train.py")
     conn = get_db()
@@ -193,8 +192,8 @@ def test_batched_writes_single_commit(tmp_project, monkeypatch):
 
 def test_batched_writes_defers_tags_and_notes(tmp_project, monkeypatch):
     """add_tag/remove_tag/set_note/add_note honor batched_writes (one commit)."""
-    from exptrack.core import Experiment, get_db
     import exptrack.core.experiment as expmod
+    from exptrack.core import Experiment, get_db
 
     exp = Experiment(script="train.py")
     conn = get_db()
@@ -453,10 +452,9 @@ def test_context_manager_fail_on_exception(tmp_project):
     from exptrack.core import Experiment, get_db
 
     eid = None
-    with pytest.raises(ValueError, match="boom"):
-        with Experiment(script="train.py") as exp:
-            eid = exp.id
-            raise ValueError("boom")
+    with pytest.raises(ValueError, match="boom"), Experiment(script="train.py") as exp:
+        eid = exp.id
+        raise ValueError("boom")
 
     conn = get_db()
     row = conn.execute(

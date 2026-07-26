@@ -16,41 +16,56 @@ _patched = False
 _orig_parse = None
 _orig_known = None
 _patch_lock = threading.Lock()
+# The experiment currently receiving captured params. The hooks are installed
+# once (globally, on the ArgumentParser class) but must not close over a single
+# Experiment — otherwise a second run in the same process (a notebook kernel,
+# programmatic reuse, back-to-back runs) would keep logging params onto the
+# *first* experiment forever. Each patch_argparse(exp) call retargets this, and
+# the hooks read it at parse time.
+_active_exp: Experiment | None = None
 
 def patch_argparse(exp: Experiment):
     """
-    Monkey-patch ArgumentParser.parse_args AND parse_known_args once.
-    When the user's script calls either, params flow into exp automatically.
-    After capture, the run name is refreshed to include real param values.
+    Monkey-patch ArgumentParser.parse_args AND parse_known_args once, and point
+    capture at ``exp``. When the user's script calls either parser method, params
+    flow into the *currently active* experiment automatically. After capture, the
+    run name is refreshed to include real param values.
+
+    Safe to call repeatedly: the class methods are patched only once, but every
+    call retargets capture to the given experiment (fixes params leaking onto the
+    first experiment when several are created in one process).
     """
-    global _patched, _orig_parse, _orig_known
+    global _patched, _orig_parse, _orig_known, _active_exp
     with _patch_lock:
+        _active_exp = exp
         if _patched:
             return
         _patched = True
 
-    import argparse
-    # Save originals only if not already saved (avoid capturing hooked versions)
-    if _orig_parse is None:
-        _orig_parse = argparse.ArgumentParser.parse_args
-    if _orig_known is None:
-        _orig_known = argparse.ArgumentParser.parse_known_args
+        import argparse
+        # Save originals only if not already saved (avoid capturing hooked versions)
+        if _orig_parse is None:
+            _orig_parse = argparse.ArgumentParser.parse_args
+        if _orig_known is None:
+            _orig_known = argparse.ArgumentParser.parse_known_args
 
-    def _hooked_parse(self_ap, args=None, namespace=None):
-        ns = _orig_parse(self_ap, args, namespace)
-        _capture_namespace(exp, ns)
-        return ns
+        def _hooked_parse(self_ap, args=None, namespace=None):
+            ns = _orig_parse(self_ap, args, namespace)
+            if _active_exp is not None:
+                _capture_namespace(_active_exp, ns)
+            return ns
 
-    def _hooked_known(self_ap, args=None, namespace=None):
-        ns, remaining = _orig_known(self_ap, args, namespace)
-        _capture_namespace(exp, ns)
-        # Also try to parse the remaining args as free-form --key value
-        if remaining:
-            _capture_remaining(exp, remaining)
-        return ns, remaining
+        def _hooked_known(self_ap, args=None, namespace=None):
+            ns, remaining = _orig_known(self_ap, args, namespace)
+            if _active_exp is not None:
+                _capture_namespace(_active_exp, ns)
+                # Also try to parse the remaining args as free-form --key value
+                if remaining:
+                    _capture_remaining(_active_exp, remaining)
+            return ns, remaining
 
-    argparse.ArgumentParser.parse_args = _hooked_parse
-    argparse.ArgumentParser.parse_known_args = _hooked_known
+        argparse.ArgumentParser.parse_args = _hooked_parse
+        argparse.ArgumentParser.parse_known_args = _hooked_known
 
 
 def _capture_namespace(exp: Experiment, ns):

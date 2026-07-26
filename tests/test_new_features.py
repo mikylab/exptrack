@@ -28,6 +28,25 @@ def _capture(func, *args):
     return out_buf.getvalue(), err_buf.getvalue()
 
 
+def _capture_die(func, *args):
+    """Like _capture but tolerates (and reports) a SystemExit from die().
+
+    Returns (stdout, stderr, exit_code); exit_code is None if no SystemExit.
+    """
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = out_buf = io.StringIO()
+    sys.stderr = err_buf = io.StringIO()
+    code = None
+    try:
+        func(*args)
+    except SystemExit as e:
+        code = e.code
+    finally:
+        sys.stdout = old_out
+        sys.stderr = old_err
+    return out_buf.getvalue(), err_buf.getvalue(), code
+
+
 def _make_experiment(script="train.py", params=None, tags=None, notes=""):
     from exptrack.core import Experiment
     return Experiment(script=script, params=params, tags=tags, notes=notes)
@@ -219,7 +238,7 @@ def test_note_output_goes_to_stderr():
 
 
 def test_not_found_goes_to_stderr():
-    """Error messages for not-found experiments go to stderr."""
+    """Not-found is a hard error: exit 1, message on stderr, nothing on stdout."""
     with tempfile.TemporaryDirectory() as tmp:
         _setup_project(tmp)
         from exptrack.cli.inspect_cmds import cmd_show
@@ -227,7 +246,8 @@ def test_not_found_goes_to_stderr():
         get_db()  # ensure schema
 
         args = SimpleNamespace(id="nonexistent", timeline=False, json_output=False)
-        stdout, stderr = _capture(cmd_show, args)
+        stdout, stderr, code = _capture_die(cmd_show, args)
+        assert code == 1
         assert "Not found" in stderr
         assert stdout == ""
 
@@ -302,7 +322,7 @@ def test_db_integrity_check():
 # ── Error paths ──────────────────────────────────────────────────────────────
 
 def test_export_not_found():
-    """export with invalid ID reports error."""
+    """export with invalid ID is a hard error (exit 1, stderr)."""
     with tempfile.TemporaryDirectory() as tmp:
         _setup_project(tmp)
         from exptrack.cli.inspect_cmds import cmd_export
@@ -310,12 +330,14 @@ def test_export_not_found():
         get_db()
 
         args = SimpleNamespace(id="nonexistent", format="json", export_all=False)
-        stdout, stderr = _capture(cmd_export, args)
-        assert "Not found" in (stdout + stderr)
+        stdout, stderr, code = _capture_die(cmd_export, args)
+        assert code == 1
+        assert "Not found" in stderr
+        assert stdout == ""
 
 
 def test_diff_not_found():
-    """diff with invalid ID reports error."""
+    """diff with invalid ID is a hard error (exit 1, stderr)."""
     with tempfile.TemporaryDirectory() as tmp:
         _setup_project(tmp)
         from exptrack.cli.inspect_cmds import cmd_diff
@@ -323,8 +345,10 @@ def test_diff_not_found():
         get_db()
 
         args = SimpleNamespace(id="nonexistent")
-        stdout, stderr = _capture(cmd_diff, args)
-        assert "Not found" in (stdout + stderr)
+        stdout, stderr, code = _capture_die(cmd_diff, args)
+        assert code == 1
+        assert "Not found" in stderr
+        assert stdout == ""
 
 
 if __name__ == "__main__":

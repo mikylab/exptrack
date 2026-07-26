@@ -15,6 +15,38 @@ from http.server import HTTPServer
 from .handler import DashboardHandler, _get_auth_token, set_session_token
 
 
+def _allowed_host_for_bind(host: str) -> str:
+    """Map a bind address to the handler's Host-check policy.
+
+    A wildcard bind (0.0.0.0/::/blank) means clients arrive under the
+    machine's real name or IP — unpredictable here — so "*" tells the
+    handler to accept any Host: the user explicitly opted into network
+    exposure. Specific binds stay strict (that host only, plus loopback).
+    """
+    bind = host.strip("[]").lower()
+    return "*" if bind in ("0.0.0.0", "::", "") else bind
+
+
+def _warn_if_token_in_config() -> None:
+    """Flag a legacy ``dashboard_token`` sitting in the committable config.json.
+
+    Older versions persisted the token there, and `exptrack init` both tells
+    users config.json is safe to commit and leaves it out of .gitignore — so an
+    existing setup may already have an auth secret staged for publication. The
+    token is still honored (nothing breaks), but say so loudly once per start.
+    """
+    try:
+        from exptrack import config as _cfg
+        if _cfg.load().get("dashboard_token"):
+            print("[exptrack] WARNING: dashboard_token is stored in "
+                  ".exptrack/config.json, which is committable and not "
+                  "gitignored. Move it with `exptrack ui --token <token>` "
+                  "(writes .exptrack/dashboard_token, gitignored) or drop it "
+                  "with `exptrack ui --clear-token`.", file=sys.stderr)
+    except Exception:
+        pass
+
+
 def main(host: str = "127.0.0.1", port: int = 7331, no_auth: bool = False):
     # Parse CLI args when run directly
     if len(sys.argv) > 1:
@@ -27,6 +59,8 @@ def main(host: str = "127.0.0.1", port: int = 7331, no_auth: bool = False):
                 no_auth = True
             elif arg.isdigit():
                 port = int(arg)
+
+    _warn_if_token_in_config()
 
     token = _get_auth_token()
     if not token and not no_auth:
@@ -45,6 +79,10 @@ def main(host: str = "127.0.0.1", port: int = 7331, no_auth: bool = False):
 
     try:
         server = HTTPServer((host, port), DashboardHandler)
+        # Allow the bound host through the DNS-rebinding Host-header check
+        # (localhost/127.0.0.1/::1 are always allowed) so non-local binds work;
+        # wildcard binds accept any Host (see _allowed_host_for_bind).
+        server.allowed_host = _allowed_host_for_bind(host)
     except OSError as e:
         if e.errno == errno.EADDRINUSE:
             print(f"[exptrack] Port {port} is already in use. A previous "

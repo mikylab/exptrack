@@ -8,33 +8,23 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
-from ..core import delete_experiment, get_db
 from .. import config as cfg
-from .formatting import G, R, Y, col, dim
-
-
-def _fmt_bytes(b):
-    if b < 1024: return f"{b} B"
-    if b < 1024 * 1024: return f"{b / 1024:.1f} KB"
-    return f"{b / (1024 * 1024):.1f} MB"
+from ..core import delete_experiment, get_db
+from ..core.db import _sweep_blobs, _trash_or_local
+from .formatting import G, R, Y, col, die, dim, fmt_bytes
 
 
 def cmd_tag(args):
     from ..core.queries import find_experiment, update_experiment_tags
     conn = get_db()
-    # Support both old-style (id=str, tag=str) and new batch-style (id=[...])
-    if hasattr(args, "tag"):
-        # Old calling convention: tag <id> <tag>
-        exp_ids = [args.id] if isinstance(args.id, str) else args.id
-        tag_name = args.tag
-    else:
-        # New convention: last element of id list is the tag name
-        all_args = args.id  # list from nargs="+"
-        if len(all_args) < 2:
-            print(col("Usage: exptrack tag <id> [id2 ...] <tag>", R), file=sys.stderr); return
-        tag_name = all_args[-1]
-        exp_ids = all_args[:-1]
+    # `id` is nargs="+"; the last element is the tag name, the rest are exp ids.
+    all_args = args.id
+    if len(all_args) < 2:
+        die("Usage: exptrack tag <id> [id2 ...] <tag>")
+    tag_name = all_args[-1]
+    exp_ids = all_args[:-1]
     count = 0
     for eid in exp_ids:
         exp = find_experiment(conn, eid, "id, tags")
@@ -54,7 +44,7 @@ def cmd_note(args):
     conn = get_db()
     result = append_note(conn, args.id, args.text)
     if result.get("error"):
-        print(col(f"Not found: {args.id}", R), file=sys.stderr); return
+        die(f"Not found: {args.id}")
     conn.commit()
     print(col("Note saved.", G), file=sys.stderr)
 
@@ -62,16 +52,12 @@ def cmd_note(args):
 def cmd_untag(args):
     from ..core.queries import find_experiment, update_experiment_tags
     conn = get_db()
-    # Support both old-style (id=str, tag=str) and new batch-style (id=[...])
-    if hasattr(args, "tag"):
-        exp_ids = [args.id] if isinstance(args.id, str) else args.id
-        tag_name = args.tag
-    else:
-        all_args = args.id  # list from nargs="+"
-        if len(all_args) < 2:
-            print(col("Usage: exptrack untag <id> [id2 ...] <tag>", R), file=sys.stderr); return
-        tag_name = all_args[-1]
-        exp_ids = all_args[:-1]
+    # `id` is nargs="+"; the last element is the tag name, the rest are exp ids.
+    all_args = args.id
+    if len(all_args) < 2:
+        die("Usage: exptrack untag <id> [id2 ...] <tag>")
+    tag_name = all_args[-1]
+    exp_ids = all_args[:-1]
     count = 0
     for eid in exp_ids:
         exp = find_experiment(conn, eid, "id, tags")
@@ -98,7 +84,7 @@ def cmd_delete_tag(args):
     ).fetchall()
     match_count = sum(1 for r in rows if args.tag in json.loads(r["tags"] or "[]"))
     if not match_count:
-        print(dim(f"Tag '{args.tag}' not found on any experiment.")); return
+        print(dim(f"Tag '{args.tag}' not found on any experiment."), file=sys.stderr); return
     if not getattr(args, "yes", False):
         confirm = input(f"Remove #{args.tag} from {match_count} experiment(s)? [y/N] ")
         if confirm.lower() != "y":
@@ -113,7 +99,7 @@ def cmd_edit_note(args):
     conn = get_db()
     result = replace_notes(conn, args.id, args.text)
     if result.get("error"):
-        print(col(f"Not found: {args.id}", R), file=sys.stderr); return
+        die(f"Not found: {args.id}")
     conn.commit()
     print(col("Note updated.", G), file=sys.stderr)
 
@@ -150,7 +136,8 @@ def cmd_rm(args):
 
     if input(prompt).lower() == "y":
         for exp in to_delete:
-            delete_experiment(conn, exp["id"])
+            delete_experiment(conn, exp["id"], reclaim_blobs=False)
+        _sweep_blobs(conn)  # once for the batch, not per run
         conn.commit()
         print(col(f"Deleted {len(to_delete)} experiment(s) (including output files).", G),
               file=sys.stderr)
@@ -200,7 +187,8 @@ def cmd_clean(args):
         print(dim(f"Dry run: would delete {len(rows)} experiment(s).")); return
     if input("Delete all? [y/N] ").lower() == "y":
         for r in rows:
-            delete_experiment(conn, r["id"])
+            delete_experiment(conn, r["id"], reclaim_blobs=False)
+        _sweep_blobs(conn)
         conn.commit()
         print(col(f"Cleaned {len(rows)} experiments (including output files).", G))
 
@@ -214,7 +202,6 @@ def _clean_reset(conn, dry_run: bool = False):
     n_timeline = conn.execute("SELECT COUNT(*) FROM timeline").fetchone()[0]
 
     # Count output files/dirs too
-    import shutil
     n_output_items = 0
     try:
         root = cfg.project_root()
@@ -230,7 +217,7 @@ def _clean_reset(conn, dry_run: bool = False):
     if not total and not n_output_items:
         print(dim("Database is already empty.")); return
 
-    print(f"This will delete ALL data:")
+    print("This will delete ALL data:")
     print(f"  experiments: {n_exp}")
     print(f"  params:      {n_params}")
     print(f"  metrics:     {n_metrics}")
@@ -245,19 +232,16 @@ def _clean_reset(conn, dry_run: bool = False):
     if input(col("Delete everything? This cannot be undone. [y/N] ", R)).lower() != "y":
         return
 
-    # Delete experiment files first
+    # Delete experiment files first. No per-run blob reclaim — reset_all_tables
+    # truncates both blob tables wholesale a moment later.
     rows = conn.execute("SELECT id FROM experiments").fetchall()
     for r in rows:
-        delete_experiment(conn, r["id"])
+        delete_experiment(conn, r["id"], reclaim_blobs=False)
 
-    # Clear remaining tables
-    for table in ("params", "metrics", "artifacts", "timeline",
-                  "cell_lineage", "code_baselines", "git_diffs"):
-        try:
-            conn.execute(f"DELETE FROM {table}")
-        except Exception as e:
-            print(f"[exptrack] warning: could not clear table {table}: {e}",
-                  file=sys.stderr)
+    # Clear remaining tables (one shared list, so this and the dashboard's
+    # Reset button can't drift)
+    from ..core.db import reset_all_tables
+    reset_all_tables(conn)
     conn.commit()
 
     # Clean outputs directory and notebook_history
@@ -268,15 +252,10 @@ def _clean_reset(conn, dry_run: bool = False):
                         conf.get("notebook_history_dir", ".exptrack/notebook_history")):
             target = root / dirname
             if target.is_dir():
-                for child in target.iterdir():
-                    try:
-                        if child.is_dir():
-                            shutil.rmtree(child)
-                        else:
-                            child.unlink()
-                    except Exception as e:
-                        print(f"[exptrack] warning: could not remove {child}: {e}",
-                              file=sys.stderr)
+                # OS Trash, not rmtree — a reset wipes the tracking data, but
+                # the user's checkpoints stay recoverable.
+                for child in sorted(target.iterdir()):
+                    _trash_or_local(child, label="output")
     except Exception as e:
         print(f"[exptrack] warning: could not clean outputs directories: {e}",
               file=sys.stderr)
@@ -299,8 +278,7 @@ def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = Fa
     import re as _re
     match = _re.match(r"(\d+)d$", age_str)
     if not match:
-        print(col(f"Invalid age format: '{age_str}'. Use format like '30d' for 30 days.", R))
-        return
+        die(f"Invalid age format: '{age_str}'. Use format like '30d' for 30 days.")
 
     days = int(match.group(1))
     from datetime import timedelta
@@ -327,7 +305,8 @@ def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = Fa
         print(dim(f"Dry run: would delete {len(rows)} experiment(s).")); return
     if input(f"Delete {len(rows)} experiment(s)? [y/N] ").lower() == "y":
         for r in rows:
-            delete_experiment(conn, r["id"])
+            delete_experiment(conn, r["id"], reclaim_blobs=False)
+        _sweep_blobs(conn)
         conn.commit()
         print(col(f"Cleaned {len(rows)} experiment(s).", G))
 
@@ -335,27 +314,14 @@ def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = Fa
 def _clean_orphans(conn, dry_run: bool = False):
     """Purge DB rows and files not linked to any existing experiment."""
 
-    orphan_tables = ("params", "metrics", "artifacts", "timeline")
-    total = 0
-    for table in orphan_tables:
-        n = conn.execute(
-            f"SELECT COUNT(*) FROM {table} "
-            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
-        ).fetchone()[0]
-        if n:
-            print(f"  {table}: {n} orphaned row(s)", file=sys.stderr)
-            total += n
-
-    # cell_lineage: cells not referenced by any timeline row
-    n_cells = conn.execute(
-        "SELECT COUNT(*) FROM cell_lineage "
-        "WHERE cell_hash NOT IN ("
-        "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
-        ")"
-    ).fetchone()[0]
-    if n_cells:
-        print(f"  cell_lineage: {n_cells} unreferenced cell(s)", file=sys.stderr)
-        total += n_cells
+    # Row counts come from the same specs the deletion uses (core.db), so the
+    # preview, the --dry-run and the confirm can never describe a different set
+    # of rows than the sweep removes.
+    from ..core.db import count_orphans, sweep_orphans
+    row_counts = count_orphans(conn)
+    total = sum(row_counts.values())
+    for table, n in row_counts.items():
+        print(f"  {table}: {n} orphaned row(s)", file=sys.stderr)
 
     # code_baselines: check if any exist
     try:
@@ -398,34 +364,21 @@ def _clean_orphans(conn, dry_run: bool = False):
         print(f"[exptrack] warning: notebook_history scan failed: {e}",
               file=sys.stderr)
 
-    # outputs: directories not linked to any existing experiment
-    import shutil
+    # outputs: paths under outputs/ not linked to any existing experiment.
+    # Shared with the dashboard's Clean button so the two never disagree about
+    # what counts as an orphan.
     orphan_dirs = []
     try:
-        root = cfg.project_root()
-        conf = cfg.load()
-        outputs_dir = root / conf.get("outputs_dir", "outputs")
-        if outputs_dir.is_dir():
-            # Collect output_dir values from all experiments
-            exp_dirs = set()
-            for r in conn.execute("SELECT output_dir FROM experiments WHERE output_dir IS NOT NULL").fetchall():
-                exp_dirs.add(str(Path(r["output_dir"]).resolve()))
-            # Also collect experiment names for name-based matching
-            exp_names = {r[0] for r in conn.execute("SELECT name FROM experiments").fetchall()}
-            for child in outputs_dir.iterdir():
-                if not child.is_dir():
-                    continue
-                resolved = str(child.resolve())
-                if resolved not in exp_dirs and child.name not in exp_names:
-                    orphan_dirs.append(child)
-            if orphan_dirs:
-                dir_size = sum(
-                    f.stat().st_size for d in orphan_dirs
-                    for f in d.rglob("*") if f.is_file()
-                )
-                print(f"  outputs: {len(orphan_dirs)} orphaned dir(s) "
-                      f"({_fmt_bytes(dir_size)})", file=sys.stderr)
-                total += len(orphan_dirs)
+        from ..core.db import describe_orphan_output_paths
+        # Annotated by the same helper the dashboard's confirm dialog uses, so
+        # the two never report different sizes for the same path set.
+        orphan_infos = describe_orphan_output_paths(conn)
+        orphan_dirs = [Path(o["path"]) for o in orphan_infos]
+        if orphan_infos:
+            dir_size = sum(o["bytes"] for o in orphan_infos)
+            print(f"  outputs: {len(orphan_infos)} orphaned path(s) "
+                  f"({fmt_bytes(dir_size)})", file=sys.stderr)
+            total += len(orphan_infos)
     except Exception as e:
         print(f"[exptrack] warning: outputs scan for orphans failed: {e}",
               file=sys.stderr)
@@ -444,34 +397,21 @@ def _clean_orphans(conn, dry_run: bool = False):
     if input(f"Purge {total} orphaned item(s)? [y/N] ").lower() != "y":
         return
 
-    for table in orphan_tables:
-        conn.execute(
-            f"DELETE FROM {table} "
-            f"WHERE exp_id NOT IN (SELECT id FROM experiments)"
-        )
-    if n_cells:
-        conn.execute(
-            "DELETE FROM cell_lineage "
-            "WHERE cell_hash NOT IN ("
-            "  SELECT DISTINCT cell_hash FROM timeline WHERE cell_hash IS NOT NULL"
-            ")"
-        )
+    # One sweeper for every orphan-row table (including the refcounted blob
+    # tables), driven by the same specs that produced the counts above.
+    sweep_orphans(conn)
     if n_baselines:
         conn.execute("DELETE FROM code_baselines")
-    conn.commit()
+        conn.commit()
 
+    # Files go to the OS Trash (local .exptrack/trash/ fallback), never
+    # unlink/rmtree — an orphaned output dir is routinely model checkpoints,
+    # and "orphaned" is a heuristic that also catches runs deleted with their
+    # files deliberately kept.
     for fp in snap_files:
-        try:
-            fp.unlink()
-        except Exception as e:
-            print(f"[exptrack] warning: could not remove snapshot {fp}: {e}",
-                  file=sys.stderr)
+        _trash_or_local(fp, label="notebook snapshot")
     for d in orphan_dirs:
-        try:
-            shutil.rmtree(d)
-        except Exception as e:
-            print(f"[exptrack] warning: could not remove orphan dir {d}: {e}",
-                  file=sys.stderr)
+        _trash_or_local(d, label="orphaned output dir")
     # Clean up empty notebook_history dirs
     try:
         root = cfg.project_root()
@@ -505,9 +445,9 @@ def cmd_finish(args):
     conn = get_db()
     result = finish_experiment(conn, args.id)
     if result.get("error"):
-        print(col(f"Not found: {args.id}", R)); return
+        die(f"Not found: {args.id}")
     if result.get("message") == "already done":
-        print(dim(f"Experiment '{result['name']}' is already done.")); return
+        print(dim(f"Experiment '{result['name']}' is already done."), file=sys.stderr); return
     conn.commit()
 
     duration = result["duration_s"]
@@ -518,16 +458,12 @@ def cmd_finish(args):
     # Fire plugin hooks
     try:
         from .. import config as cfg
+        from ..plugins import make_exp_proxy
         from ..plugins import registry as plugins
         plugins.load_from_config(cfg.load())
-
-        class _FinishProxy:
-            """Lightweight proxy so plugins get the expected experiment interface."""
-            def __init__(self, r):
-                self.id = r["id"]
-                self.name = r["name"]
-                self.status = "done"
-        plugins.on_finish(_FinishProxy(result))
+        proxy = make_exp_proxy(conn, result["id"], status="done",
+                               duration_s=result["duration_s"])
+        plugins.on_finish(proxy)
     except Exception as e:
         print(f"[exptrack] warning: plugin hooks failed: {e}", file=sys.stderr)
 
@@ -540,7 +476,7 @@ def cmd_study(args):
     conn = get_db()
     studies = add_to_study(conn, args.id, args.study)
     if studies is None:
-        print(col(f"Not found: {args.id}", R)); return
+        die(f"Not found: {args.id}")
     conn.commit()
     print(col(f"Added to study '{args.study}'", G))
 
@@ -551,7 +487,7 @@ def cmd_unstudy(args):
     conn = get_db()
     studies = remove_from_study(conn, args.id, args.study)
     if studies is None:
-        print(col(f"Not found: {args.id}", R)); return
+        die(f"Not found: {args.id}")
     conn.commit()
     print(col(f"Removed from study '{args.study}'", G))
 
@@ -588,7 +524,7 @@ def cmd_delete_study(args):
     all_studies = get_all_studies(conn)
     match = [s for s in all_studies if s["name"] == args.name]
     if not match:
-        print(dim(f"Study '{args.name}' not found.")); return
+        print(dim(f"Study '{args.name}' not found."), file=sys.stderr); return
     count = match[0]["count"]
     if not getattr(args, "yes", False):
         confirm = input(f"Remove study '{args.name}' from {count} experiment(s)? [y/N] ")
@@ -605,7 +541,7 @@ def cmd_stage(args):
     conn = get_db()
     exp = find_experiment(conn, args.id, "id")
     if not exp:
-        print(col(f"Not found: {args.id}", R)); return
+        die(f"Not found: {args.id}")
     update_experiment_stage(conn, exp["id"], args.number, args.name)
     conn.commit()
     label = f" ({args.name})" if args.name else ""

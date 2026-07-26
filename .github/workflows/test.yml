@@ -8,10 +8,12 @@ on:
 
 jobs:
   test:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -32,3 +34,68 @@ jobs:
       - name: Run legacy test runner
         run: |
           python tests/run_all.py
+
+  # exptrack's headline feature is monkey-patching argparse / matplotlib /
+  # TensorBoard, but those libraries aren't needed to *run* exptrack, so the
+  # tests covering them skip on the matrix above. This job installs them so an
+  # upstream signature change is caught here rather than by a user.
+  integrations:
+    name: Patched-library integrations
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev,integrations]"
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --tb=short
+
+      # The point of this job is that these tests actually run. If an import
+      # breaks they would silently skip again, the suite would still pass
+      # green, and the coverage would be gone with nobody noticing.
+      - name: Fail if the integration tests skipped
+        run: |
+          pytest tests/ -q -rs | tee result.txt
+          if grep -qE "matplotlib not installed|could not import '(pandas|numpy)'|numpy not installed" result.txt; then
+            echo "::error::Integration tests skipped despite the integrations extra being installed."
+            exit 1
+          fi
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Ruff
+        run: |
+          ruff check .
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: ESLint (dashboard JS)
+        run: |
+          npm ci
+          npx eslint exptrack/dashboard/static/js

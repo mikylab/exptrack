@@ -5,6 +5,11 @@ __pycache__/
 dist/
 build/
 
+# Test/coverage artifacts (pytest-cov ships in the [dev] extra)
+.coverage
+.coverage.*
+htmlcov/
+
 # exptrack — local only (db, snapshots, config may contain auth tokens)
 .exptrack/experiments.db
 .exptrack/experiments.db-wal
@@ -16,3 +21,6 @@ outputs/
 
 # other
 .DS_Store
+
+# Node (dev-only dashboard ESLint tooling)
+node_modules/

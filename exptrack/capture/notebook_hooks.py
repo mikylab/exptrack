@@ -18,6 +18,7 @@ from .cell_lineage import (
     get_cell_baseline,
     get_cell_source,
     is_magic_only,
+    lookup_stored_parent,
     simple_diff,
     store_cell_lineage,
     update_cell_baseline,
@@ -52,6 +53,7 @@ _nb_state: dict = {
     "hash_to_last_exec_hash": {},  # cell_lineage_key -> last exec's source hash
     "_stdout_buf":   None,    # StringIO capturing the running cell's stdout
     "setup_count":   0,       # number of %%setup cells attached to the experiment
+    "last_error":    None,    # traceback str if the most recent cell raised, else None
 }
 
 # Cap on captured cell output (stdout + trailing-expression repr) stored per
@@ -178,6 +180,7 @@ def attach_notebook(exp: Experiment, nb_name: str = "notebook", ip=None):
     _nb_state["first_run"]    = True
     _nb_state["last_cell_hash"] = None
     _nb_state["hash_to_last_exec_hash"] = {}
+    _nb_state["last_error"]   = None
     if ip is None:
         try:
             ip = get_ipython()
@@ -209,11 +212,18 @@ def attach_notebook_deferred(nb_file: str = "", ip=None, start_fn=None):
     _nb_state["exp"] = None
     _nb_state["last_cell_hash"] = None
     _nb_state["hash_to_last_exec_hash"] = {}
+    _nb_state["last_error"] = None
 
     # Eagerly patch savefig so plots saved before the experiment is created
     # are buffered and flushed when the experiment starts.
     from .matplotlib_patch import patch_savefig
     patch_savefig()
+
+    # Eagerly install the TensorBoard import hook so a SummaryWriter created
+    # before the experiment exists still mirrors once it does (mirroring reads
+    # the active run from _nb_state, so no retarget call is needed per run).
+    from .tensorboard_patch import patch_tensorboard
+    patch_tensorboard()
 
     if ip is None:
         try:
@@ -268,6 +278,45 @@ def _unregister_hook(ip):
                 pass  # hook wasn't registered for this event — expected
             except Exception as e:
                 debug_log(f"could not unregister {event} hook: {e}")
+
+
+def _detect_cell_error(result):
+    """Return the formatted traceback string if the cell raised, else None.
+
+    IPython's ExecutionResult carries the exception in ``error_in_exec`` (a
+    runtime error in the cell body) or ``error_before_exec`` (a syntax/parse
+    error). Best-effort — never raises.
+    """
+    if result is None:
+        return None
+    exc = None
+    try:
+        exc = getattr(result, "error_in_exec", None)
+        if exc is None:
+            exc = getattr(result, "error_before_exec", None)
+    except Exception:
+        return None
+    if exc is None:
+        return None
+    try:
+        import traceback as _tb
+        return "".join(_tb.format_exception(type(exc), exc, exc.__traceback__))
+    except Exception:
+        try:
+            return f"{type(exc).__name__}: {exc}"
+        except Exception:
+            return "cell raised an exception"
+
+
+def consume_cell_error():
+    """Return the last cell's error traceback (and clear it), or None.
+
+    Read by the notebook finish path so an auto-finish (kernel shutdown / new
+    run boundary) can mark the run ``failed`` when its most recent cell raised.
+    """
+    err = _nb_state.get("last_error")
+    _nb_state["last_error"] = None
+    return err
 
 
 def _get_cell_source(result, ip):
@@ -342,7 +391,14 @@ def _process_cell_lineage(source, ch, notebook, exec_num):
     magic_only = is_magic_only(source)
 
     # ── 1. Content-addressed cell lineage ────────────────────────────────
-    parent_hash = None if magic_only else find_parent_hash(notebook, source, ch)
+    # An exact re-execution of previously-seen source already has its parent
+    # frozen in cell_lineage — reuse it (one indexed PK lookup) instead of
+    # re-running the O(N) similarity scan on every unchanged rerun.
+    if magic_only:
+        parent_hash = None
+    else:
+        seen, stored_parent = lookup_stored_parent(ch, notebook)
+        parent_hash = stored_parent if seen else find_parent_hash(notebook, source, ch)
     store_cell_lineage(notebook, source, parent_hash)
 
     # ── 2. Compute diff against parent cell (if any) ────────────────────
@@ -750,6 +806,12 @@ def _post_run_cell(result=None):
         # under the current node instead of leaving it as a separate, unlinked
         # experiment. One-shot; an explicit %exptrack promote can re-target it.
         _maybe_autolink_session(exp)
+
+        # Track whether this cell raised, so an auto-finish (kernel shutdown or
+        # a new-run boundary) can mark a broken run 'failed'. A clean cell
+        # clears the flag — a fixed-and-rerun cell shouldn't stay failed. Set
+        # BEFORE the capture pipeline so a capture hiccup can't lose it.
+        _nb_state["last_error"] = _detect_cell_error(result)
 
         _process_tracked_cell(exp, ip, source, output)
 

@@ -21,6 +21,7 @@ from .notebook_hooks import (
     detach_notebook,
 )
 from .script_tracking import capture_script_snapshot
+from .tensorboard_patch import patch_tensorboard
 
 __all__ = [
     "_nb_state",
@@ -32,4 +33,5 @@ __all__ = [
     "detach_notebook",
     "patch_argparse",
     "patch_savefig",
+    "patch_tensorboard",
 ]

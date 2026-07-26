@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .capture import attach_notebook, detach_notebook, patch_savefig
+from .capture import attach_notebook, detach_notebook, patch_savefig, patch_tensorboard
 from .core import Experiment
 
 _active: Experiment | None = None
@@ -41,14 +41,18 @@ _active: Experiment | None = None
 
 # ── Explicit API ──────────────────────────────────────────────────────────────
 
-def start(name: str = "", nb_file: str = "", **params) -> Experiment:
-    """Start a new experiment. Pass hyperparams as kwargs."""
+def start(name: str = "", nb_file: str = "", new: bool = False, **params) -> Experiment:
+    """Start a new experiment. Pass hyperparams as kwargs.
+
+    ``new=True`` is a readability alias — every ``start()`` already closes the
+    prior run and opens a fresh one, so ``start(new=True)`` documents the intent
+    ("this is a new attempt") at the call site for the run/try/compare loop.
+    """
     global _active
     if _active is not None:
-        try: _active.finish()
-        except Exception as e: print(f"[exptrack] warning: could not finish previous experiment: {e}", file=sys.stderr)
-        detach_notebook()
-        _active = None
+        # Close the prior run at this boundary; auto=True so a run whose last
+        # cell raised is recorded 'failed' rather than 'done'.
+        _finish_active(auto=True)
 
     # Try to detect notebook filename
     if not nb_file:
@@ -69,6 +73,7 @@ def start(name: str = "", nb_file: str = "", **params) -> Experiment:
     )
     attach_notebook(_active, nb_name=Path(nb_file).stem if nb_file else "notebook", ip=ip)
     patch_savefig(_active)
+    patch_tensorboard(_active)
     return _active
 
 
@@ -85,18 +90,18 @@ def param(key: str, value: Any) -> None:
 
 
 def tag(*tags: str) -> None:
+    # Route through the real mutator so tags land in the experiments.tags column
+    # (the dashboard/CLI read that, not a param). add_tag dedups; batch so N tags
+    # collapse to one commit instead of one fsync each.
     exp = _require()
-    exp.tags.extend(tags)
-    exp.log_param("_tags", exp.tags)
+    with exp.batched_writes():
+        for t in tags:
+            exp.add_tag(t)
 
 
 def note(text: str) -> None:
-    exp = _require()
-    exp.notes = (exp.notes + "\n" + text).strip()
-    from .core import get_db
-    with get_db() as conn:
-        conn.execute("UPDATE experiments SET notes=? WHERE id=?", (exp.notes, exp.id))
-        conn.commit()
+    # add_note appends (newline-joined, stripped) and writes the notes column.
+    _require().add_note(text)
 
 
 def artifact(path: str | Path, label: str = "") -> None:
@@ -109,11 +114,40 @@ def out(filename: str) -> Path:
 
 
 def done() -> None:
+    """Explicitly finish the active run as successful.
+
+    An explicit done() declares success and always finishes 'done', even if the
+    last cell happened to raise — only the automatic finish paths (kernel
+    shutdown, a new-run boundary) mark a broken run 'failed'.
+    """
+    _finish_active(auto=False)
+
+
+def _finish_active(auto: bool = False) -> None:
+    """Finish the active run. When *auto* is True (kernel shutdown / new-run
+    boundary) and the most recent cell raised, mark the run 'failed' with its
+    traceback so broken runs are self-identifying and never need manual
+    deletion."""
     global _active
     if _active is None:
-        print("[exptrack] No active experiment.")
+        if not auto:
+            print("[exptrack] No active experiment.")
         return
-    _active.finish()
+    err_tb = None
+    if auto:
+        try:
+            from .capture.notebook_hooks import consume_cell_error
+            err_tb = consume_cell_error()
+        except Exception:
+            err_tb = None
+    try:
+        if err_tb and not _active._finished:
+            msg = err_tb.strip().splitlines()[-1] if err_tb.strip() else "cell raised an exception"
+            _active.fail(msg, traceback=err_tb)
+        else:
+            _active.finish()
+    except Exception as e:
+        print(f"[exptrack] warning: could not finish experiment: {e}", file=sys.stderr)
     detach_notebook()
     _active = None
 
@@ -166,7 +200,7 @@ def _detect_nb_name() -> str:
 
     # Strategy 1: VS Code injects the notebook path into IPython globals
     try:
-        ip = get_ipython()  # type: ignore[name-defined]
+        ip = get_ipython()  # type: ignore[name-defined]  # noqa: F821 (IPython builtin)
         vsc_path = ip.user_ns.get("__vsc_ipynb_file__", "")
         if vsc_path:
             return str(vsc_path)
@@ -215,20 +249,15 @@ def _detect_nb_name() -> str:
     # Classic Jupyter sometimes stores the notebook name in
     # NotebookApp.notebook_name or as IPython config metadata.
     try:
-        ip = get_ipython()  # type: ignore[name-defined]
+        ip = get_ipython()  # type: ignore[name-defined]  # noqa: F821 (IPython builtin)
         # Some notebook servers store session info accessible via JavaScript
         # bridge or display metadata — check IPython's db/history for clues.
         # Also check traitlets config on the running kernel app.
         from ipykernel.zmqshell import ZMQInteractiveShell
         if isinstance(ip, ZMQInteractiveShell):
-            # Try parent header — classic Jupyter sends notebook name in
-            # metadata of execute requests (ipykernel >= 6)
-            parent = getattr(ip, "get_parent", lambda: {})()
-            if not parent:
-                parent = getattr(ip, "_parent_header", {})
-            nb_name = (parent.get("metadata", {}).get("cellId", "") or "")
-            # cellId looks like "cell-<hash>" — not useful.
-            # Try the kernel app's session/notebook config instead.
+            # The execute-request parent header was tried here, but the only
+            # name it carries is metadata.cellId ("cell-<hash>"), which is not
+            # the notebook name. Use the kernel app's connection file instead.
             try:
                 from ipykernel.kernelapp import IPKernelApp
                 app = IPKernelApp.instance()
@@ -281,8 +310,8 @@ def _detect_nb_name() -> str:
 
 def load_ipython_extension(ip: Any) -> None:
     """Called by %load_ext exptrack"""
-    from .capture import attach_notebook_deferred
     from . import config as _cfg
+    from .capture import attach_notebook_deferred
 
     # Don't create an experiment yet — defer until the first real cell runs.
     # This prevents %load_ext exptrack from being counted as its own run.
@@ -301,6 +330,20 @@ def load_ipython_extension(ip: Any) -> None:
         """Start or restart experiment. Optional: %exp_start my_run_name"""
         nb_file = _detect_nb_name()
         _auto_start(nb_file, name=line.strip(), ip=ip)
+
+    def exp_new(line):
+        """Start a fresh run (new attempt) without restarting the kernel.
+
+        Finishes the current run (marking it failed if its last cell raised)
+        and begins a new one, so each "run, run, try" attempt is its own
+        comparable experiment. Put %exp_new at the top of the notebook to make
+        every Run-All a separate attempt with zero per-cell ceremony.
+        Optional: %exp_new my_run_name
+
+        Same effect as %exp_start (every start closes the prior run) — a
+        distinct name for the "this is a new attempt" intent.
+        """
+        exp_start(line)
 
     def exp_done(line):
         """Finish the current experiment."""
@@ -328,6 +371,7 @@ def load_ipython_extension(ip: Any) -> None:
 
     # Register magics via the ip instance (works without get_ipython() context)
     ip.register_magic_function(exp_start, magic_kind='line')
+    ip.register_magic_function(exp_new, magic_kind='line')
     ip.register_magic_function(exp_done, magic_kind='line')
     ip.register_magic_function(exp_status, magic_kind='line')
     ip.register_magic_function(exp_tag, magic_kind='line')
@@ -341,19 +385,19 @@ def load_ipython_extension(ip: Any) -> None:
         print(f"[exptrack] warning: could not register session magics: {e}",
               file=sys.stderr)
 
-    # Finish experiment on kernel shutdown
+    # Finish experiment on kernel shutdown — auto path, so a run whose last
+    # cell raised is recorded as 'failed' rather than silently 'done'.
     import atexit
-    atexit.register(lambda: done() if _active else None)
+    atexit.register(lambda: _finish_active(auto=True) if _active else None)
 
-    print("[exptrack] Loaded. Use %exp_status, %exp_done, %exp_tag, %exp_note")
+    print("[exptrack] Loaded. Use %exp_new, %exp_status, %exp_done, %exp_tag, %exp_note")
 
 
 def _auto_start(nb_file: str = "", name: str = "", ip: Any = None) -> None:
     global _active
     if _active is not None:
-        try: _active.finish()
-        except Exception as e: print(f"[exptrack] warning: could not finish previous experiment: {e}", file=sys.stderr)
-        detach_notebook()
+        # New-run boundary — close the prior run (failed if its last cell raised).
+        _finish_active(auto=True)
 
     _active = Experiment(
         name=name or "",
@@ -363,3 +407,4 @@ def _auto_start(nb_file: str = "", name: str = "", ip: Any = None) -> None:
     nb_name = Path(nb_file).stem if nb_file else "notebook"
     attach_notebook(_active, nb_name=nb_name, ip=ip)
     patch_savefig(_active)
+    patch_tensorboard(_active)

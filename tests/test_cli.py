@@ -82,8 +82,8 @@ def test_cmd_init_patches_gitignore(tmp_path, monkeypatch):
 
 def test_cmd_stale_marks_old_running_experiments(tmp_project):
     """cmd_stale marks experiments running longer than --hours as failed."""
-    from exptrack.core import Experiment, get_db
     from exptrack.cli.admin_cmds import cmd_stale
+    from exptrack.core import Experiment, get_db
 
     # Create an experiment and manually backdate its created_at
     exp = Experiment(script="train.py")
@@ -117,8 +117,8 @@ def test_cmd_stale_marks_old_running_experiments(tmp_project):
 
 def test_cmd_stale_ignores_recent_experiments(tmp_project):
     """cmd_stale does not touch experiments that are still within the threshold."""
-    from exptrack.core import Experiment, get_db
     from exptrack.cli.admin_cmds import cmd_stale
+    from exptrack.core import Experiment, get_db
 
     exp = Experiment(script="train.py")
     eid = exp.id

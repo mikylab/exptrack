@@ -4,7 +4,6 @@ exptrack/capture/cell_lineage.py — Content-addressed cell lineage and diffing
 from __future__ import annotations
 
 import hashlib
-import sys
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 
@@ -37,6 +36,48 @@ def is_magic_only(source: str) -> bool:
     return has_magic
 
 
+_SIMILARITY_THRESHOLD = 0.3
+
+
+def lookup_stored_parent(current_hash: str, notebook: str | None = None) -> tuple[bool, str | None]:
+    """Return ``(found, parent_hash)`` for an already-stored cell.
+
+    A cell is content-addressed, so if ``current_hash`` is already in
+    ``cell_lineage`` this is an exact re-execution of previously-seen source
+    — its parent was resolved once and frozen. Reusing that stored value lets
+    ``_process_cell_lineage`` skip the O(N) SequenceMatcher scan on every
+    unchanged rerun (a hot path in long notebook sessions). ``found`` is
+    False when the hash has never been stored (a genuinely new/edited cell,
+    which still needs the fuzzy search).
+
+    ``notebook`` scopes the lookup: identical source in two different notebooks
+    hashes to the same ``cell_hash``, so without this filter a cell's parent
+    resolved in notebook A would leak into notebook B (its own row is never
+    stored — ``store_cell_lineage`` INSERT-OR-IGNOREs on the shared PK). When
+    ``notebook`` is given, a hit in a *different* notebook reports ``found=False``
+    so the fuzzy search runs against B's own lineage instead.
+    """
+    try:
+        from ..core import get_db
+        conn = get_db()
+        if notebook is None:
+            row = conn.execute(
+                "SELECT parent_hash FROM cell_lineage WHERE cell_hash=?",
+                (current_hash,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT parent_hash FROM cell_lineage WHERE cell_hash=? AND notebook=?",
+                (current_hash, notebook),
+            ).fetchone()
+    except Exception as e:
+        debug_log(f"could not look up stored parent: {e}")
+        return False, None
+    if row is None:
+        return False, None
+    return True, row["parent_hash"]
+
+
 def find_parent_hash(notebook: str, source: str, current_hash: str) -> str | None:
     """
     Find the most similar existing cell in this notebook's lineage.
@@ -45,6 +86,13 @@ def find_parent_hash(notebook: str, source: str, current_hash: str) -> str | Non
     existing cell, that existing cell is the parent.
 
     Magic-only cells are excluded both as the search subject and as candidates.
+
+    Cheap prefilters keep the scan from being O(N·L²) on every call: candidates
+    whose length can't possibly clear the similarity bar are skipped before any
+    matching, and `SequenceMatcher`'s cheap `real_quick_ratio`/`quick_ratio`
+    upper bounds gate the full `.ratio()` — an exact port of what
+    `difflib.get_close_matches` does. The subject sequence is set once and
+    reused across candidates so its autojunk index isn't rebuilt each time.
     """
     if is_magic_only(source):
         return None
@@ -65,20 +113,39 @@ def find_parent_hash(notebook: str, source: str, current_hash: str) -> str | Non
 
     best_hash = None
     best_ratio = 0.0
+    src_len = len(source)
+
+    matcher = SequenceMatcher(None)
+    matcher.set_seq2(source)  # subject fixed; only seq1 changes per candidate
 
     for row in rows:
         if row["cell_hash"] == current_hash:
             continue
-        if is_magic_only(row["source"]):
+        cand = row["source"]
+        # The lowest ratio still worth evaluating: strictly beat the running
+        # best once we have one, otherwise reach the acceptance threshold.
+        gate = best_ratio if best_hash is not None else _SIMILARITY_THRESHOLD
+        # Length band: ratio() = 2*M/(la+lb) ≤ 2*min(la,lb)/(la+lb), so a
+        # candidate whose length upper-bound is below the gate can never
+        # qualify — skip it before the magic-only parse or any matching.
+        cand_len = len(cand)
+        denom = src_len + cand_len
+        if denom == 0 or (2.0 * min(src_len, cand_len)) < gate * denom:
             continue
-        ratio = SequenceMatcher(None, row["source"], source).ratio()
-        if ratio > best_ratio:
+        if is_magic_only(cand):
+            continue
+        matcher.set_seq1(cand)
+        # Cheap upper bounds first; only compute the real ratio if it can reach
+        # the gate (an exact port of difflib.get_close_matches's fast path).
+        if (matcher.real_quick_ratio() < gate
+                or matcher.quick_ratio() < gate):
+            continue
+        ratio = matcher.ratio()
+        if ratio >= _SIMILARITY_THRESHOLD and ratio > best_ratio:
             best_ratio = ratio
             best_hash = row["cell_hash"]
 
-    if best_ratio >= 0.3:
-        return best_hash
-    return None
+    return best_hash
 
 
 def store_cell_lineage(notebook: str, source: str, parent_hash: str | None = None):
@@ -99,18 +166,16 @@ def store_cell_lineage(notebook: str, source: str, parent_hash: str | None = Non
                 f"\n# [truncated at {max_kb} KB by exptrack]"
             )
         with get_db() as conn:
-            existing = conn.execute(
-                "SELECT cell_hash FROM cell_lineage WHERE cell_hash=?", (ch,)
-            ).fetchone()
-            if not existing:
-                conn.execute(
-                    """INSERT INTO cell_lineage
-                       (cell_hash, notebook, source, parent_hash, created_at)
-                       VALUES (?,?,?,?,?)""",
-                    (ch, notebook, stored_source, parent_hash,
-                     datetime.now(timezone.utc).isoformat())
-                )
-                conn.commit()
+            # cell_hash is the PK; OR IGNORE no-ops on an existing row (drops the
+            # separate pre-SELECT).
+            conn.execute(
+                """INSERT OR IGNORE INTO cell_lineage
+                   (cell_hash, notebook, source, parent_hash, created_at)
+                   VALUES (?,?,?,?,?)""",
+                (ch, notebook, stored_source, parent_hash,
+                 datetime.now(timezone.utc).isoformat())
+            )
+            conn.commit()
     except Exception as e:
         debug_log(f"could not store cell lineage: {e}")
 

@@ -138,6 +138,95 @@ def test_find_parent_hash_excludes_self(tmp_project):
     assert parent is None
 
 
+def test_lookup_stored_parent_hit_and_miss(tmp_project):
+    """lookup_stored_parent returns the frozen parent for a re-run cell."""
+    from exptrack.capture.cell_lineage import (
+        cell_hash,
+        lookup_stored_parent,
+        store_cell_lineage,
+    )
+
+    original = "x = 1\ny = 2\nz = 3\nw = 4\nv = 5"
+    store_cell_lineage("nb.ipynb", original)
+    edited = "x = 1\ny = 2\nz = 3\nw = 4\nv = 99"
+    edited_hash = cell_hash(edited)
+    store_cell_lineage("nb.ipynb", edited, cell_hash(original))
+
+    # A stored (re-run) cell: found, parent reused verbatim.
+    seen, parent = lookup_stored_parent(edited_hash)
+    assert seen is True
+    assert parent == cell_hash(original)
+
+    # A root cell stored with no parent: found, parent None.
+    seen, parent = lookup_stored_parent(cell_hash(original))
+    assert seen is True
+    assert parent is None
+
+    # An unseen hash: not found (caller must run the fuzzy search).
+    seen, parent = lookup_stored_parent("ffffffffffff")
+    assert seen is False
+    assert parent is None
+
+
+def test_lookup_stored_parent_is_notebook_scoped(tmp_project):
+    """An identical cell in two notebooks must not share a lineage parent.
+
+    Cells are content-addressed, so the same source hashes to the same
+    ``cell_hash`` in every notebook and ``store_cell_lineage`` INSERT-OR-IGNOREs
+    on that shared PK — B's own row is never written. Without the notebook
+    filter, ``lookup_stored_parent`` would hand notebook B the parent that was
+    resolved in notebook A (a phantom "edited from" link). Regression test for
+    the cross-notebook lineage bleed fix (AUDIT_DIFF_REVERT 5.3 / L6).
+    """
+    from exptrack.capture.cell_lineage import (
+        cell_hash,
+        lookup_stored_parent,
+        store_cell_lineage,
+    )
+
+    # Notebook A: a root cell, then an edited cell whose parent is the root.
+    root = "x = 1\ny = 2\nz = 3\nw = 4\nv = 5"
+    edited = "x = 1\ny = 2\nz = 3\nw = 4\nv = 99"
+    root_hash = cell_hash(root)
+    edited_hash = cell_hash(edited)
+    store_cell_lineage("nb_a.ipynb", root)
+    store_cell_lineage("nb_a.ipynb", edited, root_hash)
+
+    # Notebook B runs the *identical* edited source. Its hash collides with A's
+    # row, but scoped to nb_b it has no lineage yet, so the lookup must miss and
+    # defer to the fuzzy search (found=False) rather than leak A's parent.
+    seen, parent = lookup_stored_parent(edited_hash, notebook="nb_b.ipynb")
+    assert seen is False
+    assert parent is None
+
+    # Scoped to its own notebook, the same hash still resolves A's parent.
+    seen, parent = lookup_stored_parent(edited_hash, notebook="nb_a.ipynb")
+    assert seen is True
+    assert parent == root_hash
+
+    # Unscoped (notebook=None) is the legacy behavior that would bleed across
+    # notebooks — it finds the row regardless of notebook.
+    seen, parent = lookup_stored_parent(edited_hash)
+    assert seen is True
+    assert parent == root_hash
+
+
+def test_find_parent_hash_boundary_similarity(tmp_project):
+    """The optimized matcher keeps the exact >= 0.3 acceptance boundary."""
+    from exptrack.capture.cell_lineage import (
+        cell_hash,
+        find_parent_hash,
+        store_cell_lineage,
+    )
+    # Two candidates, one clearly similar; the optimized gates must still
+    # pick the best real match, not prune it.
+    store_cell_lineage("nb.ipynb", "a = 1\nb = 2\nc = 3\nd = 4")
+    store_cell_lineage("nb.ipynb", "completely unrelated text here xyz")
+    edited = "a = 1\nb = 2\nc = 3\nd = 5"
+    parent = find_parent_hash("nb.ipynb", edited, cell_hash(edited))
+    assert parent == cell_hash("a = 1\nb = 2\nc = 3\nd = 4")
+
+
 def test_is_magic_only():
     """Magic-only cells are detected; mixed/code/comment-only cells are not."""
     from exptrack.capture.cell_lineage import is_magic_only

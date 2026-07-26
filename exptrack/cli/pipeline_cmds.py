@@ -137,7 +137,7 @@ def _get_parent_cmdline(pid: int) -> tuple[int, list[str]]:
 
 
 _RUN_START_RESERVED = {"name", "script", "tags", "study", "stage",
-                       "stage-name", "notes"}
+                       "stage-name", "notes", "resume", "cmd"}
 
 
 def _parse_freeform_params(raw):
@@ -289,10 +289,44 @@ def cmd_run_start(args):
                  (str(out_dir), exp.id))
     exp.log_artifact(str(out_dir), label="output_dir")
 
+    # Record the real command + snapshot the calling shell script so the run is
+    # reconstructable (the wrapper argv 'exptrack run-start …' is not what ran).
+    _capture_pipeline_command(conn, exp, getattr(args, "cmd", ""), calling_script)
+
     study, stage = _apply_study_stage(conn, exp, args)
     conn.commit()
 
     _emit_run_env(out_dir, exp, study, stage)
+
+
+def _capture_pipeline_command(conn, exp, cmd, calling_script):
+    """Record the real command (``--cmd``) on the run and snapshot the calling
+    shell script's content (content-addressed) so a pipeline run records what
+    actually executed, not the ``exptrack run-start`` wrapper invocation."""
+    if cmd:
+        conn.execute("UPDATE experiments SET command=? WHERE id=?", (cmd, exp.id))
+    # Snapshot the invoking shell script's content, if we found a real file.
+    try:
+        p = Path(calling_script)
+        if p.is_file() and p.suffix in (".sh", ".bash", ".zsh", ".slurm", ""):
+            src = p.read_text(errors="replace")
+            conf = cfg.load()
+            if len(src.encode("utf-8", "replace")) <= int(conf.get("snapshot_max_kb", 512)) * 1024:
+                from ..core.db import store_code_snapshot
+                h = store_code_snapshot(conn, src, kind="shellscript", path=str(p))
+                if h:
+                    existing = exp._params.get("_code_snapshot")
+                    lst = []
+                    if existing:
+                        try:
+                            lst = json.loads(existing)
+                        except Exception:
+                            lst = []
+                    lst.append({"hash": h, "kind": "shellscript", "path": str(p)})
+                    exp.log_param("_code_snapshot", json.dumps(lst))
+    except Exception as e:
+        from ..core.utils import debug_log
+        debug_log(f"could not snapshot calling script: {e}")
 
 
 def _gather_finish_metrics(args, exp_id, step, ts):
@@ -387,6 +421,8 @@ def cmd_run_finish(args):
     ).fetchone()["created_at"]
     duration = (datetime.fromisoformat(ts) - datetime.fromisoformat(created)).total_seconds()
 
+    real_cmd = getattr(args, "cmd", "")
+
     # Single atomic write: metrics + params + artifacts + status land together.
     with conn:
         if metric_rows:
@@ -401,6 +437,11 @@ def cmd_run_finish(args):
             conn.executemany(
                 "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
                 artifact_rows)
+        # --cmd on run-finish records the real command (last writer wins over
+        # any --cmd given at run-start).
+        if real_cmd:
+            conn.execute("UPDATE experiments SET command=? WHERE id=?",
+                         (real_cmd, exp_id))
         conn.execute(
             "UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?",
             (ts, duration, exp_id))
@@ -419,25 +460,11 @@ def cmd_run_finish(args):
     print(f"[exptrack] done: {exp_row['name']}  ({int(m)}m {s:.0f}s)", file=sys.stderr)
 
     # Fire finish plugins
+    from ..plugins import make_exp_proxy
     from ..plugins import registry as plugin_reg
     plugin_reg.load_from_config(cfg.load())
-
-    class _FakeExp:
-        pass
-    fake = _FakeExp()
-    row = conn.execute("SELECT * FROM experiments WHERE id=?", (exp_id,)).fetchone()
-    for k in row.keys():
-        setattr(fake, k, row[k])
-    fake._params = {r["key"]: json.loads(r["value"]) for r in
-                    conn.execute("SELECT key, value FROM params WHERE exp_id=?",
-                                 (exp_id,)).fetchall()}
-    fake.status = "done"
-    fake.duration_s = duration
-    fake.last_metrics = lambda: {r["key"]: r["value"] for r in conn.execute("""
-        SELECT key, value FROM metrics m WHERE exp_id=?
-        GROUP BY key HAVING MAX(COALESCE(step,0))
-    """, (exp_id,)).fetchall()}
-    plugin_reg.on_finish(fake)
+    plugin_reg.on_finish(make_exp_proxy(conn, exp_id, status="done",
+                                        duration_s=duration))
 
 
 def cmd_run_fail(args):

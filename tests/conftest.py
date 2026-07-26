@@ -8,13 +8,19 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
-from pathlib import Path
 
 import pytest
 
 # Save the original working directory at import time
 _ORIGINAL_CWD = os.getcwd()
+
+
+def exp_id_from_stdout(stdout: str, key: str = "EXP_ID") -> str | None:
+    """Extract an env var value from run-start stdout (``export KEY="VALUE"``)."""
+    for line in stdout.strip().split("\n"):
+        if line.startswith(f'export {key}='):
+            return line.split('"')[1]
+    return None
 
 
 @pytest.fixture(autouse=True)

@@ -74,7 +74,25 @@ def safe_call(
     """
     try:
         return fn(*args, **kwargs)
-    except Exception as e:  # noqa: BLE001 — intentional catch-all for capture safety
+    except Exception as e:
         label = context or getattr(fn, "__name__", "call")
         debug_log(f"{label} failed: {type(e).__name__}: {e}")
         return default
+
+
+def fmt_bytes(b) -> str:
+    """Human-readable byte size.
+
+    Lives here rather than in ``cli/formatting.py`` because the dashboard
+    routes need it too, and a dashboard module importing the CLI's ANSI
+    helpers would be a layer inversion. ``cli/formatting`` re-exports it so
+    CLI modules keep a single import site.
+
+    There were four copies of this before, and they had drifted: only one
+    handled GB, so the same 3 GB directory printed as "3072.0 MB" from one
+    call site and "3.00 GB" from another.
+    """
+    if b < 1024: return f"{b} B"
+    if b < 1024**2: return f"{b/1024:.1f} KB"
+    if b < 1024**3: return f"{b/1024**2:.1f} MB"
+    return f"{b/1024**3:.2f} GB"

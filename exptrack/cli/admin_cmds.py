@@ -13,7 +13,8 @@ from pathlib import Path
 
 from .. import config as cfg
 from ..core import get_db
-from .formatting import C, G, R, W, Y, bold, col, dim
+from ..core.db import COMPACT_PREFIX, is_diff_sentinel, resolve_git_diff
+from .formatting import C, G, R, W, Y, bold, col, dim, fmt_bytes
 
 
 def cmd_init(args):
@@ -82,17 +83,22 @@ def cmd_ui(args):
     port = getattr(args, "port", 7331)
     no_auth = getattr(args, "no_auth", False)
 
-    # Handle --token / --clear-token (persist to config)
+    # Handle --token / --clear-token. The token lives in the gitignored
+    # .exptrack/dashboard_token (0600), never in the committable config.json.
+    # A legacy token still sitting in config.json is warned about by ui_main.
     if getattr(args, "clear_token", False):
+        removed = cfg.token_file_path().is_file()
+        cfg.token_file_path().unlink(missing_ok=True)
         conf = cfg.load()
-        conf.pop("dashboard_token", None)
-        cfg.save(conf)
-        print(col("Dashboard token removed from config.", G), file=sys.stderr)
+        if conf.pop("dashboard_token", None) is not None:
+            cfg.save(conf)
+            removed = True
+        print(col("Dashboard token removed." if removed else "No dashboard token set.", G),
+              file=sys.stderr)
     elif getattr(args, "token", None):
-        conf = cfg.load()
-        conf["dashboard_token"] = args.token
-        cfg.save(conf)
-        print(col("Dashboard token saved to .exptrack/config.json", G), file=sys.stderr)
+        tf = cfg.write_token(args.token)
+        print(col(f"Dashboard token saved to {tf} (gitignored, mode 600)", G),
+              file=sys.stderr)
 
     ui_main(host=host, port=port, no_auth=no_auth)
 
@@ -172,6 +178,11 @@ def cmd_stale(args):
 def cmd_upgrade(args):
     """Run schema migrations and optionally reinstall the package."""
     conn = get_db()
+
+    # get_db() skips _ensure_schema when the user_version stamp matches; a
+    # manual upgrade must always re-verify every table, so force a full run.
+    from exptrack.core.db import _ensure_schema
+    _ensure_schema(conn, force=True)
 
     migrations = []
 
@@ -257,24 +268,18 @@ def cmd_upgrade(args):
 
 
 
-COMPACT_PREFIX = "[compacted"
 
-
-
-def _fmt_bytes(b):
-    if b < 1024: return f"{b} B"
-    if b < 1024**2: return f"{b/1024:.1f} KB"
-    return f"{b/1024**2:.1f} MB"
 
 
 def _diff_file_summary(diff_text):
     """Extract a short file-list summary from a git diff for the compact marker."""
+    from ..core.db import diff_b_path
     files = []
     for line in diff_text.splitlines():
         if line.startswith("diff --git "):
             parts = line.split()
             if len(parts) >= 4:
-                files.append(parts[3].lstrip("b/"))
+                files.append(diff_b_path(parts[3]))
     return files
 
 
@@ -315,19 +320,21 @@ def cmd_compact(args):
     if dry_run:
         modes = []
         if do_git_diff:
+            # Same gate as the real path below, so the dry-run total can't
+            # promise bytes that the actual compact then skips.
             diff_rows = [r for r in rows if r["git_diff"]
-                         and not r["git_diff"].startswith(COMPACT_PREFIX)]
+                         and not is_diff_sentinel(r["git_diff"])]
             total_diff = sum(r["diff_len"] for r in diff_rows)
-            modes.append(f"git_diff (~{_fmt_bytes(total_diff)})")
+            modes.append(f"git_diff (~{fmt_bytes(total_diff)})")
         if do_cells:
             cell_bytes = _cell_lineage_size(conn, exp_ids)
-            modes.append(f"cell_lineage.source (~{_fmt_bytes(cell_bytes)})")
+            modes.append(f"cell_lineage.source (~{fmt_bytes(cell_bytes)})")
         if do_timeline:
             tl_bytes = _timeline_diff_size(conn, exp_ids)
-            modes.append(f"timeline.source_diff (~{_fmt_bytes(tl_bytes)})")
+            modes.append(f"timeline.source_diff (~{fmt_bytes(tl_bytes)})")
         if do_snapshots:
             snap_bytes = _snapshot_disk_size(exp_ids)
-            modes.append(f"notebook_history/ (~{_fmt_bytes(snap_bytes)})")
+            modes.append(f"notebook_history/ (~{fmt_bytes(snap_bytes)})")
         print(f"Would compact {len(rows)} experiment(s):")
         print(f"  Modes: {', '.join(modes)}")
         for r in rows[:10]:
@@ -346,18 +353,19 @@ def cmd_compact(args):
                     _export_one_diff(r, out_path)
             print(col(f"Exported diff(s) to {out_path}/", G))
 
-        from ..core.db import resolve_git_diff
         diff_freed = 0
         for r in rows:
-            if not r["git_diff"] or r["git_diff"].startswith(COMPACT_PREFIX):
+            if not r["git_diff"] or is_diff_sentinel(r["git_diff"]):
                 continue
             commit = r["git_commit"] or "unknown"
             full_diff = resolve_git_diff(conn, r["git_diff"])
+            if is_diff_sentinel(full_diff):
+                continue  # dangling ref / already-failed capture: no body to strip
             files = _diff_file_summary(full_diff)
             file_info = f"{len(files)} file(s): {', '.join(files[:5])}" if files else "no files"
             if len(files) > 5:
                 file_info += f" +{len(files) - 5} more"
-            summary = (f"[compacted — {_fmt_bytes(len(full_diff))} stripped — "
+            summary = (f"[compacted — {fmt_bytes(len(full_diff))} stripped — "
                        f"{file_info} — see git commit {commit}]")
             conn.execute("UPDATE experiments SET git_diff = ? WHERE id = ?",
                          (summary, r["id"]))
@@ -365,32 +373,32 @@ def cmd_compact(args):
         if diff_freed:
             conn.commit()
             freed_total += diff_freed
-            print(col(f"  git_diff: freed ~{_fmt_bytes(diff_freed)}", G))
+            print(col(f"  git_diff: freed ~{fmt_bytes(diff_freed)}", G))
 
     # ── 2. Cell lineage source compaction ─────────────────────────────────
     if do_cells:
         cell_freed = _compact_cells(conn, exp_ids)
         freed_total += cell_freed
         if cell_freed:
-            print(col(f"  cell_lineage.source: freed ~{_fmt_bytes(cell_freed)}", G))
+            print(col(f"  cell_lineage.source: freed ~{fmt_bytes(cell_freed)}", G))
 
     # ── 3. Timeline source_diff compaction ────────────────────────────────
     if do_timeline:
         tl_freed = _compact_timeline_diffs(conn, exp_ids)
         freed_total += tl_freed
         if tl_freed:
-            print(col(f"  timeline.source_diff: freed ~{_fmt_bytes(tl_freed)}", G))
+            print(col(f"  timeline.source_diff: freed ~{fmt_bytes(tl_freed)}", G))
 
     # ── 4. Notebook history snapshot cleanup ──────────────────────────────
     if do_snapshots:
         snap_freed = _compact_snapshots(exp_ids)
         freed_total += snap_freed
         if snap_freed:
-            print(col(f"  notebook_history/: freed ~{_fmt_bytes(snap_freed)}", G))
+            print(col(f"  notebook_history/: freed ~{fmt_bytes(snap_freed)}", G))
 
     if freed_total:
         print()
-        print(col(f"Compacted {len(rows)} experiment(s), freed ~{_fmt_bytes(freed_total)} total.", G))
+        print(col(f"Compacted {len(rows)} experiment(s), freed ~{fmt_bytes(freed_total)} total.", G))
         for r in rows[:10]:
             print(f"  {col(r['id'][:8], C)}  {r['name'][:50]}")
         if len(rows) > 10:
@@ -436,7 +444,8 @@ def _compact_dedup(conn, dry_run=False):
     rows = conn.execute(
         "SELECT id, git_diff FROM experiments "
         "WHERE git_diff IS NOT NULL AND git_diff != '' "
-        "AND git_diff NOT LIKE '[compacted%' AND git_diff NOT LIKE '[ref:%'"
+        "AND git_diff NOT LIKE '[compacted%' AND git_diff NOT LIKE '[ref:%' "
+        "AND git_diff NOT LIKE '[capture-failed%'"
     ).fetchall()
     if not rows:
         print(dim("  dedup: no raw diffs to deduplicate.")); return
@@ -628,7 +637,6 @@ def _export_one_diff(row, out_path):
     branch = row["git_branch"] or ""
     commit = row["git_commit"] or ""
     from ..core.db import get_db as _get_db
-    from ..core.db import resolve_git_diff
     _conn = _get_db()
     diff = resolve_git_diff(_conn, row["git_diff"])
 
@@ -642,11 +650,15 @@ def _export_one_diff(row, out_path):
         f"- **Branch:** `{branch}`",
         f"- **Commit:** `{commit}`",
         "",
-        "```diff",
-        diff,
-        "```",
-        "",
     ]
+    # A sentinel is a status, not a diff — writing it inside a ```diff fence
+    # produced a lab-notebook file whose body was the literal marker. Matches
+    # what api_export_diff reports for the same run.
+    if is_diff_sentinel(diff):
+        lines.append(f"_No diff body is available for this run: `{diff}`_")
+    else:
+        lines += ["```diff", diff, "```"]
+    lines.append("")
     (out_path / filename).write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -655,7 +667,6 @@ def cmd_backup(args):
     import sqlite3
 
     conn = get_db()
-    conf = cfg.load()
     root = cfg.project_root()
 
     if args.path:
@@ -682,7 +693,7 @@ def cmd_backup(args):
         return
 
     size = dest.stat().st_size
-    print(col(f"Backup saved to {dest} ({_fmt_bytes(size)})", G))
+    print(col(f"Backup saved to {dest} ({fmt_bytes(size)})", G))
 
 
 def cmd_restore(args):
@@ -727,13 +738,265 @@ def cmd_restore(args):
     print(col(f"Database restored from {source}", G))
 
 
+# ── storage report ──────────────────────────────────────────────────────────
+# Split into a gather half (collect_storage_stats and its per-area helpers,
+# which touch nothing but the DB and the filesystem) and a render half (the
+# _print_storage_* section functions). The whole thing used to be one function
+# of 212 lines and 48 branches with no test coverage, largely because the
+# numbers were unreachable without capturing stdout. The stats are now a plain
+# dict that tests can assert on directly.
+#
+# Every gather helper is best-effort: a query against a table an older DB
+# doesn't have must degrade to zero rather than take down the report.
+
+def _q1(conn, sql, warn=""):
+    """First column of the first row, or 0 if the query fails."""
+    return _qrow(conn, sql, (0,), warn)[0]
+
+
+def _qrow(conn, sql, defaults, warn=""):
+    """First row as a tuple, falling back to `defaults` per column on failure.
+
+    Use this rather than several _q1 calls when the values come from the same
+    table. ``SUM(LENGTH(col))`` cannot use an index, so every extra query is a
+    full re-read of the column — and the three tables measured here
+    (``session_nodes``, ``cell_lineage``, ``git_diffs``) are exactly the ones
+    holding the large TEXT blobs that make a report worth running.
+    """
+    try:
+        row = conn.execute(sql).fetchone()
+        if not row:
+            return defaults
+        return tuple(row[i] if row[i] is not None else d
+                     for i, d in enumerate(defaults))
+    except Exception as e:
+        if warn:
+            print(f"[exptrack] warning: {warn}: {e}", file=sys.stderr)
+        return defaults
+
+
+def _storage_disk_usage(conf, root):
+    """Sizes that come from the filesystem rather than the DB."""
+    db_path = root / conf.get("db", ".exptrack/experiments.db")
+    stats = {
+        "db_path": db_path,
+        "db_size": db_path.stat().st_size if db_path.exists() else 0,
+        "outputs_size": 0, "outputs_count": 0,
+        "hist_size": 0, "hist_count": 0,
+    }
+
+    outputs_dir = root / conf.get("outputs_dir", "outputs")
+    if outputs_dir.is_dir():
+        for fp in outputs_dir.rglob("*"):
+            if fp.is_file():
+                stats["outputs_size"] += fp.stat().st_size
+                stats["outputs_count"] += 1
+
+    hist_dir = root / conf.get("notebook_history_dir", ".exptrack/notebook_history")
+    if hist_dir.is_dir():
+        for fp in hist_dir.rglob("*.json"):
+            if fp.is_file():
+                stats["hist_size"] += fp.stat().st_size
+                stats["hist_count"] += 1
+    return stats
+
+
+def _storage_row_counts(conn):
+    return {
+        "exp_count": _q1(conn, "SELECT COUNT(*) FROM experiments"),
+        "param_count": _q1(conn, "SELECT COUNT(*) FROM params"),
+        "metric_count": _q1(conn, "SELECT COUNT(*) FROM metrics"),
+        "artifact_count": _q1(conn, "SELECT COUNT(*) FROM artifacts"),
+        "timeline_count": _q1(conn, "SELECT COUNT(*) FROM timeline",
+                              warn="could not count timeline rows"),
+    }
+
+
+def _storage_git_diff_stats(conn):
+    """Inline (legacy) diffs on experiments vs. deduped bodies in git_diffs."""
+    try:
+        rows = conn.execute(
+            "SELECT LENGTH(git_diff) as sz FROM experiments "
+            "WHERE git_diff IS NOT NULL AND git_diff != '' "
+            "AND git_diff NOT LIKE '[ref:%'"
+        ).fetchall()
+    except Exception:
+        rows = []
+    inline = sum(r["sz"] for r in rows)
+    dedup_count, dedup_size = _qrow(
+        conn, "SELECT COUNT(*), COALESCE(SUM(LENGTH(diff_text)), 0) FROM git_diffs", (0, 0))
+    return {
+        "git_diff_inline": inline,
+        "git_diff_rows": len(rows),
+        "dedup_count": dedup_count,
+        "dedup_size": dedup_size,
+        "ref_count": _q1(conn, "SELECT COUNT(*) FROM experiments "
+                               "WHERE git_diff LIKE '[ref:%'"),
+        "git_diff_total": inline + dedup_size,
+    }
+
+
+def _storage_cell_stats(conn):
+    """Notebook cell sources and timeline diffs — the 'deep compact' targets."""
+    timeline_size, tl_diff_total = _qrow(
+        conn,
+        "SELECT SUM(LENGTH(value)) + SUM(LENGTH(source_diff)), "
+        "       COALESCE(SUM(CASE WHEN source_diff IS NOT NULL "
+        "                         THEN LENGTH(source_diff) ELSE 0 END), 0) "
+        "FROM timeline",
+        (0, 0), warn="could not compute timeline size")
+    cl_count, cl_size, cl_compacted = _qrow(
+        conn,
+        "SELECT COUNT(source), COALESCE(SUM(LENGTH(source)), 0), "
+        "       COUNT(*) - COUNT(source) "
+        "FROM cell_lineage",
+        (0, 0, 0))
+    return {
+        "timeline_size": timeline_size,
+        "tl_diff_total": tl_diff_total,
+        "cl_count": cl_count,
+        "cl_size": cl_size,
+        "cl_compacted": cl_compacted,
+    }
+
+
+def _storage_session_stats(conn):
+    snode_count, cells, diffs, notes = _qrow(
+        conn,
+        "SELECT COUNT(*), "
+        "       COALESCE(SUM(LENGTH(cell_source)), 0), "
+        "       COALESCE(SUM(LENGTH(git_diff)), 0), "
+        "       COALESCE(SUM(LENGTH(note)), 0) "
+        "FROM session_nodes",
+        (0, 0, 0, 0))
+    return {
+        "sess_count": _q1(conn, "SELECT COUNT(*) FROM sessions"),
+        "snode_count": snode_count,
+        "snode_cells_size": cells,
+        "snode_diff_size": diffs,
+        "snode_size": cells + diffs + notes,
+    }
+
+
+def collect_storage_stats(conn, conf=None, root=None):
+    """Every number the storage report shows, as one flat dict.
+
+    Pure gathering — no printing — so the figures can be asserted on directly
+    and reused (the dashboard's storage panel wants the same numbers).
+    """
+    conf = cfg.load() if conf is None else conf
+    root = cfg.project_root() if root is None else root
+    stats = {}
+    stats.update(_storage_disk_usage(conf, root))
+    stats.update(_storage_row_counts(conn))
+    stats.update(_storage_git_diff_stats(conn))
+    stats.update(_storage_cell_stats(conn))
+    stats.update(_storage_session_stats(conn))
+    return stats
+
+
+def _print_storage_summary(s):
+    print()
+    print(bold(col("  Storage Report", W)))
+    print(dim("  " + "-" * 50))
+    print(f"  {bold('Database file:')}     {fmt_bytes(s['db_size'])}")
+    print(f"  {bold('Outputs directory:')} {fmt_bytes(s['outputs_size'])}  "
+          f"({s['outputs_count']} files)")
+    print(f"  {bold('Total:')}             {fmt_bytes(s['db_size'] + s['outputs_size'])}")
+
+
+def _print_db_breakdown(s):
+    print()
+    print(bold(col("  Database Breakdown", W)))
+    print(dim("  " + "-" * 50))
+    print(f"  Experiments:   {s['exp_count']:>8,} rows")
+    print(f"  Params:        {s['param_count']:>8,} rows")
+    print(f"  Metrics:       {s['metric_count']:>8,} rows")
+    print(f"  Artifacts:     {s['artifact_count']:>8,} rows")
+    print(f"  Timeline:      {s['timeline_count']:>8,} rows  (~{fmt_bytes(s['timeline_size'])})")
+    if s["sess_count"] or s["snode_count"]:
+        print(f"  Sessions:      {s['sess_count']:>8,} rows  "
+              f"({s['snode_count']} nodes, ~{fmt_bytes(s['snode_size'])})")
+
+
+def _print_storage_hotspots(s):
+    print()
+    print(bold(col("  Storage Hotspots", W)))
+    print(dim("  " + "-" * 50))
+
+    if s["dedup_count"]:
+        print(f"  git_diff total:       {fmt_bytes(s['git_diff_total'])}")
+        print(f"    deduped diffs:      {fmt_bytes(s['dedup_size'])}  "
+              f"({s['dedup_count']} unique, {s['ref_count']} experiments ref)")
+        if s["git_diff_inline"]:
+            print(f"    inline (legacy):    {fmt_bytes(s['git_diff_inline'])}  "
+                  f"({s['git_diff_rows']} experiments)")
+            print(col("      Tip: Run \"exptrack compact --dedup\" to deduplicate legacy diffs.", Y))
+    else:
+        avg = s["git_diff_inline"] // s["git_diff_rows"] if s["git_diff_rows"] else 0
+        print(f"  git_diff total:       {fmt_bytes(s['git_diff_inline'])}  "
+              f"(avg {fmt_bytes(avg)}/experiment, {s['git_diff_rows']} with diffs)")
+
+    print(f"  cell_lineage.source:  {fmt_bytes(s['cl_size'])}  "
+          f"({s['cl_count']} cells with source, {s['cl_compacted']} compacted)")
+    print(f"  timeline.source_diff: {fmt_bytes(s['tl_diff_total'])}")
+    print(f"  notebook_history/:    {fmt_bytes(s['hist_size'])}  ({s['hist_count']} snapshots)")
+    if s["snode_count"]:
+        print(f"  session_nodes.cell_source: {fmt_bytes(s['snode_cells_size'])}  "
+              f"({s['snode_count']} nodes)")
+        print(f"  session_nodes.git_diff:    {fmt_bytes(s['snode_diff_size'])}")
+    print()
+
+    cell_total = s["cl_size"] + s["tl_diff_total"] + s["hist_size"]
+    if s["git_diff_total"] > 1024 * 1024:
+        print(col("    Tip: Run \"exptrack compact\" to strip old git diffs "
+                  "(or set \"max_git_diff_kb\" in config.json to cap future ones).", Y))
+    if cell_total > 1024 * 1024:
+        print(col("    Tip: Cell data is large. Run \"exptrack compact --deep\" to strip "
+                  "cell sources, timeline diffs, and notebook snapshots.", Y))
+    if s["outputs_size"] > 100 * 1024 * 1024:
+        print(col("    Tip: Outputs directory is large. Delete old experiments "
+                  "with \"exptrack rm\" to reclaim space.", Y))
+
+
+def _print_storage_health(conn, s):
+    print()
+    print(bold(col("  Database Health", W)))
+    print(dim("  " + "-" * 50))
+    wal_path = Path(str(s["db_path"]) + "-wal")
+    wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+    journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    print(f"  Journal mode:    {journal_mode.upper()}")
+    print(f"  WAL file:        {fmt_bytes(wal_size)}")
+    if wal_size > 10 * 1024 * 1024:
+        print(col("    WAL file is large. Run \"exptrack storage --checkpoint\" to reclaim.", Y))
+    elif wal_size > s["db_size"] * 2 and wal_size > 100 * 1024:
+        print(col("    WAL file is larger than the database. "
+                  "Run \"exptrack storage --checkpoint\" to reclaim.", Y))
+
+    # Rows that outlived every experiment — a legacy or hand-edited DB.
+    if s["exp_count"] == 0 and (s["param_count"] or s["metric_count"] or
+                                s["artifact_count"] or s["timeline_count"] or
+                                s["cl_count"] or s["hist_count"]):
+        print(col("    Orphaned data detected (no experiments, but rows remain). "
+                  "Run \"exptrack clean --orphans\" to purge.", Y))
+
+    # Runs left 'running' — usually a killed process, not a live job.
+    stale_running = _q1(conn, "SELECT COUNT(*) FROM experiments WHERE status='running' "
+                              "AND created_at < datetime('now', '-24 hours')")
+    if stale_running:
+        print(col(f"    {stale_running} experiment(s) running for >24h — "
+                  f"possible orphans. Use \"exptrack stale\" to review.", Y))
+    print()
+
+
 def cmd_storage(args):
     """Show data storage breakdown for the exptrack database and outputs."""
     conn = get_db()
 
-    # Always try to checkpoint WAL before reporting sizes so the numbers
-    # reflect the real state.  TRUNCATE may fail if another process (e.g.
-    # dashboard) holds a connection — that's fine, we'll show the WAL size.
+    # Checkpoint before measuring so the sizes reflect the real state. May
+    # fail if another process (e.g. the dashboard) holds a connection — fine,
+    # the WAL size is reported either way.
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     except Exception:
@@ -744,198 +1007,8 @@ def cmd_storage(args):
         print(col("WAL checkpoint complete.", G))
         return
 
-    conf = cfg.load()
-    root = cfg.project_root()
-    db_path = root / conf.get("db", ".exptrack/experiments.db")
-    db_size = db_path.stat().st_size if db_path.exists() else 0
-
-    outputs_dir = root / conf.get("outputs_dir", "outputs")
-    outputs_size = 0
-    outputs_count = 0
-    if outputs_dir.is_dir():
-        for fp in outputs_dir.rglob("*"):
-            if fp.is_file():
-                outputs_size += fp.stat().st_size
-                outputs_count += 1
-
-    exp_count = conn.execute("SELECT COUNT(*) as n FROM experiments").fetchone()["n"]
-    param_count = conn.execute("SELECT COUNT(*) as n FROM params").fetchone()["n"]
-    metric_count = conn.execute("SELECT COUNT(*) as n FROM metrics").fetchone()["n"]
-    artifact_count = conn.execute("SELECT COUNT(*) as n FROM artifacts").fetchone()["n"]
-    try:
-        timeline_count = conn.execute("SELECT COUNT(*) as n FROM timeline").fetchone()["n"]
-    except Exception as e:
-        print(f"[exptrack] warning: could not count timeline rows: {e}", file=sys.stderr)
-        timeline_count = 0
-
-    # Git diff stats (inline diffs in experiments table)
-    git_diff_rows = conn.execute(
-        "SELECT LENGTH(git_diff) as sz FROM experiments "
-        "WHERE git_diff IS NOT NULL AND git_diff != '' "
-        "AND git_diff NOT LIKE '[ref:%'"
-    ).fetchall()
-    git_diff_inline = sum(r["sz"] for r in git_diff_rows)
-
-    # Deduped diffs in git_diffs table
-    try:
-        dedup_row = conn.execute(
-            "SELECT COUNT(*) as n, COALESCE(SUM(LENGTH(diff_text)), 0) as sz FROM git_diffs"
-        ).fetchone()
-        dedup_count = dedup_row["n"]
-        dedup_size = dedup_row["sz"]
-    except Exception:
-        dedup_count, dedup_size = 0, 0
-
-    ref_count = conn.execute(
-        "SELECT COUNT(*) as n FROM experiments WHERE git_diff LIKE '[ref:%'"
-    ).fetchone()["n"]
-    git_diff_total = git_diff_inline + dedup_size
-
-    # Timeline stats
-    try:
-        timeline_rows = conn.execute(
-            "SELECT SUM(LENGTH(value)) + SUM(LENGTH(source_diff)) as sz FROM timeline"
-        ).fetchone()
-        timeline_size = timeline_rows["sz"] or 0
-    except Exception as e:
-        print(f"[exptrack] warning: could not compute timeline size: {e}", file=sys.stderr)
-        timeline_size = 0
-
-    try:
-        tl_diff_total = conn.execute(
-            "SELECT COALESCE(SUM(LENGTH(source_diff)), 0) as sz "
-            "FROM timeline WHERE source_diff IS NOT NULL"
-        ).fetchone()["sz"]
-    except Exception:
-        tl_diff_total = 0
-
-    # Cell lineage stats
-    try:
-        cl_row = conn.execute(
-            "SELECT COUNT(*) as n, COALESCE(SUM(LENGTH(source)), 0) as sz "
-            "FROM cell_lineage WHERE source IS NOT NULL"
-        ).fetchone()
-        cl_count, cl_size = cl_row["n"], cl_row["sz"]
-        cl_compacted = conn.execute(
-            "SELECT COUNT(*) as n FROM cell_lineage WHERE source IS NULL"
-        ).fetchone()["n"]
-    except Exception:
-        cl_count, cl_size, cl_compacted = 0, 0, 0
-
-    # Session Trees
-    try:
-        sess_count = conn.execute("SELECT COUNT(*) as n FROM sessions").fetchone()["n"]
-        snode_row = conn.execute(
-            "SELECT COUNT(*) as n, "
-            "COALESCE(SUM(LENGTH(cell_source)), 0) as cells_sz, "
-            "COALESCE(SUM(LENGTH(git_diff)), 0) as diff_sz, "
-            "COALESCE(SUM(LENGTH(note)), 0) as note_sz "
-            "FROM session_nodes"
-        ).fetchone()
-        snode_count = snode_row["n"]
-        snode_size = (snode_row["cells_sz"] or 0) + (snode_row["diff_sz"] or 0) + (snode_row["note_sz"] or 0)
-        snode_cells_size = snode_row["cells_sz"] or 0
-        snode_diff_size = snode_row["diff_sz"] or 0
-    except Exception:
-        sess_count, snode_count, snode_size = 0, 0, 0
-        snode_cells_size, snode_diff_size = 0, 0
-
-    # Notebook history disk usage
-    hist_dir = root / conf.get("notebook_history_dir", ".exptrack/notebook_history")
-    hist_size, hist_count = 0, 0
-    if hist_dir.is_dir():
-        for fp in hist_dir.rglob("*.json"):
-            if fp.is_file():
-                hist_size += fp.stat().st_size
-                hist_count += 1
-
-    def fmt(b):
-        if b < 1024: return f"{b} B"
-        if b < 1024**2: return f"{b/1024:.1f} KB"
-        if b < 1024**3: return f"{b/1024**2:.1f} MB"
-        return f"{b/1024**3:.2f} GB"
-
-    print()
-    print(bold(col("  Storage Report", W)))
-    print(dim("  " + "-" * 50))
-    print(f"  {bold('Database file:')}     {fmt(db_size)}")
-    print(f"  {bold('Outputs directory:')} {fmt(outputs_size)}  ({outputs_count} files)")
-    print(f"  {bold('Total:')}             {fmt(db_size + outputs_size)}")
-    print()
-    print(bold(col("  Database Breakdown", W)))
-    print(dim("  " + "-" * 50))
-    print(f"  Experiments:   {exp_count:>8,} rows")
-    print(f"  Params:        {param_count:>8,} rows")
-    print(f"  Metrics:       {metric_count:>8,} rows")
-    print(f"  Artifacts:     {artifact_count:>8,} rows")
-    print(f"  Timeline:      {timeline_count:>8,} rows  (~{fmt(timeline_size)})")
-    if sess_count or snode_count:
-        print(f"  Sessions:      {sess_count:>8,} rows  "
-              f"({snode_count} nodes, ~{fmt(snode_size)})")
-    print()
-    print(bold(col("  Storage Hotspots", W)))
-    print(dim("  " + "-" * 50))
-
-    # Git diff breakdown
-    if dedup_count:
-        print(f"  git_diff total:       {fmt(git_diff_total)}")
-        print(f"    deduped diffs:      {fmt(dedup_size)}  "
-              f"({dedup_count} unique, {ref_count} experiments ref)")
-        if git_diff_inline:
-            print(f"    inline (legacy):    {fmt(git_diff_inline)}  "
-                  f"({len(git_diff_rows)} experiments)")
-            print(col("      Tip: Run \"exptrack compact --dedup\" to deduplicate legacy diffs.", Y))
-    else:
-        git_diff_avg = git_diff_inline // len(git_diff_rows) if git_diff_rows else 0
-        print(f"  git_diff total:       {fmt(git_diff_inline)}  "
-              f"(avg {fmt(git_diff_avg)}/experiment, {len(git_diff_rows)} with diffs)")
-
-    # Cell/notebook breakdown
-    print(f"  cell_lineage.source:  {fmt(cl_size)}  "
-          f"({cl_count} cells with source, {cl_compacted} compacted)")
-    print(f"  timeline.source_diff: {fmt(tl_diff_total)}")
-    print(f"  notebook_history/:    {fmt(hist_size)}  ({hist_count} snapshots)")
-    if snode_count:
-        print(f"  session_nodes.cell_source: {fmt(snode_cells_size)}  ({snode_count} nodes)")
-        print(f"  session_nodes.git_diff:    {fmt(snode_diff_size)}")
-    print()
-
-    cell_total = cl_size + tl_diff_total + hist_size
-    if git_diff_total > 1024 * 1024:
-        print(col("    Tip: Run \"exptrack compact\" to strip old git diffs "
-                   "(or set \"max_git_diff_kb\" in config.json to cap future ones).", Y))
-    if cell_total > 1024 * 1024:
-        print(col("    Tip: Cell data is large. Run \"exptrack compact --deep\" to strip "
-                   "cell sources, timeline diffs, and notebook snapshots.", Y))
-    if outputs_size > 100 * 1024 * 1024:
-        print(col("    Tip: Outputs directory is large. Delete old experiments "
-                   "with \"exptrack rm\" to reclaim space.", Y))
-    print()
-
-    # Database health
-    print(bold(col("  Database Health", W)))
-    print(dim("  " + "-" * 50))
-    wal_path = Path(str(db_path) + "-wal")
-    wal_size = wal_path.stat().st_size if wal_path.exists() else 0
-    journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-    print(f"  Journal mode:    {journal_mode.upper()}")
-    print(f"  WAL file:        {fmt(wal_size)}")
-    if wal_size > 10 * 1024 * 1024:
-        print(col("    WAL file is large. Run \"exptrack storage --checkpoint\" to reclaim.", Y))
-    elif wal_size > db_size * 2 and wal_size > 100 * 1024:
-        print(col("    WAL file is larger than the database. "
-                  "Run \"exptrack storage --checkpoint\" to reclaim.", Y))
-    # Check for orphaned rows (data not linked to any experiment)
-    if exp_count == 0 and (param_count or metric_count or artifact_count or
-                           timeline_count or cl_count or hist_count):
-        print(col("    Orphaned data detected (no experiments, but rows remain). "
-                  "Run \"exptrack clean --orphans\" to purge.", Y))
-    # Check for stale running experiments (potential leaked connections)
-    stale_running = conn.execute(
-        "SELECT COUNT(*) as n FROM experiments WHERE status='running' "
-        "AND created_at < datetime('now', '-24 hours')"
-    ).fetchone()["n"]
-    if stale_running:
-        print(col(f"    {stale_running} experiment(s) running for >24h — "
-                  f"possible orphans. Use \"exptrack stale\" to review.", Y))
-    print()
+    stats = collect_storage_stats(conn)
+    _print_storage_summary(stats)
+    _print_db_breakdown(stats)
+    _print_storage_hotspots(stats)
+    _print_storage_health(conn, stats)

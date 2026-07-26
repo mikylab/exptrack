@@ -14,7 +14,7 @@ from .tree import render_ascii, render_json
 __all__ = [
     "SessionManager",
     "get_current_session",
-    "set_current_session",
     "render_ascii",
     "render_json",
+    "set_current_session",
 ]

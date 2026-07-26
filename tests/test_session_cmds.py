@@ -33,8 +33,8 @@ def session_tree(tmp_project):
 
     Returns ``(session_id, root_id, checkpoint_id, branch_id)``.
     """
-    from exptrack.sessions import SessionManager
     from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
 
     sm = SessionManager()
     sid = sm.start("explore", notebook="nb.ipynb")
@@ -109,8 +109,7 @@ def test_cmd_session_nodes_not_found(tmp_project):
 # ---------------------------------------------------------------------------
 
 def test_cmd_session_rm(session_tree):
-    from exptrack.cli.session_cmds import (
-        cmd_session_rm, cmd_session_restore, cmd_session_purge)
+    from exptrack.cli.session_cmds import cmd_session_purge, cmd_session_restore, cmd_session_rm
     from exptrack.core.db import get_db
 
     sid = session_tree[0]
@@ -200,7 +199,7 @@ def test_cmd_session_rm_node_not_found(tmp_project):
 
 
 def test_cmd_session_restore_node(session_tree):
-    from exptrack.cli.session_cmds import cmd_session_rm_node, cmd_session_restore_node
+    from exptrack.cli.session_cmds import cmd_session_restore_node, cmd_session_rm_node
     from exptrack.core.db import get_db
 
     br = session_tree[3]
@@ -227,7 +226,7 @@ def test_cmd_session_restore_node_not_trashed(session_tree):
 
 
 def test_cmd_session_purge_node(session_tree):
-    from exptrack.cli.session_cmds import cmd_session_rm_node, cmd_session_purge_node
+    from exptrack.cli.session_cmds import cmd_session_purge_node, cmd_session_rm_node
     from exptrack.core.db import get_db
 
     br = session_tree[3]
@@ -274,7 +273,7 @@ def test_cmd_session_trash_empty(session_tree):
 
 
 def test_cmd_session_empty_trash(session_tree):
-    from exptrack.cli.session_cmds import cmd_session_rm_node, cmd_session_empty_trash
+    from exptrack.cli.session_cmds import cmd_session_empty_trash, cmd_session_rm_node
     from exptrack.sessions.manager import list_trashed_nodes
 
     sid, root_id, cp, br = session_tree

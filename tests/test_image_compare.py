@@ -165,11 +165,22 @@ def test_escape_closes_modal():
 
 
 def test_dashboard_html_contains_image_compare():
-    """Final DASHBOARD_HTML includes image comparison code."""
-    from exptrack.dashboard.static import DASHBOARD_HTML
+    """The assembled JS/CSS bundles include image comparison code.
 
-    assert 'openCompareModal' in DASHBOARD_HTML, "DASHBOARD_HTML should contain openCompareModal"
-    assert '.img-cmp-overlay' in DASHBOARD_HTML, "DASHBOARD_HTML should contain image compare CSS"
+    JS/CSS are now served as external /static/dashboard.{js,css} bundles
+    rather than inlined into DASHBOARD_HTML, so assert against the bundles the
+    page references (DASHBOARD_JS / DASHBOARD_CSS) — and confirm the HTML
+    actually references them."""
+    from exptrack.dashboard.static import (
+        DASHBOARD_CSS,
+        DASHBOARD_HTML,
+        DASHBOARD_JS,
+    )
+
+    assert 'openCompareModal' in DASHBOARD_JS, "DASHBOARD_JS should contain openCompareModal"
+    assert '.img-cmp-overlay' in DASHBOARD_CSS, "DASHBOARD_CSS should contain image compare CSS"
+    assert '/static/dashboard.js' in DASHBOARD_HTML
+    assert '/static/dashboard.css' in DASHBOARD_HTML
 
     print("  [PASS] test_dashboard_html_contains_image_compare")
 

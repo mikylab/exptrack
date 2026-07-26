@@ -1,9 +1,6 @@
 """Tests for exptrack/capture/notebook_hooks.py — IPython post_run_cell hook."""
 from __future__ import annotations
 
-import json
-
-
 # ── Mock IPython objects ─────────────────────────────────────────────────────
 
 class MockEvents:
@@ -149,7 +146,7 @@ def test_combine_cell_output_merges_stdout_and_result():
 
 
 def test_combine_cell_output_caps_long_output():
-    from exptrack.capture.notebook_hooks import _combine_cell_output, _MAX_CELL_OUTPUT
+    from exptrack.capture.notebook_hooks import _MAX_CELL_OUTPUT, _combine_cell_output
     big = "x" * (_MAX_CELL_OUTPUT + 5000)
     out = _combine_cell_output(big, None)
     assert len(out) <= _MAX_CELL_OUTPUT + len("\n… (output truncated)")
@@ -158,8 +155,11 @@ def test_combine_cell_output_caps_long_output():
 
 def test_stdout_capture_tees_and_records():
     import sys
+
     from exptrack.capture.notebook_hooks import (
-        _start_stdout_capture, _collect_stdout_capture, _StdoutTee,
+        _collect_stdout_capture,
+        _start_stdout_capture,
+        _StdoutTee,
     )
     orig = sys.stdout
     _start_stdout_capture()
@@ -182,8 +182,11 @@ def test_collect_stdout_capture_no_buffer_is_safe():
 
 def test_stdout_tee_buffer_is_bounded():
     import sys
+
     from exptrack.capture.notebook_hooks import (
-        _start_stdout_capture, _collect_stdout_capture, _STDOUT_BUFFER_CAP,
+        _STDOUT_BUFFER_CAP,
+        _collect_stdout_capture,
+        _start_stdout_capture,
     )
     _start_stdout_capture()
     try:
@@ -278,7 +281,7 @@ def test_deferred_no_double_start(tmp_project):
 # ── Tests for attach_notebook ────────────────────────────────────────────────
 
 def test_attach_registers_hook(tmp_project):
-    from exptrack.capture.notebook_hooks import attach_notebook, _nb_state, _post_run_cell
+    from exptrack.capture.notebook_hooks import _nb_state, _post_run_cell, attach_notebook
     from exptrack.core import Experiment
 
     _reset_nb_state()
@@ -296,7 +299,10 @@ def test_attach_registers_hook(tmp_project):
 
 def test_detach_removes_hook(tmp_project):
     from exptrack.capture.notebook_hooks import (
-        attach_notebook, detach_notebook, _nb_state, _post_run_cell
+        _nb_state,
+        _post_run_cell,
+        attach_notebook,
+        detach_notebook,
     )
     from exptrack.core import Experiment
 
@@ -333,7 +339,7 @@ def test_capture_variables_new(tmp_project):
 
 def test_capture_variables_changed(tmp_project):
     """Changed variables are detected on subsequent capture."""
-    from exptrack.capture.notebook_hooks import _capture_variables, _nb_state
+    from exptrack.capture.notebook_hooks import _capture_variables
     _reset_nb_state()
 
     ip = MockShell()
@@ -351,7 +357,7 @@ def test_capture_variables_changed(tmp_project):
 
 def test_capture_variables_skips_internal(tmp_project):
     """Internal IPython names are skipped."""
-    from exptrack.capture.notebook_hooks import _capture_variables, _nb_state
+    from exptrack.capture.notebook_hooks import _capture_variables
     _reset_nb_state()
 
     ip = MockShell()
@@ -368,9 +374,7 @@ def test_capture_variables_skips_internal(tmp_project):
 
 def test_post_run_cell_creates_timeline_event(tmp_project):
     """Running _post_run_cell on a real cell creates a timeline event."""
-    from exptrack.capture.notebook_hooks import (
-        _post_run_cell, _nb_state, attach_notebook
-    )
+    from exptrack.capture.notebook_hooks import _post_run_cell, attach_notebook
     from exptrack.core import Experiment
     from exptrack.core.db import get_db
 
@@ -398,9 +402,7 @@ def test_post_run_cell_creates_timeline_event(tmp_project):
 
 def test_post_run_cell_detects_variable(tmp_project):
     """post_run_cell emits var_set event for new variables."""
-    from exptrack.capture.notebook_hooks import (
-        _post_run_cell, _nb_state, attach_notebook
-    )
+    from exptrack.capture.notebook_hooks import _post_run_cell, attach_notebook
     from exptrack.core import Experiment
     from exptrack.core.db import get_db
 
@@ -427,11 +429,8 @@ def test_post_run_cell_detects_variable(tmp_project):
 
 def test_post_run_cell_hp_auto_param(tmp_project):
     """HP-named variables (lr, epochs, etc.) are auto-logged as params."""
-    from exptrack.capture.notebook_hooks import (
-        _post_run_cell, _nb_state, attach_notebook
-    )
+    from exptrack.capture.notebook_hooks import _post_run_cell, attach_notebook
     from exptrack.core import Experiment
-    from exptrack.core.db import get_db
 
     _reset_nb_state()
     exp = Experiment(script="test_nb.py")
@@ -450,9 +449,7 @@ def test_post_run_cell_hp_auto_param(tmp_project):
 
 def test_post_run_cell_observational(tmp_project):
     """Observational cells get event_type='observational'."""
-    from exptrack.capture.notebook_hooks import (
-        _post_run_cell, _nb_state, attach_notebook
-    )
+    from exptrack.capture.notebook_hooks import _post_run_cell, attach_notebook
     from exptrack.core import Experiment
     from exptrack.core.db import get_db
 
@@ -477,9 +474,7 @@ def test_post_run_cell_observational(tmp_project):
 
 def test_post_run_cell_error_does_not_crash(tmp_project):
     """A cell execution error (e.g., bad result object) doesn't crash the hook."""
-    from exptrack.capture.notebook_hooks import (
-        _post_run_cell, _nb_state, attach_notebook
-    )
+    from exptrack.capture.notebook_hooks import _post_run_cell, attach_notebook
     from exptrack.core import Experiment
 
     _reset_nb_state()
@@ -496,7 +491,7 @@ def test_post_run_cell_error_does_not_crash(tmp_project):
 
 def test_post_run_cell_no_exp_is_noop(tmp_project):
     """If no experiment is attached, _post_run_cell is a no-op."""
-    from exptrack.capture.notebook_hooks import _post_run_cell, _nb_state
+    from exptrack.capture.notebook_hooks import _nb_state, _post_run_cell
 
     _reset_nb_state()
     ip = MockShell()
@@ -509,10 +504,8 @@ def test_post_run_cell_no_exp_is_noop(tmp_project):
 
 def test_post_run_cell_cell_lineage_stored(tmp_project):
     """Cell lineage is stored after execution."""
-    from exptrack.capture.notebook_hooks import (
-        _post_run_cell, _nb_state, attach_notebook
-    )
     from exptrack.capture.cell_lineage import cell_hash, get_cell_source
+    from exptrack.capture.notebook_hooks import _post_run_cell, attach_notebook
     from exptrack.core import Experiment
 
     _reset_nb_state()
@@ -535,9 +528,7 @@ def test_post_run_cell_cell_lineage_stored(tmp_project):
 
 def test_post_run_cell_multiple_cells(tmp_project):
     """Multiple cells execute sequentially with proper exec_count tracking."""
-    from exptrack.capture.notebook_hooks import (
-        _post_run_cell, _nb_state, attach_notebook
-    )
+    from exptrack.capture.notebook_hooks import _nb_state, _post_run_cell, attach_notebook
     from exptrack.core import Experiment
     from exptrack.core.db import get_db
 
@@ -587,9 +578,7 @@ def test_handle_scratch_or_setup_passes_normal_cell():
 
 def test_post_run_cell_scratch_emits_no_timeline(tmp_project):
     """A %%scratch cell runs through _post_run_cell but logs nothing."""
-    from exptrack.capture.notebook_hooks import (
-        _post_run_cell, attach_notebook
-    )
+    from exptrack.capture.notebook_hooks import _post_run_cell, attach_notebook
     from exptrack.core import Experiment
     from exptrack.core.db import get_db
 
@@ -608,3 +597,133 @@ def test_post_run_cell_scratch_emits_no_timeline(tmp_project):
     assert n == 0  # scratch cell left no trace
 
     exp.finish()
+
+
+# ── L1: broken-run detection (failure status for notebook runs) ──────────────
+
+def _errored_result(raw_cell, exc):
+    r = MockResult(raw_cell)
+    r.error_in_exec = exc
+    return r
+
+
+def test_cell_error_sets_last_error_flag(tmp_project):
+    """A cell that raises records its traceback on _nb_state['last_error']."""
+    from exptrack.capture.notebook_hooks import _nb_state, _post_run_cell, attach_notebook
+    from exptrack.core import Experiment
+
+    _reset_nb_state()
+    exp = Experiment(script="test_nb.py")
+    ip = MockShell()
+    attach_notebook(exp, nb_name="test_nb", ip=ip)
+
+    _post_run_cell(_errored_result("1/0", ZeroDivisionError("division by zero")))
+    assert _nb_state["last_error"] is not None
+    assert "ZeroDivisionError" in _nb_state["last_error"]
+
+    exp.finish()
+
+
+def test_clean_cell_clears_last_error_flag(tmp_project):
+    """A subsequent clean cell clears the error flag (fixed-and-rerun ≠ failed)."""
+    from exptrack.capture.notebook_hooks import _nb_state, _post_run_cell, attach_notebook
+    from exptrack.core import Experiment
+
+    _reset_nb_state()
+    exp = Experiment(script="test_nb.py")
+    ip = MockShell()
+    attach_notebook(exp, nb_name="test_nb", ip=ip)
+
+    _post_run_cell(_errored_result("1/0", ZeroDivisionError("boom")))
+    assert _nb_state["last_error"] is not None
+    ip.user_ns["x"] = 1
+    _post_run_cell(MockResult("x = 1"))
+    assert _nb_state["last_error"] is None
+
+    exp.finish()
+
+
+def test_auto_finish_marks_failed_on_error(tmp_project, monkeypatch):
+    """The auto-finish path (kernel shutdown / new boundary) marks the run
+    'failed' with a traceback when its last cell raised; explicit done() wins."""
+    import exptrack.notebook as nb
+    from exptrack.capture.notebook_hooks import _nb_state, _post_run_cell
+    from exptrack.core.db import get_db
+
+    _reset_nb_state()
+    # start() wires _active + hooks
+    run = nb.start(nb_file="broken.ipynb")
+    _nb_state["ip"] = MockShell()   # no real IPython in the test env
+    _post_run_cell(_errored_result("raise ValueError('bad')", ValueError("bad")))
+    rid = run.id
+
+    nb._finish_active(auto=True)   # simulates atexit
+
+    conn = get_db()
+    row = conn.execute("SELECT status FROM experiments WHERE id=?", (rid,)).fetchone()
+    assert row["status"] == "failed"
+    tb = conn.execute(
+        "SELECT value FROM params WHERE exp_id=? AND key='_error_traceback'", (rid,)
+    ).fetchone()
+    assert tb is not None and "ValueError" in tb["value"]
+
+
+def test_explicit_done_wins_over_error(tmp_project):
+    """Explicit done() declares success even if the last cell raised."""
+    import exptrack.notebook as nb
+    from exptrack.capture.notebook_hooks import _nb_state, _post_run_cell
+    from exptrack.core.db import get_db
+
+    _reset_nb_state()
+    run = nb.start(nb_file="broken.ipynb")
+    _nb_state["ip"] = MockShell()   # no real IPython in the test env
+    _post_run_cell(_errored_result("1/0", ZeroDivisionError("x")))
+    rid = run.id
+    nb.done()
+
+    conn = get_db()
+    row = conn.execute("SELECT status FROM experiments WHERE id=?", (rid,)).fetchone()
+    assert row["status"] == "done"
+
+
+def test_auto_trash_failed_config(tmp_project):
+    """With auto_trash_failed=True a failed run is soft-trashed at finish."""
+    from exptrack import config as cfg
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+
+    cfg.save({**cfg.load(), "auto_trash_failed": True})
+    try:
+        exp = Experiment(script="s.py")
+        rid = exp.id
+        exp.fail("boom")
+        conn = get_db()
+        row = conn.execute(
+            "SELECT deleted_at FROM experiments WHERE id=?", (rid,)
+        ).fetchone()
+        assert row["deleted_at"] is not None
+    finally:
+        cfg.save({**cfg.load(), "auto_trash_failed": False})
+
+
+def test_start_new_creates_distinct_run(tmp_project):
+    """start(new=True) (and %exp_new) closes the prior run and opens a fresh,
+    distinct experiment — each notebook attempt is its own comparable run."""
+    import exptrack.notebook as nb
+
+    _reset_nb_state()
+    first = nb.start(nb_file="explore.ipynb")
+    first_id = first.id
+    second = nb.start(nb_file="explore.ipynb", new=True)
+    second_id = second.id
+
+    assert first_id != second_id
+    assert nb.current().id == second_id
+
+    from exptrack.core.db import get_db
+    conn = get_db()
+    row = conn.execute(
+        "SELECT status FROM experiments WHERE id=?", (first_id,)
+    ).fetchone()
+    assert row["status"] in ("done", "failed")  # prior run was closed
+    second.finish()

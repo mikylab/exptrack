@@ -17,7 +17,7 @@ _HP_RE = re.compile(
     r"padding|momentum|beta|gamma|temperature|threshold|seed|arch|"
     r"architecture|model|backbone|optimizer|loss|scheduler|aug|"
     r"num.classes|in.channels?|out.channels?|latent|z.dim|embed|"
-    r"lambda|alpha|scale|gamma|delta|lr.schedule|warmup|clip).*$",
+    r"lambda|alpha|scale|delta|lr.schedule|warmup|clip).*$",
     re.IGNORECASE,
 )
 _SCALAR = (int, float, bool, str)
@@ -42,6 +42,11 @@ _OBSERVATIONAL_RE = re.compile(
     r"isinstance|hasattr|getattr)\s*\(", re.MULTILINE
 )
 
+# Assignment operators — plain (`=`) and augmented (`+= -= *= /= //= %= **=
+# &= |= ^= >>= <<= @=`) — used to tell a state-changing line from an
+# observational one. Excludes the comparisons ==, !=, <=, >=.
+_ASSIGN_RE = re.compile(r"(?:\*\*|//|>>|<<|[+\-*/%&|^@])=(?!=)|(?<![=!<>])=(?!=)")
+
 
 def is_observational(source: str) -> bool:
     """
@@ -58,11 +63,9 @@ def is_observational(source: str) -> bool:
     for line in lines:
         if line.startswith('#'):
             continue
-        if '=' in line:
-            eq_pos = line.find('=')
-            if eq_pos > 0 and line[eq_pos - 1] not in '!<>+*-/^%&|~' and \
-               (eq_pos + 1 >= len(line) or line[eq_pos + 1] != '='):
-                return False
+        # An assignment (plain or augmented) means the cell changes state.
+        if _ASSIGN_RE.search(line):
+            return False
     return True
 
 
@@ -240,21 +243,28 @@ def extract_assignments(source: str) -> dict[str, str]:
         stripped = line.strip()
         if not stripped or stripped.startswith('#') or stripped.startswith('%'):
             continue
-        if '=' in stripped and not any(stripped.startswith(kw) for kw in ('if ', 'for ', 'while ', 'def ', 'class ', 'return ', 'yield ', 'import ', 'from ', 'with ', 'assert ')):
-            eq_pos = stripped.find('=')
-            if eq_pos > 0 and stripped[eq_pos - 1] not in '!<>+*-/^%&|~' and (eq_pos + 1 >= len(stripped) or stripped[eq_pos + 1] != '='):
-                lhs = stripped[:eq_pos].strip()
-                rhs = stripped[eq_pos + 1:].strip()
-                comment_pos = _find_comment(rhs)
-                if comment_pos >= 0:
-                    rhs = rhs[:comment_pos].strip()
-                if ',' in lhs and not lhs.startswith('(') and not lhs.startswith('['):
-                    names = [n.strip() for n in lhs.split(',')]
-                    for n in names:
-                        if n.isidentifier():
-                            assignments[n] = rhs
-                elif lhs.isidentifier():
-                    assignments[lhs] = rhs
+        if not any(stripped.startswith(kw) for kw in ('if ', 'for ', 'while ', 'def ', 'class ', 'return ', 'yield ', 'import ', 'from ', 'with ', 'assert ')):
+            m = _ASSIGN_RE.search(stripped)
+            if not m:
+                continue
+            # `op` is '' for a plain `=`, else the augmented operator without the
+            # trailing `=` ('+' for `+=`, '**' for `**=`, …).
+            op = m.group()[:-1]
+            lhs = stripped[:m.start()].strip()
+            rhs = stripped[m.end():].strip()
+            comment_pos = _find_comment(rhs)
+            if comment_pos >= 0:
+                rhs = rhs[:comment_pos].strip()
+            if op and lhs.isidentifier():
+                # `x += 1` reads as `x = x + 1` on the timeline.
+                assignments[lhs] = f"{lhs} {op} {rhs}"
+            elif ',' in lhs and not lhs.startswith('(') and not lhs.startswith('['):
+                names = [n.strip() for n in lhs.split(',')]
+                for n in names:
+                    if n.isidentifier():
+                        assignments[n] = rhs
+            elif lhs.isidentifier():
+                assignments[lhs] = rhs
     return assignments
 
 

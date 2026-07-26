@@ -10,7 +10,7 @@ import json
 import sys
 from typing import Any
 
-from .db import resolve_git_diff
+from .db import diff_sentinel_kind, is_diff_sentinel, resolve_git_diff
 
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.tiff', '.webp')
 
@@ -40,6 +40,38 @@ def _safe_json(s):
         return json.loads(s)
     except (json.JSONDecodeError, ValueError):
         return s
+
+
+def _json_list(s, context: str = "") -> list:
+    """Parse a ``tags``/``studies`` column into a list, never raising.
+
+    These columns are JSON arrays, but a hand-edited DB, an older writer, or a
+    third-party script can leave a bare string (``baseline`` instead of
+    ``["baseline"]``) or outright garbage behind. A raw ``json.loads`` here used
+    to propagate out of ``list_experiments`` and kill the *whole* request — one
+    bad row blanked the entire dashboard with no error shown. Salvage what we
+    can instead: a bare string becomes a one-element list, anything else an
+    empty one, with a stderr warning when ``context`` names the caller.
+    """
+    if not s:
+        return []
+    try:
+        v = json.loads(s)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        # A bare, unquoted string is the common corruption — keep it as a label.
+        text = str(s).strip()
+        if context:
+            print(f"[exptrack] warning: malformed JSON list in {context}: {s!r}",
+                  file=sys.stderr)
+        return [text] if text else []
+    if isinstance(v, list):
+        return [x for x in v if isinstance(x, str)]
+    if isinstance(v, str):
+        return [v] if v else []
+    if context:
+        print(f"[exptrack] warning: unexpected JSON list type in {context}: {type(v).__name__}",
+              file=sys.stderr)
+    return []
 
 # ── Experiment lookup ─────────────────────────────────────────────────────────
 
@@ -90,6 +122,8 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
     # param. Keep it out of the params table.
     error_traceback = all_params.pop("_error_traceback", "") or ""
 
+    _resolved_diff = resolve_git_diff(conn, exp["git_diff"])
+
     return {
         "id": exp["id"],
         "name": exp["name"],
@@ -102,13 +136,17 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "command": exp["command"],
         "git_branch": exp["git_branch"],
         "git_commit": exp["git_commit"],
-        "git_diff": resolve_git_diff(conn, exp["git_diff"]),
-        "diff_lines": len(resolve_git_diff(conn, exp["git_diff"]).splitlines()),
+        "git_diff": _resolved_diff,
+        # A sentinel (capture-failed / unavailable / compacted marker) is a
+        # status, not diff content — counting it as "1 line" made the detail
+        # header claim the run had one line of uncommitted changes.
+        "diff_lines": 0 if is_diff_sentinel(_resolved_diff)
+                      else len(_resolved_diff.splitlines()),
         "hostname": exp["hostname"],
         "python_ver": exp["python_ver"],
         "notes": exp["notes"],
-        "tags": json.loads(exp["tags"] or "[]"),
-        "studies": json.loads(exp["studies"] or "[]"),
+        "tags": _json_list(exp["tags"], "experiment_detail.tags"),
+        "studies": _json_list(exp["studies"], "experiment_detail.studies"),
         "output_dir": exp["output_dir"] or "",
         "stage": exp["stage"],
         "stage_name": exp["stage_name"],
@@ -129,6 +167,46 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
     }
 
 
+def find_previous_by_script(conn, exp_id: str) -> dict | None:
+    """Find the chronologically-previous experiment that used the same script.
+
+    Backs the dashboard Overview's "What changed" card — auto-diffing a run
+    against the last attempt at the same script means the "changed one line,
+    reran" workflow gets a param diff without the user ever renaming a run.
+    Returns None if this experiment has no script recorded or no earlier run
+    shares it. See ``_BASELINE_WHERE`` for which runs can be a baseline.
+    """
+    # (created_at, rowid) rather than created_at alone — see get_previous_run:
+    # runs launched in the same clock tick tie, and the tie-break decided whether
+    # "previous" pointed backwards or forwards in time.
+    prev = conn.execute(
+        """
+        SELECT prev.id AS id, prev.name AS name, prev.created_at AS created_at,
+               prev.status AS status
+        FROM experiments cur
+        JOIN experiments prev
+          ON prev.script = cur.script AND prev.script IS NOT NULL
+         AND (prev.created_at, prev.rowid) < (cur.created_at, cur.rowid)
+         AND prev.deleted_at IS NULL
+         AND prev.status != 'running'
+        WHERE cur.id = ?
+        ORDER BY prev.created_at DESC, prev.rowid DESC LIMIT 1
+        """,
+        (exp_id,),
+    ).fetchone()
+    if not prev:
+        return None
+    params = get_params_batch(conn, [prev["id"]]).get(prev["id"], {})
+    return {
+        "id": prev["id"], "name": prev["name"], "created_at": prev["created_at"],
+        # Carried so the card can say the baseline crashed — its metrics stop
+        # wherever it died, which a bare delta would present as a real result.
+        "status": prev["status"] or "",
+        "params": params,
+        "metrics": get_latest_metrics(conn, prev["id"]),
+    }
+
+
 def _session_origin(conn, session_node_id) -> dict | None:
     """Build the session back-link context for an experiment that came from (or
     is linked to) a Session Trees node, so the detail view can render a
@@ -138,7 +216,8 @@ def _session_origin(conn, session_node_id) -> dict | None:
         return None
     node = conn.execute(
         "SELECT n.id, n.label, n.node_type, n.parent_id, n.session_id, "
-        "s.name AS sess_name, s.status AS sess_status "
+        "s.name AS sess_name, s.status AS sess_status, "
+        "s.deleted_at AS sess_deleted_at "
         "FROM session_nodes n LEFT JOIN sessions s ON s.id = n.session_id "
         "WHERE n.id=? AND n.deleted_at IS NULL",
         (session_node_id,),
@@ -151,6 +230,10 @@ def _session_origin(conn, session_node_id) -> dict | None:
         "session_id": node["session_id"],
         "session_name": node["sess_name"] or "session",
         "session_status": node["sess_status"],
+        # The session may itself be in the Trash while this run and node stay
+        # live — the session list hides it, so the banner has to say so instead
+        # of offering a link to something the user can't find anywhere else.
+        "session_deleted": node["sess_deleted_at"] is not None,
         "node_label": node["label"],
         "node_type": node["node_type"],
         "lineage": _node_lineage_labels(conn, node["id"]),
@@ -286,11 +369,12 @@ def _get_compact_status(conn, exp_id: str, raw_git_diff) -> dict:
 
 def list_experiments(conn, limit: int = 50, status: str = "",
                      tag: str = "", study: str = "",
-                     include_trashed: bool = False) -> list[dict]:
+                     include_trashed: bool = False, offset: int = 0) -> list[dict]:
     """List experiments with last metrics and params.
 
     Trashed experiments (``deleted_at IS NOT NULL``) are excluded unless
-    *include_trashed* is True.
+    *include_trashed* is True. *offset* pages past the first N rows (used by
+    the dashboard's "Load more" — the list is ``ORDER BY created_at DESC``).
     """
     clauses: list[str] = []
     params: list = []
@@ -307,12 +391,13 @@ def list_experiments(conn, limit: int = 50, status: str = "",
         params.append(f'%"{study}"%')
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     params.append(limit)
+    params.append(max(0, offset))
     query = f"""
         SELECT id, project, name, status, created_at, duration_s,
                git_branch, git_commit, tags, studies, notes, output_dir,
-               stage, stage_name, COALESCE(name_is_auto, 0) AS name_is_auto
+               stage, stage_name, script, COALESCE(name_is_auto, 0) AS name_is_auto
         FROM experiments {where}
-        ORDER BY created_at DESC LIMIT ?
+        ORDER BY created_at DESC LIMIT ? OFFSET ?
     """
     rows = conn.execute(query, params).fetchall()
     # Batch-load metrics, sparklines, and params for every listed experiment in
@@ -332,8 +417,9 @@ def list_experiments(conn, limit: int = 50, status: str = "",
             "duration_s": r["duration_s"],
             "git_branch": r["git_branch"],
             "git_commit": r["git_commit"],
-            "tags": json.loads(r["tags"] or "[]"),
-            "studies": json.loads(r["studies"] or "[]"),
+            "script": r["script"] or "",
+            "tags": _json_list(r["tags"], "list_experiments.tags"),
+            "studies": _json_list(r["studies"], "list_experiments.studies"),
             "notes": r["notes"] or "",
             "output_dir": r["output_dir"] or "",
             "stage": r["stage"],
@@ -348,6 +434,367 @@ def list_experiments(conn, limit: int = 50, status: str = "",
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
+
+def last_metrics(conn, exp_id: str) -> dict:
+    """Latest value per metric key (by step, then ts, then insert order).
+
+    Ordering ascending and letting later rows overwrite earlier ones means the
+    highest-step (then latest-ts, then last-inserted) value wins. Unlike the old
+    ``GROUP BY key HAVING MAX(COALESCE(step,0))`` SQL, step-less metrics (the
+    common ``log_metric(k, v)`` case, where every step is NULL) are kept rather
+    than dropped by the boolean HAVING filter.
+    """
+    rows = conn.execute(
+        "SELECT key, value FROM metrics WHERE exp_id=? "
+        "ORDER BY COALESCE(step, -1), ts, rowid", (exp_id,)
+    ).fetchall()
+    return {r["key"]: r["value"] for r in rows}
+
+
+# Which runs may serve as a "previous run" baseline. Both baseline lookups
+# (get_previous_run, find_previous_by_script) apply this, so the strip, the
+# "What changed" card and the finish-time summary always agree on the baseline.
+#
+#   - Trashed runs are excluded. They're gone from every list, so a delta
+#     against one shows a baseline the user can't find, open or verify — and
+#     deleting the run between two attempts silently changes the numbers with
+#     no visible cause. Excluding them means "previous" simply walks back to
+#     the next surviving run, which is what the list shows.
+#   - `running` runs are excluded. Their metrics are still moving, so a delta
+#     against one doesn't reproduce a minute later, and a parallel sweep would
+#     otherwise compare each run against a half-finished sibling. (A run left
+#     `running` by a killed process is what `exptrack stale` / `finish` are
+#     for; until then it isn't a comparable result.)
+#   - `failed` runs are KEPT. "it broke, I fixed it, what changed?" is the loop
+#     this whole affordance exists for, and skipping past the failure would
+#     hide exactly the comparison the user wants. The baseline's status rides
+#     along on the payload instead, so the UI can flag that its metrics stop
+#     where it crashed.
+_BASELINE_WHERE = "deleted_at IS NULL AND status != 'running'"
+
+
+def get_previous_run(conn, exp_id: str) -> dict | None:
+    """The previous run of the same script (next-older by created_at).
+
+    Backs the "what changed since last time" affordance: the most recent run of
+    the same ``script`` created strictly before this one, restricted to runs
+    that can be a baseline (see ``_BASELINE_WHERE``) and excluding the run
+    itself. Returns a row dict (id, name, status, created_at, ...) or None.
+
+    Ordered by ``(created_at, rowid)``, not ``created_at`` alone: two runs
+    launched inside the same clock tick tie on the timestamp, and the tie-break
+    was whatever order SQLite happened to return — so "previous" could resolve
+    to the run that started *after* this one. ``rowid`` is insertion order, which
+    is launch order, so the pair always resolves the same way and always
+    backwards in time.
+    """
+    this = find_experiment(conn, exp_id, "id, script, created_at, rowid AS _rid")
+    if not this:
+        return None
+    row = conn.execute(
+        "SELECT id, name, script, status, created_at, git_commit, git_diff "
+        "FROM experiments "
+        f"WHERE script=? AND {_BASELINE_WHERE} "
+        "  AND (created_at, rowid) < (?, ?) "
+        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (this["script"], this["created_at"], this["_rid"]),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _run_code_signature(conn, exp_id: str) -> tuple:
+    """A coarse (commit, diff, script_hash) signature used to tell whether two
+    runs' code differs without a full diff. script_hash comes from the
+    ``_script_hash`` param captured by ``capture_script_snapshot``.
+
+    This describes the whole **repository state**, not the run's own code — the
+    ``git_diff`` is the entire working tree — so use ``_run_source_identity``
+    when the question is "did *this run's* code change?".
+    """
+    row = find_experiment(conn, exp_id, "git_commit, git_diff")
+    commit = (row or {}).get("git_commit") or ""
+    diff = (row or {}).get("git_diff") or ""
+    sh = conn.execute(
+        "SELECT value FROM params WHERE exp_id=? AND key='_script_hash'", (exp_id,)
+    ).fetchone()
+    return (commit, diff, sh["value"] if sh else "")
+
+
+def _run_source_identity(conn, exp_id: str) -> tuple | None:
+    """Content identity of the code a run actually executed, or None when the
+    run captured none.
+
+    The same sources ``compare_run_code`` diffs: a script run's content-addressed
+    snapshot hash, or a notebook run's ordered executed-cell hashes. Comparing
+    these answers "did this run's code change?" precisely, which the
+    repository-wide ``_run_code_signature`` cannot — an edit to any other tracked
+    file in the project moves that signature, so a byte-identical rerun was
+    reported as "code changed" right next to a Code-changes panel that (reading
+    these same snapshots) correctly said nothing had changed.
+    """
+    row = conn.execute(
+        "SELECT value FROM params WHERE exp_id=? AND key='_code_snapshot'", (exp_id,)
+    ).fetchone()
+    if row:
+        entries = _safe_json(row["value"])
+        if isinstance(entries, str):        # legacy double-encoded rows
+            entries = _safe_json(entries)
+        if isinstance(entries, list):
+            hashes = tuple(
+                e["hash"] for e in entries
+                if isinstance(e, dict) and e.get("hash")
+            )
+            if hashes:
+                return ("snapshot", *hashes)
+
+    cells = conn.execute(
+        "SELECT cell_hash FROM timeline WHERE exp_id=? AND event_type='cell_exec' "
+        "AND cell_hash IS NOT NULL ORDER BY seq",
+        (exp_id,),
+    ).fetchall()
+    if cells:
+        return ("cells", *(r["cell_hash"] for r in cells))
+    return None
+
+
+# Floats that differ only in the last bits are not a change. `0.9 + 0.03` and
+# `0.85 + 0.04 * 2` are both "0.93" but differ by 1.1e-16, which surfaced as a
+# metric change rendering "▼ -0.0000 (-0.0%)" — a delta that reads as zero on a
+# row claiming something moved. Scaled to the magnitudes involved so it stays a
+# noise filter and never swallows a real small change.
+_METRIC_EPS_REL = 1e-12
+
+
+def _metric_moved(a, b) -> bool:
+    """True when a metric genuinely changed between two runs (not float noise)."""
+    try:
+        fa, fb = float(a), float(b)
+    except (TypeError, ValueError):
+        return a != b
+    return abs(fb - fa) > _METRIC_EPS_REL * max(1.0, abs(fa), abs(fb))
+
+
+def diff_runs(conn, base_id: str, new_id: str) -> dict:
+    """Structured delta between two runs (base → new): param changes, metric
+    moves, and a coarse code-changed signal. Used by the finish-time summary and
+    the dashboard "vs previous" strip. Never raises on missing runs — returns
+    empty sections instead.
+    """
+    def _params(eid):
+        return {
+            r["key"]: r["value"]
+            for r in conn.execute(
+                "SELECT key, value FROM params WHERE exp_id=?", (eid,)
+            ).fetchall()
+            if not r["key"].startswith("_")
+        }
+
+    pa, pb = _params(base_id), _params(new_id)
+    param_changes = []
+    for k in sorted(set(pa) | set(pb)):
+        va, vb = pa.get(k), pb.get(k)
+        if va != vb:
+            param_changes.append({"key": k, "from": va, "to": vb})
+
+    ma, mb = last_metrics(conn, base_id), last_metrics(conn, new_id)
+    metric_changes = []
+    for k in sorted(set(ma) | set(mb)):
+        va, vb = ma.get(k), mb.get(k)
+        # A metric present on only one run isn't a value change — it was simply
+        # not measured on the other side. Skip it so comparing against a run that
+        # logged no (or different) metrics doesn't flood the delta with
+        # None→value rows (e.g. a run made before metric logging was added, or an
+        # empty phantom run). A genuine value move still has both sides present.
+        if va is None or vb is None:
+            continue
+        if _metric_moved(va, vb):
+            delta = None
+            try:
+                delta = float(vb) - float(va)
+            except (TypeError, ValueError):
+                delta = None
+            metric_changes.append({"key": k, "from": va, "to": vb, "delta": delta})
+
+    sig_a, sig_b = _run_code_signature(conn, base_id), _run_code_signature(conn, new_id)
+    # Two separate facts, kept separate: `source_changed` is this run's own code
+    # (what the Code-changes panel diffs), `code_changed` is the repository state
+    # around it. Collapsing them into one flag made the strip claim "code
+    # changed" for an edit to an unrelated file.
+    src_a, src_b = _run_source_identity(conn, base_id), _run_source_identity(conn, new_id)
+    return {
+        "base_id": base_id,
+        "new_id": new_id,
+        "param_changes": param_changes,
+        "metric_changes": metric_changes,
+        "code_changed": sig_a != sig_b,
+        # None when either run captured no source, so a caller can tell "the
+        # source is the same" from "we don't know".
+        "source_changed": None if (src_a is None or src_b is None) else src_a != src_b,
+    }
+
+
+def _run_cells(conn, exp_id: str) -> list[dict]:
+    """Ordered code cells actually run by an experiment, each with full source.
+
+    Reads the run's ``cell_exec`` timeline events (in execution order) and joins
+    each to its content-addressed source in ``cell_lineage``. Used by
+    ``compare_run_code`` to pair cells across two runs and surface the edit —
+    the notebook analogue of a script's git diff (notebook JSON is excluded from
+    git_diff by design, so the cell edit only lives here).
+    """
+    rows = conn.execute(
+        """SELECT t.cell_pos, t.cell_hash, cl.source
+           FROM timeline t
+           LEFT JOIN cell_lineage cl ON t.cell_hash = cl.cell_hash
+           WHERE t.exp_id=? AND t.event_type='cell_exec'
+           ORDER BY t.seq""",
+        (exp_id,),
+    ).fetchall()
+    return [{"cell_pos": r["cell_pos"], "cell_hash": r["cell_hash"],
+             "source": r["source"]} for r in rows]
+
+
+def _script_snapshot_source(conn, exp_id: str) -> str | None:
+    """Full script source snapshot for a run, via the ``_code_snapshot`` param
+    (content-addressed in ``code_snapshots``). None when the run has no snapshot
+    (e.g. a notebook run, or a pre-L3 run)."""
+    from .db import get_code_snapshot
+    row = conn.execute(
+        "SELECT value FROM params WHERE exp_id=? AND key='_code_snapshot'", (exp_id,)
+    ).fetchone()
+    if not row:
+        return None
+    entries = _safe_json(row["value"])
+    # Legacy rows (before script_tracking stopped pre-encoding the list) stored
+    # the value double-JSON-encoded, so one unwrap yields a string — decode again.
+    if isinstance(entries, str):
+        entries = _safe_json(entries)
+    if not isinstance(entries, list):
+        return None
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        if e.get("kind") == "script" and e.get("hash"):
+            snap = get_code_snapshot(conn, e["hash"])
+            if snap and snap.get("content") is not None:
+                return snap["content"]
+    return None
+
+
+def compare_run_code(conn, id_a: str, id_b: str) -> dict:
+    """Code diff between two runs, for the Compare view's cell-edit panel —
+    "what code changed between these two attempts?".
+
+    The two ids may be passed in any order; the pair is resolved and ordered
+    older → newer by ``created_at`` so the diff always reads base (older) → new
+    (newer). The chosen ids are returned as ``base_id`` / ``new_id``.
+
+    - Notebook runs: pairs each run's executed cells (by notebook position when
+      known, else execution order) and returns the pairs whose source differs,
+      as ``{pos, label, a, b}`` for the shared line/word diff renderer.
+    - Script runs: returns a single pair from the ``_code_snapshot`` full-source
+      snapshots (``label='script'``).
+
+    Never raises — returns ``{mode: 'none', cells: []}`` (with ``base_id`` /
+    ``new_id`` None) when a run is missing or there's nothing to diff.
+    """
+    ra = find_experiment(conn, id_a, "id, created_at")
+    rb = find_experiment(conn, id_b, "id, created_at")
+    if not ra or not rb:
+        return {"mode": "none", "cells": [], "base_id": None, "new_id": None}
+    if (rb.get("created_at") or "") < (ra.get("created_at") or ""):
+        ra, rb = rb, ra
+    base_id, new_id = ra["id"], rb["id"]
+    result = _compare_code(conn, base_id, new_id)
+    result["base_id"], result["new_id"] = base_id, new_id
+    return result
+
+
+def _compare_code(conn, base_id: str, new_id: str) -> dict:
+    """Ordered (base → new) code diff — see ``compare_run_code``."""
+    # ── Script snapshot diff (L3 real-command / snapshot capture) ──────────
+    sa = _script_snapshot_source(conn, base_id)
+    sb = _script_snapshot_source(conn, new_id)
+    if sa is not None or sb is not None:
+        cells = ([] if (sa or "") == (sb or "")
+                 else [{"pos": None, "label": "script", "a": sa or "", "b": sb or ""}])
+        return {"mode": "script", "cells": cells}
+
+    # ── Notebook cell diff ─────────────────────────────────────────────────
+    cells_a = _run_cells(conn, base_id)
+    cells_b = _run_cells(conn, new_id)
+    if not cells_a and not cells_b:
+        return {"mode": "none", "cells": []}
+
+    def _key(c, idx):
+        # Pair by notebook cell position when both sides recorded it; otherwise
+        # fall back to execution order so pre-cell_pos runs still line up.
+        return c["cell_pos"] if c["cell_pos"] is not None else f"#{idx}"
+
+    map_a = {_key(c, i): c for i, c in enumerate(cells_a)}
+    map_b = {_key(c, i): c for i, c in enumerate(cells_b)}
+    # Sort ints (real cell positions) ahead of the "#N" execution-order fallback.
+    ordered = sorted(set(map_a) | set(map_b),
+                     key=lambda k: (0, k) if isinstance(k, int) else (1, k))
+
+    changed = []
+    for k in ordered:
+        ca, cb = map_a.get(k), map_b.get(k)
+        # Content-addressed identity: equal hashes ⇒ identical cell (robust even
+        # when the stored source is NULL after compaction), so skip.
+        if ca and cb and ca["cell_hash"] == cb["cell_hash"]:
+            continue
+        a_src = (ca["source"] if ca else "") or ""
+        b_src = (cb["source"] if cb else "") or ""
+        if a_src == b_src:
+            continue
+        pos = k if isinstance(k, int) else None
+        label = f"cell {pos}" if pos is not None else "cell"
+        changed.append({"pos": pos, "label": label, "a": a_src, "b": b_src})
+
+    return {"mode": "cells", "cells": changed}
+
+
+def _fmt_val(v) -> str:
+    """Short display for a param/metric value (trim long floats)."""
+    if isinstance(v, float):
+        return f"{v:.4g}"
+    s = str(v)
+    return s if len(s) <= 24 else s[:21] + "…"
+
+
+def format_run_delta(diff: dict, prev_row: dict | None) -> str:
+    """One-line human summary of diff_runs(), or '' if nothing changed.
+
+    e.g. "vs prev (a3f2c1, 12m ago): lr 0.01→0.02 · code changed · acc 0.84→0.87"
+    """
+    parts = []
+    for c in diff.get("param_changes", [])[:4]:
+        parts.append(f"{c['key']} {_fmt_val(c['from'])}→{_fmt_val(c['to'])}")
+    extra_p = len(diff.get("param_changes", [])) - 4
+    if extra_p > 0:
+        parts.append(f"+{extra_p} more params")
+    # Prefer the precise signal; fall back to the repository one only when the
+    # run's own source couldn't be determined, and name it for what it is
+    # otherwise (see diff_runs).
+    src = diff.get("source_changed")
+    if src or (src is None and diff.get("code_changed")):
+        parts.append("code changed")
+    elif diff.get("code_changed"):
+        parts.append("repo changed elsewhere")
+    for c in diff.get("metric_changes", [])[:4]:
+        parts.append(f"{c['key']} {_fmt_val(c['from'])}→{_fmt_val(c['to'])}")
+    if not parts:
+        return ""
+    label = "prev"
+    if prev_row:
+        who = prev_row.get("name") or (prev_row.get("id") or "")[:6]
+        # Name the baseline's failure: its metrics stop where it crashed, so a
+        # bare "acc 0.4→0.87" against it reads as a win that wasn't measured.
+        if prev_row.get("status") == "failed":
+            who += ", failed"
+        label = f"prev ({who})"
+    return f"vs {label}: " + " · ".join(parts)
 
 
 def get_latest_metrics(conn, exp_id: str) -> dict[str, float]:
@@ -621,7 +1068,8 @@ def get_stats(conn) -> dict[str, Any]:
     diff_rows = conn.execute(
         "SELECT LENGTH(git_diff) as sz FROM experiments "
         "WHERE deleted_at IS NULL AND git_diff IS NOT NULL AND git_diff != '' "
-        "AND git_diff NOT LIKE '[compacted%' AND git_diff NOT LIKE '[ref:%'"
+        "AND git_diff NOT LIKE '[compacted%' AND git_diff NOT LIKE '[ref:%' "
+        "AND git_diff NOT LIKE '[capture-failed%'"
     ).fetchall()
     diff_total_bytes = sum(r["sz"] for r in diff_rows)
     diff_count = len(diff_rows)
@@ -689,7 +1137,7 @@ def remove_tag_global(conn, tag: str) -> int:
     now = datetime.now(timezone.utc).isoformat()
     count = 0
     for r in rows:
-        tags = json.loads(r["tags"] or "[]")
+        tags = _json_list(r["tags"], "remove_tag_global")
         if tag in tags:
             tags = [t for t in tags if t != tag]
             conn.execute(
@@ -793,8 +1241,13 @@ def get_experiment_diff(conn, exp_id: str) -> dict | None:
     ).fetchone()
     if not exp:
         return None
+    diff = resolve_git_diff(conn, exp["git_diff"])
     return {
-        "diff": resolve_git_diff(conn, exp["git_diff"]),
+        "diff": diff,
+        # Classified server-side so the client branches on a field instead of
+        # re-hardcoding the marker strings (they were already drifting between
+        # the two JS renderers).
+        "sentinel": diff_sentinel_kind(diff),
         "branch": exp["git_branch"],
         "commit": exp["git_commit"],
     }
@@ -848,8 +1301,8 @@ def get_export_data(conn, exp_id: str) -> dict | None:
         "git_branch": exp["git_branch"],
         "git_commit": exp["git_commit"],
         "hostname": exp["hostname"],
-        "tags": json.loads(exp["tags"] or "[]"),
-        "studies": json.loads(exp["studies"] or "[]"),
+        "tags": _json_list(exp["tags"], "export_data.tags"),
+        "studies": _json_list(exp["studies"], "export_data.studies"),
         "notes": exp["notes"],
         "output_dir": exp["output_dir"] or "",
         "stage": exp["stage"],
@@ -1245,7 +1698,7 @@ def add_to_study(conn, exp_id: str, study_name: str) -> list[str] | None:
     exp = find_experiment(conn, exp_id, "id, studies")
     if not exp:
         return None
-    studies = json.loads(exp["studies"] or "[]")
+    studies = _json_list(exp["studies"], "add_to_study")
     if study_name not in studies:
         studies.append(study_name)
         update_experiment_studies(conn, exp["id"], studies)
@@ -1257,7 +1710,7 @@ def remove_from_study(conn, exp_id: str, study_name: str) -> list[str] | None:
     exp = find_experiment(conn, exp_id, "id, studies")
     if not exp:
         return None
-    studies = json.loads(exp["studies"] or "[]")
+    studies = _json_list(exp["studies"], "remove_from_study")
     studies = [s for s in studies if s != study_name]
     update_experiment_studies(conn, exp["id"], studies)
     return studies

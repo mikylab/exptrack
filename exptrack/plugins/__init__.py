@@ -10,11 +10,43 @@ Plugins hook into experiment lifecycle events:
 from __future__ import annotations
 
 import importlib
+import json
 import sys
+import types
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..core import Experiment
+
+
+def make_exp_proxy(conn, exp_id: str, status: str = "done", duration_s=None):
+    """Build a plugin-facing experiment stand-in from DB rows.
+
+    The lifecycle-command paths (``exptrack finish``, ``exptrack run-finish``)
+    have no live ``Experiment`` object to hand to plugins, so they build a
+    lightweight namespace from the DB. Plugins like ``github_sync`` read the
+    full interface (``project``, ``created_at``, ``duration_s``, ``script``,
+    ``git_*``, ``_params``, ``last_metrics()``, ``tags`` as a **list**,
+    ``notes``); an incomplete proxy makes every sync silently ``AttributeError``
+    inside the registry's try/except. This is the single, complete builder both
+    paths use.
+    """
+    from .. import config as cfg
+    from ..core.queries import get_params_batch, last_metrics
+    row = conn.execute("SELECT * FROM experiments WHERE id=?", (exp_id,)).fetchone()
+    # SIM118 is suppressed below: `row` is a sqlite3.Row, not a dict —
+    # iterating it yields values, so .keys() is the only way to get the
+    # column names and `for k in row` would be a bug.
+    p = types.SimpleNamespace(**{k: row[k] for k in row.keys()})  # noqa: SIM118
+    p.status = status
+    p.duration_s = duration_s if duration_s is not None else row["duration_s"]
+    p.tags = json.loads(row["tags"] or "[]")
+    # `project` may be NULL on manually-created rows; derive it like Experiment.
+    p.project = row["project"] or cfg.load().get("project", cfg.project_root().name)
+    # Reuse the batch param loader (tolerates malformed JSON values).
+    p._params = get_params_batch(conn, [exp_id]).get(exp_id, {})
+    p.last_metrics = lambda: last_metrics(conn, exp_id)
+    return p
 
 
 class Plugin:

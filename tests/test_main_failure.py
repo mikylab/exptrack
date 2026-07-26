@@ -11,10 +11,15 @@ script catches an error and calls sys.exit(1) (the cause is chained on
 SystemExit.__context__ and must not be swallowed behind "SystemExit(code)").
 """
 import json
+import os
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+# Repo root (parent of tests/), so the subprocess can import exptrack even on a
+# bare checkout where the package isn't pip-installed.
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _make_project(root: Path):
@@ -26,9 +31,11 @@ def _make_project(root: Path):
 
 
 def _run(root: Path, script_name: str):
+    env = {**os.environ}
+    env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     return subprocess.run(
         [sys.executable, "-m", "exptrack", script_name],
-        cwd=str(root), capture_output=True, text=True,
+        cwd=str(root), capture_output=True, text=True, env=env,
     )
 
 

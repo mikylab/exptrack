@@ -106,10 +106,10 @@ def test_tag_workflow(tmp_project):
     exp2 = Experiment(script="b.py")
     exp2.finish()
 
-    # Tag both experiments
-    cmd_tag(SimpleNamespace(id=exp1.id, tag="v1"))
-    cmd_tag(SimpleNamespace(id=exp2.id, tag="v1"))
-    cmd_tag(SimpleNamespace(id=exp1.id, tag="baseline"))
+    # Tag both experiments (real CLI shape: id is nargs="+", last elem is tag)
+    cmd_tag(SimpleNamespace(id=[exp1.id, "v1"]))
+    cmd_tag(SimpleNamespace(id=[exp2.id, "v1"]))
+    cmd_tag(SimpleNamespace(id=[exp1.id, "baseline"]))
 
     conn = get_db()
 
@@ -120,7 +120,7 @@ def test_tag_workflow(tmp_project):
     assert "baseline" in tags1
 
     # Untag
-    cmd_untag(SimpleNamespace(id=exp1.id, tag="v1"))
+    cmd_untag(SimpleNamespace(id=[exp1.id, "v1"]))
     r1 = conn.execute("SELECT tags FROM experiments WHERE id=?", (exp1.id,)).fetchone()
     tags1 = json.loads(r1["tags"])
     assert "v1" not in tags1

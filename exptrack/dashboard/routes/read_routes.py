@@ -6,6 +6,7 @@ GET endpoints for stats, experiments, metrics, diffs, timelines, exports.
 from __future__ import annotations
 
 from ...core.queries import (
+    find_previous_by_script,
     get_all_tags,
     get_cell_source,
     get_experiment_detail,
@@ -20,19 +21,38 @@ from ...core.queries import (
 )
 
 
+def _qint(qs: dict, key: str, default: int) -> int:
+    """Parse an int query param, falling back to default on junk input.
+
+    Keeps malformed query strings (?limit=abc) a 200-with-default instead of a
+    500 traceback.
+    """
+    try:
+        return int(qs.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def api_stats(conn) -> dict:
     return get_stats(conn)
 
 
 def api_experiments(conn, qs: dict) -> list:
-    limit = int(qs.get("limit", 50))
+    limit = _qint(qs, "limit", 50)
+    offset = _qint(qs, "offset", 0)
     status = qs.get("status", "")
-    return list_experiments(conn, limit=limit, status=status)
+    return list_experiments(conn, limit=limit, status=status, offset=offset)
 
 
 def api_experiment(conn, exp_id: str) -> dict:
     result = get_experiment_detail(conn, exp_id)
     return result if result else {"error": "not found"}
+
+
+def api_prev_by_script(conn, exp_id: str) -> dict:
+    """Previous experiment with the same script + its params, for the Overview
+    "What changed" card. `{}` when there's no earlier same-script run."""
+    return find_previous_by_script(conn, exp_id) or {}
 
 
 def api_trash(conn) -> dict:
@@ -55,6 +75,7 @@ def api_delete_preview(conn, exp_id: str) -> dict:
 def api_list_confusion(conn, exp_id: str) -> dict:
     """Return the list of saved confusion matrices for this experiment."""
     import json as _json
+
     from ...core.queries import find_experiment
     exp = find_experiment(conn, exp_id)
     if not exp:
@@ -94,13 +115,42 @@ def api_diff(conn, exp_id: str) -> dict:
     return result if result else {"error": "not found"}
 
 
+def api_run_delta(conn, exp_id: str) -> dict:
+    """What changed vs the previous run of the same script (the 'vs previous'
+    strip on the detail view). Returns {previous: {...}, ...diff} or
+    {previous: None} when this is the first run of its script."""
+    from ...core.queries import diff_runs, find_experiment, format_run_delta, get_previous_run
+    exp = find_experiment(conn, exp_id, "id, created_at")
+    if not exp:
+        return {"error": "not found"}
+    prev = get_previous_run(conn, exp["id"])
+    if not prev:
+        return {"previous": None}
+    diff = diff_runs(conn, prev["id"], exp["id"])
+    diff["previous"] = {
+        "id": prev["id"], "name": prev.get("name") or "",
+        "created_at": prev.get("created_at") or "",
+        # So the strip can mark a crashed baseline — its metrics stop where it
+        # died, which an unqualified delta would present as a measured result.
+        "status": prev.get("status") or "",
+    }
+    # So the strip can state how much *earlier* the baseline ran — a timestamp
+    # alone doesn't tell the reader which direction the comparison runs.
+    diff["current_created_at"] = exp.get("created_at") or ""
+    diff["summary"] = format_run_delta(diff, prev)
+    return diff
+
+
 def api_compare(conn, qs: dict) -> dict:
     id1, id2 = qs.get("id1", ""), qs.get("id2", "")
     if not id1 or not id2:
         return {"error": "provide id1 and id2"}
+    from ...core.queries import compare_run_code
+    # compare_run_code resolves both ids and orders them older → newer itself.
     return {
         "exp1": api_experiment(conn, id1),
         "exp2": api_experiment(conn, id2),
+        "code_diff": compare_run_code(conn, id1, id2),
     }
 
 
@@ -118,7 +168,7 @@ def api_vars_at(conn, exp_id: str, qs: dict) -> dict:
     exp = find_experiment(conn, exp_id)
     if not exp:
         return {"error": "not found"}
-    seq = int(qs.get("seq", 999999))
+    seq = _qint(qs, "seq", 999999)
     return get_vars_at_seq(conn, exp["id"], seq=seq)
 
 
