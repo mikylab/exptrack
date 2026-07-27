@@ -7,6 +7,7 @@ output file paths, and fires plugin hooks on lifecycle events.
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import math
@@ -18,6 +19,7 @@ import sys
 import time
 import traceback as _tb
 import uuid
+import weakref
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +63,25 @@ def _claim_run_wrapper() -> Experiment | None:
         _run_wrapper = None
         w._adopted = True
     return w
+
+
+# Live, unfinished runs, so interpreter shutdown can flush metrics still held
+# inside the commit-coalescing window (see Experiment._commit_metrics). Weak
+# refs: this must never be the reason a run object stays alive. A script that
+# just falls off the end without calling finish() still keeps its last points;
+# only a hard kill (SIGKILL) can lose them, bounded by the interval.
+_live_runs: weakref.WeakSet[Experiment] = weakref.WeakSet()
+
+
+def _flush_live_runs() -> None:
+    for exp in list(_live_runs):
+        try:
+            exp.flush_metrics()
+        except Exception:
+            pass        # shutdown: never raise out of an atexit hook
+
+
+atexit.register(_flush_live_runs)
 
 
 def mark_wrapper_foreign_child(exp: Experiment) -> None:
@@ -155,6 +176,12 @@ class Experiment:
     # row that `__main__` then Trashes at finish. Class default for the resume
     # path (object.__new__, skips __init__) and early readers.
     _had_foreign_child = False
+    # Metric-commit coalescing (see _commit_metrics). Class-level defaults so
+    # the resume path (object.__new__, skips __init__) and any early caller are
+    # safe; __init__ replaces the interval with the configured value.
+    _metric_commit_interval_s = 0.25
+    _last_metric_commit = float("-inf")
+    _metrics_uncommitted = False
 
     def __new__(cls, *args, **kwargs):
         # A bare ``Experiment()`` created by a script running under
@@ -202,6 +229,16 @@ class Experiment:
         self.status   = "running"
         self._thin_every = thin_every  # None = use config default
         self.duration_s: float | None = None
+        # How long metric writes may sit uncommitted (see _commit_metrics).
+        self._metric_commit_interval_s = max(
+            0.0, cfg.load().get("metric_commit_interval_ms", 250) / 1000.0)
+        # -inf, not "now": the first metric of a run must commit immediately.
+        # Starting the window at creation defers it until the *second* write,
+        # which for a run logging once per epoch means the chart sits one epoch
+        # behind for the whole run.
+        self._last_metric_commit = float("-inf")
+        self._metrics_uncommitted = False
+        _live_runs.add(self)
 
         # Detect caller script if not given
         if not script:
@@ -288,6 +325,14 @@ class Experiment:
         # (_defer_commit is covered by the class-level default.)
         exp.name_is_auto = False        # resumed runs already have a chosen name
         exp.duration_s = None           # set by finish(); default so it's never unset
+        # Metric-commit coalescing: the class defaults are safe, but a resumed
+        # run logs metrics in the same tight loops, so it gets the configured
+        # interval and the atexit flush like any other run.
+        exp._metric_commit_interval_s = max(
+            0.0, cfg.load().get("metric_commit_interval_ms", 250) / 1000.0)
+        exp._last_metric_commit = float("-inf")
+        exp._metrics_uncommitted = False
+        _live_runs.add(exp)
 
         exp._params = {r["key"]: json.loads(r["value"]) for r in conn.execute(
             "SELECT key, value FROM params WHERE exp_id=?", (exp.id,)).fetchall()}
@@ -336,6 +381,13 @@ class Experiment:
         self._output_dir = str(
             cfg.project_root() / conf.get("outputs_dir", "outputs") / self.name
         )
+        # An earlier run on this connection may still hold metric rows inside
+        # the commit-coalescing window (see _commit_metrics), and that leaves an
+        # implicit transaction open — BEGIN IMMEDIATE below would then fail with
+        # "cannot start a transaction within a transaction". Land them first.
+        # (A no-op inside batched_writes(), which owns its own commit and never
+        # marks metrics as pending.)
+        _flush_live_runs()
         # Deduplicate git diff: store full text once, reference by hash
         diff_for_db = self.git_diff
         if diff_for_db:
@@ -510,6 +562,52 @@ class Experiment:
             return True
         return step % keep_every == 0
 
+    def _commit_metrics(self, conn):
+        """Commit metric writes, but at most once per commit interval.
+
+        Metrics are the one thing written in a tight loop: a 100k-iteration
+        training run calls this 100k times, and every commit is an fsync. That
+        made the commit ~96% of exptrack's write cost — 100k iterations logging
+        5 metrics took 151s, against 6s when the same inserts are committed in
+        batches. exptrack is supposed to be a passive observer of a training
+        run, not two and a half minutes of it.
+
+        Coalescing on *time* rather than a fixed count is what keeps the
+        dashboard live: uncommitted rows aren't visible to the dashboard's
+        separate connection, so a count-based batch would stall a slow run's
+        chart for however long N iterations take, while a time-based one bounds
+        the lag at the interval regardless of loop speed. The cost is symmetric
+        and bounded: a run killed with `kill -9` loses at most that interval's
+        metrics. Every ordinary exit path — `finish`, `fail`, the context
+        manager, interpreter shutdown — flushes, and so does any other logging
+        call, since committing the shared connection commits these too.
+
+        `metric_commit_interval_ms: 0` in config restores a commit per call.
+        """
+        if self._defer_commit:
+            return          # inside batched_writes(); that block owns the commit
+        interval = self._metric_commit_interval_s
+        if interval <= 0:
+            conn.commit()
+            return
+        now = time.monotonic()
+        if now - self._last_metric_commit >= interval:
+            conn.commit()
+            self._last_metric_commit = now
+        else:
+            self._metrics_uncommitted = True
+
+    def flush_metrics(self):
+        """Commit any metric rows still held by the coalescing window above."""
+        if not self._metrics_uncommitted:
+            return
+        self._metrics_uncommitted = False
+        self._last_metric_commit = time.monotonic()
+        try:
+            get_db().commit()
+        except Exception as e:
+            print(f"[exptrack] warning: metric flush failed: {e}", file=sys.stderr)
+
     def log_metric(self, key: str, value: float, step: int | None = None):
         if self._finished:
             print(f"[exptrack] warning: logging metric '{key}' after experiment finished",
@@ -524,13 +622,17 @@ class Experiment:
             return
         ts = datetime.now(timezone.utc).isoformat()
         node_id = _active_session_node()
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO metrics (exp_id, key, value, step, ts, session_node_id) "
-                "VALUES (?,?,?,?,?,?)",
-                (self.id, key, fval, step, ts, node_id)
-            )
-            conn.commit()
+        # NB: `conn = get_db()`, not `with get_db() as conn:` — sqlite3's
+        # connection context manager commits on exit, which would defeat both
+        # the coalescing below and batched_writes(). Same reason log_params
+        # takes the connection directly.
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO metrics (exp_id, key, value, step, ts, session_node_id) "
+            "VALUES (?,?,?,?,?,?)",
+            (self.id, key, fval, step, ts, node_id)
+        )
+        self._commit_metrics(conn)
         plugins.on_metric(self, key, value, step)
 
     def log_metrics(self, metrics: dict[str, float], step: int | None = None):
@@ -552,14 +654,14 @@ class Experiment:
             finite_metrics[k] = fv
         if not finite_metrics:
             return
-        with get_db() as conn:
-            conn.executemany(
-                "INSERT INTO metrics (exp_id, key, value, step, ts, session_node_id) "
-                "VALUES (?,?,?,?,?,?)",
-                [(self.id, k, v, step, ts, node_id)
-                 for k, v in finite_metrics.items()]
-            )
-            conn.commit()
+        conn = get_db()   # not `with` — see the note in log_metric
+        conn.executemany(
+            "INSERT INTO metrics (exp_id, key, value, step, ts, session_node_id) "
+            "VALUES (?,?,?,?,?,?)",
+            [(self.id, k, v, step, ts, node_id)
+             for k, v in finite_metrics.items()]
+        )
+        self._commit_metrics(conn)
         for k, v in finite_metrics.items():
             plugins.on_metric(self, k, v, step)
 
@@ -627,6 +729,10 @@ class Experiment:
             raise ValueError(
                 f"Invalid status '{status}'. Must be one of: {_VALID_STATUSES}"
             )
+        # Land any metrics still inside the coalescing window before anything
+        # here can raise — the run's last points must not depend on the rest of
+        # finish() succeeding.
+        self.flush_metrics()
         # Fingerprint any dataset-shaped params before locking the run, so it
         # runs for every finish path (scripts, notebooks, programmatic), not just
         # `exptrack run`. Must precede `_finished` since it calls log_params.
@@ -636,6 +742,7 @@ class Experiment:
         self._finished = True
         self.duration_s = time.time() - self._start
         self.status = status
+        _live_runs.discard(self)   # already flushed above; nothing left to do at exit
 
         # Scan output_dir for artifacts before closing
         self._scan_output_dir()

@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.55.0] - 2026-07-27
+
+**Upgrading an existing project:** the read fixes below apply to runs you have
+already recorded — they are better queries over the same rows, so an existing
+100k-iteration experiment charts and lists faster immediately, with nothing to
+re-record. The metrics index is rebuilt once, automatically, the first time this
+version opens the database (about 2 seconds per 5 million metric rows); every
+later open skips it. The faster write path only applies to new runs, and
+`metric_keep_every` likewise only thins metrics logged from now on — it does not
+touch points already stored.
+
+### Changed
+- **Logging metrics in a long training loop is ~18x faster** — every `log_metric`/`log_metrics` call committed immediately, and a commit is an fsync. That made the commit about 96% of exptrack's write cost: a 100k-iteration run logging 5 metrics spent **151 seconds** inside exptrack, against 8 seconds when the same rows are committed in batches. exptrack is meant to observe a training run, not add two and a half minutes to it. Metric writes are now committed at most once per `metric_commit_interval_ms` (new config key, default 250 ms). The window is measured in *time*, not in number of writes, so the dashboard stays live regardless of how fast the loop runs — the first metric of a run always commits immediately, and a run logging once per epoch still commits every point as it goes. A run killed with `kill -9` can lose at most that window's metrics; every ordinary exit — finishing, failing, the context manager, or the interpreter shutting down on a script that never called `finish()` — flushes, as does any other logging call. Set `metric_commit_interval_ms: 0` to restore a commit per call.
+- **Metric logging honours `batched_writes()`** — it always claimed to, but metrics took the connection through a context manager that commits on exit, so the block never actually deferred them.
+
+### Fixed
+- **The Charts tab keeps up with a live run** — `/api/metrics` selected every point for the experiment and built a Python object per row before throwing ~99% of them away in downsampling. One 100k-iteration run logging 5 metrics is 500k rows, so drawing 2500 chart points took about 6 seconds — on the endpoint the detail view polls **every 5 seconds** while a run is live, so each poll occupied a request thread for longer than the interval and the polls stacked up. The downsampling now happens in SQL and only the points that survive it are ever built in Python: same 500 points per metric, same exact first/last values and same preserved peaks and troughs, in 1.4 seconds.
+- **A step-less metric series is charted in the right order** — `log_metric(key, value)` with no step leaves every step NULL, and the series was then ordered by a timestamp that only resolves to the second, so points within the same second came back shuffled and the "last" point on the chart was not the run's last value.
+
+### Removed
+- **The metrics session-node index no longer stores an entry per row** — `session_node_id` is NULL for every metric logged outside a notebook session, and the only query the index serves looks up a real node id. Indexing all those NULLs cost 5.1 MB of a 54 MB database — about 10% — for nothing. It is now a partial index, rebuilt automatically on upgrade. The freed pages are reused by the database as it grows; to hand them back to the filesystem right away, use the new `exptrack clean --vacuum` below.
+
+### Added
+- **`exptrack clean --vacuum`** — reclaim free space in the database file without deleting anything. Space freed inside the file (a purged run, a dropped index) is reused as the database grows but is never returned to the filesystem until a VACUUM, and every other path that VACUUMs does so only after deleting something — `--reset` wipes the project. Reports how much it reclaimed; `--dry-run` shows the current size. Stop the dashboard first, since VACUUM needs exclusive access.
+
+## [1.54.2] - 2026-07-27
+
+### Fixed
+- **The experiment table loads on a project with real training runs** — the query behind `/api/experiments` found each metric's latest point with a correlated subquery, which re-scans a metric's entire history *once per point in it*. The cost therefore grew with the square of points-per-metric: harmless on a handful of hand-logged numbers, but a project of ~70 runs logging a few thousand points per metric (well under a million rows) never finished the request at all. Because the stats cards come from a separate query that doesn't touch metrics, the page rendered its headline counts — "68 total runs, 61 done" — above a table that stayed permanently empty, with no error to explain it. Finding the latest point is now a single linear pass, and the same fix applies to the per-experiment detail view. On a 680k-row database the listing went from not completing to about three seconds.
+- **The last-logged value wins consistently when several points share a step** — the old query returned every point tied at the highest step and kept whichever one SQLite happened to emit last. Ties now break by timestamp, then insert order, matching the rest of the codebase.
+
 ## [1.54.1] - 2026-07-27
 
 ### Fixed
