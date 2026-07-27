@@ -76,6 +76,30 @@ def mark_wrapper_foreign_child(exp: Experiment) -> None:
         _run_wrapper._had_foreign_child = True
 
 
+def _active_session_node() -> str | None:
+    """Id of the Session Trees node currently being explored, or None.
+
+    Stamped onto each metric as it's written so a metric belongs to the branch
+    that produced it. A notebook session funnels every ``metric()`` call into
+    one auto-created run, so without this the only way to attribute a metric to
+    a branch is to guess from timestamps — and that guess is wrong whenever the
+    user revisits an earlier branch, since switching back changes the active
+    node without creating one.
+
+    Import is local and failure is swallowed: metric logging must not depend on
+    the (optional) session subsystem being importable.
+    """
+    try:
+        from ..sessions import get_current_session
+        sm = get_current_session()
+        if sm is not None and sm.session_id:
+            return sm._current_node_id
+    except Exception as e:
+        from .utils import debug_log
+        debug_log(f"could not resolve active session node for metric: {e}")
+    return None
+
+
 def _redact_params(params: dict) -> dict:
     """Redact parameter values matching configured sensitive patterns."""
     try:
@@ -499,10 +523,12 @@ class Experiment:
         if not self._should_store_metric(step):
             return
         ts = datetime.now(timezone.utc).isoformat()
+        node_id = _active_session_node()
         with get_db() as conn:
             conn.execute(
-                "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-                (self.id, key, fval, step, ts)
+                "INSERT INTO metrics (exp_id, key, value, step, ts, session_node_id) "
+                "VALUES (?,?,?,?,?,?)",
+                (self.id, key, fval, step, ts, node_id)
             )
             conn.commit()
         plugins.on_metric(self, key, value, step)
@@ -515,6 +541,7 @@ class Experiment:
         if not self._should_store_metric(step):
             return
         ts = datetime.now(timezone.utc).isoformat()
+        node_id = _active_session_node()
         finite_metrics = {}
         for k, v in metrics.items():
             fv = float(v)
@@ -527,8 +554,10 @@ class Experiment:
             return
         with get_db() as conn:
             conn.executemany(
-                "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
-                [(self.id, k, v, step, ts) for k, v in finite_metrics.items()]
+                "INSERT INTO metrics (exp_id, key, value, step, ts, session_node_id) "
+                "VALUES (?,?,?,?,?,?)",
+                [(self.id, k, v, step, ts, node_id)
+                 for k, v in finite_metrics.items()]
             )
             conn.commit()
         for k, v in finite_metrics.items():

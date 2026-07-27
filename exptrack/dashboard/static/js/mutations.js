@@ -80,11 +80,8 @@ async function compactExp(id) {
   if (d.ok && d.freed > 0) {
     owlSay('Compacted! Freed ~' + fmtFreed(d.freed), 'owl-bounce');
     await loadExperiments();
+    // refreshDetail restores the active tab (and reloads its content) itself.
     await refreshDetail(id);
-    // Refresh active tab content (timeline, etc.)
-    if (currentDetailTab && currentDetailTab !== 'overview') {
-      switchDetailTab(currentDetailTab, id);
-    }
   } else {
     alert('Nothing to compact \u2014 already fully compacted.');
   }

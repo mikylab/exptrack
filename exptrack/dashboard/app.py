@@ -10,9 +10,58 @@ SIGHUP behaviour). Use `nohup exptrack ui &`, tmux, or screen for persistence.
 import errno
 import secrets
 import sys
-from http.server import HTTPServer
+from http.server import ThreadingHTTPServer
 
 from .handler import DashboardHandler, _get_auth_token, set_session_token
+
+# Connections the kernel may hold before the server accepts them. The page's
+# boot fires ~8 API calls at once on top of the shell + CSS/JS bundles + the
+# vendored Chart.js, so the stdlib default of 5 is below a single page load.
+_REQUEST_QUEUE_SIZE = 64
+
+
+class DashboardServer(ThreadingHTTPServer):
+    """Threaded HTTP server for the dashboard.
+
+    Threading is not an optimization here, it is a correctness requirement.
+    The stdlib ``HTTPServer`` accepts one connection, then blocks in
+    ``readline()`` until that client sends a request line. A connection that
+    is merely *open* — not yet sending — therefore stalls every other request
+    for as long as it stays quiet, and one that never sends stalls them
+    forever. Locally this is invisible: the browser connects and writes the
+    request in the same instant. Through a remote tunnel (ssh -L, VS Code port
+    forwarding, cloudflared) it is the normal case — those relays pool and
+    pre-open TCP connections to the local port and forward the bytes a
+    round-trip later, so an idle pooled socket deadlocked the whole dashboard
+    and every fetch died as a bare "NetworkError" in the browser.
+
+    ``daemon_threads`` keeps Ctrl+C immediate: an in-flight request never
+    holds the process open.
+    """
+
+    daemon_threads = True
+    request_queue_size = _REQUEST_QUEUE_SIZE
+
+    def process_request_thread(self, request, client_address):
+        """Serve one connection, then drop this thread's SQLite connection.
+
+        ``core.db.get_db()`` caches per *thread* (``threading.local``), so with
+        a thread per connection every request would otherwise leave an open
+        sqlite3 connection behind and the dashboard would leak file
+        descriptors for as long as it runs.
+        """
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            try:
+                from exptrack.core.db import close_db
+                # sweep=False: the orphan scan is anti-join COUNTs over
+                # params/metrics/timeline, far too expensive to repeat on
+                # every closed connection. The CLI-exit close and
+                # `exptrack clean` still sweep.
+                close_db(sweep=False)
+            except Exception:
+                pass  # never let cleanup break a served request
 
 
 def _allowed_host_for_bind(host: str) -> str:
@@ -78,7 +127,7 @@ def main(host: str = "127.0.0.1", port: int = 7331, no_auth: bool = False):
                   file=sys.stderr)
 
     try:
-        server = HTTPServer((host, port), DashboardHandler)
+        server = DashboardServer((host, port), DashboardHandler)
         # Allow the bound host through the DNS-rebinding Host-header check
         # (localhost/127.0.0.1/::1 are always allowed) so non-local binds work;
         # wildcard binds accept any Host (see _allowed_host_for_bind).

@@ -20,7 +20,6 @@ from ..core.utils import debug_log
 
 _NODE_CELLS_MAX_BYTES = 256 * 1024  # soft cap on per-node cell_source size
 _NODE_SETUP_MAX_BYTES = 256 * 1024  # separate soft cap for %%setup prep blocks
-_BRANCH_DIFF_THROTTLE_S = 2.0  # min seconds between branch git_diff refreshes
 _NODE_IMAGES_MAX = 30  # cap on plot paths tracked per node (most-recent kept)
 
 # One SEP-joined blob holds a node's recorded cells (and, in parallel, their
@@ -65,6 +64,59 @@ def _unix_to_iso(ts) -> str | None:
 
 
 _git = git_run  # local alias for terseness inside this module
+
+
+def _store_node_diff(conn, diff_text: str | None) -> str | None:
+    """Prepare a diff for storage in ``session_nodes.git_diff``.
+
+    Session diffs get the same two protections experiment diffs have always
+    had, and for the same reasons. They are **capped** at ``max_git_diff_kb``
+    (a node captured whatever `git diff` produced, uncapped, so one large
+    working tree could write megabytes per node), and they are **stored
+    content-addressed** in `git_diffs` — sibling branches off one checkpoint
+    share a working tree, so their diffs are usually byte-identical and were
+    being stored once per node.
+
+    Returns the ``[ref:sha256:…]`` marker, or the text itself when it is a
+    status sentinel (``[capture-failed]`` etc. — a marker, not a body) or when
+    the blob write fails. Does not commit; the caller's transaction owns it.
+    """
+    if not diff_text:
+        return None
+    from ..core.db import is_diff_sentinel, store_git_diff
+    if is_diff_sentinel(diff_text):
+        return diff_text
+    from ..config import load as load_config
+    try:
+        cap = max(0, int(load_config().get("max_git_diff_kb", 256))) * 1024
+    except (TypeError, ValueError):
+        cap = 256 * 1024
+    if cap and len(diff_text) > cap:
+        diff_text = (diff_text[:cap]
+                     + "\n\n[truncated — exceeded max_git_diff_kb limit]")
+    try:
+        return store_git_diff(conn, diff_text)
+    except Exception as e:
+        debug_log(f"could not store session node diff by reference: {e}")
+        return diff_text
+
+
+def _resolve_node_diff(conn, raw_diff: str | None, cache: dict | None = None) -> str | None:
+    """Resolve a node's stored ``git_diff`` (a ref marker, inline text, or a
+    sentinel) into displayable text.
+
+    `cache` memoizes by raw value: sibling nodes routinely share one blob, so
+    rendering a tree would otherwise re-read the same body once per node.
+    """
+    if not raw_diff:
+        return raw_diff
+    if cache is not None and raw_diff in cache:
+        return cache[raw_diff]
+    from ..core.db import resolve_git_diff
+    resolved = resolve_git_diff(conn, raw_diff)
+    if cache is not None:
+        cache[raw_diff] = resolved
+    return resolved
 
 
 def _detach_experiments(conn, node_ids: list[str]) -> None:

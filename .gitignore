@@ -24,3 +24,10 @@ outputs/
 
 # Node (dev-only dashboard ESLint tooling)
 node_modules/
+
+# Ignore all Markdown files
+*.md
+
+# But keep these
+!README.md
+!CLAUDE.md

@@ -17,6 +17,7 @@ from typing import Any
 from ..core.db import get_db
 from ..core.git import _git as git_run
 from ..core.git import git_diff as _git_diff
+from ..core.utils import debug_log
 from . import _shared
 
 # Shared state/constants/helpers used by the class + build_tree, plus the
@@ -26,7 +27,6 @@ from . import _shared
 # split. (noqa: F401 — the names not used in this file are deliberately
 # re-exported.)
 from ._shared import (  # noqa: F401  (re-exported)
-    _BRANCH_DIFF_THROTTLE_S,
     _NODE_CELLS_MAX_BYTES,
     _NODE_IMAGES_MAX,
     _NODE_SETUP_MAX_BYTES,
@@ -38,7 +38,9 @@ from ._shared import (  # noqa: F401  (re-exported)
     _new_id,
     _node_images,
     _node_lineage_labels,
+    _resolve_node_diff,
     _session_study_name,
+    _store_node_diff,
     _trash_node_images,
     _unix_to_iso,
     get_current_session,
@@ -87,7 +89,14 @@ class SessionManager:
         # per recorded cell).
         self._current_cell_source: str = ""
         self._current_cell_outputs: str = ""
-        self._last_branch_diff_refresh: float = 0.0
+        # Cursor into the current node's recorded cells while a Run-All replays
+        # them, and the index of the cell most recently recorded. Together these
+        # make re-running a node's cells refresh what's stored instead of
+        # appending a second copy of the same code. Reset on every node switch
+        # (see _switch_to_node) because a Run-All re-enters the node from the
+        # top. None = not replaying / nothing recorded yet.
+        self._replay_idx: int | None = None
+        self._last_cell_idx: int | None = None
         # One-shot guard for `branch("X")` reusing an existing label. We can't
         # tell at branch() time whether this is a Run-All re-run (merge) or a
         # new idea reusing the name (fork) — the code hasn't run yet. So we arm
@@ -223,16 +232,40 @@ class SessionManager:
         )
         conn.commit()
 
+    def _match_recorded_cell(self, src_parts: list[str], recorded: str) -> int | None:
+        """Index of the already-recorded cell this execution repeats, else None.
+
+        Two ways a cell can be a repeat rather than a new execution:
+
+        - It re-runs the cell recorded most recently (`_last_cell_idx`) — the
+          user hit Ctrl-Enter twice.
+        - It matches the replay cursor (`_replay_idx`) — a Run-All is stepping
+          through the node's existing cells in their original order.
+
+        Anything else is genuinely new work and gets appended.
+        """
+        target = recorded.strip()
+        for idx in (self._last_cell_idx, self._replay_idx):
+            if idx is not None and 0 <= idx < len(src_parts) \
+                    and src_parts[idx].strip() == target:
+                return idx
+        return None
+
     def record_cell(self, source: str, output: str | None = None) -> None:
-        """Append a cell's source (and its output) to the *current* node.
+        """Record a cell's source (and its output) on the *current* node.
 
         `cell_source` and `cell_outputs` are kept segment-aligned: each
         recorded cell contributes one source segment and one output segment
         (the trailing-expression repr, or "" when the cell produced none).
         Cells are written live so the dashboard shows what ran — and what it
         produced — under the active branch/checkpoint immediately. Session
-        magics are skipped. Re-running the same cell back-to-back is deduped,
-        but its output is refreshed so the latest result is shown.
+        magics are skipped.
+
+        **Re-running a cell refreshes it in place rather than appending a
+        second copy.** That covers a back-to-back re-execution *and* a Run-All
+        replaying the whole node (see `_match_recorded_cell`); without the
+        replay cursor every Run-All doubled the node's stored cells until the
+        byte cap started evicting the real content.
         """
         if not self.session_id or not source or not self._current_node_id:
             return
@@ -252,16 +285,19 @@ class SessionManager:
         while len(out_parts) < len(src_parts):
             out_parts.append("")
 
-        if src_parts and src_parts[-1].strip() == recorded.strip():
-            # Immediate re-run of the same cell — don't duplicate the source,
-            # but refresh its output so a fresh result is reflected.
-            if out_str and out_parts and out_parts[-1] != out_str:
-                out_parts[-1] = out_str
-            else:
-                return  # nothing changed
+        repeat_idx = self._match_recorded_cell(src_parts, recorded)
+        if repeat_idx is not None:
+            self._last_cell_idx = repeat_idx
+            self._replay_idx = repeat_idx + 1
+            if not out_str or out_parts[repeat_idx] == out_str:
+                return  # same code, same result — nothing to write
+            out_parts[repeat_idx] = out_str
         else:
             src_parts.append(recorded)
             out_parts.append(out_str)
+            # A new cell means we've diverged from whatever was recorded before,
+            # so any in-progress replay is over.
+            self._replay_idx = None
             # Drop oldest cells (source + output together) if over the cap.
             # Track the running byte total instead of re-joining each iteration.
             sep_len = len(self._CELL_SEPARATOR)
@@ -272,6 +308,7 @@ class SessionManager:
                     out_parts.pop(0)
                 src_parts.insert(0, "# … earlier cells elided to bound memory …")
                 out_parts.insert(0, "")
+            self._last_cell_idx = len(src_parts) - 1
 
         new_blob = self._CELL_SEPARATOR.join(src_parts)
         new_out = self._CELL_SEPARATOR.join(out_parts)
@@ -282,21 +319,6 @@ class SessionManager:
         )
         self._current_cell_source = new_blob
         self._current_cell_outputs = new_out
-        # Throttle the per-cell git diff refresh: 2-3 subprocesses on every
-        # cell run is too aggressive for big repos. _BRANCH_DIFF_THROTTLE_S
-        # caps it without losing freshness — the next non-throttled cell or
-        # any explicit checkpoint still re-snapshots.
-        now = time.time()
-        if now - self._last_branch_diff_refresh >= _BRANCH_DIFF_THROTTLE_S:
-            row = self._get_node(self._current_node_id, "node_type, parent_id")
-            if row and row["node_type"] == "branch":
-                head = _git("rev-parse", "--short", "HEAD")
-                diff = self._compute_diff_vs_checkpoint(row["parent_id"], head)
-                conn.execute(
-                    "UPDATE session_nodes SET git_diff=? WHERE id=?",
-                    (diff or None, self._current_node_id),
-                )
-                self._last_branch_diff_refresh = now
         conn.commit()
 
     def record_image(self, path: str, label: str | None = None) -> None:
@@ -332,19 +354,90 @@ class SessionManager:
             print(f"[exptrack] session image capture warning: {e}", file=sys.stderr)
 
     def _switch_to_node(self, node_id: str) -> None:
-        """Set _current_node_id and refresh the cached cell_source/outputs."""
+        """Set _current_node_id and refresh the cached cell_source/outputs.
+
+        Arms the replay cursor at the node's first cell: entering a node is
+        exactly when a Run-All would start re-executing its cells from the top,
+        so this is what lets `record_cell` recognize the replay and refresh in
+        place instead of appending duplicates.
+        """
         self._current_node_id = node_id
         row = self._get_node(node_id, "cell_source, cell_outputs")
         self._current_cell_source = (row["cell_source"]
                                      if row and row["cell_source"] else "")
         self._current_cell_outputs = (row["cell_outputs"]
                                       if row and row["cell_outputs"] else "")
+        self._replay_idx = 0
+        self._last_cell_idx = None
 
     def _get_node(self, node_id: str, cols: str = "*"):
         """Single-row id lookup — used in a few places."""
         return get_db().execute(
             f"SELECT {cols} FROM session_nodes WHERE id=?", (node_id,),
         ).fetchone()
+
+    def _refresh_branch_diff(self) -> None:
+        """Re-snapshot the current branch node's diff against its checkpoint.
+
+        Called on **structural transitions only** — a new checkpoint, switching
+        branches, a promote, or session end — i.e. the moments the user finishes
+        with a branch. This used to run on every recorded cell (throttled to
+        2 s, which interactive cells almost always exceed), so each cell paid for
+        two or three `git` subprocesses plus a rewrite of the node's whole diff
+        blob, overwhelmingly to store a byte-identical diff: exploration happens
+        in cells, and cells are not in the working tree.
+
+        The tradeoff is explicit — a working-tree edit made mid-branch lands on
+        the node at the next transition rather than instantly. Nothing is lost,
+        since every path that reads a branch's diff (promote, materialize,
+        finalize, session end) passes through one of these transitions first.
+        """
+        if not self.session_id or not self._current_node_id:
+            return
+        try:
+            row = self._get_node(self._current_node_id, "node_type, parent_id")
+            if not row or row["node_type"] != "branch":
+                return
+            head = _git("rev-parse", "--short", "HEAD")
+            diff = self._compute_diff_vs_checkpoint(row["parent_id"], head)
+            conn = get_db()
+            conn.execute(
+                "UPDATE session_nodes SET git_diff=? WHERE id=?",
+                (_store_node_diff(conn, diff), self._current_node_id),
+            )
+            conn.commit()
+        except Exception as e:
+            debug_log(f"could not refresh branch diff: {e}")
+
+    def _find_ancestor_checkpoint(self, label: str) -> str | None:
+        """Id of a live checkpoint with this label on the current node's
+        ancestor path, or None.
+
+        This is what makes a Run-All idempotent. Re-running the notebook
+        re-executes `%exptrack checkpoint "base"` while the current node is
+        still the branch from the previous pass, so the checkpoint was created
+        *under that branch* — and the following `branch` under it — growing a
+        fresh duplicate spine on every Run-All (each with its own cells and diff
+        blob). Re-declaring a checkpoint that is already an ancestor means "the
+        notebook is replaying from the top", so we return to it instead.
+        """
+        conn = get_db()
+        cur = self._get_node(self._current_node_id, "parent_id") \
+            if self._current_node_id else None
+        pid = cur["parent_id"] if cur else None
+        seen: set[str] = set()
+        while pid and pid not in seen:
+            seen.add(pid)
+            row = conn.execute(
+                "SELECT id, parent_id, node_type, label FROM session_nodes "
+                "WHERE id=? AND deleted_at IS NULL", (pid,),
+            ).fetchone()
+            if not row:
+                return None
+            if row["node_type"] == "checkpoint" and row["label"] == label:
+                return row["id"]
+            pid = row["parent_id"]
+        return None
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -379,14 +472,21 @@ class SessionManager:
         """Mark session ended; mark trailing open branches as abandoned."""
         if not self.session_id:
             return
+        # Ending the session is the last chance to capture the open branch's
+        # working-tree state.
+        self._refresh_branch_diff()
         conn = get_db()
         # Mark any branch nodes whose deepest child is themselves (no checkpoint
         # follows) as abandoned. A branch is "open" if no descendant is a
         # checkpoint. Simpler heuristic: any branch with no child node at all.
+        # Both halves ignore trashed rows: a trashed branch shouldn't be
+        # relabelled, and a branch whose only children are trashed *is* open —
+        # counting those children left it un-abandoned forever.
         rows = conn.execute(
             "SELECT id FROM session_nodes WHERE session_id=? AND node_type='branch' "
+            "AND deleted_at IS NULL "
             "AND id NOT IN (SELECT parent_id FROM session_nodes "
-            "WHERE session_id=? AND parent_id IS NOT NULL)",
+            "WHERE session_id=? AND parent_id IS NOT NULL AND deleted_at IS NULL)",
             (self.session_id, self.session_id),
         ).fetchall()
         for r in rows:
@@ -404,6 +504,8 @@ class SessionManager:
         self._last_checkpoint_id = None
         self._current_cell_source = ""
         self._current_cell_outputs = ""
+        self._replay_idx = None
+        self._last_cell_idx = None
         self._pending_collision = None
         self._auto_linked_run_id = None
 
@@ -458,7 +560,13 @@ class SessionManager:
 
     def checkpoint(self, label: str) -> str | None:
         """Add a checkpoint under the current node, or reuse an existing
-        checkpoint with the same label (idempotent re-runs)."""
+        checkpoint with the same label (idempotent re-runs).
+
+        A label already present as a child *or an ancestor* of the current node
+        resolves to that node — the ancestor case is what keeps a Run-All from
+        rebuilding the whole spine underneath itself (see
+        `_find_ancestor_checkpoint`).
+        """
         self._pending_collision = None
         if not self.session_id:
             return None
@@ -466,8 +574,11 @@ class SessionManager:
             row = self._get_node(self._current_node_id, "node_type, label")
             if row and row["node_type"] == "checkpoint" and row["label"] == label:
                 return self._current_node_id
+        # Leaving a branch — freeze its diff before we move off it.
+        self._refresh_branch_diff()
         parent_id = self._current_node_id or self._last_checkpoint_id
-        existing = self._find_child_by_label(parent_id, label, ("checkpoint",))
+        existing = (self._find_child_by_label(parent_id, label, ("checkpoint",))
+                    or self._find_ancestor_checkpoint(label))
         if existing:
             self._switch_to_node(existing)
             self._last_checkpoint_id = existing
@@ -491,7 +602,7 @@ class SessionManager:
             "label, git_diff, git_commit, seq, created_at) "
             "VALUES (?, ?, ?, 'checkpoint', ?, ?, ?, ?, ?)",
             (nid, self.session_id, parent_id, label,
-             diff or None, commit or None, self._next_seq(), now),
+             _store_node_diff(conn, diff), commit or None, self._next_seq(), now),
         )
         conn.commit()
         self._switch_to_node(nid)
@@ -511,6 +622,8 @@ class SessionManager:
         self._pending_collision = None
         if not self.session_id or not self._last_checkpoint_id:
             return None
+        # Moving off whatever branch we were on — freeze its diff first.
+        self._refresh_branch_diff()
         existing = self._find_child_by_label(
             self._last_checkpoint_id, label, ("branch", "abandoned"))
         if existing:
@@ -551,7 +664,7 @@ class SessionManager:
             "label, git_diff, git_commit, seq, created_at) "
             "VALUES (?, ?, ?, 'branch', ?, ?, ?, ?, ?)",
             (nid, self.session_id, checkpoint_id, label,
-             diff or None, commit or None, self._next_seq(), now),
+             _store_node_diff(conn, diff), commit or None, self._next_seq(), now),
         )
         conn.commit()
         return nid
@@ -618,6 +731,9 @@ class SessionManager:
         """Link an experiment to the current session node."""
         if not self.session_id or not self._current_node_id:
             return
+        # Promoting is a "capture this branch's state" moment, so make sure the
+        # node's diff reflects the working tree as of now.
+        self._refresh_branch_diff()
         conn = get_db()
         conn.execute(
             "UPDATE experiments SET session_node_id=? WHERE id=?",
@@ -686,7 +802,11 @@ def build_tree(session_id: str) -> dict[str, Any]:
         (session_id,),
     ).fetchall()
 
-    # Build node dict and child lists
+    # Build node dict and child lists. Node diffs are stored content-addressed
+    # (siblings off one checkpoint usually share a working tree, so they share
+    # a blob), so each is resolved back to text here — memoized, since that
+    # sharing means one body would otherwise be re-read once per node.
+    diff_cache: dict[str, str] = {}
     by_id: dict[str, dict] = {}
     for r in nodes:
         by_id[r["id"]] = {
@@ -700,7 +820,7 @@ def build_tree(session_id: str) -> dict[str, Any]:
             "setup_source": r["setup_source"],
             "setup_outputs": r["setup_outputs"],
             "images": _node_images(r["images"]),
-            "git_diff": r["git_diff"],
+            "git_diff": _resolve_node_diff(conn, r["git_diff"], diff_cache),
             "git_commit": r["git_commit"],
             "seq": r["seq"],
             "created_at": r["created_at"],

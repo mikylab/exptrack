@@ -12,6 +12,7 @@ import sys
 
 # ── Database ──────────────────────────────────────────────────────────────────
 import threading
+import time
 from pathlib import Path
 
 from .. import config as cfg
@@ -29,7 +30,49 @@ _local = threading.local()
 # ``_create_base_schema`` or a new/changed ``_migrate_*`` helper), otherwise
 # existing databases will never see the new migration. ``exptrack upgrade``
 # always forces a full re-run regardless of the stamp.
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
+
+# Serializes the open-time WAL switch + schema migration *within this process*.
+# Threads (the dashboard serves one per request) otherwise race each other to
+# convert a brand-new database to WAL — see ``_set_wal_mode``. Held only around
+# connection setup, and the steady-state path (matching schema stamp) does
+# nothing under it, so it is never a throughput bottleneck.
+_open_lock = threading.Lock()
+
+# Attempts at the journal_mode switch before giving up and using whatever mode
+# the database is already in.
+_WAL_RETRIES = 6
+
+
+def _set_wal_mode(conn: sqlite3.Connection) -> None:
+    """Switch *conn* to WAL, retrying if another opener holds the database.
+
+    Changing ``journal_mode`` needs a brief exclusive lock and SQLite does
+    **not** run the busy handler while acquiring it, so neither
+    ``sqlite3.connect(timeout=…)`` nor ``PRAGMA busy_timeout`` helps: two
+    processes (or two threads, before ``_open_lock``) opening the same fresh
+    database in the same instant get a bare ``database is locked`` out of the
+    pragma itself. The dashboard's boot burst opens eight connections at once,
+    which is exactly that race.
+
+    A failed switch is not fatal — the connection still works in the default
+    rollback journal, just without WAL's reader/writer concurrency — so after
+    the retries this degrades rather than raising into the caller's request.
+    """
+    for attempt in range(_WAL_RETRIES):
+        try:
+            row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower() and "busy" not in str(e).lower():
+                raise
+        else:
+            # The pragma reports the mode actually in effect; a contended
+            # switch can report the old mode instead of raising.
+            if row is None or str(row[0]).lower() == "wal":
+                return
+        time.sleep(0.02 * (attempt + 1))
+    debug_log("db: could not switch to WAL (database busy); "
+              "continuing in the existing journal mode")
 
 
 def get_db() -> sqlite3.Connection:
@@ -71,25 +114,29 @@ def get_db() -> sqlite3.Connection:
 
     conn = sqlite3.connect(p_str, timeout=10)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    # busy_timeout first: every statement below benefits from it, and unlike the
+    # journal_mode switch it takes no lock of its own.
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA foreign_keys=ON")
 
-    # A matching schema stamp means this exptrack version has already opened
-    # (and integrity-checked + migrated) this DB — skip both the full-file
-    # quick_check scan and the per-table migration probes.
-    if _stored_schema_version(conn) != _SCHEMA_VERSION:
-        # Quick integrity check on first open of a new/pre-upgrade database
-        try:
-            result = conn.execute("PRAGMA quick_check").fetchone()
-            if result and result[0] != "ok":
-                print(f"[exptrack] warning: database integrity check failed: {result[0]}",
+    with _open_lock:
+        _set_wal_mode(conn)
+        conn.execute("PRAGMA foreign_keys=ON")
+
+        # A matching schema stamp means this exptrack version has already opened
+        # (and integrity-checked + migrated) this DB — skip both the full-file
+        # quick_check scan and the per-table migration probes.
+        if _stored_schema_version(conn) != _SCHEMA_VERSION:
+            # Quick integrity check on first open of a new/pre-upgrade database
+            try:
+                result = conn.execute("PRAGMA quick_check").fetchone()
+                if result and result[0] != "ok":
+                    print(f"[exptrack] warning: database integrity check failed: {result[0]}",
+                          file=sys.stderr)
+            except Exception as e:
+                print(f"[exptrack] warning: could not check database integrity: {e}",
                       file=sys.stderr)
-        except Exception as e:
-            print(f"[exptrack] warning: could not check database integrity: {e}",
-                  file=sys.stderr)
 
-        _ensure_schema(conn)
+            _ensure_schema(conn)
     _local.conn = conn
     _local.db_path = p_str
     return conn
@@ -344,7 +391,8 @@ def _create_base_schema(conn):
             value   REAL,
             step    INTEGER,
             ts      TEXT,
-            source  TEXT DEFAULT 'auto'
+            source  TEXT DEFAULT 'auto',
+            session_node_id TEXT
         );
         CREATE TABLE IF NOT EXISTS artifacts (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -553,6 +601,30 @@ def _migrate_artifacts(conn):
 
 
 def _migrate_metrics(conn):
+    # Tag each metric with the Session Trees node that was active when it was
+    # logged. A notebook session logs every metric() into one auto-run, so
+    # attributing a metric to the branch that produced it used to be
+    # reconstructed from timestamps — which silently mis-attributes as soon as
+    # you revisit an earlier branch, since that switches the active node without
+    # creating one. Recording the node at write time makes it exact; the
+    # timestamp-window fallback stays for metrics logged before this column.
+    #
+    # The index is created *here*, not in `_create_base_schema`: that runs
+    # first, so on any pre-existing database it would be indexing a column that
+    # doesn't exist yet — and a failed statement aborts the whole base-schema
+    # script, i.e. every existing install breaks on upgrade. Creating it after
+    # the ALTER covers migrated and fresh databases alike.
+    try:
+        _add_columns(conn, "metrics", {"session_node_id": "TEXT"})
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_metrics_session_node "
+            "ON metrics(session_node_id)")
+    except sqlite3.OperationalError:
+        pass
+    except Exception as e:
+        print(f"[exptrack] warning: metrics session_node_id migration error: {e}",
+              file=sys.stderr)
+
     # Add source column to metrics and migrate _result:* params
     try:
         added = _add_columns(conn, "metrics", {"source": "TEXT DEFAULT 'auto'"})

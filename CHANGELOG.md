@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.54.1] - 2026-07-27
+
+### Fixed
+- **A burst of simultaneous first connections no longer fails with "database is locked"** — switching a database to WAL takes an exclusive lock that SQLite acquires *without* consulting the busy handler, so neither the connection timeout nor `busy_timeout` covered it. Opening a brand-new database from several threads at once — which is exactly what the dashboard does now that it serves a thread per request, and the page boots with about eight parallel fetches — could raise `sqlite3.OperationalError: database is locked` straight out of `PRAGMA journal_mode=WAL`, failing whichever request lost the race. The switch is now serialized within the process and retried with a short backoff when another opener holds the file, and a switch that still can't get through leaves the connection working in the default journal mode rather than raising into the request.
+
+## [1.54.0] - 2026-07-26
+
+### Fixed
+- **The dashboard works through an SSH/VS Code/cloudflared tunnel** — the server was single-threaded, so it accepted one connection and then blocked waiting for that client to send a request line. A connection that was merely *open* stalled every other request for as long as it stayed quiet, and one that never sent stalled them forever. That never shows up on localhost, where the browser connects and writes in the same instant, but it is the normal case through a tunnel: port forwarders pool and pre-open sockets to the forwarded port and relay the bytes a round-trip later. One idle pooled socket was enough to deadlock the whole dashboard, and every fetch died in the browser as a bare `NetworkError when attempting to fetch resource` naming whichever request was still pending — usually `/api/experiments`, which is the slowest and so the last to drain. The dashboard now serves each connection on its own thread, reaps a socket that opens without sending, and accepts a listen backlog large enough for the page's boot burst (which fires about eight API calls at once, above the stdlib default of five).
+
+## [1.53.0] - 2026-07-26
+
+### Fixed
+- **Re-running a notebook no longer duplicates a session's cells** — a Run-All re-executes the branch magic and then every cell under it, and each pass appended a second copy of the same code to the node. Three Run-Alls stored three copies of every cell, until the per-node byte cap started evicting the real content and replacing it with the "earlier cells elided" marker. A cell that repeats one already recorded — a back-to-back re-run, or a Run-All replaying the node in order — now refreshes it in place, keeping its latest output. Genuinely new work is still appended, so diverging mid-replay records normally.
+- **A Run-All no longer rebuilds the whole session tree underneath itself** — re-running the notebook re-executed `%exptrack checkpoint "base"` while the current node was still the branch from the previous pass, so the checkpoint was created *under that branch*, and the following branch under that. Every pass grew a duplicate spine with its own cells and its own diff. Re-declaring a checkpoint that is already an ancestor now returns to it, so repeated Run-Alls converge on one tree instead of one copy per run.
+- **Branch metrics are attributed to the branch that produced them** — a notebook session logs every `metric()` into a single auto-created run, and promoting a node reconstructed which metrics were "its" from timestamps. Revisiting an earlier branch switches the active node *without creating one*, so the window never moved and the later metric was credited to whichever node happened to be newest: promote the 0.7 branch and you could get the 0.5 branch's accuracy. Metrics now record the active session node as they're written, so attribution is exact. Metrics logged before this release still fall back to the timestamp window.
+- **Compacting an experiment can no longer blank a session node's diff** — the check for "is anyone else still using this diff body?" looked only at experiments, but session nodes reference the same content-addressed blobs (and materializing a node hands its reference to the new run). Compacting the run deleted the body out from under the tree it came from.
+- **A branch whose only children are trashed is marked abandoned at session end** — the open-branch query counted trashed children as children, so such a branch stayed live forever.
+- **Trashing the active session node no longer gives the session a second root** — with both the current-node and checkpoint pointers cleared, the next `%exptrack checkpoint` inserted a parentless row. It now falls back to the checkpoint anchor, else the session root.
+- **`session finalize` ignores node ids from other sessions**, and linking a node to an experiment escapes `%`/`_` in the id it matches on.
+
+### Changed
+- **Session node diffs are size-capped and stored once** — a node captured whatever `git diff` produced, uncapped and inline, so one large working tree could write megabytes per node and sibling branches off a checkpoint each stored their own copy of a byte-identical diff. Node diffs now honour `max_git_diff_kb` (the cap experiment diffs have always had) and are stored content-addressed in `git_diffs`, so siblings share one blob.
+- **A branch's git diff is refreshed on structural transitions instead of on every cell** — it used to re-snapshot after each recorded cell (throttled to 2 seconds, which interactive cells almost always exceed), so every cell paid two or three `git` subprocesses plus a rewrite of the node's whole diff blob — about 11 ms per cell on a 60-file repo, overwhelmingly to store a diff identical to the one already there, since exploration happens in cells and cells aren't in the working tree. The snapshot now happens when you leave a branch: a new checkpoint, a branch switch, a promote, or session end. A working-tree edit made mid-branch lands at the next transition rather than instantly; every path that reads a branch's diff passes through one first.
+- **`exptrack storage` counts session nodes as diff referrers** — the deduped-diff line reported only how many experiments pointed at a shared body, so a blob referenced solely by a session tree read as "0 experiments ref" next to a non-zero size, i.e. as an orphan.
+- **Promoting a node stores cell previews, not a second copy of every cell** — replayed cells wrote their entire source into the timeline event as well as the content-addressed `cell_lineage` table, so each materialized sibling duplicated all of the shared upstream code. The event now carries a preview and the full body is served through its `cell_hash`, as it is for live runs.
+
+## [1.52.3] - 2026-07-26
+
+### Fixed
+- **The detail panel stays where you scrolled it on a live run** — rewriting the panel on each metric poll briefly collapsed its content, so the browser clamped the scroll position back to the top. Reading anything below the fold on a running experiment meant being yanked upward every 5 seconds. The offset is now restored across an in-place refresh; opening a run still starts at the top.
+- **The Overview chart preview keeps its metric on a live run** — the small preview above the params grid has its own metric dropdown, and the panel rebuild on each metric poll reset it to the first metric every 5 seconds. It now remembers your pick, falling back to the first metric only when that key isn't in the run you're looking at.
+
+### Changed
+- **A live chart now updates in place instead of being rebuilt every poll** — while a run trains, the Charts tab refreshes every 5 seconds, and each refresh discarded the tab's DOM and recreated the Chart.js instances. That took focus out of an axis-range input mid-typing, snapped the metric dropdown shut if it was open, and restarted the draw animation on every poll. Fresh points are now pushed into the charts already on screen; the tab is only rebuilt when it genuinely can't show the new data (different run, different view mode, or the run gained or lost a metric).
+
+## [1.52.2] - 2026-07-26
+
+### Fixed
+- **A live run no longer throws you back to Overview every 5 seconds** — while an experiment is `running`, the detail panel auto-refreshes on each metric poll, and that refresh rebuilt the whole panel with Overview hardcoded active. Opening Charts (or any other tab) on a training run was effectively impossible: the numbers updated, but the view snapped back before you could read them. The refresh now restores whichever tab you were on, and the Charts tab reloads just its own container instead of rebuilding the entire panel.
+- **The Charts tab keeps your selection while a run is live** — with the tab now surviving auto-refresh, its own state has to as well: the metric picked in Single view and any typed Y/X axis bounds are carried across each reload instead of resetting to the first metric and "auto" every poll. A failed poll also leaves the last chart on screen rather than blanking the tab.
+
 ## [1.52.1] - 2026-07-26
 
 ### Fixed
