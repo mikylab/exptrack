@@ -832,6 +832,10 @@ def _storage_git_diff_stats(conn):
         "dedup_size": dedup_size,
         "ref_count": _q1(conn, "SELECT COUNT(*) FROM experiments "
                                "WHERE git_diff LIKE '[ref:%'"),
+        # Session nodes reference these blobs too, so a report counting only
+        # experiments would show a live blob as referenced by nothing.
+        "node_ref_count": _q1(conn, "SELECT COUNT(*) FROM session_nodes "
+                                    "WHERE git_diff LIKE '[ref:%'"),
         "git_diff_total": inline + dedup_size,
     }
 
@@ -926,8 +930,11 @@ def _print_storage_hotspots(s):
 
     if s["dedup_count"]:
         print(f"  git_diff total:       {fmt_bytes(s['git_diff_total'])}")
+        refs = f"{s['ref_count']} experiments ref"
+        if s.get("node_ref_count"):
+            refs += f", {s['node_ref_count']} session nodes ref"
         print(f"    deduped diffs:      {fmt_bytes(s['dedup_size'])}  "
-              f"({s['dedup_count']} unique, {s['ref_count']} experiments ref)")
+              f"({s['dedup_count']} unique, {refs})")
         if s["git_diff_inline"]:
             print(f"    inline (legacy):    {fmt_bytes(s['git_diff_inline'])}  "
                   f"({s['git_diff_rows']} experiments)")

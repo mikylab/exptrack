@@ -220,6 +220,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # still safe to send one.
     _responded: bool = False
 
+    # Drop a connection that opens but never sends a request line. Tunnels and
+    # browsers both pre-open sockets they may never use; with a thread per
+    # connection those would otherwise sit in readline() for the lifetime of
+    # the process, one parked thread each. StreamRequestHandler.setup() applies
+    # this to the socket and http.server turns the resulting timeout into a
+    # clean close (its log_error routes through the suppressed log_message, so
+    # a reaped idle socket stays silent).
+    timeout = 30
+
     def log_message(self, fmt, *args):
         pass  # suppress request logs
 

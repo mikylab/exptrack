@@ -1333,3 +1333,422 @@ def test_link_experiment_rejects_bad_ids(tmp_project):
 
     assert link_experiment("nope", "whatever")["ok"] is False
     assert link_experiment(br, "no-such-exp")["ok"] is False
+
+
+# ── Run-All idempotency, diff storage, and metric attribution ─────────────────
+# The exploratory loop these guard is "play in a notebook, Run All, repeat".
+# Each of the three used to silently accumulate duplicate data on every pass.
+
+def test_run_all_does_not_duplicate_cells(tmp_project):
+    """Re-running a branch's cells refreshes them instead of appending copies.
+
+    A Run-All re-executes the branch magic (re-entering the node) and then every
+    cell under it. Without a replay cursor each pass appended a second copy of
+    the same code, so the node's stored cells doubled per Run-All until the byte
+    cap began evicting the real content.
+    """
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+
+    sm = SessionManager()
+    sm.start("runall")
+    sm.checkpoint("base")
+    br = sm.branch("try A")
+    for _ in range(3):                     # three full Run-All passes
+        sm.branch("try A")
+        sm.record_cell("a = 1", "1")
+        sm.record_cell("b = 2", "2")
+
+    src = get_db().execute(
+        "SELECT cell_source FROM session_nodes WHERE id=?", (br,),
+    ).fetchone()["cell_source"]
+    cells = src.split(SessionManager._CELL_SEPARATOR)
+    assert cells == ["a = 1", "b = 2"]
+
+
+def test_run_all_keeps_outputs_aligned_and_fresh(tmp_project):
+    """A replayed cell's output is updated in place, staying segment-aligned."""
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+
+    sm = SessionManager()
+    sm.start("runall-out")
+    sm.checkpoint("base")
+    br = sm.branch("A")
+    sm.record_cell("acc()", "0.70")
+    sm.record_cell("loss()", "1.20")
+
+    sm.branch("A")                          # Run-All, new numbers
+    sm.record_cell("acc()", "0.91")
+    sm.record_cell("loss()", "0.30")
+
+    row = get_db().execute(
+        "SELECT cell_source, cell_outputs FROM session_nodes WHERE id=?", (br,),
+    ).fetchone()
+    sep = SessionManager._CELL_SEPARATOR
+    assert row["cell_source"].split(sep) == ["acc()", "loss()"]
+    assert row["cell_outputs"].split(sep) == ["0.91", "0.30"]
+
+
+def test_diverging_cell_after_replay_is_appended(tmp_project):
+    """Replay only dedups the cells that actually match; new work is recorded."""
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+
+    sm = SessionManager()
+    sm.start("diverge")
+    sm.checkpoint("base")
+    br = sm.branch("A")
+    sm.record_cell("a = 1", "")
+    sm.record_cell("b = 2", "")
+
+    sm.branch("A")
+    sm.record_cell("a = 1", "")             # replays
+    sm.record_cell("b = 99", "")            # diverges here
+    sm.record_cell("c = 3", "")             # and keeps going
+
+    cells = get_db().execute(
+        "SELECT cell_source FROM session_nodes WHERE id=?", (br,),
+    ).fetchone()["cell_source"].split(SessionManager._CELL_SEPARATOR)
+    assert cells == ["a = 1", "b = 2", "b = 99", "c = 3"]
+
+
+def test_run_all_reuses_ancestor_checkpoint(tmp_project):
+    """Re-declaring a checkpoint that is already an ancestor returns to it.
+
+    Otherwise a Run-All creates the checkpoint *under the branch* it left off
+    on, and the branch under that — growing a fresh duplicate spine, with its
+    own cells and diff blob, on every pass.
+    """
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+
+    sm = SessionManager()
+    sm.start("spine")
+    for _ in range(3):
+        sm.checkpoint("base")
+        sm.record_cell("load()", "")
+        sm.branch("try A")
+        sm.record_cell("t = 0.7", "")
+
+    rows = get_db().execute(
+        "SELECT node_type, label FROM session_nodes "
+        "WHERE session_id=? AND deleted_at IS NULL", (sm.session_id,),
+    ).fetchall()
+    kinds = sorted((r["node_type"], r["label"]) for r in rows)
+    assert kinds == [("branch", "try A"), ("checkpoint", "base"), ("root", "spine")]
+
+
+def test_node_diffs_are_capped_and_deduped(tmp_project, monkeypatch):
+    """Sibling branches share one content-addressed diff blob, size-capped."""
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions import manager as mgr
+
+    monkeypatch.setattr(mgr, "_git", lambda *a: "abc123")
+    monkeypatch.setattr(mgr.SessionManager, "_compute_diff_vs_checkpoint",
+                        lambda self, *a: "d" * 5000)
+
+    sm = SessionManager()
+    sm.start("dedup")
+    sm.checkpoint("base")
+    ids = [sm.branch(f"b{i}") for i in range(3)]
+
+    conn = get_db()
+    stored = [conn.execute(
+        "SELECT git_diff FROM session_nodes WHERE id=?", (i,)).fetchone()["git_diff"]
+        for i in ids]
+    assert all(s.startswith("[ref:sha256:") for s in stored)
+    assert len(set(stored)) == 1                       # one shared blob
+    assert conn.execute("SELECT COUNT(*) c FROM git_diffs").fetchone()["c"] == 1
+
+
+def test_node_diff_over_cap_is_truncated(tmp_project, monkeypatch):
+    """A huge working-tree diff can't write megabytes onto a node."""
+    import exptrack.config as cfg
+    from exptrack.core.db import get_db, resolve_git_diff
+    from exptrack.sessions import _shared
+
+    conf = dict(cfg.load())
+    conf["max_git_diff_kb"] = 1
+    monkeypatch.setattr(cfg, "load", lambda: conf)
+
+    conn = get_db()
+    ref = _shared._store_node_diff(conn, "x" * 50_000)
+    body = resolve_git_diff(conn, ref)
+    assert len(body) < 2 * 1024
+    assert "truncated" in body
+
+
+def test_node_diff_sentinel_is_not_stored_as_a_blob(tmp_project):
+    """A capture-failure marker is a status, not a diff body."""
+    from exptrack.core.db import get_db
+    from exptrack.core.git import CAPTURE_FAILED
+    from exptrack.sessions import _shared
+
+    conn = get_db()
+    assert _shared._store_node_diff(conn, CAPTURE_FAILED) == CAPTURE_FAILED
+    assert conn.execute("SELECT COUNT(*) c FROM git_diffs").fetchone()["c"] == 0
+
+
+def test_metrics_are_tagged_with_the_active_node(tmp_project):
+    """A metric records which branch was active when it was logged."""
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager, set_current_session
+
+    sm = SessionManager()
+    sm.start("tagged")
+    set_current_session(sm)
+    try:
+        exp = Experiment(name="live")
+        sm.checkpoint("base")
+        a = sm.branch("A")
+        exp.log_metric("acc", 0.7)
+        b = sm.branch("B")
+        exp.log_metrics({"acc": 0.5, "loss": 2.0})
+
+        rows = get_db().execute(
+            "SELECT key, value, session_node_id FROM metrics WHERE exp_id=?",
+            (exp.id,),
+        ).fetchall()
+        by_node = {(r["key"], r["value"]): r["session_node_id"] for r in rows}
+        assert by_node[("acc", 0.7)] == a
+        assert by_node[("acc", 0.5)] == b
+        assert by_node[("loss", 2.0)] == b
+    finally:
+        set_current_session(None)
+
+
+def test_materialize_attributes_metrics_across_a_branch_revisit(tmp_project):
+    """Revisiting a branch keeps its metrics on it.
+
+    Attribution used to be reconstructed from timestamps, but returning to an
+    earlier branch switches the active node *without creating one* — so the
+    window never moved and the later metric was credited to whichever node had
+    been created most recently.
+    """
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager, set_current_session
+    from exptrack.sessions.manager import materialize_experiment
+
+    sm = SessionManager()
+    sm.start("revisit")
+    set_current_session(sm)
+    try:
+        exp = Experiment(name="live")
+        sm.checkpoint("base")
+        a = sm.branch("A")
+        sm.record_cell("t = 0.7", "")
+        exp.log_metric("acc", 0.70)
+        b = sm.branch("B")
+        sm.record_cell("t = 0.5", "")
+        exp.log_metric("acc", 0.50)
+        sm.branch("A")                       # back to A — no new node
+        exp.log_metric("acc", 0.75)
+
+        conn = get_db()
+        got = {}
+        for nid, label in ((a, "A"), (b, "B")):
+            res = materialize_experiment(nid)
+            assert res["ok"], res
+            got[label] = sorted(r["value"] for r in conn.execute(
+                "SELECT value FROM metrics WHERE exp_id=?", (res["id"],)).fetchall())
+        assert got["A"] == [0.70, 0.75]
+        assert got["B"] == [0.50]
+    finally:
+        set_current_session(None)
+
+
+def test_materialize_falls_back_to_the_time_window_for_untagged_metrics(tmp_project):
+    """Metrics logged before the node tag existed still get attributed."""
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager, set_current_session
+    from exptrack.sessions.manager import materialize_experiment
+
+    sm = SessionManager()
+    sm.start("legacy")
+    set_current_session(sm)
+    try:
+        exp = Experiment(name="live")
+        sm.autolink_run(exp.id)              # live run hangs off the root
+        sm.checkpoint("base")
+        a = sm.branch("A")
+        sm.record_cell("t = 0.7", "")
+        exp.log_metric("acc", 0.7)
+        conn = get_db()
+        # Simulate a pre-migration row: the metric exists but names no node.
+        conn.execute("UPDATE metrics SET session_node_id=NULL WHERE exp_id=?",
+                     (exp.id,))
+        conn.commit()
+
+        sm.branch("B")                       # a later node, so A's window closes
+        res = materialize_experiment(a)
+        assert res["ok"], res
+        vals = [r["value"] for r in conn.execute(
+            "SELECT value FROM metrics WHERE exp_id=?", (res["id"],)).fetchall()]
+        assert vals == [0.7]
+    finally:
+        set_current_session(None)
+
+
+def test_materialize_does_not_double_wrap_a_node_diff_ref(tmp_project, monkeypatch):
+    """A node's diff ref is passed through, not re-stored as a blob of itself."""
+    from exptrack.core.db import get_db, resolve_git_diff
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions import manager as mgr
+    from exptrack.sessions.manager import materialize_experiment
+
+    monkeypatch.setattr(mgr, "_git", lambda *a: "abc123")
+    monkeypatch.setattr(mgr.SessionManager, "_compute_diff_vs_checkpoint",
+                        lambda self, *a: "diff --git a/f b/f\n+x\n")
+
+    sm = SessionManager()
+    sm.start("nowrap")
+    sm.checkpoint("base")
+    br = sm.branch("A")
+    sm.record_cell("x = 1", "")
+
+    res = materialize_experiment(br)
+    assert res["ok"], res
+    conn = get_db()
+    stored = conn.execute(
+        "SELECT git_diff FROM experiments WHERE id=?", (res["id"],)).fetchone()["git_diff"]
+    body = resolve_git_diff(conn, stored)
+    assert body.startswith("diff --git")           # not a nested [ref:…] string
+    assert conn.execute("SELECT COUNT(*) c FROM git_diffs").fetchone()["c"] == 1
+
+
+def test_materialize_caps_replayed_cell_previews(tmp_project):
+    """Replayed cells store a preview + a cell_lineage row, not a full copy each.
+
+    The full body is content-addressed and served via the event's cell_hash, so
+    storing it inline again duplicated every shared ancestor cell once per
+    materialized sibling.
+    """
+    import json
+
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import materialize_experiment
+
+    big = "\n".join(f"row_{i} = {i}" for i in range(400))
+    sm = SessionManager()
+    sm.start("cap")
+    sm.checkpoint("base")
+    sm.record_cell(big, "")
+    br = sm.branch("A")
+    sm.record_cell("use_it()", "")
+
+    res = materialize_experiment(br)
+    assert res["ok"], res
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT cell_hash, value FROM timeline WHERE exp_id=? AND event_type='cell_exec'",
+        (res["id"],),
+    ).fetchall()
+    previews = [json.loads(r["value"])["source_preview"] for r in rows]
+    assert all(len(p) <= 200 for p in previews)
+    # The whole cell is still retrievable through the content-addressed table.
+    full = conn.execute(
+        "SELECT source FROM cell_lineage WHERE cell_hash=?",
+        (rows[0]["cell_hash"],),
+    ).fetchone()["source"]
+    assert full == big
+
+
+def test_end_abandons_a_branch_whose_only_children_are_trashed(tmp_project):
+    """A branch is open if nothing live follows it."""
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import delete_node
+
+    sm = SessionManager()
+    sm.start("abandon")
+    sm.checkpoint("base")
+    br = sm.branch("A")
+    sm.record_cell("x = 1", "")
+    child = sm.checkpoint("after")
+    delete_node(child)
+    sm.end()
+
+    node_type = get_db().execute(
+        "SELECT node_type FROM session_nodes WHERE id=?", (br,),
+    ).fetchone()["node_type"]
+    assert node_type == "abandoned"
+
+
+def test_delete_node_leaves_a_usable_current_node(tmp_project):
+    """Trashing the active node must not orphan the next checkpoint.
+
+    With both pointers cleared, the following checkpoint() inserted a row with
+    parent_id NULL — a second root for the session.
+    """
+    from exptrack.core.db import get_db
+    from exptrack.sessions import SessionManager, set_current_session
+    from exptrack.sessions.manager import delete_node
+
+    sm = SessionManager()
+    sm.start("orphan")
+    set_current_session(sm)
+    try:
+        cp = sm.checkpoint("base")
+        br = sm.branch("A")
+        delete_node(cp)                      # trashes the checkpoint and branch
+        assert sm._current_node_id not in (None, cp, br)
+        nid = sm.checkpoint("after")
+        parent = get_db().execute(
+            "SELECT parent_id FROM session_nodes WHERE id=?", (nid,),
+        ).fetchone()["parent_id"]
+        assert parent is not None
+        roots = get_db().execute(
+            "SELECT COUNT(*) c FROM session_nodes "
+            "WHERE session_id=? AND parent_id IS NULL AND deleted_at IS NULL",
+            (sm.session_id,),
+        ).fetchone()["c"]
+        assert roots == 1
+    finally:
+        set_current_session(None)
+
+
+def test_finalize_ignores_nodes_from_another_session(tmp_project):
+    """A stray node id can't be materialized into this session's study."""
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import finalize_session
+
+    other = SessionManager()
+    other.start("other")
+    other.checkpoint("c")
+    foreign = other.branch("foreign")
+    other.record_cell("x = 1", "")
+    other.end()
+
+    sm = SessionManager()
+    sm.start("mine")
+    sm.checkpoint("c")
+    mine = sm.branch("mine")
+    sm.record_cell("y = 2", "")
+    sid = sm.session_id
+    sm.end()
+
+    res = finalize_session(sid, node_ids=[mine, foreign])
+    assert res["ok"]
+    assert [m["node_id"] for m in res["materialized"]] == [mine]
+
+
+def test_link_experiment_escapes_like_wildcards(tmp_project):
+    """An id containing a LIKE wildcard doesn't match an arbitrary run."""
+    from exptrack.core import Experiment
+    from exptrack.sessions import SessionManager
+    from exptrack.sessions.manager import link_experiment
+
+    Experiment(name="real")
+    sm = SessionManager()
+    sm.start("like")
+    sm.checkpoint("c")
+    br = sm.branch("b")
+
+    assert link_experiment(br, "%")["ok"] is False
+    assert link_experiment(br, "_")["ok"] is False

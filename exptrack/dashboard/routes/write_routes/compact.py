@@ -175,11 +175,18 @@ def _compact_git_diffs(conn, exp_ids: list) -> tuple:
             file_info += f" +{len(files) - 5} more"
         summary = f"[compacted — {fmt_bytes(diff_len)} stripped — {file_info} — see git commit {commit}]"
         conn.execute("UPDATE experiments SET git_diff = ? WHERE id = ?", (summary, row["id"]))
-        # Delete the blob from git_diffs if it was a ref and no other experiment uses it
+        # Delete the blob from git_diffs only if nothing else still points at it.
+        # Session nodes reference these blobs too (a node's diff is stored
+        # content-addressed, and materializing a node hands its ref to the new
+        # experiment), so checking `experiments` alone would strip the body out
+        # from under the session tree that shares it.
         if raw_diff.startswith("[ref:sha256:"):
             diff_hash = raw_diff[12:-1]
             other = conn.execute(
-                "SELECT 1 FROM experiments WHERE git_diff=? AND id!=?", (raw_diff, eid)
+                "SELECT 1 FROM experiments WHERE git_diff=? AND id!=? "
+                "UNION ALL "
+                "SELECT 1 FROM session_nodes WHERE git_diff=? LIMIT 1",
+                (raw_diff, eid, raw_diff),
             ).fetchone()
             if not other:
                 conn.execute("DELETE FROM git_diffs WHERE diff_hash=?", (diff_hash,))

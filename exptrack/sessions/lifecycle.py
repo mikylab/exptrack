@@ -200,6 +200,16 @@ def finalize_session(session_id: str, node_ids: list[str] | None = None, *,
             if any(c.strip() for c in (r["cell_source"] or "").split(sep))
         ]
 
+    else:
+        # Caller-supplied ids: keep only nodes that actually belong to this
+        # session. A stray id from another session would otherwise be
+        # materialized here and filed under this session's study.
+        own = {r["id"] for r in conn.execute(
+            "SELECT id FROM session_nodes WHERE session_id=? AND deleted_at IS NULL",
+            (session_id,),
+        ).fetchall()}
+        node_ids = [nid for nid in node_ids if nid in own]
+
     materialized: list[dict[str, str]] = []
     errors: list[dict[str, str]] = []
     for nid in node_ids:
@@ -244,6 +254,16 @@ def finalize_session(session_id: str, node_ids: list[str] | None = None, *,
         "grouped": grouped,
         "deleted": deleted,
     }
+
+
+def _session_root_id(conn, session_id: str) -> str | None:
+    """The session's live root node id, or None."""
+    row = conn.execute(
+        "SELECT id FROM session_nodes WHERE session_id=? AND parent_id IS NULL "
+        "AND deleted_at IS NULL ORDER BY seq LIMIT 1",
+        (session_id,),
+    ).fetchone()
+    return row["id"] if row else None
 
 
 def preview_node_delete(node_id: str) -> dict[str, Any]:
@@ -317,11 +337,16 @@ def delete_node(node_id: str) -> dict[str, Any]:
     mgr = get_current_session()
     if mgr and mgr.session_id == row["session_id"]:
         deleted = set(ids)
-        if mgr._current_node_id in deleted:
-            mgr._current_node_id = mgr._last_checkpoint_id \
-                if mgr._last_checkpoint_id not in deleted else None
         if mgr._last_checkpoint_id in deleted:
             mgr._last_checkpoint_id = None
+        if mgr._current_node_id in deleted:
+            # Fall back to the live checkpoint anchor, else the session root —
+            # never to None, which would make the next checkpoint() insert a
+            # parentless node and give the session a second root.
+            mgr._current_node_id = mgr._last_checkpoint_id or _session_root_id(
+                conn, row["session_id"])
+        if mgr._last_checkpoint_id is None:
+            mgr._last_checkpoint_id = mgr._current_node_id
 
     return {"ok": True, "nodes": len(ids), "experiments": exp_count}
 
@@ -449,8 +474,8 @@ def rename_node(node_id: str, label: str) -> dict[str, Any]:
 def promote_to_checkpoint(node_id: str) -> dict[str, Any]:
     """Convert a branch (or abandoned branch) node into a checkpoint.
 
-    The branch's current `git_diff` — which is refreshed live as cells run — is
-    simply frozen in place (checkpoints don't refresh their diff). Returns
+    The branch's current `git_diff` — last refreshed when the live session left
+    it — is simply frozen in place (checkpoints don't refresh their diff). Returns
     {ok, node_type} or {ok: False, error}. Keeps the live SessionManager's
     checkpoint anchor pointed at the newest checkpoint so later branches attach
     under it."""

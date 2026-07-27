@@ -42,7 +42,7 @@ def test_schema_version_stamped(db_conn):
 # after a schema change means existing DBs silently never migrate. This test
 # fails whenever the schema DDL changes, forcing a deliberate update here —
 # and the message reminds you to bump `_SCHEMA_VERSION` at the same time.
-_EXPECTED_SCHEMA_FINGERPRINT = "0a3728f30167f4e7"
+_EXPECTED_SCHEMA_FINGERPRINT = "8cf3b12953402db0"
 
 
 def _schema_fingerprint(conn) -> str:
@@ -431,3 +431,121 @@ def test_migrate_metrics_second_open_is_noop(tmp_project):
     remaining = {r["key"] for r in conn.execute(
         "SELECT key FROM params WHERE exp_id='e1'").fetchall()}
     assert remaining == {"_result:junk"}
+
+
+# ── concurrent first open ────────────────────────────────────────────────────
+
+def test_concurrent_first_open_does_not_lock(tmp_project):
+    """Many threads opening a brand-new DB at once must all get a connection.
+
+    Switching ``journal_mode`` takes an exclusive lock that SQLite acquires
+    *without* running the busy handler, so ``timeout``/``busy_timeout`` do not
+    cover it: before ``_open_lock`` + ``_set_wal_mode``'s retry, a burst of
+    simultaneous first opens (the dashboard serves a thread per request and the
+    page boots with ~8 fetches) raised ``database is locked`` straight out of
+    ``PRAGMA journal_mode=WAL``.
+    """
+    import threading
+
+    from exptrack.core import db as _db
+
+    errors: list[BaseException] = []
+
+    def burst():
+        barrier = threading.Barrier(8)
+
+        def open_and_query():
+            barrier.wait()
+            try:
+                conn = _db.get_db()
+                conn.execute("SELECT COUNT(*) FROM experiments").fetchone()
+            except BaseException as e:
+                errors.append(e)
+            finally:
+                _db.close_db(sweep=False)
+
+        threads = [threading.Thread(target=open_and_query) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+    # The race only exists while the database is still in its default rollback
+    # journal, i.e. on the *first* open — so each round starts from a fresh
+    # file. One round hits the window maybe 1 in 15 times; the repeat is what
+    # makes this a guard rather than a coin flip.
+    for _ in range(20):
+        _db.close_db(sweep=False)
+        for suffix in ("", "-wal", "-shm"):
+            (tmp_project / ".exptrack" / f"experiments.db{suffix}").unlink(
+                missing_ok=True)
+        burst()
+
+    assert not errors, f"concurrent open failed: {errors[0]!r}"
+    assert _db.get_db().execute(
+        "PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+
+def test_set_wal_mode_retries_a_locked_switch():
+    """The switch is retried, deterministically — the thread race above only
+    reproduces intermittently, so the retry itself is pinned here."""
+    import sqlite3
+
+    from exptrack.core import db as _db
+
+    class FlakyConn:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self, sql):
+            self.calls += 1
+            if self.calls < 3:
+                raise sqlite3.OperationalError("database is locked")
+            return _Row("wal")
+
+    class _Row:
+        def __init__(self, mode):
+            self.mode = mode
+
+        def fetchone(self):
+            return (self.mode,)
+
+    conn = FlakyConn()
+    _db._set_wal_mode(conn)
+    assert conn.calls == 3
+
+
+def test_set_wal_mode_reraises_unrelated_errors():
+    """Only lock/busy contention is retried — a real error must surface."""
+    import sqlite3
+
+    import pytest as _pytest
+
+    from exptrack.core import db as _db
+
+    class BadConn:
+        def execute(self, sql):
+            raise sqlite3.OperationalError("no such table: nope")
+
+    with _pytest.raises(sqlite3.OperationalError):
+        _db._set_wal_mode(BadConn())
+
+
+def test_set_wal_mode_degrades_when_database_is_held(tmp_path):
+    """A contended switch must not raise — the connection still works."""
+    import sqlite3
+
+    from exptrack.core import db as _db
+
+    path = str(tmp_path / "held.db")
+    holder = sqlite3.connect(path)
+    holder.execute("CREATE TABLE x (a)")
+    holder.commit()
+    holder.execute("BEGIN EXCLUSIVE")  # blocks the journal_mode switch
+    try:
+        conn = sqlite3.connect(path, timeout=1)
+        conn.execute("PRAGMA busy_timeout=100")
+        _db._set_wal_mode(conn)  # must return rather than raise
+    finally:
+        holder.rollback()
+        holder.close()

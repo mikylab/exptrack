@@ -330,6 +330,13 @@ async function refreshDetail(id, opts) {
   const keepSidebar = opts && opts.keepSidebar;
   const isInitialEntry = currentDetailId !== id ||
     document.getElementById('detail-view').style.display === 'none';
+  // The panel HTML below is rebuilt from scratch with Overview active, so an
+  // in-place refresh (auto-refresh poll on a running run, logging a metric, a
+  // tag edit) would yank the user off whatever tab they opened — it's restored
+  // after the rewrite. A fresh entry into a *different* run starts on Overview,
+  // so reset currentDetailTab here or that restore would put the user on the
+  // previous run's tab.
+  if (isInitialEntry) currentDetailTab = 'overview';
   currentDetailId = id;
   showDetailView();
   if (isInitialEntry && !keepSidebar) {
@@ -656,6 +663,18 @@ async function refreshDetail(id, opts) {
   ) : '';
 
   const _restoreRename = _preserveActiveRename();
+  // #main-content is the scroller, and emptying the panel below collapses its
+  // content — the browser then clamps scrollTop to 0. On a running experiment
+  // that happens every metric poll, so anything below the fold scrolls itself
+  // back to the top every 5 seconds. Restored right after the write, while the
+  // new content (same shape, so the same height) is already laid out. A fresh
+  // entry into a run should start at the top, so only an in-place refresh keeps
+  // the offset.
+  const _scroller = document.getElementById('main-content');
+  const _keptScroll = (_scroller && !isInitialEntry) ? _scroller.scrollTop : 0;
+  // Applied again after the tab restore below, which swaps which tab div is
+  // displayed and can collapse the height a second time.
+  const _restoreScroll = () => { if (_keptScroll) _scroller.scrollTop = _keptScroll; };
   document.getElementById('detail-panel').innerHTML = `
     <div class="detail" style="border:none;padding:4px 16px;margin:0">
       <!-- Filmstrip: flip through runs in the current list -->
@@ -779,6 +798,7 @@ async function refreshDetail(id, opts) {
       <div id="detail-tab-confusion" style="display:none"></div>
     </div>
   `;
+  _restoreScroll();
   _restoreRename();
 
   // Filmstrip of the current run list, active card centered.
@@ -810,6 +830,12 @@ async function refreshDetail(id, opts) {
   // Cache metrics data for Charts tab and render overview preview
   _chartsMetricsData = metricsData;
   renderOverviewChartPreview(metricsData);
+
+  // Put the user back on the tab they were reading (see the reset above). Runs
+  // after _chartsMetricsData is cached so a restored Charts tab renders against
+  // this refresh's data, not the previous one's.
+  if (currentDetailTab !== 'overview') switchDetailTab(currentDetailTab, exp.id);
+  _restoreScroll();
 
   // Populate result type dropdown
   populateResultTypeDropdown(exp.id);
@@ -1253,8 +1279,12 @@ async function _autoRefreshPoll() {
     _autoRefreshMetricCount = newMetricCount;
 
     if (metricsChanged) {
-      // Refresh the active tab if it shows metrics
-      if (currentDetailTab === 'overview' || currentDetailTab === 'charts') {
+      // Refresh the active tab if it shows metrics. Charts reloads just its own
+      // container — a full refreshDetail would rebuild the entire panel (and
+      // every other tab's DOM) to update one chart.
+      if (currentDetailTab === 'charts') {
+        loadChartsTab(_autoRefreshExpId);
+      } else if (currentDetailTab === 'overview') {
         refreshDetail(_autoRefreshExpId);
       }
     }

@@ -4,14 +4,17 @@
 let currentDetailTab = 'overview';
 let currentDetailExpId = '';
 
+// Tab ids in the order the buttons are rendered in refreshDetail's template —
+// the class toggle below is index-coupled to that order, so the two must match.
+const DETAIL_TABS = ['overview','timeline','charts','images','logs','compare-within','confusion'];
+
 function switchDetailTab(tab, expId) {
   currentDetailTab = tab;
   currentDetailExpId = expId;
   document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
-    const tabs = ['overview','timeline','charts','images','logs','compare-within','confusion'];
-    t.classList.toggle('active', tabs[i] === tab);
+    t.classList.toggle('active', DETAIL_TABS[i] === tab);
   });
-  ['overview','timeline','charts','images','logs','compare-within','confusion'].forEach(t => {
+  DETAIL_TABS.forEach(t => {
     const el = document.getElementById('detail-tab-'+t);
     if (el) el.style.display = t === tab ? '' : 'none';
   });

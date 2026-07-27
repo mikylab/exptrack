@@ -5,6 +5,26 @@
 let _chartsMetricsData = null;
 let _chartsViewMode = 'single';
 let _chartsMaxPoints = 500;
+// The metric picked in single view. Held across reloads of the tab because a
+// running experiment reloads it on every auto-refresh poll — without this the
+// selector snaps back to the first metric every 5 seconds.
+let _chartsSelectedKey = null;
+// The metric shown in the Overview tab's chart preview, held for the same reason.
+let _overviewPreviewKey = null;
+// What the tab currently on screen was built from — the run id and the metric
+// keys it drew. Compared against fresh data to decide whether the charts can be
+// updated in place or the tab HTML has to be rebuilt.
+let _chartsExpId = null;
+let _chartsRenderedKeys = [];
+
+// The metrics worth charting: every key that has at least one point. Computed
+// identically by the HTML builder, the initializer and the overview preview, so
+// it lives in one place.
+function chartMetricKeys(metricsData) {
+  return Object.entries(metricsData || {})
+    .filter(([, pts]) => pts.length >= 1)
+    .map(([k]) => k);
+}
 
 const CHART_COLORS = [
   '#2c5aa0', '#e07b39', '#2d8659', '#c0392b', '#8e44ad',
@@ -22,12 +42,25 @@ function buildChartScaleConfig(axisLabel, scaleOpts, axis) {
   return cfg;
 }
 
+function _pointLabels(points) {
+  return points.map((p, i) => p.step !== null ? p.step : i);
+}
+
+// Swap a chart's data without recreating it. The points also hang off the chart
+// (rather than living only in createChart's closure) so the click-to-delete
+// handler always resolves against the points currently drawn.
+function _applyChartPoints(chart, points) {
+  chart.$points = points;
+  chart.data.labels = _pointLabels(points);
+  chart.data.datasets[0].data = points.map(p => p.value);
+}
+
 function createChart(canvas, key, points, colorIdx, scaleOpts) {
   const color = CHART_COLORS[colorIdx % CHART_COLORS.length];
-  return new Chart(canvas, {
+  const chart = new Chart(canvas, {
     type: 'line',
     data: {
-      labels: points.map((p, i) => p.step !== null ? p.step : i),
+      labels: _pointLabels(points),
       datasets: [{
         label: key,
         data: points.map(p => p.value),
@@ -47,10 +80,10 @@ function createChart(canvas, key, points, colorIdx, scaleOpts) {
         x: buildChartScaleConfig('Step', scaleOpts, 'x'),
         y: buildChartScaleConfig(key, scaleOpts, 'y'),
       },
-      onClick: (evt, elements) => {
+      onClick: (evt, elements, self) => {
         if (!elements.length) return;
         const idx = elements[0].index;
-        const pt = points[idx];
+        const pt = self.$points[idx];
         const step = pt.step;
         const val = pt.value;
         if (confirm('Delete point: ' + key + ' = ' + val + ' (step ' + (step ?? idx) + ')?')) {
@@ -59,6 +92,8 @@ function createChart(canvas, key, points, colorIdx, scaleOpts) {
       }
     }
   });
+  chart.$points = points;
+  return chart;
 }
 
 function destroyTabCharts() {
@@ -69,20 +104,34 @@ function destroyTabCharts() {
   }
 }
 
+// The axis-range inputs, id → the key it fills in a scale-opts object. One list
+// so the read, the write, and the reset can't drift when an input is added or
+// renamed. An unset bound is '' throughout, which buildChartScaleConfig skips —
+// so an all-empty scale is the same as no scale and needs no special case.
+const CHART_SCALE_INPUTS = {
+  'chart-y-min': 'yMin', 'chart-y-max': 'yMax',
+  'chart-x-min': 'xMin', 'chart-x-max': 'xMax',
+};
+
 function getChartScaleOpts() {
-  return {
-    yMin: (document.getElementById('chart-y-min') || {}).value || '',
-    yMax: (document.getElementById('chart-y-max') || {}).value || '',
-    xMin: (document.getElementById('chart-x-min') || {}).value || '',
-    xMax: (document.getElementById('chart-x-max') || {}).value || '',
-  };
+  const opts = {};
+  for (const [id, key] of Object.entries(CHART_SCALE_INPUTS)) {
+    opts[key] = (document.getElementById(id) || {}).value || '';
+  }
+  return opts;
+}
+
+// Write a scale back into the inputs — used to carry the user's typed range
+// across a rebuild of the tab HTML. A null/empty opts clears them.
+function applyChartScaleInputs(opts) {
+  for (const [id, key] of Object.entries(CHART_SCALE_INPUTS)) {
+    const el = document.getElementById(id);
+    if (el) el.value = (opts && opts[key]) || '';
+  }
 }
 
 function resetChartScaleInputs() {
-  ['chart-y-min', 'chart-y-max', 'chart-x-min', 'chart-x-max'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.value = '';
-  });
+  applyChartScaleInputs(null);
 }
 
 // ── Single chart view ────────────────────────────────────────────────────────
@@ -123,12 +172,42 @@ function renderAllCharts(container, metricsData, scaleOpts) {
   }
 }
 
+// Push fresh metric data into the charts already on screen instead of rebuilding
+// the tab. A running experiment reloads this tab every 5 seconds, and a rebuild
+// throws the DOM away each time — which takes focus out of an axis input
+// mid-typing, closes the metric dropdown if it's open, and restarts the draw
+// animation. Returns false when the tab on screen can't represent this data
+// (never built, other run, other view mode, or the run gained/lost a metric key),
+// leaving the caller to rebuild.
+function updateChartsInPlace(container, metricsData, expId, mode) {
+  if (expId !== _chartsExpId || mode !== _chartsViewMode) return false;
+  if (!container.querySelector('.charts-tab-content')) return false;
+
+  const keys = chartMetricKeys(metricsData);
+  if (keys.length !== _chartsRenderedKeys.length) return false;
+  if (keys.some((k, i) => k !== _chartsRenderedKeys[i])) return false;
+
+  if (mode === 'all') {
+    for (const key of keys) {
+      const chart = charts['all_' + key];
+      if (!chart) return false;
+      _applyChartPoints(chart, metricsData[key]);
+      chart.update('none');
+    }
+    return true;
+  }
+
+  const sel = container.querySelector('#chart-metric-select');
+  if (!charts._active || !sel || !metricsData[sel.value]) return false;
+  _applyChartPoints(charts._active, metricsData[sel.value]);
+  charts._active.update('none');
+  return true;
+}
+
 // ── Charts tab HTML & init ───────────────────────────────────────────────────
 
 function buildChartsTabContent(metricsData, viewMode) {
-  const metricKeys = Object.entries(metricsData)
-    .filter(([k, pts]) => pts.length >= 1)
-    .map(([k]) => k);
+  const metricKeys = chartMetricKeys(metricsData);
 
   if (metricKeys.length === 0) {
     return '<div class="chart-empty">No metric data to chart.</div>';
@@ -176,14 +255,15 @@ function buildChartsTabContent(metricsData, viewMode) {
   return html;
 }
 
-function initChartsTab(container, metricsData, viewMode) {
+// initScale: the axis range to render with, carried over by loadChartsTab from
+// the previous render of this tab (empty bounds are ignored downstream).
+function initChartsTab(container, metricsData, viewMode, initScale) {
   _chartsMetricsData = metricsData;
   _chartsViewMode = viewMode;
   destroyTabCharts();
 
-  const metricKeys = Object.entries(metricsData)
-    .filter(([k, pts]) => pts.length >= 1)
-    .map(([k]) => k);
+  const metricKeys = chartMetricKeys(metricsData);
+  _chartsRenderedKeys = metricKeys;
   if (metricKeys.length === 0) return;
 
   // View toggle buttons
@@ -222,7 +302,7 @@ function initChartsTab(container, metricsData, viewMode) {
   if (dlBtn) dlBtn.addEventListener('click', downloadChartsPng);
 
   if (viewMode === 'all') {
-    renderAllCharts(container, metricsData, null);
+    renderAllCharts(container, metricsData, initScale);
     return;
   }
 
@@ -231,10 +311,16 @@ function initChartsTab(container, metricsData, viewMode) {
   if (!sel) return;
 
   sel.addEventListener('change', () => {
+    _chartsSelectedKey = sel.value;
     renderSingleChart(container, sel.value, metricsData, getChartScaleOpts());
   });
 
-  renderSingleChart(container, metricKeys[0], metricsData, null);
+  // Keep the user's pick across reloads; fall back to the first metric when it
+  // isn't in this run (switching experiments) or nothing is remembered yet.
+  const initialKey = metricKeys.includes(_chartsSelectedKey) ? _chartsSelectedKey : metricKeys[0];
+  sel.value = initialKey;
+  _chartsSelectedKey = initialKey;
+  renderSingleChart(container, initialKey, metricsData, initScale);
 }
 
 async function loadChartsTab(expId, viewMode) {
@@ -242,11 +328,25 @@ async function loadChartsTab(expId, viewMode) {
   if (!container) return;
 
   const mode = viewMode || _chartsViewMode || 'single';
+  // Carried across a rebuild so the typed axis range survives it. (All-empty on
+  // first load, which renders exactly like no scale at all.)
+  const keptScale = getChartScaleOpts();
   const metricsData = await api('/api/metrics/' + expId + '?max_points=' + _chartsMaxPoints);
+  // api() reports its own failure (and returns null); leave the last good chart
+  // on screen rather than blanking the tab on one bad poll.
+  if (!metricsData) return;
   _chartsMetricsData = metricsData;
 
+  // The common case while a run trains: same run, same view, same metrics — feed
+  // the new points to the live charts and leave the DOM (and the user's focus,
+  // dropdown and scroll position) alone.
+  if (updateChartsInPlace(container, metricsData, expId, mode)) return;
+
+  destroyTabCharts();
+  _chartsExpId = expId;
   container.innerHTML = buildChartsTabContent(metricsData, mode);
-  initChartsTab(container, metricsData, mode);
+  applyChartScaleInputs(keptScale);
+  initChartsTab(container, metricsData, mode, keptScale);
 }
 
 // ── Chart PNG export ─────────────────────────────────────────────────────────
@@ -293,9 +393,7 @@ function renderOverviewChartPreview(metricsData) {
   const container = document.getElementById('overview-chart-preview');
   if (!container || !metricsData) return;
 
-  const metricKeys = Object.entries(metricsData)
-    .filter(([k, pts]) => pts.length >= 1)
-    .map(([k]) => k);
+  const metricKeys = chartMetricKeys(metricsData);
   if (metricKeys.length === 0) return;
 
   const selHtml = metricKeys.length > 1
@@ -318,7 +416,20 @@ function renderOverviewChartPreview(metricsData) {
     charts._preview = createChart(canvas, key, points, keyIdx, null);
   }
 
+  // Remembered like the Charts tab's picker: a running experiment rebuilds the
+  // whole Overview panel on every metric poll, so without this the preview snaps
+  // back to the first metric every 5 seconds. Falls back to the first key when
+  // the remembered one isn't in this run (switching experiments).
+  const initialKey = metricKeys.includes(_overviewPreviewKey) ? _overviewPreviewKey : metricKeys[0];
+  _overviewPreviewKey = initialKey;
+
   const sel = document.getElementById('overview-chart-select');
-  if (sel) sel.addEventListener('change', () => drawPreview(sel.value));
-  drawPreview(metricKeys[0]);
+  if (sel) {
+    sel.value = initialKey;
+    sel.addEventListener('change', () => {
+      _overviewPreviewKey = sel.value;
+      drawPreview(sel.value);
+    });
+  }
+  drawPreview(initialKey);
 }

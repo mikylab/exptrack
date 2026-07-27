@@ -42,9 +42,13 @@ def link_experiment(node_id: str, exp_id: str) -> dict[str, Any]:
         _detach_experiments(conn, [node_id])
         conn.commit()
         return {"ok": True, "linked": None}
+    # Prefix match on the id. LIKE wildcards in the caller's string are escaped
+    # so an id containing `%` or `_` can't match some arbitrary other run.
+    like = exp_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     erow = conn.execute(
-        "SELECT id FROM experiments WHERE id LIKE ? AND deleted_at IS NULL",
-        (exp_id + "%",),
+        "SELECT id FROM experiments WHERE id LIKE ? ESCAPE '\\' "
+        "AND deleted_at IS NULL",
+        (like + "%",),
     ).fetchone()
     if not erow:
         return {"ok": False, "error": "experiment not found"}
@@ -99,7 +103,7 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
     from datetime import datetime, timezone
 
     from ..config import load as load_config
-    from ..core.db import store_git_diff
+    from ..core.db import is_diff_sentinel, store_git_diff
 
     exp_id = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc).isoformat()
@@ -108,9 +112,13 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
     created_at = _unix_to_iso(row["created_at"]) or now
     name = (row["label"] or "").strip() or f"{row['sess_name'] or 'session'} node"
     # Dedup the git diff by hash like the canonical save path does, so a node's
-    # diff doesn't get a second inline copy in the experiments row.
+    # diff doesn't get a second inline copy in the experiments row. A node diff
+    # is normally *already* a `[ref:sha256:…]` marker, which is passed straight
+    # through — re-storing it would hash the marker itself and create a blob
+    # whose body is the literal pointer text.
     git_diff = row["git_diff"]
-    if git_diff:
+    if git_diff and not git_diff.startswith("[ref:sha256:") \
+            and not is_diff_sentinel(git_diff):
         try:
             git_diff = store_git_diff(conn, git_diff)
         except Exception:
@@ -154,6 +162,7 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
     # — otherwise only the first-line preview survives the promotion and the
     # session code isn't really transitioned over (you can't retrace/rerun it).
     from ..capture.cell_lineage import cell_hash as _cell_hash
+    from ..capture.notebook_hooks import _SETUP_EVENT_MAX_BYTES
     SEP = _CELL_SEPARATOR
     seq = 0
     cell_pos = 0
@@ -172,10 +181,12 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
         for i, c in enumerate(setup_cells):
             setup_pos += 1
             # Setup cells render their full source inline (no view-source
-            # button), so they don't need a cell_lineage row.
+            # button), so they don't need a cell_lineage row — they carry the
+            # source on the event, bounded like the live capture path does.
             events.append(
                 (exp_id, seq, "setup", None, None, f"setup_{setup_pos}",
-                 json.dumps({"source_preview": c,
+                 json.dumps({"source": c[:_SETUP_EVENT_MAX_BYTES],
+                             "source_preview": c[:200],
                              "output_preview": (setup_outs[i] if i < len(setup_outs) else "").strip()}),
                  now))
             seq += 1
@@ -186,9 +197,15 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
             if ch:
                 lineage_rows.append((ch, notebook, c, None, now))
             cell_pos += 1
+            # `source_preview` is a preview, capped exactly as the live capture
+            # path caps it. The full body already lives in `cell_lineage` above
+            # and is served through the event's `cell_hash`, so storing it here
+            # too duplicated every shared ancestor cell once per materialized
+            # sibling — N branches off one checkpoint meant N copies of the same
+            # upstream code in timeline JSON.
             events.append(
                 (exp_id, seq, "cell_exec", ch, cell_pos, f"cell_{cell_pos}",
-                 json.dumps({"source_preview": c,
+                 json.dumps({"source_preview": c[:200],
                              "output_preview": (outs[i] if i < len(outs) else "").strip()}),
                  now))
             seq += 1
@@ -247,13 +264,36 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
 
 
 def _copy_node_window_metrics(conn, node_row, new_exp_id: str) -> int:
-    """Copy the session's live-run metrics that were logged while this node's
-    cells ran (ts in [node.created_at, next node's created_at)) onto the newly
+    """Copy the session's live-run metrics belonging to this node onto the newly
     materialized run. Best-effort, returns the number copied.
 
     Notebook sessions log every `metric()` into one auto-created run; this
     re-attributes those points to the branch/checkpoint they belong to so a
-    graduated experiment carries its own metrics, not just its code."""
+    graduated experiment carries its own metrics, not just its code.
+
+    Attribution is **exact when possible**: metrics carry the
+    ``session_node_id`` that was active when they were logged, so those are
+    matched directly. Only metrics written before that column existed fall back
+    to the timestamp window ``[node.created_at, next node's created_at)`` —
+    which mis-attributes as soon as an earlier branch is revisited, because
+    switching back to a node doesn't create one and so doesn't move the window.
+    """
+    node_id = node_row["id"]
+    tagged = conn.execute(
+        "SELECT m.key, m.value, m.step, m.ts, m.source FROM metrics m "
+        "JOIN experiments e ON e.id = m.exp_id "
+        "WHERE m.session_node_id=? AND e.deleted_at IS NULL AND m.exp_id != ?",
+        (node_id, new_exp_id),
+    ).fetchall()
+    if tagged:
+        conn.executemany(
+            "INSERT INTO metrics (exp_id, key, value, step, ts, source, session_node_id) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [(new_exp_id, r["key"], r["value"], r["step"], r["ts"],
+              r["source"] or "auto", node_id) for r in tagged],
+        )
+        return len(tagged)
+
     try:
         lower = float(node_row["created_at"])
     except (TypeError, ValueError):
@@ -268,21 +308,25 @@ def _copy_node_window_metrics(conn, node_row, new_exp_id: str) -> int:
     upper_iso = _unix_to_iso(nxt["c"]) if nxt else None
     # Pull from every run linked to this session (the live auto-run), except the
     # run we're building. Window-filter on the ISO ts (UTC ISO sorts chronologically).
+    # Only *untagged* metrics are eligible: a tagged one belongs to whichever node
+    # it names, and letting the window claim it would hand this node another
+    # branch's numbers — the exact failure the tag was added to prevent.
     rows = conn.execute(
         "SELECT m.key, m.value, m.step, m.ts, m.source FROM metrics m "
         "JOIN experiments e ON e.id = m.exp_id "
         "JOIN session_nodes n ON n.id = e.session_node_id "
         "WHERE n.session_id=? AND e.deleted_at IS NULL AND e.id != ? "
+        "AND m.session_node_id IS NULL "
         "AND m.ts >= ? AND (? IS NULL OR m.ts < ?)",
         (session_id, new_exp_id, lower_iso, upper_iso, upper_iso),
     ).fetchall()
     if not rows:
         return 0
     conn.executemany(
-        "INSERT INTO metrics (exp_id, key, value, step, ts, source) "
-        "VALUES (?,?,?,?,?,?)",
+        "INSERT INTO metrics (exp_id, key, value, step, ts, source, session_node_id) "
+        "VALUES (?,?,?,?,?,?,?)",
         [(new_exp_id, r["key"], r["value"], r["step"], r["ts"],
-          r["source"] or "auto") for r in rows],
+          r["source"] or "auto", node_id) for r in rows],
     )
     return len(rows)
 
