@@ -30,7 +30,7 @@ _local = threading.local()
 # ``_create_base_schema`` or a new/changed ``_migrate_*`` helper), otherwise
 # existing databases will never see the new migration. ``exptrack upgrade``
 # always forces a full re-run regardless of the stamp.
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 # Serializes the open-time WAL switch + schema migration *within this process*.
 # Threads (the dashboard serves one per request) otherwise race each other to
@@ -614,11 +614,28 @@ def _migrate_metrics(conn):
     # doesn't exist yet — and a failed statement aborts the whole base-schema
     # script, i.e. every existing install breaks on upgrade. Creating it after
     # the ALTER covers migrated and fresh databases alike.
+    #
+    # The index is PARTIAL. `session_node_id` is NULL for every metric written
+    # outside a notebook session — i.e. all of them, for anyone running
+    # scripts — and the only query it serves probes an actual node id
+    # (`WHERE m.session_node_id=?`), so indexing the NULLs buys nothing and
+    # costs real space: on a 100k-iteration run logging 5 metrics it was 5.1 MB
+    # of a 54 MB database, ~10%, entirely NULL entries. (The one `IS NULL`
+    # query, the pre-column timestamp-window fallback in
+    # sessions/materialize.py, is driven through the exp_id joins and never
+    # wanted this index.)
     try:
         _add_columns(conn, "metrics", {"session_node_id": "TEXT"})
+        # Replace the older full index in place; DROP is a no-op when the
+        # database was created after this change.
+        idx = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='idx_metrics_session_node'").fetchone()
+        if idx and idx[0] and "NOT NULL" not in (idx[0] or ""):
+            conn.execute("DROP INDEX idx_metrics_session_node")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_metrics_session_node "
-            "ON metrics(session_node_id)")
+            "ON metrics(session_node_id) WHERE session_node_id IS NOT NULL")
     except sqlite3.OperationalError:
         pass
     except Exception as e:

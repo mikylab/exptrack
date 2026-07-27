@@ -797,53 +797,77 @@ def format_run_delta(diff: dict, prev_row: dict | None) -> str:
     return f"vs {label}: " + " · ".join(parts)
 
 
+def _latest_metric_rows(conn, exp_ids: list[str]):
+    """One row per (exp_id, key): its latest value + source, and how many
+    distinct sources that key has (so the caller can mark it "mixed").
+
+    This is the single hot query behind the experiment list, so how it's
+    written matters. It used to find the latest point with a *correlated*
+    subquery per row --
+
+        WHERE COALESCE(step,0) = (SELECT MAX(COALESCE(step,0)) FROM metrics m2
+                                  WHERE m2.exp_id=m.exp_id AND m2.key=m.key)
+
+    -- plus a second correlated subquery for the distinct-source count. Each
+    one re-scans the whole (exp_id, key) group *for every row in that group*,
+    so the cost is quadratic in points-per-metric: fine on a toy project,
+    but a real training run logs thousands of points per key, and ~70 runs x
+    5 keys x 2k points (680k rows, an unremarkable size) never finished. The
+    dashboard's `/api/experiments` hung forever while `/api/stats` -- which
+    doesn't touch metrics -- returned instantly, so the page rendered its
+    headline counts above a permanently empty table.
+
+    Two window/aggregate passes over the same indexed row set replace both
+    correlated subqueries: linear instead of quadratic.
+
+    Ordering by ``(step, ts, rowid)`` also makes the pick deterministic. The
+    old query returned *every* row tied at the max step and let the Python
+    dict comprehension keep whichever SQLite happened to emit last; now the
+    genuinely last-logged point wins, matching ``last_metrics``.
+    """
+    ph = ",".join("?" * len(exp_ids))
+    return conn.execute(f"""
+        WITH scoped AS (
+            SELECT exp_id, key, value, COALESCE(source, 'auto') AS source,
+                   COALESCE(step, 0) AS step_n, ts, rowid AS rid
+            FROM metrics WHERE exp_id IN ({ph})
+        ),
+        latest AS (
+            SELECT exp_id, key, value, source,
+                   ROW_NUMBER() OVER (PARTITION BY exp_id, key
+                                      ORDER BY step_n DESC, ts DESC, rid DESC) AS rn
+            FROM scoped
+        ),
+        sources AS (
+            SELECT exp_id, key, COUNT(DISTINCT source) AS source_count
+            FROM scoped GROUP BY exp_id, key
+        )
+        SELECT l.exp_id, l.key, l.value, l.source, s.source_count
+        FROM latest l
+        JOIN sources s ON s.exp_id = l.exp_id AND s.key = l.key
+        WHERE l.rn = 1
+    """, exp_ids).fetchall()
+
+
 def get_latest_metrics(conn, exp_id: str) -> dict[str, float]:
     """Get the last value of each metric key for an experiment."""
-    rows = conn.execute("""
-        SELECT key, value FROM metrics m WHERE exp_id=?
-        AND COALESCE(step, 0) = (
-            SELECT MAX(COALESCE(step, 0)) FROM metrics m2
-            WHERE m2.exp_id=m.exp_id AND m2.key=m.key
-        )
-    """, (exp_id,)).fetchall()
-    return {r["key"]: r["value"] for r in rows}
+    return {r["key"]: r["value"] for r in _latest_metric_rows(conn, [exp_id])}
 
 
 def get_latest_metrics_with_source(conn, exp_id: str) -> dict[str, dict]:
     """Get the last value and source of each metric key for an experiment."""
-    rows = conn.execute("""
-        SELECT key, value, COALESCE(source, 'auto') as source,
-               (SELECT COUNT(DISTINCT COALESCE(source, 'auto')) FROM metrics m3
-                WHERE m3.exp_id=m.exp_id AND m3.key=m.key) as source_count
-        FROM metrics m WHERE exp_id=?
-        AND COALESCE(step, 0) = (
-            SELECT MAX(COALESCE(step, 0)) FROM metrics m2
-            WHERE m2.exp_id=m.exp_id AND m2.key=m.key
-        )
-    """, (exp_id,)).fetchall()
     return {r["key"]: {
         "value": r["value"],
         "source": "mixed" if r["source_count"] > 1 else r["source"],
-    } for r in rows}
+    } for r in _latest_metric_rows(conn, [exp_id])}
 
 
 def get_latest_metrics_with_source_batch(conn, exp_ids: list[str]) -> dict[str, dict[str, dict]]:
     """Batched ``get_latest_metrics_with_source`` for many experiments at once."""
     if not exp_ids:
         return {}
-    ph = ",".join("?" * len(exp_ids))
-    rows = conn.execute(f"""
-        SELECT exp_id, key, value, COALESCE(source, 'auto') as source,
-               (SELECT COUNT(DISTINCT COALESCE(source, 'auto')) FROM metrics m3
-                WHERE m3.exp_id=m.exp_id AND m3.key=m.key) as source_count
-        FROM metrics m WHERE exp_id IN ({ph})
-        AND COALESCE(step, 0) = (
-            SELECT MAX(COALESCE(step, 0)) FROM metrics m2
-            WHERE m2.exp_id=m.exp_id AND m2.key=m.key
-        )
-    """, exp_ids).fetchall()
     out: dict[str, dict] = {e: {} for e in exp_ids}
-    for r in rows:
+    for r in _latest_metric_rows(conn, exp_ids):
         out[r["exp_id"]][r["key"]] = {
             "value": r["value"],
             "source": "mixed" if r["source_count"] > 1 else r["source"],
@@ -946,18 +970,92 @@ def _downsample_points(points: list[dict], max_points: int = 1500) -> list[dict]
     return result
 
 
+# One metric point as the charts endpoint returns it.
+def _point(row) -> dict:
+    return {"value": row["value"], "step": row["step"], "ts": row["ts"]}
+
+
+def _bucketed_points(conn, exp_id: str, key: str, lo: int, hi: int,
+                     num_buckets: int) -> list[dict]:
+    """Min/max-per-bucket downsample of one metric key, done in SQL.
+
+    Two aggregate passes over the key's rows — one keeping each bucket's
+    lowest-valued point, one its highest. Each relies on SQLite's documented
+    "bare columns in an aggregate query" rule: with **exactly one** min()/max()
+    aggregate, the non-aggregated columns come from the row that produced it,
+    so we get that point's ``step``/``ts`` and not just its value. (That rule
+    is why this is two queries rather than one with both aggregates — having
+    both voids the guarantee and the bare columns become arbitrary.)
+
+    Buckets are cut on ``COALESCE(step, rowid)``: the step for a normal
+    training loop, and insert order for the step-less ``log_metric(k, v)``
+    case, where every step is NULL and bucketing on it would collapse the
+    whole series into one bucket. The first and last points get reserved
+    buckets of their own so a chart always spans the true extent of the run
+    and the final value read off it is exact.
+    """
+    span = max(1, hi - lo + 1)
+    # -1 and num_buckets are the reserved first/last buckets.
+    bucket = ("CASE WHEN o = ? THEN -1 WHEN o = ? THEN ? "
+              "ELSE ((o - ?) * ?) / ? END")
+    args = (lo, hi, num_buckets, lo, num_buckets, span, exp_id, key)
+    seen: dict[tuple, tuple] = {}
+    for agg in ("MIN", "MAX"):
+        rows = conn.execute(f"""
+            SELECT value, step, ts, o, {agg}(value) AS _extreme, {bucket} AS b
+            FROM (SELECT value, step, ts, COALESCE(step, rowid) AS o
+                  FROM metrics WHERE exp_id=? AND key=?)
+            GROUP BY b
+        """, args).fetchall()
+        for r in rows:
+            # A bucket whose min and max are the same row contributes it once.
+            seen.setdefault((r["o"], r["value"]), (r["o"], _point(r)))
+    # Sort on `o`, the same value the buckets were cut on — NOT on step/ts. For
+    # a step-less series every step is NULL and `ts` resolves only to the
+    # second, so ordering by those scrambles the series and the "last" point is
+    # whichever bucket happened to sort last.
+    return [p for _, p in sorted(seen.values(), key=lambda t: t[0])]
+
+
 def get_metrics_series(conn, exp_id: str, max_points: int = 500) -> dict[str, list[dict]]:
-    """Get metric points grouped by key, downsampled if over max_points."""
-    rows = conn.execute("""
-        SELECT key, value, step, ts FROM metrics
-        WHERE exp_id=? ORDER BY key, COALESCE(step, 0)
-    """, (exp_id,)).fetchall()
-    by_key: dict[str, list] = {}
-    for r in rows:
-        by_key.setdefault(r["key"], []).append({
-            "value": r["value"], "step": r["step"], "ts": r["ts"]
-        })
-    return {k: _downsample_points(v, max_points) for k, v in by_key.items()}
+    """Get metric points grouped by key, downsampled if over max_points.
+
+    The downsampling happens in SQL. This used to ``SELECT`` every point for
+    the experiment, build a dict per row, and hand the whole list to
+    ``_downsample_points`` — which then threw ~99% of it away. One
+    100k-iteration run logging 5 metrics is 500k rows, so rendering 2500
+    chart points meant materializing 500k dicts: ~6s per call, of which the
+    scan itself was under 1.5s. That is the endpoint the detail view **polls
+    every 5 seconds** while a run is live, so the poll could not keep up with
+    itself — each one occupied a request thread for longer than the interval.
+
+    Now only the points that survive downsampling ever reach Python. A key
+    already at or under *max_points* is returned whole and exactly as stored;
+    only larger ones are bucketed.
+    """
+    # Below 4 there are no interior buckets left. The endpoint clamps to 10,
+    # but this is called directly too.
+    max_points = max(4, max_points)
+    num_buckets = max(1, (max_points - 2) // 2)
+    # Cheap prep: one grouped pass telling us which keys even need reducing,
+    # and the extent to cut each one's buckets over.
+    keys = conn.execute(
+        "SELECT key, COUNT(*) AS n, MIN(COALESCE(step, rowid)) AS lo, "
+        "MAX(COALESCE(step, rowid)) AS hi "
+        "FROM metrics WHERE exp_id=? GROUP BY key", (exp_id,)
+    ).fetchall()
+    out: dict[str, list[dict]] = {}
+    for k in keys:
+        if k["n"] <= max_points:
+            rows = conn.execute(
+                "SELECT value, step, ts FROM metrics WHERE exp_id=? AND key=? "
+                "ORDER BY COALESCE(step, 0), rowid", (exp_id, k["key"])
+            ).fetchall()
+            out[k["key"]] = [_point(r) for r in rows]
+        else:
+            out[k["key"]] = _bucketed_points(
+                conn, exp_id, k["key"], k["lo"], k["hi"], num_buckets)
+    return out
 
 
 def get_metrics_summary(conn, exp_id: str) -> list[dict]:

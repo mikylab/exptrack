@@ -157,6 +157,11 @@ def cmd_clean(args):
         _clean_orphans(conn, dry_run)
         return
 
+    # --vacuum: hand free pages back to the filesystem, deleting nothing
+    if getattr(args, "vacuum", False):
+        _clean_vacuum(conn, dry_run)
+        return
+
     # --baselines: wipe code_baselines table
     if getattr(args, "baselines", False):
         try:
@@ -309,6 +314,44 @@ def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = Fa
         _sweep_blobs(conn)
         conn.commit()
         print(col(f"Cleaned {len(rows)} experiment(s).", G))
+
+
+def _clean_vacuum(conn, dry_run: bool = False):
+    """VACUUM the database — reclaim free pages, delete nothing.
+
+    Space freed inside the file (a dropped index, a purged run) is reused as
+    the database grows but is not returned to the filesystem until a VACUUM.
+    The other paths here VACUUM only after deleting something, and `--reset`
+    is destructive, so without this there was no way to shrink the file after
+    e.g. the metrics session-node index became partial — only "delete
+    everything".
+    """
+    p = cfg.project_root() / cfg.load().get("db", ".exptrack/experiments.db")
+    before = p.stat().st_size if p.exists() else 0
+    if dry_run:
+        print(dim(f"Dry run: would VACUUM {fmt_bytes(before)} database at {p}."))
+        return
+    try:
+        # Fold the WAL back into the main file first, or VACUUM can't shrink it.
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+        # …and again afterwards: in WAL mode the rebuilt pages land in the WAL,
+        # so without this the main file is still its old size and this reports
+        # "nothing to reclaim" for a VACUUM that did work.
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception as e:
+        print(col(f"Could not VACUUM: {e}", Y), file=sys.stderr)
+        print(dim("Another connection may have the database open — "
+                  "stop the dashboard (exptrack ui) and retry."), file=sys.stderr)
+        return
+    after = p.stat().st_size if p.exists() else 0
+    freed = before - after
+    if freed > 0:
+        print(col(f"Reclaimed {fmt_bytes(freed)} "
+                  f"({fmt_bytes(before)} → {fmt_bytes(after)}).", G), file=sys.stderr)
+    else:
+        print(dim(f"Nothing to reclaim (database is {fmt_bytes(after)})."),
+              file=sys.stderr)
 
 
 def _clean_orphans(conn, dry_run: bool = False):

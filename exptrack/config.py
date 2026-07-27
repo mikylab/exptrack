@@ -40,6 +40,7 @@ DEFAULTS: dict = {
     ],
     "var_fingerprint_max_mb": 100,   # cap content-hashing of vars for change detection; lower if per-cell capture is slow with big DataFrames
     "metric_keep_every":     1,      # store every Nth metric point (1=all, 10=every 10th)
+    "metric_commit_interval_ms": 250,  # coalesce metric commits (one fsync each) into at most one per this window; 0 = commit every call
     "max_cell_source_kb":    50,     # hard cap on cell source in cell_lineage
     "max_source_diff_kb":    20,     # hard cap on source_diff in timeline events
     "max_vars_per_cell":     50,     # max var_set events per cell execution
