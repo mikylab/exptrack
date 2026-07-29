@@ -5,4 +5,4 @@ include CONTRIBUTING.md
 recursive-include exptrack *.py
 include exptrack/py.typed
 include exptrack/dashboard/vendor/*.js
-recursive-include exptrack/dashboard/static *.js *.css
+recursive-include exptrack/dashboard/static *.js *.css *.svg

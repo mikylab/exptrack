@@ -68,7 +68,9 @@
   .result-type-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; background: var(--code-bg); border: 1px solid var(--border); font-size: 12px; }
   .source-view { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; font-size: 13px; border-radius: 4px; white-space: pre-wrap; max-height: 500px; overflow-y: auto; margin-top: 6px; }
   .source-view .line-num { color: var(--muted); display: inline-block; min-width: 30px; text-align: right; margin-right: 12px; user-select: none; }
-  .view-source-btn { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; margin-left: 6px; color: var(--blue); }
+  /* nowrap: in the Data Files table this sits in a fixed 60px column, where the
+     label otherwise wrapped to one letter per line ("v i e w"). */
+  .view-source-btn { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--border); background: var(--card-bg); cursor: pointer; border-radius: 3px; margin-left: 6px; color: var(--blue); white-space: nowrap; }
   .view-source-btn:hover { background: var(--code-bg); }
   .tl-type-label { display: inline-block; font-size: var(--text-xs); padding: 1px 6px; border-radius: var(--radius-sm); margin-right: 6px; font-weight: 600; letter-spacing: 0.3px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
   .tl-type-label.tl-type-cell_exec { background: var(--accent-soft); color: var(--tl-cell); border-color: transparent; }

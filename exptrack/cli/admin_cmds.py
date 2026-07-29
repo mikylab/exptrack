@@ -14,7 +14,8 @@ from pathlib import Path
 from .. import config as cfg
 from ..core import get_db
 from ..core.db import COMPACT_PREFIX, is_diff_sentinel, resolve_git_diff
-from .formatting import C, G, R, W, Y, bold, col, dim, fmt_bytes
+from ..core.queries import find_experiment
+from .formatting import C, G, R, W, Y, bold, col, die, dim, fmt_bytes
 
 
 def cmd_init(args):
@@ -882,6 +883,27 @@ def _storage_session_stats(conn):
     }
 
 
+def _storage_metric_stats(conn):
+    """Bytes held by the metrics table, broken down by key.
+
+    Metrics are the only table exptrack writes inside the user's training loop,
+    so on any real project they are the largest thing in the database — and
+    until this landed the report counted their rows without ever saying what
+    those rows cost.
+    """
+    from ..core.storage import metric_storage, table_byte_sizes
+    table_bytes = table_byte_sizes(conn)
+    m = metric_storage(conn, table_bytes=table_bytes)
+    return {
+        "table_bytes": table_bytes,
+        "metrics_size": m["bytes"],
+        "metrics_exact": m["exact"],
+        "metric_keys": m["keys"],
+        "metric_key_count": m["key_count"],
+        "metric_keys_omitted": m["keys_omitted"],
+    }
+
+
 def collect_storage_stats(conn, conf=None, root=None):
     """Every number the storage report shows, as one flat dict.
 
@@ -893,9 +915,12 @@ def collect_storage_stats(conn, conf=None, root=None):
     stats = {}
     stats.update(_storage_disk_usage(conf, root))
     stats.update(_storage_row_counts(conn))
+    stats.update(_storage_metric_stats(conn))
     stats.update(_storage_git_diff_stats(conn))
     stats.update(_storage_cell_stats(conn))
     stats.update(_storage_session_stats(conn))
+    from ..core.storage import free_space
+    stats["free_space"] = free_space(conn)
     return stats
 
 
@@ -904,6 +929,13 @@ def _print_storage_summary(s):
     print(bold(col("  Storage Report", W)))
     print(dim("  " + "-" * 50))
     print(f"  {bold('Database file:')}     {fmt_bytes(s['db_size'])}")
+    free = s.get("free_space") or {}
+    if free.get("bytes"):
+        # Without this line the breakdown below simply doesn't add up to the
+        # file size after a delete, which reads as "the delete didn't work".
+        print(f"    of which free:     {fmt_bytes(free['bytes'])}  "
+              + dim(f"({free['pct']:.0f}% reusable — deleted rows, "
+                    f"returned to disk by \"exptrack clean --vacuum\")"))
     print(f"  {bold('Outputs directory:')} {fmt_bytes(s['outputs_size'])}  "
           f"({s['outputs_count']} files)")
     print(f"  {bold('Total:')}             {fmt_bytes(s['db_size'] + s['outputs_size'])}")
@@ -915,7 +947,8 @@ def _print_db_breakdown(s):
     print(dim("  " + "-" * 50))
     print(f"  Experiments:   {s['exp_count']:>8,} rows")
     print(f"  Params:        {s['param_count']:>8,} rows")
-    print(f"  Metrics:       {s['metric_count']:>8,} rows")
+    print(f"  Metrics:       {s['metric_count']:>8,} rows  "
+          f"(~{fmt_bytes(s['metrics_size'])})")
     print(f"  Artifacts:     {s['artifact_count']:>8,} rows")
     print(f"  Timeline:      {s['timeline_count']:>8,} rows  (~{fmt_bytes(s['timeline_size'])})")
     if s["sess_count"] or s["snode_count"]:
@@ -923,10 +956,28 @@ def _print_db_breakdown(s):
               f"({s['snode_count']} nodes, ~{fmt_bytes(s['snode_size'])})")
 
 
-def _print_storage_hotspots(s):
+def _print_metric_hotspot(s, by_metric=False):
+    """The metrics line, plus an optional per-key breakdown."""
+    exact = "" if s.get("metrics_exact") else "  (estimated)"
+    print(f"  metrics:              {fmt_bytes(s['metrics_size'])}  "
+          f"({s['metric_count']:,} points across {s['metric_key_count']} keys)"
+          f"{exact}")
+    if not by_metric:
+        return
+    for k in s.get("metric_keys", []):
+        per_run = dim(f"{k['max_per_exp']:,} max/run")
+        print(f"    {k['key'][:28]:<28} {fmt_bytes(k['bytes']):>9}  "
+              f"{k['points']:>9,} pts  {per_run}")
+    if s.get("metric_keys_omitted"):
+        print(dim(f"    … and {s['metric_keys_omitted']} more keys"))
+
+
+def _print_storage_hotspots(s, by_metric=False):
     print()
     print(bold(col("  Storage Hotspots", W)))
     print(dim("  " + "-" * 50))
+
+    _print_metric_hotspot(s, by_metric)
 
     if s["dedup_count"]:
         print(f"  git_diff total:       {fmt_bytes(s['git_diff_total'])}")
@@ -955,6 +1006,15 @@ def _print_storage_hotspots(s):
     print()
 
     cell_total = s["cl_size"] + s["tl_diff_total"] + s["hist_size"]
+    # Metrics are usually the biggest table and, unlike diffs and cell sources,
+    # compaction does not touch them — point them at prune instead.
+    if s["metrics_size"] > 1024 * 1024:
+        busiest = (s.get("metric_keys") or [{}])[0].get("max_per_exp", 0)
+        if busiest > 2000:
+            print(col(f"    Tip: metrics are {fmt_bytes(s['metrics_size'])} and one series "
+                      f"reaches {busiest:,} points in a single run. Run "
+                      f"\"exptrack prune --max-points 500 --dry-run\" to preview thinning "
+                      f"them (charts downsample to 500 points anyway).", Y))
     if s["git_diff_total"] > 1024 * 1024:
         print(col("    Tip: Run \"exptrack compact\" to strip old git diffs "
                   "(or set \"max_git_diff_kb\" in config.json to cap future ones).", Y))
@@ -964,6 +1024,72 @@ def _print_storage_hotspots(s):
     if s["outputs_size"] > 100 * 1024 * 1024:
         print(col("    Tip: Outputs directory is large. Delete old experiments "
                   "with \"exptrack rm\" to reclaim space.", Y))
+
+
+def _print_largest_experiments(conn, s, top=5):
+    """Which runs are actually holding the space.
+
+    The whole-database totals above answer "what kind of data is big"; this
+    answers "which run do I delete or prune", which is the question that
+    actually leads to an action.
+    """
+    if not top:
+        return
+    from ..core.storage import experiment_storage
+    rows = experiment_storage(conn, limit=top, table_bytes=s.get("table_bytes"))
+    if not rows:
+        return
+    print()
+    print(bold(col(f"  Largest Experiments (top {len(rows)}, estimated)", W)))
+    print(dim("  " + "-" * 50))
+    print(dim(f"    {'ID':<9} {'NAME':<24} {'TOTAL':>9} {'METRICS':>9} "
+              f"{'POINTS':>9}"))
+    for e in rows:
+        name = e["name"] or "(unnamed)"
+        if len(name) > 23:
+            name = name[:22] + "…"
+        flag = col(" [trash]", Y) if e["trashed"] else ""
+        print(f"    {e['id'][:8]:<9} {name:<24} {fmt_bytes(e['db_bytes']):>9} "
+              f"{fmt_bytes(e['metrics_bytes']):>9} {e['n_metrics']:>9,}{flag}")
+    print(dim("    Sizes are database bytes only — output files are not counted."))
+
+
+def _print_trash_storage(conn):
+    """What emptying the Trash would give back.
+
+    Soft delete keeps every row and leaves output files in place, so this is
+    the one place storage accumulates with nothing else in the report showing
+    it. Silent when the Trash is empty — a permanent "Trash: 0 B" line is noise
+    on the overwhelmingly common case.
+    """
+    from ..core.storage import trash_storage
+    t = trash_storage(conn)
+    if not (t["experiments"] or t["nodes"] or t["sessions"] or t["local_files"]):
+        return
+    print()
+    print(bold(col("  Trash", W)))
+    print(dim("  " + "-" * 50))
+    if t["experiments"]:
+        print(f"  Trashed experiments: {t['experiments']:>6,}  "
+              f"(~{fmt_bytes(t['exp_db_bytes'])} in the database)")
+    if t["nodes"] or t["sessions"]:
+        print(f"  Trashed session nodes: {t['nodes']:>4,}  "
+              f"(~{fmt_bytes(t['node_db_bytes'])}"
+              + (f", {t['sessions']} whole session(s)" if t["sessions"] else "") + ")")
+    if t["output_files"]:
+        print(f"  Their output files:  {t['output_files']:>6,}  "
+              f"({fmt_bytes(t['output_bytes'])} across {t['output_dirs']} dir(s), "
+              f"kept until you delete permanently with files)")
+    if t["local_files"]:
+        print(f"  .exptrack/trash/:    {t['local_files']:>6,} files  "
+              f"({fmt_bytes(t['local_bytes'])})")
+        print(dim("    Files exptrack could not hand to the OS Trash. "
+                  "Delete the directory when you're sure."))
+    reclaim = t["db_bytes"] + t["output_bytes"]
+    if reclaim:
+        print(col(f"  Reclaimable: ~{fmt_bytes(reclaim)}", Y)
+              + dim("  (permanently delete from the dashboard's Trash view, "
+                    "then \"exptrack clean --vacuum\")"))
 
 
 def _print_storage_health(conn, s):
@@ -981,12 +1107,21 @@ def _print_storage_health(conn, s):
         print(col("    WAL file is larger than the database. "
                   "Run \"exptrack storage --checkpoint\" to reclaim.", Y))
 
-    # Rows that outlived every experiment — a legacy or hand-edited DB.
-    if s["exp_count"] == 0 and (s["param_count"] or s["metric_count"] or
-                                s["artifact_count"] or s["timeline_count"] or
-                                s["cl_count"] or s["hist_count"]):
-        print(col("    Orphaned data detected (no experiments, but rows remain). "
-                  "Run \"exptrack clean --orphans\" to purge.", Y))
+    # Rows that outlived the experiment they belonged to — a database written
+    # by an older version that deleted the run row only, a hand-edited one, or
+    # a process killed mid-delete. This used to fire only when the project held
+    # *zero* experiments, so 5 runs alongside 20k orphaned metric rows reported
+    # perfect health. They are invisible in every list while still occupying
+    # the file, which is the whole reason to name them.
+    from ..core.storage import orphan_storage
+    orphans = orphan_storage(conn)
+    if orphans["rows"]:
+        detail = ", ".join(f"{v['rows']:,} {t}" for t, v in orphans["tables"].items())
+        print(col(f"    {orphans['rows']:,} orphaned row(s) "
+                  f"(~{fmt_bytes(orphans['bytes'])}): {detail}", Y))
+        print(dim("    Rows whose experiment no longer exists — swept "
+                  "automatically when a CLI command exits, or now with "
+                  "\"exptrack clean --orphans\"."))
 
     # Runs left 'running' — usually a killed process, not a live job.
     stale_running = _q1(conn, "SELECT COUNT(*) FROM experiments WHERE status='running' "
@@ -1017,5 +1152,101 @@ def cmd_storage(args):
     stats = collect_storage_stats(conn)
     _print_storage_summary(stats)
     _print_db_breakdown(stats)
-    _print_storage_hotspots(stats)
+    _print_storage_hotspots(stats, by_metric=getattr(args, "by_metric", False))
+    _print_largest_experiments(conn, stats, top=getattr(args, "top", 5))
+    _print_trash_storage(conn)
     _print_storage_health(conn, stats)
+
+
+def _resolve_prune_scope(conn, args):
+    """(exp_ids, keys, protect_extremes, scope-label) for a prune request."""
+    exp_ids = []
+    for prefix in (getattr(args, "id", None) or []):
+        row = find_experiment(conn, prefix, "id, name")
+        if not row:
+            die(f"Not found: {prefix}")
+        exp_ids.append(row["id"])
+    keys = getattr(args, "key", None) or None
+    scope = f"{len(exp_ids)} experiment(s)" if exp_ids else "all experiments"
+    if keys:
+        scope += f", keys: {', '.join(keys)}"
+    return exp_ids, keys, not getattr(args, "no_protect_extremes", False), scope
+
+
+def _confirm_prune() -> bool:
+    """Ask before a destructive, unrecoverable delete."""
+    try:
+        answer = input("  Prune these points? This cannot be undone [y/N]: ")
+    except (EOFError, KeyboardInterrupt):
+        print(file=sys.stderr)
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return True
+    print(dim("  Cancelled."), file=sys.stderr)
+    return False
+
+
+def cmd_prune(args):
+    """Thin already-stored metric points: exptrack prune [id...] --max-points N
+
+    ``metric_keep_every``/``thin_every`` only ever applied at write time, so a
+    run recorded at every iteration was stuck at that resolution forever. This
+    is the way back — and it is destructive, hence the preview-and-confirm.
+    """
+    from ..core.storage import preview_metric_prune, prune_metrics, table_byte_sizes
+    conn = get_db()
+
+    keep_every = max(1, getattr(args, "keep_every", 1) or 1)
+    max_points = max(0, getattr(args, "max_points", 0) or 0)
+    if keep_every == 1 and not max_points:
+        die("Nothing to do: pass --keep-every N or --max-points N "
+            "(e.g. \"exptrack prune --max-points 500\")")
+
+    exp_ids, keys, protect, scope = _resolve_prune_scope(conn, args)
+
+    # One whole-file page scan for the whole command: the preview and the
+    # delete both need bytes-per-row, and computing it is not cheap.
+    table_bytes = table_byte_sizes(conn)
+    metrics_before = table_bytes.get("metrics", 0)
+    p = preview_metric_prune(conn, exp_ids or None, keys, keep_every,
+                             max_points, protect, table_bytes)
+    if not p["points"]:
+        print(dim(f"Nothing to prune ({scope}); "
+                  f"{p['total_points']:,} points already at or under the target."),
+              file=sys.stderr)
+        return
+
+    doomed = col(format(p["points"], ","), Y)
+    print(f"  Scope:     {scope}", file=sys.stderr)
+    print(f"  Would remove: {doomed} of {p['total_points']:,} points "
+          f"(~{fmt_bytes(p['freed'])}), leaving {p['remaining']:,}", file=sys.stderr)
+    if protect:
+        print(dim("  Keeping the first, last, min and max of every series."),
+              file=sys.stderr)
+    if getattr(args, "dry_run", False):
+        print(dim("  Dry run — nothing removed."), file=sys.stderr)
+        return
+    if not getattr(args, "yes", False) and not _confirm_prune():
+        return
+
+    # Delete exactly the previewed set rather than re-deriving it.
+    r = prune_metrics(conn, table_bytes=table_bytes, doomed=p["_ids"])
+    print(col(f"  Pruned {r['deleted']:,} points (~{fmt_bytes(r['freed'])}).", G),
+          file=sys.stderr)
+
+    if getattr(args, "vacuum", False):
+        # The one VACUUM implementation — it checkpoints the WAL on both sides,
+        # which is load-bearing and non-obvious.
+        from .mutate_cmds import _clean_vacuum
+        _clean_vacuum(conn)
+    else:
+        # Deleted pages go to the database's free list, not back to the OS.
+        print(dim("  Freed pages are reused as the database grows. "
+                  "Run \"exptrack clean --vacuum\" to return them to the filesystem."),
+              file=sys.stderr)
+
+    # Derived from the report: re-measuring would be a third whole-file scan
+    # for numbers already in hand.
+    if metrics_before:
+        print(dim(f"  metrics now ~{fmt_bytes(max(0, metrics_before - r['freed']))} "
+                  f"across {r['remaining']:,} points."), file=sys.stderr)

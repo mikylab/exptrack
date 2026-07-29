@@ -30,15 +30,22 @@ function closeDetailExport(btn) {
 }
 
 async function _fetchExportText(id, fmt) {
-  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt',
+  const ext = {json:'.json', 'json-full':'.full.json', markdown:'.md', csv:'.csv',
+               tsv:'.tsv', plain:'.txt',
                params:'.params.txt', 'params-flags':'.params.txt', 'params-json':'.params.json',
                'params-md':'.params.md', 'params-tsv':'.params.tsv'};
+  // 'json-full' is the same endpoint asked for the complete (round-trippable)
+  // payload — every metric point, every artifact — rather than the summary.
+  const full = fmt === 'json-full';
+  const fileExt = ext[fmt] || '.txt';
+  if (full) fmt = 'json';
   let text;
   if (fmt === 'csv' || fmt === 'tsv') {
     const data = await postApi('/api/bulk-export', {ids: [id], format: fmt});
     text = data.content || JSON.stringify(data, null, 2);
   } else {
-    const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt));
+    const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt) +
+                           (full ? '&full=1' : ''));
     if (fmt === 'markdown') text = data.markdown || JSON.stringify(data, null, 2);
     else if (fmt === 'plain') text = _formatExpPlainText(data.data || data);
     else if (fmt.startsWith('params')) {
@@ -49,7 +56,7 @@ async function _fetchExportText(id, fmt) {
   const exp = allExperiments.find(e => e.id.startsWith(id));
   const name = exp ? exp.name.replace(/[^a-zA-Z0-9_-]/g, '_') : id.slice(0,8);
   const mime = (fmt === 'json' || fmt === 'params-json') ? 'application/json' : 'text/plain';
-  return {text, filename: name + (ext[fmt] || '.txt'), mime};
+  return {text, filename: name + fileExt, mime};
 }
 
 async function downloadExportFmt(id, fmt) {
@@ -145,6 +152,11 @@ async function doCompare() {
   const id2 = document.getElementById('cmp-id2').value.trim();
   if (!id1 || !id2) return;
   const data = await api('/api/compare?id1=' + id1 + '&id2=' + id2);
+  if (!data) {
+    document.getElementById('compare-result').innerHTML =
+      '<p>Could not load the comparison \u2014 the request failed.</p>';
+    return;
+  }
   if (data.error || data.exp1?.error || data.exp2?.error) {
     document.getElementById('compare-result').innerHTML = '<p>One or both experiments not found.</p>';
     return;

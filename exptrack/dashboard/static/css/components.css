@@ -236,6 +236,29 @@
   }
   table.truncated tr.overflow { display: none; }
   tr.filter-hidden { display: none; }
+  /* Artifact directory groups: the header row stays, its contents fold away,
+     so a run with thousands of checkpoints reads as a handful of directories. */
+  tbody.artifact-group.filter-hidden { display: none; }
+  .artifact-group-row { cursor: pointer; user-select: none; }
+  .artifact-group-row td {
+    background: var(--code-bg); font-size: 12px; color: var(--muted);
+    padding: 5px 10px !important; border-top: 1px solid var(--border);
+  }
+  .artifact-group-row:hover td { color: var(--fg); }
+  .art-group-caret::before {
+    content: '\25BC'; font-size: 9px; display: inline-block; width: 12px;
+    text-align: center; transition: transform 0.15s;
+  }
+  .artifact-group.group-collapsed .art-group-caret::before { transform: rotate(-90deg); }
+  .artifact-group.group-collapsed tr.artifact-row-tr { display: none; }
+  .art-group-dir { font-family: var(--font-mono); }
+  .art-group-count {
+    margin-left: 6px; padding: 0 6px; border-radius: 8px;
+    background: var(--border); color: var(--text-2); font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Type summary beside a section heading ("· 120 model, 8 image"). */
+  .section-sub { font-size: 12px; font-weight: 400; color: var(--text-3); }
   .metric-group-header { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 4px; user-select: none; }
   .metric-group-header::before { content: '\25BC'; font-size: var(--text-xs); display: inline-block; width: 12px; text-align: center; transition: transform 0.15s; margin-right: 2px; }
   .metric-group.collapsed .metric-group-header::before { transform: rotate(-90deg); }
@@ -476,8 +499,39 @@
     font-size: 12px; color: var(--muted); padding: 6px 0;
     display: flex; flex-direction: column; gap: 3px;
   }
-  .settings-storage .storage-row { display: flex; justify-content: space-between; }
-  .settings-storage .storage-val { font-weight: 500; color: var(--fg); }
+  .settings-storage .storage-row { display: flex; justify-content: space-between; gap: 8px; }
+  .settings-storage .storage-val {
+    font-weight: 500; color: var(--fg); font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .settings-storage .storage-row-strong .storage-val { color: var(--accent); }
+  /* Section label: separates bytes-by-metric from bytes-by-run from raw counts,
+     which are three different questions in one panel. */
+  .settings-storage .storage-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-3);
+  }
+  .settings-storage .storage-sub { display: flex; flex-direction: column; gap: 2px; }
+  .settings-storage .storage-row-sub { padding-left: 8px; }
+  .settings-storage .storage-key {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--font-mono);
+  }
+  .settings-storage .storage-exp-link { cursor: pointer; }
+  .settings-storage .storage-exp-link:hover { color: var(--accent); text-decoration: underline; }
+  .settings-storage .storage-trash-tag {
+    font-size: 10px; padding: 0 3px; border-radius: 3px;
+    background: var(--status-warning-soft); color: var(--status-warning);
+  }
+  .settings-storage .storage-note { font-size: 11px; color: var(--text-3); font-style: italic; }
+  .settings-storage .storage-prune-btn {
+    font-family: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--code-bg);
+    color: var(--muted); border-radius: 4px; text-transform: none; letter-spacing: 0;
+  }
+  .settings-storage .storage-prune-btn:hover { background: var(--border); color: var(--fg); }
   .settings-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
   .settings-actions button {
     font-family: inherit; font-size: 12px; width: 100%; padding: 7px 12px;

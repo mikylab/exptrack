@@ -5,6 +5,9 @@ GET endpoints for stats, experiments, metrics, diffs, timelines, exports.
 """
 from __future__ import annotations
 
+import threading
+import time
+
 from ...core.queries import (
     find_previous_by_script,
     get_all_tags,
@@ -37,9 +40,17 @@ def api_stats(conn) -> dict:
     return get_stats(conn)
 
 
+# Ceiling on rows one /api/experiments request may return. The client pages in
+# EXP_PAGE_SIZE (1000) chunks and its "load all" path walks offsets, so nothing
+# in the dashboard asks for more — but `limit` is client-supplied and was
+# unbounded, so a single request could ask the server to build the whole
+# project's list in memory and serialize it.
+_MAX_LIST_LIMIT = 5000
+
+
 def api_experiments(conn, qs: dict) -> list:
-    limit = _qint(qs, "limit", 50)
-    offset = _qint(qs, "offset", 0)
+    limit = max(0, min(_qint(qs, "limit", 50), _MAX_LIST_LIMIT))
+    offset = max(0, _qint(qs, "offset", 0))
     status = qs.get("status", "")
     return list_experiments(conn, limit=limit, status=status, offset=offset)
 
@@ -57,9 +68,21 @@ def api_prev_by_script(conn, exp_id: str) -> dict:
 
 def api_trash(conn) -> dict:
     """Return the unified trash: trashed experiments AND trashed session nodes
-    (grouped by session). Shape: {experiments: [...], sessions: [...], counts}."""
+    (grouped by session). Shape: {experiments: [...], sessions: [...], counts}.
+
+    Carries a ``storage`` block so the view can state what the Trash costs —
+    the whole point of soft delete is that nothing is reclaimed until you say
+    so, which means the bill has to be visible somewhere. It rides on this
+    route, not on the polled badge count, because measuring it walks the
+    database's pages and the trashed runs' output directories.
+    """
+    from ...core.storage import trash_storage
     from ...core.trash import list_unified_trash
-    return list_unified_trash(conn)
+    from ...core.utils import safe_call
+    payload = list_unified_trash(conn)
+    payload["storage"] = safe_call(trash_storage, conn, default=None,
+                                   context="api_trash storage")
+    return payload
 
 
 def api_delete_preview(conn, exp_id: str) -> dict:
@@ -181,7 +204,8 @@ def api_cell_source(conn, cell_hash: str) -> dict:
 
 def api_export(conn, exp_id: str, qs: dict) -> dict:
     from ...core.queries import PARAMS_EXPORT_FORMATS, format_export_markdown, format_export_params
-    data = get_export_data(conn, exp_id)
+    full = str(qs.get("full", "")).lower() in ("1", "true", "yes")
+    data = get_export_data(conn, exp_id, full=full)
     if not data:
         return {"error": "not found"}
     fmt = qs.get("format", "json")
@@ -257,10 +281,243 @@ def api_multi_compare(conn, qs: dict) -> dict:
     return {"experiments": get_multi_compare(conn, ids)}
 
 
+# Directories a project-wide scan never descends into: version control,
+# exptrack's own store, and the usual multi-gigabyte dependency trees. Without
+# this the walk below spends its whole budget inside node_modules.
+_SCAN_SKIP_DIRS = {
+    ".git", ".hg", ".svn", ".exptrack", "node_modules", "__pycache__",
+    ".venv", "venv", "env", ".env", ".tox", ".mypy_cache", ".pytest_cache",
+    ".ipynb_checkpoints", "site-packages", ".idea", ".vscode", "dist", "build",
+}
+_SCAN_MAX_DEPTH = 3      # deep enough for data/raw/train, shallow enough to stay fast
+_SCAN_MAX_DIRS = 400     # hard ceiling on directories examined
+_SCAN_CACHE_TTL = 60.0   # seconds; suggestions are advisory, so staleness is cheap
+
+# One cached walk per project root: {root: (expires_at, {rel_dir: {ext: count}})}.
+# The walk is up to _SCAN_MAX_DIRS directory listings — ~10 ms on local disk but
+# seconds on an sshfs/NFS-mounted project — and it would otherwise run on every
+# Images and Data Files request, including the ones a live run's 5-second
+# refresh re-issues and the two a Compare view opens at once. Caching per root
+# rather than per extension set means opening Images and then Data Files shares
+# a single walk.
+_scan_cache: dict = {}
+_scan_cache_lock = threading.Lock()
+
+
+def _walk_ext_counts(root: str) -> dict:
+    """Per-directory extension histograms for the project, cached with a TTL.
+
+    Bounded by depth and by total directories examined rather than being
+    allowed to traverse the whole tree, since a project root can be
+    arbitrarily large.
+    """
+    import os
+    now = time.monotonic()
+    hit = _scan_cache.get(root)
+    if hit and hit[0] > now:
+        return hit[1]
+
+    found: dict = {}
+    for examined, (dirpath, dirnames, filenames) in enumerate(os.walk(root)):
+        if examined >= _SCAN_MAX_DIRS:
+            break
+        rel = os.path.relpath(dirpath, root)
+        depth = 0 if rel == "." else rel.count(os.sep) + 1
+        # Prune in place so os.walk never descends into them at all.
+        dirnames[:] = [d for d in dirnames
+                       if d not in _SCAN_SKIP_DIRS and not d.startswith(".")]
+        if depth >= _SCAN_MAX_DEPTH:
+            dirnames[:] = []
+        hist: dict = {}
+        for f in filenames:
+            ext = os.path.splitext(f)[1].lower()
+            if ext:
+                hist[ext] = hist.get(ext, 0) + 1
+        if hist:
+            found[rel if rel != "." else "."] = hist
+
+    with _scan_cache_lock:
+        _scan_cache[root] = (now + _SCAN_CACHE_TTL, found)
+    return found
+
+
+# Bounds on a *saved* scan path's walk. Unlike the suggestion walk above this
+# one is not cached — it has to reflect files the run just wrote — and both tabs
+# re-issue it constantly (a live run's 5-second refresh, the two requests a
+# Compare view opens at once). A saved path routinely points at a
+# checkpoint-per-epoch tree, so without a ceiling one tab open meant thousands
+# of stat calls and a JSON body listing every file, on every request.
+_SCAN_MAX_WALK_DIRS = 2000
+_SCAN_MAX_FILES = 5000
+
+
+def _collect_scan_files(root: str, paths: list, exts: set) -> tuple[list, bool]:
+    """Files matching *exts* under the saved scan paths, newest first.
+
+    Returns ``(files, truncated)``. A saved path may also be a single file.
+    Traversal is bounded by ``_SCAN_MAX_WALK_DIRS`` / ``_SCAN_MAX_FILES`` and
+    prunes the same version-control and dependency trees the suggestion walk
+    does; ``truncated`` is reported so the tab can say what it left out rather
+    than presenting a partial list as the whole set.
+    """
+    import os
+
+    from ...config import readable_project_path
+    files: list = []
+    walked_dirs = 0
+    truncated = False
+
+    def _entry(full: str, base_dir: str):
+        try:
+            stat = os.stat(full)
+        except OSError:
+            return None
+        ext = os.path.splitext(full)[1].lower()
+        return {
+            "name": os.path.basename(full),
+            "path": os.path.relpath(full, root),
+            "size": stat.st_size,
+            "modified": stat.st_mtime,
+            "dir": os.path.relpath(os.path.dirname(full), base_dir) or ".",
+            "ext": ext[1:],
+        }
+
+    for scan_path in paths:
+        contained = readable_project_path(scan_path)
+        if contained is None:
+            continue  # outside the project, or exptrack's own internals
+        abs_dir = str(contained)
+        if not os.path.isdir(abs_dir):
+            if os.path.isfile(abs_dir) and os.path.splitext(abs_dir)[1].lower() in exts:
+                entry = _entry(abs_dir, os.path.dirname(abs_dir))
+                if entry:
+                    files.append(entry)
+            continue
+        for dirpath, dirnames, filenames in os.walk(abs_dir):
+            walked_dirs += 1
+            if walked_dirs > _SCAN_MAX_WALK_DIRS:
+                truncated = True
+                break
+            # Sorted + pruned in place: deterministic order across requests, so
+            # a truncated listing is at least a stable one.
+            dirnames[:] = sorted(d for d in dirnames if d not in _SCAN_SKIP_DIRS)
+            for fn in sorted(filenames):
+                if os.path.splitext(fn)[1].lower() not in exts:
+                    continue
+                if len(files) >= _SCAN_MAX_FILES:
+                    truncated = True
+                    break
+                entry = _entry(os.path.join(dirpath, fn), abs_dir)
+                if entry:
+                    files.append(entry)
+            if truncated:
+                break
+        if truncated:
+            break
+
+    files.sort(key=lambda x: x["modified"], reverse=True)
+    return files, truncated
+
+
+def _walk_candidate_dirs(root: str, exts: set) -> dict:
+    """Project directories containing files with *exts*, mapped to their count."""
+    return {rel: n for rel, hist in _walk_ext_counts(root).items()
+            if (n := sum(c for ext, c in hist.items() if ext in exts))}
+
+
+def _suggested_scan_paths(conn, exp, root: str, exts: set, saved: list) -> list:
+    """Directories worth scanning for this run, best first.
+
+    Suggestions used to be `output_dir` and its immediate subdirectories only,
+    and were hidden as soon as one path had been saved — so the common case
+    (data living somewhere else entirely, and needing a *second* path) was left
+    to typing a raw relative path by hand. These are drawn from what the run
+    actually touched first, then from the project layout.
+    """
+    import json
+    import os
+
+    out: list = []
+    seen = {p.strip("/") for p in (saved or [])}
+
+    def rel_inside(path):
+        """Project-relative form of *path*, or None if it escapes the root.
+
+        Anything outside the project cannot be served by /api/file/, so it is
+        never a useful suggestion.
+        """
+        p = str(path or "")
+        if not p:
+            return None
+        rel = os.path.relpath(p, root) if os.path.isabs(p) else p
+        return None if rel.startswith("..") else rel
+
+    def add(path, why, known_dir=False):
+        p = str(path or "").strip("/")
+        if not p or p in seen:
+            return
+        # known_dir: os.walk already proved this is a directory, so skip the
+        # stat — on a network filesystem that is hundreds of avoidable calls.
+        if not known_dir and not os.path.isdir(os.path.join(root, p)):
+            return
+        seen.add(p)
+        out.append({"path": p, "why": why})
+
+    # 1. The run's own output directory and its immediate children.
+    output_dir = exp.get("output_dir") or ""
+    if output_dir:
+        add(output_dir, "this run's output dir")
+        try:
+            for entry in sorted(os.scandir(os.path.join(root, output_dir)),
+                                key=lambda e: e.name):
+                if entry.is_dir():
+                    add(os.path.join(output_dir, entry.name), "in the output dir")
+        except OSError:
+            pass
+
+    # 2. Directories the run's registered artifacts live in — files it really
+    #    wrote, which is a stronger signal than anything the layout implies.
+    try:
+        for r in conn.execute("SELECT DISTINCT path FROM artifacts WHERE exp_id=?",
+                              (exp["id"],)).fetchall():
+            rel = rel_inside(r["path"])
+            if rel:
+                add(os.path.dirname(rel), "holds this run's outputs")
+    except Exception:
+        pass
+
+    # 3. Inputs exptrack fingerprinted for this run (the dataset manifest).
+    try:
+        row = conn.execute(
+            "SELECT value FROM params WHERE exp_id=? AND key='_dataset_manifest'",
+            (exp["id"],)).fetchone()
+        manifest = json.loads(row["value"]) if row else {}
+        if isinstance(manifest, str):
+            manifest = json.loads(manifest)
+        for entry in (manifest or {}).values() if isinstance(manifest, dict) else []:
+            if not isinstance(entry, dict):
+                continue
+            rel = rel_inside(entry.get("path"))
+            if rel:
+                add(rel if entry.get("kind") == "dir" else os.path.dirname(rel),
+                    "a dataset this run read")
+    except Exception:
+        pass
+
+    # 4. Anywhere else in the project actually holding matching files.
+    try:
+        for rel, n in sorted(_walk_candidate_dirs(root, exts).items(),
+                             key=lambda kv: -kv[1]):
+            add(rel, f"{n} matching file{'s' if n != 1 else ''}", known_dir=True)
+    except Exception:
+        pass
+
+    return out[:12]
+
+
 def api_list_logs(conn, exp_id: str) -> dict:
     """List log/text/data files from user-configured paths for this experiment."""
     import json
-    import os
 
     from ...config import project_root
     from ...core.queries import find_experiment
@@ -274,64 +531,13 @@ def api_list_logs(conn, exp_id: str) -> dict:
     # Load saved log paths from dedicated column
     paths = json.loads(exp["log_paths"] or "[]")
 
-    # Build suggested paths from output_dir
-    output_dir = exp["output_dir"] or ""
-    suggested = []
-    if output_dir and os.path.isdir(os.path.join(root, output_dir)):
-        suggested.append(output_dir)
-        try:
-            for entry in os.scandir(os.path.join(root, output_dir)):
-                if entry.is_dir():
-                    suggested.append(os.path.join(output_dir, entry.name))
-        except OSError:
-            pass
-
-    # Scan log/text/data files from saved paths
     log_exts = {'.log', '.txt', '.out', '.err', '.csv', '.json', '.jsonl', '.tsv'}
-    files = []
-    for scan_path in paths:
-        abs_dir = os.path.normpath(os.path.join(root, scan_path))
-        if not abs_dir.startswith(os.path.normpath(root)):
-            continue  # security: stay within project
-        if not os.path.isdir(abs_dir):
-            # Could be a single file
-            if os.path.isfile(abs_dir):
-                ext = os.path.splitext(abs_dir)[1].lower()
-                if ext in log_exts:
-                    rel = os.path.relpath(abs_dir, root)
-                    try:
-                        stat = os.stat(abs_dir)
-                    except OSError:
-                        continue
-                    files.append({
-                        "name": os.path.basename(abs_dir),
-                        "path": rel,
-                        "size": stat.st_size,
-                        "modified": stat.st_mtime,
-                        "dir": ".",
-                        "ext": ext[1:],
-                    })
-            continue
-        for dirpath, _, filenames in os.walk(abs_dir):
-            for fn in sorted(filenames):
-                ext = os.path.splitext(fn)[1].lower()
-                if ext in log_exts:
-                    full = os.path.join(dirpath, fn)
-                    rel = os.path.relpath(full, root)
-                    try:
-                        stat = os.stat(full)
-                    except OSError:
-                        continue
-                    files.append({
-                        "name": fn,
-                        "path": rel,
-                        "size": stat.st_size,
-                        "modified": stat.st_mtime,
-                        "dir": os.path.relpath(dirpath, abs_dir) or ".",
-                        "ext": ext[1:],
-                    })
-    files.sort(key=lambda x: x["modified"], reverse=True)
-    return {"files": files, "paths": paths, "suggested_paths": suggested}
+    suggested = _suggested_scan_paths(conn, exp, root, log_exts, paths)
+
+    # Scan log/text/data files from saved paths (bounded — see _collect_scan_files)
+    files, truncated = _collect_scan_files(root, paths, log_exts)
+    return {"files": files, "paths": paths, "suggested_paths": suggested,
+            "truncated": truncated, "max_files": _SCAN_MAX_FILES}
 
 
 def api_get_todos() -> dict:
@@ -365,46 +571,11 @@ def api_list_images(conn, exp_id: str) -> dict:
     # Load saved image paths from dedicated column
     paths = json.loads(exp["image_paths"] or "[]")
 
-    # Build suggested paths from output_dir
-    output_dir = exp["output_dir"] or ""
-    suggested = []
-    if output_dir and os.path.isdir(os.path.join(root, output_dir)):
-        suggested.append(output_dir)
-        # Also suggest subdirectories of output_dir
-        try:
-            for entry in os.scandir(os.path.join(root, output_dir)):
-                if entry.is_dir():
-                    suggested.append(os.path.join(output_dir, entry.name))
-        except OSError:
-            pass
-
-    # Scan images from saved paths
     image_exts_set = set(IMAGE_EXTS)
-    images = []
-    for scan_path in paths:
-        abs_dir = os.path.normpath(os.path.join(root, scan_path))
-        if not abs_dir.startswith(os.path.normpath(root)):
-            continue  # security: stay within project
-        if not os.path.isdir(abs_dir):
-            continue
-        for dirpath, _, filenames in os.walk(abs_dir):
-            for fn in sorted(filenames):
-                ext = os.path.splitext(fn)[1].lower()
-                if ext in image_exts_set:
-                    full = os.path.join(dirpath, fn)
-                    rel = os.path.relpath(full, root)
-                    try:
-                        stat = os.stat(full)
-                    except OSError:
-                        continue
-                    images.append({
-                        "name": fn,
-                        "path": rel,
-                        "size": stat.st_size,
-                        "modified": stat.st_mtime,
-                        "dir": os.path.relpath(dirpath, abs_dir) or ".",
-                    })
-    images.sort(key=lambda x: x["modified"], reverse=True)
+    suggested = _suggested_scan_paths(conn, exp, root, image_exts_set, paths)
+
+    # Scan images from saved paths (bounded — see _collect_scan_files)
+    images, truncated = _collect_scan_files(root, paths, image_exts_set)
 
     # Also include image artifacts from the artifacts table
     artifact_images = []
@@ -434,6 +605,7 @@ def api_list_images(conn, exp_id: str) -> dict:
     return {
         "images": images, "paths": paths,
         "suggested_paths": suggested, "artifact_images": artifact_images,
+        "truncated": truncated, "max_files": _SCAN_MAX_FILES,
     }
 
 

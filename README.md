@@ -22,10 +22,17 @@ exptrack ui        # open the web dashboard
 
 ## Dashboard
 
-<img width="1385" height="666" alt="image" src="https://github.com/user-attachments/assets/42d83735-fbb0-45e7-871c-f0d2d775c1bf" />
+<img alt="exptrack dashboard — experiment list grouped by script, with tags, studies, and metric sparklines" src="docs/images/dashboard.png" />
 
+Filter, compare, tag, and explore experiments from a local web UI. Runs on localhost with no accounts or internet needed. Runs group by script by default, so a burst of near-identical attempts reads as one block instead of a flat list.
 
-Filter, compare, tag, and explore experiments from a local web UI. Runs on localhost with no accounts or internet needed.
+Every run's detail view opens with **what changed** since the last run of the same script — the params you edited, the metric deltas they produced, and the code diff behind them — plus a filmstrip for stepping between runs without going back to the list.
+
+<img alt="Run detail — the What Changed card diffing params and metrics against the previous run of the same script" src="docs/images/dashboard-detail.png" />
+
+The **Charts** tab plots every logged metric with linear/log scales, typed axis bounds, and a display-only smoothing slider (the raw series stays visible behind it). Charts on a live run update in place every 5 seconds without resetting your tab, zoom, or metric pick.
+
+<img alt="Charts tab — a training loss curve with axis-range controls and a smoothing slider" src="docs/images/dashboard-charts.png" />
 
 ---
 
@@ -37,11 +44,23 @@ Filter, compare, tag, and explore experiments from a local web UI. Runs on local
 
 **Compare experiments visually.** Side-by-side parameter diffs with overlay metric charts for pairs. Bar charts across three or more runs. Image artifacts support swipe and overlay comparison.
 
-**Chart metrics over time.** Interactive charts with linear/log scale, zoom, and configurable downsampling. Write-time thinning for long training runs. Sparkline previews in the experiment list.
+**See what changed between one run and the next.** Every run opens with a diff against the previous run of the same script — the params you edited, the metric deltas, and the code behind them. Deltas are polarity-aware: a rising `loss` is coloured as a regression, not an improvement.
 
-**Capture git state automatically.** Branch, commit hash, and full diff against HEAD are stored with every run. See exactly what code produced each result.
+**Chart metrics over time.** Interactive charts with linear/log scale, typed axis bounds, configurable downsampling, and a display-only smoothing slider. Write-time thinning for long training runs, plus `exptrack prune` to thin series you already recorded (first, last, min and max always survive). Sparkline previews in the experiment list.
+
+**Capture git state automatically.** Branch, commit hash, and full diff against HEAD are stored with every run, plus a content-addressed snapshot of the script's own source — so two runs stay diffable against each other after you've edited the file.
+
+**Mirror TensorBoard scalars automatically.** If your code already calls `SummaryWriter.add_scalar` / `add_scalars` / `add_histogram`, those values land in exptrack's metrics table too. No new dependency, no code change.
+
+**Version your inputs.** When a run finishes, dataset-shaped parameters (`--data_dir`, `--train`, a `.csv`/`.parquet` path) are fingerprinted — size and content hash for files, a listing fingerprint for directories — and shown as a Datasets section on the run.
+
+**Keep failures useful.** A crashed run records the full traceback, not just the message, and the dashboard shows it in a **Run failed** panel. A failed run stays available as a comparison baseline, because "it broke, I fixed it, what changed?" is the point.
 
 **Log and compare image artifacts.** `plt.savefig()` calls are captured automatically. View images in a gallery grid, lightbox, or side-by-side/overlay comparison between experiments.
+
+**Delete safely.** Deleting a run moves it to a Trash you can restore from; permanent deletion is a separate, explicit step, and files go to the OS Trash rather than being unlinked.
+
+**Explore in a notebook without losing the thread.** Session Trees record the *shape* of exploration — checkpoints, branches, scratch and setup cells — as a tree you can compare, promote into experiments, and finalize into a study. See [Session Trees](docs/session-trees.md).
 
 **Run entirely on your machine.** One SQLite file, standard library only, no accounts or internet. Data stays local.
 
@@ -250,7 +269,8 @@ exptrack study <id> ablation-v2    # group into a study
 exptrack stage <id> 1 train        # assign a numbered stage
 
 # Export (JSON, Markdown, CSV, TSV)
-exptrack export <id>               # JSON to stdout
+exptrack export <id>               # JSON summary to stdout
+exptrack export <id> --full        # every metric point + every artifact
 exptrack export <id> --format csv  # CSV
 exptrack export --all --format md  # bulk export
 
@@ -263,28 +283,38 @@ exptrack restore <path>            # restore from backup
 exptrack storage                   # show DB size and stats
 ```
 
+**Exports are summaries by default.** A run that logs every iteration stores tens of thousands of metric points and can register thousands of checkpoints — dumping one JSON object per point and one per file buried the params and the final numbers under the raw data. So every format, JSON included, ships one entry per metric key (`count`, `first`, `last`, `min`, `max`, with the step each extreme occurred at) and a capped artifact list alongside an `artifacts_summary` giving the shape of the rest — counts by type and by containing directory (`outputs/ckpts: 3990`). Nothing is dropped silently: the summary always states how many were omitted.
+
+Add `--full` (or `?full=1` on the dashboard's export endpoint, **Export → JSON (full)** in the UI) for the complete, round-trippable payload: the raw `metrics_series` and every artifact. `--max-artifacts N` sets the list cap directly; `0` lists them all.
+
 ---
 
 ## Dashboard Features
 
 ```bash
 exptrack ui                  # auto-generates a per-session token, prints URL
-exptrack ui --token secret   # set a persistent token (saved to .exptrack/config.json)
+exptrack ui --token secret   # set a persistent token (saved to .exptrack/dashboard_token)
 exptrack ui --no-auth        # disable auth (local-only, trusted environments)
 exptrack ui-stop             # kill a stale dashboard still holding port 7331
 ```
 
-- **Experiment list** with status filters, search, sparkline charts, and customizable columns (resize, show/hide)
-- **Detail view** with parameters, metrics, interactive charts, code changes, git diff, and a reproducible command with one-click copy
-- **Compare** experiments pair-wise (side-by-side with overlay charts) or across 3+ runs (bar charts)
-- **Timeline** showing cell executions, variable changes, and artifact creation (notebooks)
+- **Experiment list** grouped by script (or study, branch, commit, day), with status filters, search, sparkline charts, and customizable columns — including any captured parameter as a sortable column, one click to add the ones that actually vary between runs
+- **Detail view** with a "what changed vs the previous run" strip, parameters, metrics, interactive charts, code changes, git diff, datasets, a **Run failed** traceback panel, and a reproducible command with one-click copy
+- **Filmstrip** across the top of the detail view — step between runs with ← / → without going back to the list
+- **Compare** experiments pair-wise (side-by-side with overlay charts, plus a code-diff panel) or across 3+ runs (bar charts)
+- **Charts tab** with single/all views, linear/log scales, typed axis bounds, downsampling, and a smoothing slider; live runs update in place every 5 seconds without resetting your view
+- **Timeline** showing cell executions, variable changes, captured cell output, and artifact creation (notebooks)
+- **Sessions** tab rendering Session Trees as a git-style graph — branch, compare, promote a node into an experiment, or finalize a whole session into a study
 - **Images** displayed in a gallery grid with lightbox and side-by-side/overlay/swipe comparison
 - **Data files** (CSV, JSON, JSONL, TSV) rendered as interactive sortable tables
-- **Toolbox** with a commands notepad (save and edit shell commands) and a todo list with due dates
+- **Confusion matrix** calculator per run — multiple named matrices, side-by-side compare, results saveable as metrics
+- **Trash** with restore, plus an explicit permanent-delete step (files go to the OS Trash)
+- **Storage panel** showing bytes by metric key and the largest runs, with a **Prune…** action that previews before it deletes
+- **Toolbox** with a commands notepad (templated `{{variables}}`, exportable as a runnable `.sh`) and a todo list with due dates; pinnable as a side panel
 - **Manual experiment creation** for logging runs that weren't tracked automatically
 - **Inline editing** for names, tags, notes, studies, and stages (double-click to edit)
 - **Studies and stages** to organize multi-step pipelines, with highlight mode and filtering
-- Tag autocomplete, searchable filter dropdowns, timezone selector, bulk operations, and export (JSON/Markdown/CSV/TSV/Text)
+- Tag autocomplete, searchable filter dropdowns, "needs naming" filter, timezone selector, dark mode, bulk operations, and export (JSON summary, JSON full, Markdown, CSV, TSV, Text)
 
 ---
 

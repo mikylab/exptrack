@@ -16,11 +16,14 @@ migrated onto them incrementally:
 * ``safe_call()`` — run a callable, returning a default (and logging via
   ``debug_log``) on any exception, so the ``try/except/fallback`` idiom is
   expressed once instead of being copy-pasted across modules.
+* ``json_dumps()`` — ``json.dumps`` that emits JSON every parser accepts.
 
 stdlib only.
 """
 from __future__ import annotations
 
+import json
+import math
 import os
 import sys
 from typing import Any, Callable, TypeVar
@@ -78,6 +81,67 @@ def safe_call(
         label = context or getattr(fn, "__name__", "call")
         debug_log(f"{label} failed: {type(e).__name__}: {e}")
         return default
+
+
+def _finite_only(obj: Any, _seen: frozenset = frozenset()) -> Any:
+    """Recursively replace non-finite floats with ``None``.
+
+    Only walked for a payload that actually contains one — see
+    :func:`json_dumps`. Values ``json.dumps`` would hand to ``default=`` are
+    left alone: that callable stringifies them, so no bare token survives.
+
+    ``_seen`` carries the container ids on the current path. A cycle is
+    returned untouched rather than followed, so a circular payload — which is
+    the *other* thing ``json.dumps`` raises ``ValueError`` for — raises that
+    same readable error from the retry instead of exhausting the stack here.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, (dict, list, tuple)):
+        if id(obj) in _seen:
+            return obj
+        seen = _seen | {id(obj)}
+        if isinstance(obj, dict):
+            return {k: _finite_only(v, seen) for k, v in obj.items()}
+        return [_finite_only(v, seen) for v in obj]
+    return obj
+
+
+def json_dumps(data: Any, **kwargs: Any) -> str:
+    """``json.dumps``, guaranteeing output that any JSON parser will accept.
+
+    ``json.dumps`` renders ``inf``/``-inf`` as the bare tokens ``Infinity`` /
+    ``-Infinity``. Python's own ``json.loads`` reads those back — a documented
+    non-standard extension — but ``JSON.parse`` and most other parsers reject
+    them outright, and they reject the *whole document*, not the one value.
+
+    So a single non-finite metric made an entire response unreadable in the
+    browser: ``/api/experiment/<id>`` failed to parse, so the detail panel
+    reported "Experiment not found", and ``/api/metrics/<id>`` failed beside
+    it with a bare fetch error. Nothing server-side noticed, because
+    ``json.loads`` happily round-trips what ``json.dumps`` wrote. The same
+    tokens would make a ``exptrack export --format json`` file unloadable by
+    any other tool.
+
+    ``Experiment.log_metric`` guards against writing such a value, but that
+    guard postdates a lot of stored data and the ten other ``INSERT INTO
+    metrics`` paths never had one — so the read side has to be the one that
+    can't be broken by a row that already exists.
+
+    Non-finite floats become ``null``: every consumer already types a metric
+    value as a number, and a chart gap or a blank cell is the honest
+    rendering of a measurement that isn't one.
+
+    The fast path costs only the check the C encoder already performs; the
+    sanitizing walk runs solely for a payload that tripped it.
+    """
+    kwargs["allow_nan"] = False
+    try:
+        return json.dumps(data, **kwargs)
+    except ValueError:
+        # Non-finite float somewhere in the payload. (Any other ValueError —
+        # a circular reference — will raise again from the retry, as it should.)
+        return json.dumps(_finite_only(data), **kwargs)
 
 
 def fmt_bytes(b) -> str:

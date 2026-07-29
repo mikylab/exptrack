@@ -139,22 +139,49 @@ def test_checkpoint_flag_short_circuits(project_with_data):
     assert "Storage Report" not in out  # nothing else runs
 
 
-def test_orphan_tip_when_rows_outlive_experiments(project_with_data):
-    """The health section flags data left behind with no experiments."""
-    conn = get_db()
-    # FKs are ON, so params/metrics rows pin the experiment. Drop the
-    # constraint to produce exactly the state this tip exists to report: a
-    # legacy or hand-edited DB with child rows and no experiments.
+def _strand(conn, where="1=1"):
+    """Delete experiment rows only, as an older version's delete did.
+
+    FKs are ON, so child rows pin their experiment; dropping the constraint
+    produces exactly the state this report exists to describe — a legacy or
+    hand-edited database carrying rows that belong to nothing.
+    """
     conn.execute("PRAGMA foreign_keys=OFF")
-    conn.execute("DELETE FROM experiments")
+    conn.execute(f"DELETE FROM experiments WHERE {where}")
     conn.commit()
     conn.execute("PRAGMA foreign_keys=ON")
+
+
+def test_orphan_tip_when_rows_outlive_experiments(project_with_data):
+    """The health section flags rows left behind with no experiment."""
+    conn = get_db()
+    _strand(conn)
     out = _run_storage()
-    assert "Orphaned data detected" in out
+    assert "orphaned row(s)" in out
+    assert "metrics" in out
+    assert "exptrack clean --orphans" in out
+
+
+def test_orphan_tip_fires_while_other_experiments_remain(project_with_data):
+    """The old check only fired on an empty database — this is the regression.
+
+    A project with live runs *and* stranded rows reported perfect health, so
+    the rows sat there invisibly: nothing joins to a missing experiment, but
+    they still occupy the file.
+    """
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, name, status, created_at, updated_at) "
+        "VALUES ('live1', 'still here', 'done', datetime('now'), datetime('now'))")
+    conn.commit()
+    _strand(conn, "id != 'live1'")
+    assert conn.execute("SELECT COUNT(*) FROM experiments").fetchone()[0] == 1
+
+    assert "orphaned row(s)" in _run_storage()
 
 
 def test_no_orphan_tip_on_a_healthy_project(project_with_data):
-    assert "Orphaned data detected" not in _run_storage()
+    assert "orphaned row(s)" not in _run_storage()
 
 
 def test_stale_running_tip(project_with_data):

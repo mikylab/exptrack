@@ -122,6 +122,42 @@ def token_file_path() -> Path:
     return exptrack_dir() / "dashboard_token"
 
 
+def readable_project_path(rel_path: str | Path) -> Path | None:
+    """Resolve *rel_path* against the project root, or None if it is off-limits.
+
+    The single definition of "a path the dashboard may read on the user's
+    behalf", applied by both the file server (`/api/file/`) and the Images /
+    Data Files scan-path walks. Two rules, and both halves matter:
+
+    * **Inside the project root.** ``realpath`` on both sides with a separator
+      boundary — a bare ``startswith(root)`` also accepts a sibling directory
+      whose name merely begins with the root's (``/home/me/proj`` matching
+      ``/home/me/proj2``), and without resolving symlinks a link inside the
+      project reaches anywhere on disk.
+    * **Not under ``.exptrack/``.** That directory holds the database, the
+      dashboard token and notebook history — internals, not user artifacts.
+
+    It lives here because where a path sits relative to the project (and which
+    subtrees are exptrack's own) is config-layer knowledge. It was previously
+    inline in the HTTP handler, and the scan routes carried a weaker copy of
+    only the first rule, which is exactly the drift a shared predicate ends.
+    """
+    import os
+    root = project_root()
+    if not root:
+        return None
+    real_root = os.path.realpath(str(root))
+    abs_path = os.path.realpath(os.path.join(str(root), str(rel_path)))
+    if abs_path != real_root and not abs_path.startswith(real_root + os.sep):
+        return None
+    # Literal rather than exptrack_dir(), which creates the directory — a
+    # read-only predicate must not have that side effect.
+    internals = os.path.realpath(os.path.join(real_root, ".exptrack"))
+    if abs_path == internals or abs_path.startswith(internals + os.sep):
+        return None
+    return Path(abs_path)
+
+
 def write_token(token: str) -> Path:
     """Persist the dashboard token 0600 and guarantee it is gitignored.
 

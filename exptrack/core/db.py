@@ -142,7 +142,7 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
-def close_db(sweep: bool = True) -> None:
+def close_db(sweep: bool = True, checkpoint: bool = True) -> None:
     """Close the cached database connection for the current thread.
 
     Optionally sweeps orphaned rows, checkpoints the WAL, then closes the
@@ -153,6 +153,13 @@ def close_db(sweep: bool = True) -> None:
     COUNT scans over params/metrics/timeline are wasted work there. Orphans
     only appear after deletes; the CLI-exit close and ``exptrack clean``
     keep sweeping.
+
+    Pass ``checkpoint=False`` where the close happens once per *request*
+    rather than once per process. A TRUNCATE checkpoint waits on any open
+    writer — it invokes SQLite's busy handler, so it blocks for up to
+    ``busy_timeout`` (5s) while a training run holds its metric-commit window
+    open — and paying that on every dashboard request ties up a request
+    thread for the length of the run.
     """
     conn = getattr(_local, "conn", None)
     if conn is not None:
@@ -161,19 +168,59 @@ def close_db(sweep: bool = True) -> None:
                 _sweep_orphans(conn)
             except (sqlite3.Error, OSError):
                 pass  # best-effort cleanup on close
-        try:
-            # TRUNCATE mode flushes all WAL pages to the DB and then
-            # truncates the WAL file to zero bytes.  This is safe because
-            # we're about to close the only connection on this thread.
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except sqlite3.Error:
-            pass  # checkpoint may fail if other connections exist
+        if checkpoint:
+            try:
+                # TRUNCATE mode flushes all WAL pages to the DB and then
+                # truncates the WAL file to zero bytes.  This is safe because
+                # we're about to close the only connection on this thread.
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                pass  # checkpoint may fail if other connections exist
         try:
             conn.close()
         except sqlite3.Error:
             pass  # connection may already be closed
         _local.conn = None
         _local.db_path = None
+
+
+def checkpoint_truncate(conn: sqlite3.Connection, timeout_ms: int = 250) -> bool:
+    """Drain the WAL back into the database file *and* truncate it to zero.
+
+    For the destructive paths only. A big delete pushes every rewritten page
+    through the WAL, so the `-wal` file balloons to roughly the size of what
+    was deleted — through the dashboard it then sits there at its high-water
+    mark until the server exits, because the per-request checkpoint is
+    deliberately PASSIVE (it must never wait on a live training run; see
+    ``DashboardHandler._wal_checkpoint``). The result was a "delete" that left
+    both a same-sized database *and* a new multi-megabyte WAL beside it.
+
+    TRUNCATE does invoke SQLite's busy handler, so this lowers ``busy_timeout``
+    for the duration and restores it afterwards: the wait is bounded to
+    ``timeout_ms`` instead of the connection's 5s, and a checkpoint that can't
+    get through simply returns False — the WAL is drained by the next PASSIVE
+    checkpoint or at process exit either way. Only ever call this from an
+    explicitly destructive, user-initiated action, never a hot path.
+    """
+    prev = None
+    try:
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+        prev = row[0] if row else None
+    except sqlite3.Error:
+        pass
+    try:
+        conn.execute(f"PRAGMA busy_timeout={int(timeout_ms)}")
+        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        return bool(row) and row[0] == 0
+    except sqlite3.Error as e:
+        debug_log(f"checkpoint_truncate failed: {e}")
+        return False
+    finally:
+        if prev is not None:
+            try:
+                conn.execute(f"PRAGMA busy_timeout={int(prev)}")
+            except sqlite3.Error:
+                pass
 
 
 # (table, WHERE-condition) pairs identifying orphaned child rows. Table/column
@@ -754,6 +801,11 @@ DIFF_UNAVAILABLE = "[diff-unavailable]"
 # Prefix of the marker `exptrack compact` leaves in place of a stripped diff.
 COMPACT_PREFIX = "[compacted"
 
+# Prefix of the pointer stored in place of a deduplicated diff body; the full
+# marker is f"{REF_PREFIX}{hash}]". Lives here with the other diff markers so
+# there is one spelling to grep for.
+REF_PREFIX = "[ref:sha256:"
+
 
 def is_diff_sentinel(diff: str | None) -> bool:
     """True when a git_diff value is a status marker rather than diff text.
@@ -804,7 +856,7 @@ def resolve_git_diff(conn: sqlite3.Connection, raw_diff: str | None) -> str:
     """
     if not raw_diff:
         return ""
-    if raw_diff.startswith("[ref:sha256:"):
+    if raw_diff.startswith(REF_PREFIX):
         h = raw_diff[12:-1]
         row = conn.execute(
             "SELECT diff_text FROM git_diffs WHERE diff_hash=?", (h,)
@@ -831,7 +883,7 @@ def store_git_diff(conn: sqlite3.Connection, diff_text: str) -> str:
         (diff_hash, diff_text, json.dumps(files) if files else None,
          datetime.now(timezone.utc).isoformat()),
     )
-    return f"[ref:sha256:{diff_hash}]"
+    return f"{REF_PREFIX}{diff_hash}]"
 
 
 def store_code_snapshot(conn: sqlite3.Connection, content: str,
@@ -959,29 +1011,19 @@ def find_orphan_output_paths(conn: sqlite3.Connection) -> list[Path]:
     behind, and anything the user dropped into ``outputs/`` by hand looks
     identical to real debris.
     """
-    root = cfg.project_root()
-    conf = cfg.load()
-    outputs_dir = root / conf.get("outputs_dir", "outputs")
-    if not outputs_dir.is_dir():
+    outputs_dir = _outputs_base()
+    if outputs_dir is None or not outputs_dir.is_dir():
         return []
-    exp_dirs = {
-        str(Path(r["output_dir"]).resolve())
-        for r in conn.execute(
-            "SELECT output_dir FROM experiments WHERE output_dir IS NOT NULL"
-        ).fetchall()
-    }
-    exp_names = {r[0] for r in conn.execute("SELECT name FROM experiments").fetchall()}
+    # One shared claim rule with output_dirs_owned_by — see claimed_output_paths
+    # for why the two must never disagree.
+    claimed = claimed_output_paths(conn)
     orphans: list[Path] = []
     for child in sorted(outputs_dir.iterdir()):
-        try:
-            resolved = str(child.resolve())
-        except OSError:
-            continue
+        norm = _norm_path(child)
         if child.is_dir():
-            if resolved not in exp_dirs and child.name not in exp_names:
+            if norm not in claimed:
                 orphans.append(child)
-        elif not any(resolved == d or resolved.startswith(d + os.sep)
-                     for d in exp_dirs):
+        elif not any(norm == d or norm.startswith(d + os.sep) for d in claimed):
             orphans.append(child)
     return orphans
 
@@ -1111,6 +1153,16 @@ def _send_to_os_trash(path: Path) -> bool:
     return False
 
 
+def local_trash_dir() -> Path:
+    """Where the local OS-trash *fallback* puts files: ``.exptrack/trash/``.
+
+    One definition, because the storage report measures exactly the directory
+    ``_trash_or_local`` writes to — a second hardcoded path would report a size
+    for somewhere files never land.
+    """
+    return cfg.project_root() / ".exptrack" / "trash"
+
+
 def _trash_or_local(path: Path, label: str = "file") -> str:
     """Send *path* to the OS Trash; on failure, move it to ``.exptrack/trash/``.
 
@@ -1123,7 +1175,7 @@ def _trash_or_local(path: Path, label: str = "file") -> str:
     if _send_to_os_trash(path):
         return "os_trash"
     try:
-        local_trash = cfg.project_root() / ".exptrack" / "trash"
+        local_trash = local_trash_dir()
         local_trash.mkdir(parents=True, exist_ok=True)
         from datetime import datetime
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1139,6 +1191,105 @@ def _trash_or_local(path: Path, label: str = "file") -> str:
         print(f"[exptrack] warning: could not trash {label} {path}: {e}",
               file=sys.stderr)
         return "failed"
+
+
+def _norm_path(p) -> str:
+    """Absolute, normalized string form of a path — no filesystem access.
+
+    Used to compare output-directory claims between experiment rows. Every
+    path involved is built from ``cfg.project_root()`` or read back from a
+    column that stored an absolute path, so lexical normalization is enough
+    and a per-row ``resolve()`` (a syscall each, in a scan run per delete) is
+    not worth paying.
+    """
+    return os.path.normpath(os.path.abspath(str(p)))
+
+
+def _outputs_base() -> Path | None:
+    """The configured ``outputs/`` directory, or None if config is unreadable."""
+    try:
+        return cfg.project_root() / cfg.load().get("outputs_dir", "outputs")
+    except Exception as e:
+        print(f"[exptrack] warning: could not resolve outputs dir: {e}",
+              file=sys.stderr)
+        return None
+
+
+def claimed_output_paths(conn: sqlite3.Connection,
+                         exclude_id: str | None = None) -> set[str]:
+    """Output paths that experiment rows lay claim to.
+
+    A row claims its recorded ``output_dir`` **and** the name-derived
+    ``outputs/<name>``. This is the single definition of "claimed", shared by
+    ``find_orphan_output_paths`` (what counts as debris) and
+    ``output_dirs_owned_by`` (whose files a delete may take). The two must
+    never disagree: a directory the delete protects because another run claims
+    it would otherwise be reported as an orphan and trashed by the next Clean
+    click, undoing the guarantee one button over.
+
+    Comparison is lexical (``_norm_path``) rather than ``resolve()`` on both
+    sides — consistency between the two consumers is what matters, and
+    resolving would put a syscall on every row of a scan that runs per delete.
+
+    Trashed runs count: they still occupy ``experiments`` and Restore has to
+    stay lossless. Pass *exclude_id* to ask about every row but that one.
+    """
+    base = _outputs_base()
+    sql = "SELECT name, output_dir FROM experiments"
+    params: tuple = ()
+    if exclude_id is not None:
+        sql += " WHERE id != ?"
+        params = (exclude_id,)
+    claimed: set[str] = set()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except sqlite3.Error:
+        return claimed
+    for r in rows:
+        if r["output_dir"]:
+            claimed.add(_norm_path(r["output_dir"]))
+        if base is not None and r["name"]:
+            claimed.add(_norm_path(base / r["name"]))
+    return claimed
+
+
+def output_dirs_owned_by(conn: sqlite3.Connection, exp_id: str,
+                         name: str | None, output_dir: str | None) -> list[Path]:
+    """The output directories a permanent delete of ``exp_id`` may remove.
+
+    There are two candidates — the run's recorded ``output_dir`` and the
+    name-derived ``outputs/<name>`` — and the second is only ours when no
+    *other* experiment row claims it. **Names are not unique**: the dashboard's
+    rename accepts any name, and ``rename_output_folder`` deliberately refuses
+    to move a folder onto an existing one, so two runs can carry the same name
+    while only one of them owns the directory. Trashing the name-derived path
+    unconditionally therefore destroyed the *other* run's outputs — rename run
+    A to a name run B already has, permanently delete A with "also move
+    files", and B's outputs went to the Trash with nothing in the confirm
+    dialog saying whose they were.
+
+    ``get_delete_preview`` and ``_delete_experiment_files`` share this, so the
+    dialog can never size a directory the delete then leaves alone (or, worse,
+    the reverse).
+    """
+    candidates: list[Path] = []
+    if output_dir:
+        candidates.append(Path(output_dir))
+    base = _outputs_base()
+    if name and base is not None:
+        candidates.append(base / name)
+    if not candidates:
+        return []
+
+    claimed = claimed_output_paths(conn, exclude_id=exp_id)
+    owned: list[Path] = []
+    for c in candidates:
+        if _norm_path(c) in claimed:
+            print(f"[exptrack] note: leaving {c} in place — another experiment "
+                  f"claims that output directory", file=sys.stderr)
+            continue
+        owned.append(c)
+    return owned
 
 
 def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str) -> dict:
@@ -1159,17 +1310,9 @@ def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str) -> dict:
     ).fetchone()
     output_dirs: list[Path] = []
     if exp_row:
-        if exp_row["output_dir"]:
-            output_dirs.append(Path(exp_row["output_dir"]))
-        if exp_row["name"]:
-            try:
-                conf = cfg.load()
-                output_dirs.append(
-                    cfg.project_root() / conf.get("outputs_dir", "outputs") / exp_row["name"]
-                )
-            except Exception as e:
-                print(f"[exptrack] warning: could not resolve output dir: {e}",
-                      file=sys.stderr)
+        output_dirs = output_dirs_owned_by(
+            conn, exp_id, exp_row["name"], exp_row["output_dir"]
+        )
     handled_dirs: list[str] = []
     for out_dir in output_dirs:
         try:
@@ -1315,17 +1458,9 @@ def get_delete_preview(conn: sqlite3.Connection, exp_id: str) -> dict:
     output_dir_exists = False
     output_dir_bytes = 0
     output_dir_files = 0
-    candidates: list[Path] = []
-    if output_dir:
-        candidates.append(Path(output_dir))
-    if exp["name"]:
-        try:
-            conf = cfg.load()
-            candidates.append(
-                cfg.project_root() / conf.get("outputs_dir", "outputs") / exp["name"]
-            )
-        except Exception:
-            pass
+    # Same ownership rule the delete applies, so the dialog never sizes a
+    # directory that belongs to a different run (see output_dirs_owned_by).
+    candidates = output_dirs_owned_by(conn, exp_id, exp["name"], output_dir)
     for d in candidates:
         try:
             if d.is_dir():

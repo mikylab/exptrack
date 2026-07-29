@@ -365,8 +365,18 @@ def test_api_export_json():
         assert data["status"] == "done", "Status mismatch"
         assert data["params"]["lr"] == 0.01, "Params missing"
         assert "v1" in data["tags"], "Tags missing"
-        assert "loss" in data["metrics_series"], "Metrics series missing"
-        assert len(data["metrics_series"]["loss"]) == 2, "Should have 2 loss points"
+        # Default JSON export is a summary: one entry per metric key, not one
+        # object per logged point.
+        assert "loss" in data["metrics"], "Metrics summary missing"
+        assert data["metrics"]["loss"]["count"] == 2, "Should count 2 loss points"
+        assert data["metrics"]["loss"]["last"] == 0.3, "Last value wrong"
+        assert data["metrics"]["loss"]["min"] == 0.3, "Min wrong"
+        assert data["metrics"]["loss"]["max"] == 0.5, "Max wrong"
+        assert "metrics_series" not in data, "Summary export should omit raw points"
+
+        # ?full=1 restores the complete, round-trippable payload.
+        full = api_export(conn, exp.id, {"format": "json", "full": "1"})
+        assert len(full["metrics_series"]["loss"]) == 2, "Should have 2 loss points"
 
         print("  [PASS] test_api_export_json")
 

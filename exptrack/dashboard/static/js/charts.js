@@ -46,28 +46,94 @@ function _pointLabels(points) {
   return points.map((p, i) => p.step !== null ? p.step : i);
 }
 
+// ── Smoothing ────────────────────────────────────────────────────────────────
+//
+// Display-only: the stored points are never touched, so smoothing is free to
+// undo and a smoothed chart still deletes the real point you click. To actually
+// shrink a noisy series on disk, use Settings → Prune (or `exptrack prune`).
+function _clampSmoothing(v) {
+  return Math.min(0.95, Math.max(0, parseFloat(v) || 0));
+}
+let _chartSmoothing = _clampSmoothing(
+  localStorage.getItem('exptrack-chart-smoothing') || '0');
+
+// Exponential moving average with bias correction — the same weighting
+// TensorBoard uses. The debias divisor matters: without it every curve is
+// dragged toward zero for its first points and a loss that starts at 2.0
+// appears to start near 0 and climb, which is the opposite of what happened.
+function _smoothValues(values, alpha) {
+  if (!alpha || alpha <= 0) return values;
+  const out = new Array(values.length);
+  let acc = 0, debias = 0;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (v === null || v === undefined || !isFinite(v)) { out[i] = v; continue; }
+    acc = acc * alpha + (1 - alpha) * v;
+    debias = debias * alpha + (1 - alpha);
+    out[i] = acc / debias;
+  }
+  return out;
+}
+
 // Swap a chart's data without recreating it. The points also hang off the chart
 // (rather than living only in createChart's closure) so the click-to-delete
 // handler always resolves against the points currently drawn.
+//
+// Every chart carries two datasets: the main line (smoothed, or the raw values
+// when smoothing is off) and a faint ghost of the unsmoothed series. Keeping
+// both datasets present at all times — the ghost merely hidden at zero — means
+// moving the slider never changes the dataset count, so charts update in place
+// instead of being torn down and rebuilt.
 function _applyChartPoints(chart, points) {
   chart.$points = points;
+  const raw = points.map(p => p.value);
   chart.data.labels = _pointLabels(points);
-  chart.data.datasets[0].data = points.map(p => p.value);
+  chart.data.datasets[0].data = _smoothValues(raw, _chartSmoothing);
+  if (chart.data.datasets[1]) {
+    chart.data.datasets[1].data = raw;
+    chart.data.datasets[1].hidden = !_chartSmoothing;
+  }
+}
+
+// Re-render every live chart against the current smoothing factor. Cheap
+// enough to run straight from the slider's input event — no rebuild, so the
+// axis inputs keep focus and the metric dropdown stays open.
+function setChartSmoothing(value) {
+  _chartSmoothing = _clampSmoothing(value);
+  try { localStorage.setItem('exptrack-chart-smoothing', String(_chartSmoothing)); } catch (e) {}
+  const label = document.getElementById('chart-smoothing-val');
+  if (label) label.textContent = _chartSmoothing ? _chartSmoothing.toFixed(2) : 'off';
+  for (const c of Object.values(charts)) {
+    if (!c || !c.$points) continue;
+    _applyChartPoints(c, c.$points);
+    c.update('none');
+  }
 }
 
 function createChart(canvas, key, points, colorIdx, scaleOpts) {
   const color = CHART_COLORS[colorIdx % CHART_COLORS.length];
+  const raw = points.map(p => p.value);
   const chart = new Chart(canvas, {
     type: 'line',
     data: {
       labels: _pointLabels(points),
       datasets: [{
         label: key,
-        data: points.map(p => p.value),
+        data: _smoothValues(raw, _chartSmoothing),
         borderColor: color,
         backgroundColor: color + '1a',
         fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 7,
         pointHitRadius: 10,
+      }, {
+        // The unsmoothed series, kept visible behind the smoothed line so the
+        // real spread is never hidden by the smoothing — a smoothed curve on
+        // its own reads as far less noisy data than was actually recorded.
+        label: key + ' (raw)',
+        data: raw,
+        borderColor: color + '59',
+        borderWidth: 1,
+        fill: false, tension: 0, pointRadius: 0, pointHitRadius: 0,
+        hidden: !_chartSmoothing,
       }]
     },
     options: {
@@ -245,6 +311,20 @@ function buildChartsTabContent(metricsData, viewMode) {
     + '</div>'
     + '</div>';
 
+  // Smoothing is display-only and applies to every chart at once, so it sits
+  // on its own row rather than among the per-axis range inputs.
+  html += '<div class="chart-smooth-bar">'
+    + '<span class="scale-label">Smoothing</span>'
+    + '<input type="range" id="chart-smoothing" min="0" max="0.95" step="0.05" '
+    +   'value="' + _chartSmoothing + '" '
+    +   'title="Exponential moving average over the plotted points. '
+    +         'Display only — the stored data is unchanged.">'
+    + '<span class="chart-smooth-val" id="chart-smoothing-val">'
+    +   (_chartSmoothing ? _chartSmoothing.toFixed(2) : 'off') + '</span>'
+    + '<span class="chart-smooth-note">display only — use Settings → Prune to '
+    +   'shrink the stored series</span>'
+    + '</div>';
+
   if (isSingle) {
     html += '<div class="chart-container"></div>';
   } else {
@@ -300,6 +380,9 @@ function initChartsTab(container, metricsData, viewMode, initScale) {
 
   const dlBtn = container.querySelector('#chart-download-png');
   if (dlBtn) dlBtn.addEventListener('click', downloadChartsPng);
+
+  const smooth = container.querySelector('#chart-smoothing');
+  if (smooth) smooth.addEventListener('input', () => setChartSmoothing(smooth.value));
 
   if (viewMode === 'all') {
     renderAllCharts(container, metricsData, initScale);

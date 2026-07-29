@@ -59,7 +59,11 @@ class DashboardServer(ThreadingHTTPServer):
                 # params/metrics/timeline, far too expensive to repeat on
                 # every closed connection. The CLI-exit close and
                 # `exptrack clean` still sweep.
-                close_db(sweep=False)
+                # checkpoint=False: close_db's TRUNCATE checkpoint waits on
+                # any open writer (up to busy_timeout, 5s) — a live training
+                # run stalled every request here. The handler already does a
+                # non-blocking PASSIVE checkpoint after each write.
+                close_db(sweep=False, checkpoint=False)
             except Exception:
                 pass  # never let cleanup break a served request
 

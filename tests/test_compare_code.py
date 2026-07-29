@@ -94,3 +94,76 @@ def test_git_diff_sentinel_distinguishes_failure(monkeypatch):
     # Not a repo → an empty diff is honest, not a capture failure.
     monkeypatch.setattr(git, "_is_git_repo", lambda: False)
     assert git.git_diff("HEAD") == ""
+
+
+# ── Snapshot capture is not exclusive to `exptrack run` ──────────────────────
+#
+# capture_script_snapshot used to be called only from __main__, so a script run
+# as plain `python train.py` (building its own Experiment, a fully supported
+# pattern) recorded no source at all. The visible symptom was a contradiction:
+# the "vs previous run" strip said `code changed` — that signal is computed from
+# the repository-wide signature and needs no snapshot — while the Code-changes
+# panel directly below it had nothing to diff.
+
+def _script_run(tmp_project, source: str):
+    """A run started the way a plain `python script.py` does: the script exists
+    on disk and the Experiment is constructed by the script itself."""
+    path = tmp_project / "train.py"
+    path.write_text(source)
+    exp = Experiment(script=str(path))
+    exp.finish()
+    return exp.id
+
+
+def test_plain_python_run_captures_its_script(tmp_project):
+    """A run that was not launched by `exptrack run` still snapshots its code."""
+    exp_id = _script_run(tmp_project, "THRESHOLD = 0.5\n")
+    conn = get_db()
+    row = conn.execute(
+        "SELECT 1 FROM params WHERE exp_id=? AND key='_code_snapshot'", (exp_id,)
+    ).fetchone()
+    assert row is not None, "plain `python script.py` run captured no code snapshot"
+
+
+def test_compare_two_plain_python_runs_shows_the_edit(tmp_project):
+    """Two runs that both differ from HEAD *and* from each other diff against
+    each other — not against the committed file."""
+    a = _script_run(tmp_project, "THRESHOLD = 0.7\n")
+    b = _script_run(tmp_project, "THRESHOLD = 0.9\n")
+    cd = compare_run_code(get_db(), a, b)
+    assert cd["mode"] == "script"
+    assert len(cd["cells"]) == 1
+    assert cd["cells"][0]["a"] == "THRESHOLD = 0.7\n"
+    assert cd["cells"][0]["b"] == "THRESHOLD = 0.9\n"
+
+
+def test_script_snapshot_is_idempotent(tmp_project):
+    """__main__ still calls capture_script_snapshot explicitly after
+    Experiment.__init__ already did; the second call must be a no-op rather
+    than a duplicate timeline event and a second set of params."""
+    from exptrack.capture.script_tracking import capture_script_snapshot
+    path = tmp_project / "train.py"
+    path.write_text("x = 1\n")
+    exp = Experiment(script=str(path))
+    capture_script_snapshot(exp, str(path))   # what __main__ does
+    exp.finish()
+    conn = get_db()
+    n_events = conn.execute(
+        "SELECT COUNT(*) FROM timeline WHERE exp_id=? AND event_type='cell_exec'",
+        (exp.id,)).fetchone()[0]
+    n_params = conn.execute(
+        "SELECT COUNT(*) FROM params WHERE exp_id=? AND key='_code_snapshot'",
+        (exp.id,)).fetchone()[0]
+    assert n_events == 1
+    assert n_params == 1
+
+
+def test_label_script_is_not_snapshotted(tmp_project):
+    """`run-start --script pipeline` passes a label, not a file — nothing to
+    snapshot, and no crash trying."""
+    exp = Experiment(script="pipeline")
+    exp.finish()
+    row = get_db().execute(
+        "SELECT 1 FROM params WHERE exp_id=? AND key='_code_snapshot'", (exp.id,)
+    ).fetchone()
+    assert row is None

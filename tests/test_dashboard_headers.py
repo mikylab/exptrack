@@ -224,3 +224,178 @@ def test_api_response_is_not_loosened_by_an_earlier_shell_request(live_server):
     _get(live_server + "/")
     _, headers, _ = _get(live_server + "/api/stats")
     assert headers["Content-Security-Policy"] == "default-src 'none'; frame-ancestors 'none'"
+
+
+# ── favicon ──────────────────────────────────────────────────────────────────
+
+def test_favicon_is_served_at_both_spellings(live_server):
+    """Browsers request /favicon.ico unprompted on every page load — it 404'd on
+    every visit before the icon existed. Both spellings resolve to the one SVG."""
+    for path in ("/favicon.ico", "/favicon.svg"):
+        status, headers, body = _get(live_server + path)
+        assert status == 200, path
+        assert headers["Content-Type"] == "image/svg+xml", path
+        assert b"<svg" in body, path
+
+
+def test_favicon_needs_no_auth_and_caches_hard(live_server):
+    """A <link rel=icon> cannot carry a Bearer token, so the icon is auth-exempt
+    like the bundles — and immutable, so it is fetched once."""
+    _, headers, _ = _get(live_server + "/favicon.ico")
+    assert "immutable" in headers["Cache-Control"]
+
+
+# ── responses must be parseable by JSON.parse, not just json.loads ──────────
+
+def _strict_json(body: bytes):
+    """Parse like JSON.parse: the NaN/Infinity extension is not JSON."""
+    def _reject(token):
+        raise ValueError(f"non-standard JSON token: {token}")
+    return json.loads(body.decode(), parse_constant=_reject)
+
+
+@pytest.fixture
+def run_with_infinite_metric(tmp_project):
+    """A run holding a non-finite metric, as older exptrack versions stored.
+
+    ``Experiment.log_metric`` refuses one now, but that guard postdates a lot
+    of stored data and none of the other ``INSERT INTO metrics`` paths has it,
+    so the row is written directly — which is exactly the state a user's older
+    project is already in. (SQLite coerces NaN to NULL on write; ±inf it keeps,
+    so inf is the case that reaches the encoder.)
+    """
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+
+    exp = Experiment(name="diverged")
+    exp.log_metric("loss", 2.0, step=0)
+    exp.finish()
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO metrics (exp_id, key, value, step, ts, source) "
+        "VALUES (?,?,?,?,?,?)",
+        (exp.id, "loss", float("inf"), 1, "2026-01-01T00:00:00+00:00", "auto"),
+    )
+    conn.commit()
+    return exp.id
+
+
+@pytest.mark.parametrize("route", ["/api/metrics/", "/api/experiment/"])
+def test_non_finite_metric_does_not_break_the_response(
+    live_server, run_with_infinite_metric, route
+):
+    """One inf value used to make the *whole* body unparseable in the browser.
+
+    /api/experiment/<id> failing that way is why the detail panel reported
+    "Experiment not found", and /api/metrics/<id> failed alongside it — the
+    pair of symptoms this guards against.
+    """
+    status, _, body = _get(live_server + route + run_with_infinite_metric)
+    assert status == 200
+    assert b"Infinity" not in body
+    parsed = _strict_json(body)  # raises if the extension tokens are present
+    assert parsed
+    # (`error` on the experiment payload is the run's stored traceback slot,
+    # not a route failure — what must not appear is a lookup failure.)
+    assert parsed.get("error") != "not found"
+
+
+def test_non_finite_metric_reads_back_as_null(live_server, run_with_infinite_metric):
+    """The finite points survive; the meaningless one becomes a chart gap."""
+    _, _, body = _get(live_server + "/api/metrics/" + run_with_infinite_metric)
+    values = [p["value"] for p in _strict_json(body)["loss"]]
+    assert 2.0 in values
+    assert None in values
+
+
+# ── large user files must not be read whole into memory ─────────────────────
+
+def test_large_log_is_served_as_a_tail_window(live_server, tmp_project):
+    """A tee'd training log runs to hundreds of MB and the viewer renders its
+    last 500 lines, so serving the whole file cost a request thread that much
+    RAM to produce a window the client then had to find by scanning it."""
+    from exptrack.dashboard import handler as h
+
+    outputs = tmp_project / "outputs"
+    outputs.mkdir(exist_ok=True)
+    big = outputs / "stdout.log"
+    line = "x" * 99 + "\n"
+    n = (h._TEXT_PREVIEW_MAX_BYTES // len(line)) + 500
+    big.write_text("".join(f"{i:06d}" + line[6:] for i in range(n)))
+    total = big.stat().st_size
+
+    status, headers, body = _get(live_server + "/api/file/outputs/stdout.log")
+
+    assert status == 200
+    assert headers["X-Exptrack-Truncated"] == "tail"
+    assert int(headers["X-Exptrack-Total-Bytes"]) == total
+    assert len(body) <= h._TEXT_PREVIEW_MAX_BYTES
+    assert int(headers["Content-Length"]) == len(body)
+    # The end of the file — what a log viewer is for — and no partial first line.
+    assert body.endswith(f"{n - 1:06d}".encode() + line[6:].encode())
+    assert body.split(b"\n", 1)[0].strip()
+    assert len(body.split(b"\n", 1)[0]) == len(line) - 1
+
+
+def test_large_csv_is_served_from_the_head(live_server, tmp_project):
+    """A CSV's header row is the first line, and the viewer shows the first
+    200 rows — a tail window would lose the column names."""
+    from exptrack.dashboard import handler as h
+
+    outputs = tmp_project / "outputs"
+    outputs.mkdir(exist_ok=True)
+    big = outputs / "metrics.csv"
+    rows = ["step,loss,acc\n"]
+    rows += [f"{i},0.5,0.9\n" for i in range(h._TEXT_PREVIEW_MAX_BYTES // 12 + 500)]
+    big.write_text("".join(rows))
+
+    status, headers, body = _get(live_server + "/api/file/outputs/metrics.csv")
+
+    assert status == 200
+    assert headers["X-Exptrack-Truncated"] == "head"
+    assert body.startswith(b"step,loss,acc\n")
+    assert body.endswith(b"\n"), "window must end on a line boundary"
+    assert len(body) <= h._TEXT_PREVIEW_MAX_BYTES
+
+
+def test_small_text_file_is_served_whole_and_unflagged(live_server, tmp_project):
+    outputs = tmp_project / "outputs"
+    outputs.mkdir(exist_ok=True)
+    (outputs / "notes.txt").write_text("all of it\n")
+
+    status, headers, body = _get(live_server + "/api/file/outputs/notes.txt")
+
+    assert status == 200
+    assert body == b"all of it\n"
+    assert "X-Exptrack-Truncated" not in headers
+
+
+def test_file_body_is_streamed_not_read_whole(live_server, tmp_project, monkeypatch):
+    """Memory must not scale with the served file — no single read() of it."""
+    from exptrack.dashboard import handler as h
+
+    outputs = tmp_project / "outputs"
+    outputs.mkdir(exist_ok=True)
+    payload = bytes.fromhex("89504e470d0a1a0a") + b"\x00" * (h._STREAM_CHUNK * 3)
+    (outputs / "big.png").write_bytes(payload)
+
+    sizes = []
+    real_stream = h.DashboardHandler._send_stream
+
+    def spy(self, fh, length, *a, **kw):
+        class _Counting:
+            def read(_s, n):
+                chunk = fh.read(n)
+                sizes.append(len(chunk))
+                return chunk
+        return real_stream(self, _Counting(), length, *a, **kw)
+
+    monkeypatch.setattr(h.DashboardHandler, "_send_stream", spy)
+
+    status, _, body = _get(live_server + "/api/file/outputs/big.png")
+
+    assert status == 200
+    assert body == payload
+    assert sizes and max(sizes) <= h._STREAM_CHUNK
+    assert len(sizes) >= 3, "whole file went out in one read"

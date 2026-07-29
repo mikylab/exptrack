@@ -14,6 +14,66 @@ from .db import diff_sentinel_kind, is_diff_sentinel, resolve_git_diff
 
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.tiff', '.webp')
 
+# How many artifacts a rendering lists before summarising the rest. A
+# checkpoint-per-epoch run produces thousands, and a flat list of them buries
+# everything else in the export. This now applies to the JSON export too — it
+# carries an `artifacts_summary` describing the shape of what was left out, and
+# `full=True` (`exptrack export --full`, `?full=1`) restores the complete list
+# for round-tripping.
+ARTIFACT_LIST_LIMIT = 25
+
+# How many directories the export's artifact/metric summaries name before
+# stopping. Past this the tail is long-tail noise, not shape.
+SUMMARY_DIR_LIMIT = 10
+
+_ARTIFACT_KINDS = (
+    ("model", ('.pt', '.pth', '.ckpt', '.safetensors', '.h5', '.hdf5', '.onnx',
+               '.pkl', '.joblib', '.bin')),
+    ("image", IMAGE_EXTS),
+    ("data", ('.csv', '.json', '.jsonl', '.parquet', '.tsv', '.npy', '.npz',
+              '.arrow', '.feather')),
+    ("log", ('.log', '.txt', '.out', '.err')),
+)
+
+
+def artifact_kind(path: str) -> str:
+    """Coarse type of an artifact path — the grouping key for summaries."""
+    lower = str(path or "").lower()
+    dot = lower.rfind(".")
+    if dot == -1 or "/" in lower[dot:]:
+        return "dir"
+    ext = lower[dot:]
+    for kind, exts in _ARTIFACT_KINDS:
+        if ext in exts:
+            return kind
+    return "file"
+
+
+def summarize_artifacts(artifacts: list, limit: int = ARTIFACT_LIST_LIMIT) -> dict:
+    """Cap a long artifact list and describe what was left out.
+
+    Returns the items to render plus counts by type and by containing
+    directory, so a run with 4000 checkpoints reports its *shape* — "4000
+    models under outputs/ckpts" — instead of 4000 indistinguishable lines.
+    ``limit=0`` means no cap.
+    """
+    items = list(artifacts or [])
+    by_kind: dict = {}
+    by_dir: dict = {}
+    for a in items:
+        path = a.get("path") if isinstance(a, dict) else a["path"]
+        by_kind[artifact_kind(path)] = by_kind.get(artifact_kind(path), 0) + 1
+        parent = str(path or "").rsplit("/", 1)[0] if "/" in str(path or "") else "."
+        by_dir[parent] = by_dir.get(parent, 0) + 1
+    shown = items if not limit else items[:limit]
+    return {
+        "total": len(items),
+        "shown": shown,
+        "omitted": len(items) - len(shown),
+        "by_type": sorted(by_kind.items(), key=lambda kv: -kv[1]),
+        "by_dir": sorted(by_dir.items(), key=lambda kv: -kv[1]),
+    }
+
 
 def _rel_path(path: str) -> str:
     """Convert an absolute artifact path to relative from project root.
@@ -1353,8 +1413,57 @@ def get_experiment_diff(conn, exp_id: str) -> dict | None:
 
 # ── Export ─────────────────────────────────────────────────────────────────────
 
-def get_export_data(conn, exp_id: str) -> dict | None:
-    """Get full export data for an experiment."""
+def summarize_metric_series(points: list[dict]) -> dict:
+    """Collapse one metric's points into the numbers you'd read off its chart.
+
+    A run logging every iteration stores tens of thousands of points per key,
+    and dumping each one as its own JSON object made the export unreadable —
+    the params and the final numbers were buried under the series. The summary
+    keeps what a reader actually asks of a finished run (where it ended, where
+    it started, its extremes and how many points there were); the raw series is
+    still available via ``full=True``.
+    """
+    vals = [p["value"] for p in points if p.get("value") is not None]
+    if not vals:
+        return {"count": len(points), "first": None, "last": None,
+                "min": None, "max": None, "first_step": None, "last_step": None,
+                "min_step": None, "max_step": None}
+    lo = min(range(len(vals)), key=lambda i: vals[i])
+    hi = max(range(len(vals)), key=lambda i: vals[i])
+    steps = [p.get("step") for p in points if p.get("value") is not None]
+    return {
+        "count": len(points),
+        "first": vals[0], "first_step": steps[0],
+        "last": vals[-1], "last_step": steps[-1],
+        "min": vals[lo], "min_step": steps[lo],
+        "max": vals[hi], "max_step": steps[hi],
+    }
+
+
+def _artifact_export_summary(artifacts: list, limit: int) -> dict:
+    """Shape-of-the-list payload the export ships alongside the capped list."""
+    s = summarize_artifacts(artifacts, limit)
+    return {
+        "total": s["total"],
+        "listed": len(s["shown"]),
+        "omitted": s["omitted"],
+        "by_type": [{"type": k, "count": n} for k, n in s["by_type"]],
+        "by_dir": [{"dir": d, "count": n} for d, n in s["by_dir"][:SUMMARY_DIR_LIMIT]],
+        "dirs_omitted": max(0, len(s["by_dir"]) - SUMMARY_DIR_LIMIT),
+    }
+
+
+def get_export_data(conn, exp_id: str, full: bool = False,
+                    artifact_limit: int = ARTIFACT_LIST_LIMIT) -> dict | None:
+    """Get export data for an experiment.
+
+    By default this is a *summary* export: each metric key is one object
+    (count/first/last/min/max) rather than one object per logged point, and the
+    artifact list is capped at ``artifact_limit`` with an ``artifacts_summary``
+    describing the rest by type and containing directory. ``full=True`` adds
+    the complete ``metrics_series`` and lists every artifact, for round-tripping.
+    ``artifact_limit=0`` also means "list them all".
+    """
     exp = conn.execute(
         "SELECT * FROM experiments WHERE id LIKE ?",
         (exp_id + "%",)
@@ -1409,8 +1518,7 @@ def get_export_data(conn, exp_id: str) -> dict | None:
         "variables": variables,
         "code_changes": code_changes,
         "datasets": datasets,
-        "metrics_series": {},
-        "artifacts": [{"label": a["label"], "path": a["path"]} for a in artifacts],
+        "metrics": {},
         "timeline_summary": {
             "total_events": len(timeline),
             "cell_executions": sum(1 for t in timeline if t["event_type"] == "cell_exec"),
@@ -1418,10 +1526,19 @@ def get_export_data(conn, exp_id: str) -> dict | None:
             "artifact_events": sum(1 for t in timeline if t["event_type"] == "artifact"),
         },
     }
+    series: dict[str, list[dict]] = {}
     for m in metrics:
-        data["metrics_series"].setdefault(m["key"], []).append({
+        series.setdefault(m["key"], []).append({
             "value": m["value"], "step": m["step"]
         })
+    data["metrics"] = {k: summarize_metric_series(pts) for k, pts in series.items()}
+    if full:
+        data["metrics_series"] = series
+
+    art_rows = [{"label": a["label"], "path": a["path"]} for a in artifacts]
+    limit = 0 if full else artifact_limit
+    data["artifacts"] = art_rows if not limit else art_rows[:limit]
+    data["artifacts_summary"] = _artifact_export_summary(art_rows, limit)
     return data
 
 
@@ -1505,8 +1622,9 @@ def replace_notes(conn, exp_id_prefix: str, text: str) -> dict:
 # ── Export formatting ─────────────────────────────────────────────────────────
 
 def get_batch_export_data(conn, exp_ids: list[str] | None = None,
-                          export_all: bool = False) -> list[dict]:
-    """Get export data for multiple experiments."""
+                          export_all: bool = False, full: bool = False,
+                          artifact_limit: int = ARTIFACT_LIST_LIMIT) -> list[dict]:
+    """Get export data for multiple experiments (see ``get_export_data``)."""
     if export_all:
         rows = conn.execute(
             "SELECT id FROM experiments ORDER BY created_at DESC"
@@ -1522,11 +1640,34 @@ def get_batch_export_data(conn, exp_ids: list[str] | None = None,
                 rows.append(r)
     else:
         return []
-    return [get_export_data(conn, r["id"]) for r in rows if r]
+    return [get_export_data(conn, r["id"], full=full, artifact_limit=artifact_limit)
+            for r in rows if r]
 
 
-def format_export_markdown(data: dict) -> str:
-    """Generate a markdown summary of an experiment from export data."""
+def export_metric_summaries(data: dict) -> dict:
+    """Per-key metric summary from export data, whichever form it carries.
+
+    The one reader of both shapes: the summary export ships ``metrics``, a
+    ``full=True`` export additionally ships the raw ``metrics_series``, and
+    older callers may hand over only the latter.
+    """
+    if data.get("metrics"):
+        return data["metrics"]
+    return {k: summarize_metric_series(pts)
+            for k, pts in (data.get("metrics_series") or {}).items()}
+
+
+def _m(value) -> str:
+    """Render a metric value for a table cell ("--" when there isn't one)."""
+    return "--" if value is None else str(value)
+
+
+def format_export_markdown(data: dict, artifact_limit: int = ARTIFACT_LIST_LIMIT) -> str:
+    """Generate a markdown summary of an experiment from export data.
+
+    ``artifact_limit=0`` lists every artifact; the default caps the list and
+    summarises the remainder by type and directory.
+    """
     lines = [
         f"# {data['name']}",
         "",
@@ -1572,16 +1713,37 @@ def format_export_markdown(data: dict) -> str:
         for k, v in data["variables"].items():
             lines.append(f"| {k} | {json.dumps(v)} |")
         lines.append("")
-    if data.get("metrics_series"):
-        lines += ["## Metrics", "", "| Key | Last | Steps |", "| --- | --- | --- |"]
-        for k, pts in data["metrics_series"].items():
-            last = pts[-1]["value"] if pts else "--"
-            lines.append(f"| {k} | {last} | {len(pts)} |")
+    summaries = export_metric_summaries(data)
+    if summaries:
+        lines += ["## Metrics", "", "| Key | Last | Min | Max | Points |",
+                  "| --- | --- | --- | --- | --- |"]
+        for k, s in summaries.items():
+            lines.append(f"| {k} | {_m(s['last'])} | {_m(s['min'])} | "
+                         f"{_m(s['max'])} | {s['count']} |")
         lines.append("")
-    if data.get("artifacts"):
-        lines += ["## Artifacts", ""]
-        for a in data["artifacts"]:
+    art = data.get("artifacts_summary")
+    if art or data.get("artifacts"):
+        shown = data.get("artifacts") or []
+        if art is None:
+            # Raw (uncapped) data from an older caller — cap it here as before.
+            s = summarize_artifacts(shown, artifact_limit)
+            shown, art = s["shown"], _artifact_export_summary(shown, artifact_limit)
+        lines += [f"## Artifacts ({art['total']})", ""]
+        if art["omitted"]:
+            # State the shape of what is not listed, so the summary is useful
+            # on its own rather than just an apology for a truncated list.
+            types = ", ".join(f"{t['count']} {t['type']}" for t in art["by_type"])
+            lines.append(f"{art['total']} files — {types}.")
+            top_dirs = ", ".join(f"`{d['dir']}` ({d['count']})" for d in art["by_dir"][:5])
+            if top_dirs:
+                lines.append("")
+                lines.append(f"Directories: {top_dirs}")
+            lines.append("")
+        for a in shown:
             lines.append(f"- **{a['label']}**: `{a['path']}`")
+        if art["omitted"]:
+            lines.append(f"- … and {art['omitted']} more "
+                         f"(`exptrack export --full` for the complete list)")
         lines.append("")
     if data.get("code_changes"):
         lines += ["## Code Changes", ""]
@@ -1662,9 +1824,10 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
     all_param_keys: set[str] = set()
     all_metric_keys: set[str] = set()
     all_var_keys: set[str] = set()
-    for data in experiments:
+    metric_summaries = [export_metric_summaries(d) for d in experiments]
+    for data, ms in zip(experiments, metric_summaries):
         all_param_keys.update(k for k in data.get("params", {}) if not k.startswith("_"))
-        all_metric_keys.update(data.get("metrics_series", {}).keys())
+        all_metric_keys.update(ms.keys())
         all_var_keys.update(data.get("variables", {}).keys())
 
     param_keys = sorted(all_param_keys)
@@ -1686,10 +1849,9 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
     writer.writerow(header)
 
     # Rows
-    for data in experiments:
+    for data, summaries in zip(experiments, metric_summaries):
         params = data.get("params", {})
         variables = data.get("variables", {})
-        metrics_series = data.get("metrics_series", {})
         artifacts = data.get("artifacts", [])
         code_changes = data.get("code_changes", {})
         ts = data.get("timeline_summary", {})
@@ -1717,10 +1879,15 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
         row += [str(params.get(k, "")) for k in param_keys]
         row += [str(variables.get(k, "")) for k in var_keys]
         for k in metric_keys:
-            pts = metrics_series.get(k, [])
-            row.append(str(pts[-1]["value"]) if pts else "")
-        # Artifacts as semicolon-separated label:path pairs
+            s = summaries.get(k)
+            row.append("" if not s or s.get("last") is None else str(s["last"]))
+        # Artifacts as semicolon-separated label:path pairs. The list is capped
+        # upstream, so say how many were left out rather than implying this is
+        # everything the run wrote.
         art_str = ";".join(f"{a.get('label','')}:{a.get('path','')}" for a in artifacts)
+        omitted = (data.get("artifacts_summary") or {}).get("omitted") or 0
+        if omitted:
+            art_str += f";… +{omitted} more"
         # Code changes as semicolon-separated key:value
         cc_str = ";".join(f"{k}" for k in code_changes) if code_changes else ""
         row += [art_str, cc_str,

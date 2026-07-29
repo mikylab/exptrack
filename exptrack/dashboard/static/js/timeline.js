@@ -33,6 +33,15 @@ let timelineFilter = '';
 
 // Mirror of cell_lineage.is_magic_only — true when a cell is only IPython
 // magics / shell escapes / comments / blanks (a command, not editable code).
+// api() returns null when a request fails (it has already raised the error
+// bar), so every `data.error` read must be guarded — otherwise it throws, the
+// render never runs, and the tab sits at "Loading…" forever. That blank-panel
+// outcome is exactly what the visible-failures rule exists to prevent.
+function _apiFailedHtml(what) {
+  return '<p style="color:var(--muted)">Could not load ' + esc(what) +
+         ' \u2014 the request failed. See the error bar above for details.</p>';
+}
+
 function _isMagicOnlyCell(src) {
   if (!src) return false;
   let hasMagic = false;
@@ -287,7 +296,7 @@ async function viewCellSource(cellHash, btnEl) {
   btnEl.textContent = 'loading...';
   const data = await api('/api/cell-source/' + cellHash);
   btnEl.textContent = 'hide source';
-  if (data.error || !data.source) {
+  if (!data || data.error || !data.source) {
     const div = document.createElement('div');
     div.className = 'source-view';
     div.innerHTML = '<span style="color:var(--yellow)">Source was compacted to save space.</span>'
@@ -338,6 +347,41 @@ async function viewCellSource(cellHash, btnEl) {
   _toggleTimelinePreview(body, true);
 }
 
+// ── Scan-path suggestions ────────────────────────────────────────────────────
+//
+// Shared by the Images and Data Files tabs. Suggestions used to be shown only
+// while *no* path had been saved, which hid them at exactly the point the user
+// had proved they were useful and wanted a second one — so they stay visible,
+// with anything already added filtered out server-side. Each chip carries the
+// reason it was suggested ("a dataset this run read", "42 matching files"), so
+// picking one is a decision rather than a guess.
+// The server bounds a saved scan path's walk (a checkpoint-per-epoch tree is
+// thousands of files, re-scanned on every request). Say so rather than letting
+// a capped listing read as the complete set.
+function _scanTruncNotice(data, noun) {
+  if (!data || !data.truncated) return '';
+  const max = data.max_files || 0;
+  return '<p class="scan-trunc">Showing the first ' + max + ' ' + noun +
+         ' found — this scan path holds more. Add a narrower path to see the rest.</p>';
+}
+
+function _scanSuggestionsHtml(suggestions, inputId, addFn, expId) {
+  if (!suggestions || !suggestions.length) return '';
+  const chips = suggestions.map(s => {
+    const path = typeof s === 'string' ? s : s.path;
+    const why = (typeof s === 'string' ? '' : s.why) || '';
+    return '<button type="button" class="scan-suggest-chip" title="' +
+      esc(why ? path + ' — ' + why : path) + '" onclick="document.getElementById(\'' +
+      escJsAttr(inputId) + '\').value=\'' + escJsAttr(path) + '\';' +
+      escJsAttr(addFn) + '(\'' + escJsAttr(expId) + '\')">' +
+      '<span class="scan-suggest-path">' + esc(path) + '</span>' +
+      (why ? '<span class="scan-suggest-why">' + esc(why) + '</span>' : '') +
+      '</button>';
+  }).join('');
+  return '<div class="scan-suggest"><span class="scan-suggest-label">Suggested:</span>' +
+         chips + '</div>';
+}
+
 // ── Image gallery ────────────────────────────────────────────────────────────
 
 let imageFilter = '';
@@ -351,6 +395,7 @@ async function loadImages(expId) {
   container.innerHTML = '<p style="color:var(--muted)">Loading...</p>';
 
   const data = await api('/api/images/' + expId);
+  if (!data) { container.innerHTML = _apiFailedHtml('images'); return; }
   if (data.error && data.error !== 'not found') {
     container.innerHTML = '<p style="color:var(--muted)">Error: ' + esc(data.error) + '</p>';
     return;
@@ -384,11 +429,8 @@ async function loadImages(expId) {
   html += '</div>';
 
   // Suggested paths from output_dir or params
-  if (suggestedPaths.length && paths.length === 0) {
-    html += '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Suggestions: ';
-    html += suggestedPaths.map(s => '<a href="#" style="color:var(--blue)" onclick="event.preventDefault();document.getElementById(\'img-path-input\').value=\'' + escJsAttr(s) + '\';addImagePath(\'' + expId + '\')">' + esc(s) + '</a>').join(', ');
-    html += '</div>';
-  }
+  html += _scanSuggestionsHtml(suggestedPaths, 'img-path-input', 'addImagePath', expId);
+  html += _scanTruncNotice(data, 'images');
   html += '</div>';
 
   // Show images if we have any
@@ -561,6 +603,7 @@ async function loadLogs(expId) {
   container.innerHTML = '<p style="color:var(--muted)">Loading...</p>';
 
   const data = await api('/api/logs/' + expId);
+  if (!data) { container.innerHTML = _apiFailedHtml('logs'); return; }
   if (data.error && data.error !== 'not found') {
     container.innerHTML = '<p style="color:var(--muted)">Error: ' + esc(data.error) + '</p>';
     return;
@@ -591,12 +634,8 @@ async function loadLogs(expId) {
   html += '<button onclick="addLogPath(\'' + expId + '\')">Add Path</button>';
   html += '</div>';
 
-  // Suggested paths
-  if (suggestedPaths.length && paths.length === 0) {
-    html += '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Suggestions: ';
-    html += suggestedPaths.map(s => '<a href="#" style="color:var(--blue)" onclick="event.preventDefault();document.getElementById(\'log-path-input\').value=\'' + escJsAttr(s) + '\';addLogPath(\'' + expId + '\')">' + esc(s) + '</a>').join(', ');
-    html += '</div>';
-  }
+  html += _scanSuggestionsHtml(suggestedPaths, 'log-path-input', 'addLogPath', expId);
+  html += _scanTruncNotice(data, 'files');
   html += '</div>';
 
   // Show files if we have any
@@ -644,7 +683,7 @@ async function loadLogs(expId) {
 
     // File table
     html += '<table class="params-table" style="margin-top:8px">';
-    html += '<tr><th>File</th><th>Size</th><th>Modified</th><th style="width:60px"></th></tr>';
+    html += '<tr><th>File</th><th>Size</th><th>Modified</th><th style="width:72px"></th></tr>';
     for (const f of filtered) {
       const sizeKb = (f.size / 1024).toFixed(1);
       const modDate = f.modified ? new Date(f.modified * 1000).toLocaleString() : '';

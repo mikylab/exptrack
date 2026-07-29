@@ -51,7 +51,9 @@ def api_bulk_delete_permanent(conn, body: dict) -> dict:
     if not ids:
         return {"error": "no ids provided"}
     delete_files = bool(body.get("delete_files", False))
-    from exptrack.core.db import _sweep_blobs, delete_experiment
+    from exptrack.core.db import _sweep_blobs, checkpoint_truncate, delete_experiment
+    from exptrack.core.storage import free_space
+    free_before = free_space(conn)["bytes"]
     deleted = 0
     totals = {"os_trash": 0, "local_trash": 0, "failed": 0, "missing": 0}
     for eid in ids:
@@ -65,8 +67,10 @@ def api_bulk_delete_permanent(conn, body: dict) -> dict:
     if deleted:
         _sweep_blobs(conn)  # once for the batch, not once per run
     conn.commit()
+    freed = max(0, free_space(conn)["bytes"] - free_before)
+    checkpoint_truncate(conn)   # see api_delete_permanent: PASSIVE won't shrink it
     return {"ok": True, "deleted": deleted, "deleted_files": delete_files,
-            "file_stats": totals}
+            "file_stats": totals, "freed_bytes": freed}
 
 
 def api_bulk_delete_preview(conn, body: dict) -> dict:
@@ -125,7 +129,7 @@ def api_bulk_export(conn, body: dict) -> dict | list:
     fmt = body.get("format", "json")
     if not ids:
         return {"error": "no ids provided"}
-    batch = get_batch_export_data(conn, exp_ids=ids)
+    batch = get_batch_export_data(conn, exp_ids=ids, full=bool(body.get("full")))
     if not batch:
         return {"error": "no experiments found"}
     if fmt in ("csv", "tsv"):

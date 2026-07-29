@@ -94,6 +94,12 @@
   .trash-header h2 { margin: 0; font-size: 18px; font-weight: 600; }
   .trash-header .trash-actions { display: flex; gap: 6px; }
   .trash-blurb { color: var(--muted); font-size: 12px; margin: 0 0 12px; line-height: 1.5; }
+  .trash-storage {
+    font-family: var(--font-mono); font-size: var(--text-xs);
+    color: var(--text-2); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 6px 10px; margin: 0 0 10px; display: inline-block;
+  }
   .trash-empty {
     padding: 32px 16px; text-align: center; color: var(--muted);
     border: 1px dashed var(--border); border-radius: 6px;

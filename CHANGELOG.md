@@ -4,6 +4,122 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.58.2] - 2026-07-29
+
+### Fixed
+- **Orphaned rows are reported instead of quietly carried** — a row whose experiment no longer exists shows up nowhere in the UI while still taking space, and the storage report only warned about them when the database held *zero* experiments. A project with 5 runs and 20,000 orphaned metric rows therefore reported perfect health. `exptrack storage` now counts them with their estimated size (`40,003 orphaned row(s) (~4.0 MB): 40,000 metrics, 2 artifacts, 1 git_diffs`), and the dashboard's Settings → Database panel gained an **Orphaned rows** section with a Clean button. This matters most in the dashboard: any CLI command sweeps orphans when it exits, but the dashboard deliberately never does (the check is an anti-join across metrics/params/timeline, far too expensive to run per request), so a UI-only user would carry a legacy database's orphans indefinitely.
+
+  Nothing in current exptrack creates orphans — a delete removes the run's children first, and the schema's foreign keys would refuse it otherwise. They come from databases written by older versions, edited by hand, or left behind by a process killed mid-delete.
+
+### Documentation
+- Two FAQ entries: whether deleting from the dashboard removes metrics (a permanent delete does — Move to Trash deliberately keeps everything), and what to do about orphaned rows from older versions.
+
+## [1.58.1] - 2026-07-29
+
+### Fixed
+- **Deleting runs looked like it reclaimed nothing** — it did remove every metric, param, artifact and timeline row, but SQLite puts the freed pages on the database's internal free list rather than handing them back to the operating system, so the file on disk stayed exactly the same size and the storage report's per-table breakdown quietly stopped adding up to it (delete a run holding 120k metric points and the tables account for 8 MB of a 12 MB file, with nothing naming the other 4 MB). Every delete now reports what it freed and points at the one command that returns it to the filesystem: `exptrack rm` and `exptrack clean` print it, the dashboard says it after a permanent delete, and `exptrack storage` — plus the Settings → Database panel — shows an **of which free** line under the database size. Nothing about what gets deleted changed; the space was always reusable, it just never said so.
+- **A permanent delete through the dashboard left a large WAL behind** — a delete pushes every rewritten page through the write-ahead log, and the dashboard's per-request checkpoint is deliberately non-blocking (it must never wait on a live training run), which drains the WAL but leaves the file at its high-water mark. Deleting a 16 MB run therefore left a same-sized database *and* a fresh 16 MB `-wal` next to it until the server was stopped. Permanent deletes now truncate the WAL with a short bounded wait — if a run is mid-write the checkpoint simply gives up and the next one handles it, so this can't stall the UI. The CLI already truncated on exit and is unchanged.
+
+### Documentation
+- A FAQ entry for the above ("I deleted runs but the database file is the same size"), including when it's worth vacuuming at all — if you're about to log more runs, the freed space is simply reused.
+
+## [1.58.0] - 2026-07-29
+
+### Added
+- **The storage report says what the Trash is holding** — soft delete keeps every row and deliberately leaves output files in place, so the Trash was the one place storage built up with nothing anywhere saying how much. `exptrack storage` gained a **Trash** section, the dashboard's Settings → Database panel shows the same figures with a link into the Trash, and the Trash view itself opens with a one-line "Holding …" summary. Three separate numbers, because they are reclaimed by three different actions: database bytes held by trashed runs and session nodes, their output files still sitting on disk, and the `.exptrack/trash/` fallback directory. The output-file figure goes through the same ownership rule the permanent delete uses, so it can never advertise space the delete would leave alone because a surviving run also claims that directory.
+
+### Documentation
+- **How big an empty project should be** — a new FAQ entry: about 148 KB of database (the schema's 37 pages, created on first use rather than by `exptrack init`) and no WAL at rest, since the `-wal`/`-shm` files exist only while a connection is open. Plus what a WAL that stays large means and how to reclaim it.
+- **Reading `exptrack storage`** — a section in the CLI reference explaining which figures are exact (per table, from SQLite's page accounting) and which are apportioned estimates, and what each part of the report is for.
+- Corrected two stale claims in the FAQ: the dashboard no longer loads Chart.js from a CDN (it is vendored, and exptrack makes no external requests at all), and the documented run-name pattern was the pre-1.x layout.
+
+## [1.57.0] - 2026-07-29
+
+**Upgrading an existing project:** nothing to migrate. `exptrack export` and the
+dashboard's JSON export now emit a summary by default — if you have a script
+consuming `metrics_series` or the complete artifact list from a JSON export, add
+`--full` (CLI) or `?full=1` (`/api/export/<id>`) to keep the old payload.
+
+### Changed
+- **The JSON export is a summary by default** — a run that logs every iteration stored tens of thousands of metric points, and each one came out of the export as its own JSON object, with every registered artifact listed beneath them. The params and the final numbers — the reason you open an export at all — were buried under raw data. Every format, JSON included, now ships one entry per metric key (`count`, `first`, `last`, `min`, `max`, with the step each extreme occurred at) and a capped artifact list alongside an `artifacts_summary` that describes what was left out by type and by containing directory (`outputs/ckpts: 3990`). Nothing is dropped silently: `omitted` always states how many are missing.
+- **`exptrack export --full` and Export → JSON (full)** — the complete, round-trippable payload is still one flag away: `--full` on the CLI, `?full=1` on `/api/export/<id>`, and a **JSON (full)** entry in the dashboard's Export and Copy menus. It adds the raw `metrics_series` alongside the summary and lists every artifact. `--max-artifacts N` still sets the artifact cap on its own (`0` lists them all), and now applies to JSON as well as the human-readable formats.
+- **Markdown exports show min and max, not just the last value** — the metrics table gained `Min` and `Max` columns now that the summary computes them.
+
+### Documentation
+- **New dashboard screenshots** — the README's dashboard image was several releases out of date; it now shows the current list view, the "what changed" run detail, and the Charts tab, all served from `docs/images/` in the repo.
+- **Docs caught up with the last several releases** — the README feature lists, `docs/cli-reference.md` (now covering `prune`, `compact`, `backup`/`restore`, `watch`, `studies`, the full `clean` and `storage` flag sets, the Session Trees commands, and a new Export formats section), `docs/configuration.md` (every current config key, including `metric_commit_interval_ms`, `auto_trash_failed`, `snapshot_max_kb`, `git_diff_exclude`, `var_fingerprint_max_mb` and the TensorBoard capture toggle, plus where the dashboard token lives), `docs/how-it-works.md` (TensorBoard mirroring, dataset fingerprinting, failure tracebacks, the current 10-table schema) and `docs/python-api.md` (constructor arguments, `batched_writes`, metric batching, run adoption).
+
+## [1.56.7] - 2026-07-29
+
+### Fixed
+- **A scan path can no longer list exptrack's own internals** — `/api/file/` has always refused to serve anything under `.exptrack/`, but the Images and Data Files scan walks only checked that a path was inside the project, so pointing one at `.exptrack` listed the config file and every notebook-history snapshot. Both now apply the same rule.
+- **A failed Images or Data Files request says so instead of hanging on "Loading…"** — when the request failed the tab threw internally and never rendered, leaving a blank panel with no explanation. Same for a failed Compare.
+
+### Changed
+- **One shared definition of which output directory belongs to which run** — the permanent-delete guard added in 1.56.3 and the orphaned-file finder computed "claimed" separately, so a directory the delete protected because another run owned it could still be reported as debris and trashed by the next Clean click. Internal, but it closes the gap between the two.
+
+## [1.56.6] - 2026-07-29
+
+### Fixed
+- **Watching a live run no longer stacks up requests** — the detail view polls every 5 seconds while a run is running, with nothing stopping a new poll from starting while the previous one was still in flight. On a large run, a slow filesystem or a tunnelled connection a poll can take longer than the interval, so the requests piled up and each re-rendered the panel underneath the last. A tick now skips while the previous one is still working. A failed poll also used to throw inside its own error handler, which made one bad request look exactly like a healthy refresh; it is now handled, and the run is re-checked after the request returns so a poll that lands after you switch runs can't redraw the wrong one.
+- **The experiment list endpoint caps how many rows one request can ask for** — `limit` came straight from the query string with no ceiling, so a single request could have the server build and serialize the entire project's list. The dashboard already pages in chunks, and the Compare picker's "Load all runs" now walks pages instead of asking for everything at once, so a capped response can't be mistaken for the complete set.
+
+## [1.56.5] - 2026-07-29
+
+### Fixed
+- **A scan path pointing at a huge directory no longer stalls the Images and Data Files tabs** — both walked every saved scan path in full on every request, with a `stat` per file and every result shipped as JSON. Point one at a checkpoint-per-epoch output tree and each tab open re-listed thousands of files, including on a live run's 5-second refresh and the two requests a Compare view issues at once; on a project mounted over SSH or NFS that held a request thread for seconds. The walk is now bounded, skips dependency and version-control trees, and the tab says when a listing was capped instead of presenting a partial set as the whole one.
+- **Scan paths can no longer reach outside the project** — the containment check compared path prefixes without a separator boundary or resolving symlinks, so a sibling directory whose name merely started with the project's (`myproject2` next to `myproject`) was accepted, as was a symlink inside the project pointing anywhere on disk. It now matches the check `/api/file/` has always used.
+
+## [1.56.4] - 2026-07-29
+
+### Changed
+- **The dashboard reuses connections instead of reopening one per request** — it served HTTP/1.0, so every fetch paid a fresh TCP handshake. That is free on localhost and is not free through an SSH tunnel or VS Code port forwarding, where the ~8 requests the page fires on load and the detail view's 5-second poll each pay a round trip to set up a connection they use once.
+- **Opening a large log or CSV no longer loads the whole file** — the viewer renders at most the last 500 lines of a log or the first 200 rows of a table, but the server read the entire file into memory and the browser downloaded and scanned all of it to find that window. A multi-hundred-MB training log could freeze the tab and cost the server as much memory as the file. Text files past 4 MB are now served as a window — the end of a log, the start of a CSV or JSON — with the viewer stating that the file continues past what it shows. Images and other files stream in fixed-size chunks, so serving one never scales the server's memory with its size.
+
+## [1.56.3] - 2026-07-29
+
+### Fixed
+- **Permanently deleting a run can no longer trash a different run's outputs** — the delete removed both the run's recorded output directory *and* `outputs/<its name>`, but names are not unique: renaming a run to a name another run already has leaves the folder where it was, owned by the original. Deleting the renamed run with "also move files" then sent the *other* run's checkpoints to the Trash, and the confirm dialog counted those files without saying whose they were. The name-derived directory is now only removed when no other experiment — including a trashed one, so Restore stays lossless — claims it, and the preview sizes exactly what the delete will take.
+- **Cleaning orphaned output files only touches what the confirm listed** — the dialog is built by one request and the deletion runs in a second, which re-discovered orphans from scratch. Anything written under `outputs/` in between — a run started while the dialog was open, a file dropped in by hand — was moved to the Trash having never been shown. The browser now posts back the exact paths it displayed and the server trashes only those that are still orphaned, reporting any it skipped.
+- **The dashboard no longer stalls while a training run is logging** — every request ran a `wal_checkpoint(TRUNCATE)` before dispatch and another when the request thread closed its connection. TRUNCATE waits on any open writer, so with a live run each request could block for up to 5 seconds; through an SSH tunnel or VS Code port forwarding, where every request is already a round trip, the UI appeared to hang. Reads no longer checkpoint at all (a GET writes nothing), and writes use the non-blocking PASSIVE mode. `exptrack clean` and process exit still truncate the WAL.
+
+## [1.56.2] - 2026-07-27
+
+### Fixed
+- **Older runs holding a diverged metric now open again** — a single infinite metric value (a loss that blew up, or any point written by one of the metric-insert paths that predate the finite-value guard) was serialized by the API as the bare token `Infinity`. That is a Python-only extension to JSON: the browser's parser rejects it, and it rejects the entire response rather than the one value. So the run's detail request failed to parse and the panel reported **"Experiment not found"**, with a network error naming `/api/metrics/<id>` beside it — for a run that was sitting right there in the list. Non-finite values are now sent as `null`, which charts render as a gap and tables leave blank, and every other point on the run comes back intact. `exptrack export --format json` was writing the same unloadable token and is fixed with it.
+
+## [1.56.1] - 2026-07-27
+
+### Changed
+- **The storage panel opens about 5x faster** — its metric breakdown aggregated with a window function that expanded one intermediate row per stored metric point before grouping, and it ranked runs with six correlated subqueries evaluated once per experiment plus three whole-table scans per experiment to size shared git diffs. On a 52 MB project the endpoint went from 733 ms to 140 ms, and the gap widens with database size. Same numbers, fewer passes.
+- **Adding a scan path no longer re-walks the project on every request** — the Images and Data Files tabs each scanned the project directory for suggestions on every load, including the two a Compare view issues at once and the ones a live run's 5-second refresh re-issues. On a project mounted over SSH or NFS that walk is seconds, not milliseconds, and it held a dashboard request thread for the duration. It is now cached for 60 seconds and shared between the two tabs.
+- **A parameter sweep no longer re-snapshots its script once per run** — every `Experiment()` captures its source, so a sweep constructing 100 runs in one process re-read, re-hashed, re-stored and re-`git diff`ed the same unchanged file 100 times (~69 ms and one `git` subprocess each). The work is now done once per file version; editing the file mid-run picks up the change.
+
+### Fixed
+- **Artifact type labels agree everywhere** — the dashboard counted artifact types by rendering a badge and parsing its CSS class back out, so it reported `img` where the CLI and exports said `image`, and would have silently counted everything as `file` if the badge markup were ever restyled.
+
+## [1.56.0] - 2026-07-27
+
+**Upgrading an existing project:** nothing to migrate — no schema change. The
+storage figures and the largest-runs list describe runs you have already
+recorded. `exptrack prune` is opt-in and destructive; it always previews first.
+Script snapshots are captured from now on, so the run-to-run code diff works
+for runs recorded with this version onward (runs made with `exptrack run`
+already had snapshots and are unaffected).
+
+### Added
+- **You can finally see what metrics cost** — the storage report counted metric rows and never said what those rows took up, even though metrics are the only table written inside a training loop and so are usually the largest thing in the database. `exptrack storage` now reports metric bytes, `--by-metric` breaks them down per metric key (with the largest number of points recorded in any single run), and the figures come from SQLite's own page accounting, so the per-table totals are exact rather than guessed.
+- **`exptrack storage --top N` and a largest-runs list in the dashboard** — the totals tell you what *kind* of data is big; this tells you *which run* to act on. Each run's estimated database bytes, broken down into metrics/timeline/params/artifacts, largest first. The Settings storage panel leads with this and with bytes-per-metric instead of the five row counts it used to show, and each run is clickable straight through to its detail view.
+- **`exptrack prune` — thin metrics you already logged** — `metric_keep_every` and `thin_every` only ever applied while a run was being recorded, so a run logged at every iteration was stuck at that resolution forever and `exptrack compact` never touched metrics. `exptrack prune --max-points 500` (or `--keep-every N`) thins stored series, optionally scoped to given runs or metric keys. The first, last, minimum and maximum point of every series are always kept, so a pruned chart keeps its shape, its peaks and its exact final value. It previews before it deletes, `--dry-run` stops at the preview, and the dashboard exposes the same thing as a **Prune…** button in Settings → storage that always shows the real numbers before asking. Charts downsample to 500 points anyway, so pruning to 500 loses nothing you could see.
+- **Chart smoothing** — a slider on the Charts tab applies an exponential moving average to noisy curves. Display only: the stored points are untouched, so it is free to undo, and clicking a smoothed chart still deletes the real point underneath. The unsmoothed series stays visible as a faint line behind the smoothed one, so smoothing never makes data look cleaner than it was.
+- **A favicon** — the dashboard had none, so browsers 404'd on `/favicon.ico` on every page load. It is the header's pixel owl, which was already drawn on a 16x16 grid.
+
+### Fixed
+- **"What changed → Show code changes" now works for runs started with plain `python train.py`** — exptrack only snapshotted a script's source when the run went through `exptrack run`, so a script that creates its own `Experiment()` recorded no code at all. The result was self-contradictory: the "vs previous run" strip said `code changed` (it reads a repository-wide signal that needs no snapshot) while the Code changes panel right below it reported that no code had been captured. In particular, two runs that had each diverged from the committed file **and from each other** could not be diffed against each other — which is the comparison that panel exists for. Every run with a real script file now snapshots it, whichever way it was started.
+- **Artifacts no longer bury the Overview and the exports** — a run that saves a checkpoint per epoch registers thousands of artifacts. The Overview's Artifacts section now starts collapsed once there are more than 25, showing a summary in its heading ("129 · 120 model, 8 img, 1 dir"), and artifacts are grouped by the directory they live in, each group foldable. Markdown, plain-text and `exptrack show` output list the first few and then summarise the rest by type and directory rather than printing every line; `--max-artifacts N` overrides the cap (`0` for all). JSON export is unchanged and still contains every artifact, since it is the machine-readable format.
+- **Adding a data-file or image scan path suggests somewhere useful** — suggestions were the run's output directory and its immediate subdirectories, and they disappeared as soon as you had saved one path, which is exactly when you might want a second. They are now drawn from what the run actually touched — the directories its artifacts were written to, and the datasets exptrack fingerprinted from its parameters (so `--data_dir data/raw` is offered directly) — then from directories elsewhere in the project that actually contain matching files. Each suggestion says why it was offered, and clicking one adds it.
+- **The "view" button in the Data Files table no longer renders one letter per line.**
+
 ## [1.55.0] - 2026-07-27
 
 **Upgrading an existing project:** the read fixes below apply to runs you have

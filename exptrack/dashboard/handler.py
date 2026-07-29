@@ -15,15 +15,27 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+from ..core.utils import json_dumps
 from .routes import read_routes, write_routes
 from .static import DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_JS
+
+
+def _read_favicon() -> bytes:
+    """The mascot SVG served as the tab icon. Missing file degrades to empty."""
+    try:
+        return (Path(__file__).parent / "static" / "favicon.svg").read_bytes()
+    except OSError:
+        return b""
+
 
 # The assembled JS/CSS bundles, served at /static/dashboard.{js,css} (auth-
 # exempt, Host-gated) and referenced from the HTML by hash-versioned URL. Bytes
 # built once at import; the ?v=<hash> query busts the browser cache on change.
+# The favicon rides along: same auth-exempt, immutable-cached treatment.
 _STATIC_BUNDLES = {
     "dashboard.css": (DASHBOARD_CSS.encode("utf-8"), "text/css; charset=utf-8"),
     "dashboard.js": (DASHBOARD_JS.encode("utf-8"), "application/javascript; charset=utf-8"),
+    "favicon.svg": (_read_favicon(), "image/svg+xml"),
 }
 
 # Vendored static assets served at /vendor/<name> (auth-exempt, Host-gated).
@@ -168,6 +180,44 @@ def get_db():
     return _get_db()
 
 
+# ── Serving user files ───────────────────────────────────────────────────────
+
+# Response bodies are written in chunks of this size, so the request thread's
+# memory never scales with the file it is serving.
+_STREAM_CHUNK = 64 * 1024
+
+# Text files larger than this are served as a window rather than whole. The
+# viewers render at most the last 500 lines / first 200 rows anyway, and a
+# training stdout log or a per-step metrics CSV runs to hundreds of MB.
+_TEXT_PREVIEW_MAX_BYTES = 4 * 1024 * 1024
+
+# Which end of a text file is the interesting one: a log's is the last, and
+# anything with a header row or a document structure has its at the front.
+# There is deliberately no list of "text extensions" beside this — that is
+# derivable from the mime map in _serve_file (everything not image/*), and a
+# second list would silently revert a newly-added type to being read whole.
+_TAIL_EXTS = frozenset({".log", ".txt", ".out", ".err"})
+
+
+def _read_bounded_text(path: str, size: int, tail: bool) -> bytes:
+    """Read at most ``_TEXT_PREVIEW_MAX_BYTES`` from one end of a text file.
+
+    Trimmed to a line boundary — both because a half-line is noise in the
+    viewer and because slicing mid-UTF-8-sequence would decode to a
+    replacement character.
+    """
+    budget = _TEXT_PREVIEW_MAX_BYTES
+    with open(path, "rb") as f:
+        if tail:
+            f.seek(max(0, size - budget))
+            data = f.read(budget)
+            nl = data.find(b"\n")
+            return data[nl + 1:] if nl != -1 else data
+        data = f.read(budget)
+        nl = data.rfind(b"\n")
+        return data[:nl + 1] if nl != -1 else data
+
+
 _session_token: str = ""
 
 
@@ -216,6 +266,18 @@ def _get_auth_token() -> str:
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
+    # Keep-alive. The stdlib default is HTTP/1.0, i.e. a fresh TCP connection
+    # for every request — a full setup round trip each time, which is free on
+    # localhost and very much not free through an ssh -L tunnel or VS Code port
+    # forwarding, where the dashboard's ~8-request boot burst and its 5s detail
+    # poll each pay it. Safe here because every response goes out with an
+    # accurate Content-Length (_send_bytes / _send_stream / the stdlib's own
+    # send_error), and the paths that answer *without* draining the request
+    # body — the 413 over-large-body guard, the Host/auth rejections — go
+    # through send_error, which sends `Connection: close` and stops the
+    # connection being reused with an unread body still in the pipe.
+    protocol_version = "HTTP/1.1"
+
     # Set once a response has started, so the 500 handler knows whether it is
     # still safe to send one.
     _responded: bool = False
@@ -265,7 +327,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """
         traceback.print_exc(file=sys.stderr)
         if self._responded:
-            return  # body already going out; nothing safe to append
+            # A body is already going out and we don't know how much of the
+            # promised Content-Length made it. Under keep-alive the client
+            # would read the next response as the tail of this one, so the
+            # connection has to end here.
+            self.close_connection = True
+            return
         try:
             self.send_error(500, "Internal server error - see the exptrack console")
         except Exception:
@@ -282,8 +349,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._responded = False
         try:
             super().handle_one_request()
-        except BrokenPipeError:
-            pass  # browser closed connection early — harmless
+        except (BrokenPipeError, ConnectionResetError):
+            # Browser closed the connection early — harmless, but the socket is
+            # gone, so don't loop waiting for another request on it.
+            self.close_connection = True
         except Exception:
             self._server_error()
 
@@ -354,6 +423,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/static/"):])
             return
 
+        # Browsers request /favicon.ico unprompted on every page load, so this
+        # 404'd on every visit before the icon existed. Both spellings resolve
+        # to the one SVG — no .ico is shipped; every browser that asks for
+        # /favicon.ico also renders SVG.
+        if path in ("/favicon.ico", "/favicon.svg"):
+            self._serve_static("favicon.svg")
+            return
+
         if not self._check_auth():
             return
 
@@ -366,11 +443,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         qs = dict(urllib.parse.parse_qsl(parsed.query))
         conn = get_db()
 
-        # Checkpoint WAL on every API request.  External CLI commands
-        # (run-start, run-finish, clean --reset) cannot truncate the WAL
-        # while the dashboard holds a connection — only we can do it.
-        # wal_checkpoint(TRUNCATE) is a no-op (<1ms) when the WAL is empty.
-        self._wal_checkpoint(conn)
+        # No checkpoint on the read path: a GET never appends to the WAL, so
+        # there is nothing here for a checkpoint to reclaim — it was pure
+        # latency, and a blocking one at that. See _wal_checkpoint.
 
         handler = _GET_EXACT.get(path)
         if handler is None:
@@ -532,6 +607,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/commands/delete":      lambda: write_routes.api_delete_command(body),
             "/api/commands/reorder":     lambda: write_routes.api_reorder_commands(body),
             "/api/storage-info":         lambda: write_routes.api_storage_info(conn),
+            "/api/prune-metrics":        lambda: write_routes.api_prune_metrics(conn, body),
             "/api/propagate-tag-rename": lambda: write_routes.api_propagate_tag_rename(body),
             "/api/propagate-study-rename": lambda: write_routes.api_propagate_study_rename(body),
             "/api/save-export":          lambda: write_routes.api_save_export(body),
@@ -547,21 +623,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _wal_checkpoint(conn):
-        """Checkpoint and truncate the WAL after writes.
+        """Flush this request's writes back into the main database file.
 
-        TRUNCATE flushes all WAL pages back to the DB and then truncates
-        the WAL file to zero bytes.  The dashboard is the only long-lived
-        connection, so this is safe and keeps the WAL from growing unbounded.
+        **PASSIVE, deliberately.** TRUNCATE (and RESTART) invoke SQLite's busy
+        handler, so they *wait* on any connection holding a write transaction
+        — which is exactly what a training run does between metric commits
+        (``metric_commit_interval_ms``). Measured against a modest writer loop
+        a single TRUNCATE blocked for 0.63s, and the ceiling is the 5s
+        ``busy_timeout``. This used to run before every GET dispatch, after
+        every POST, *and* again in ``close_db`` when the request thread exited
+        — up to two blocking truncates per request, on a UI that fires ~8
+        requests at boot and polls the detail view every 5s. Through an ssh
+        tunnel, where each request is already a round trip, that was the
+        dashboard hanging whenever a run was live.
+
+        PASSIVE does as much of the same work as it can get for free and
+        returns immediately if a writer is active, so the WAL still drains
+        without the UI ever waiting on the user's training loop. The WAL file
+        itself stays at its high-water mark instead of being truncated to
+        zero; ``exptrack clean`` and the process-exit ``close_db`` still
+        truncate.
         """
         try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except Exception:
             pass
 
     # ── Response helpers ─────────────────────────────────────────────────────
 
     def _send_bytes(self, data: bytes, ctype: str, cache_control: str | None = None,
-                    csp: str = _CSP_STRICT):
+                    csp: str = _CSP_STRICT, extra_headers=()):
         """Write a 200 response body with the standard header tail.
 
         The shared shape (status + Content-Type + Content-Length + optional
@@ -571,20 +662,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
         something the browser will actually render as a document (the HTML
         shell, a user file) passes its own.
         """
+        self._send_head(len(data), ctype, cache_control, csp, extra_headers)
+        self.wfile.write(data)
+
+    def _send_head(self, length: int, ctype: str, cache_control: str | None,
+                   csp: str, extra_headers=()):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(length))
         if cache_control:
             self.send_header("Cache-Control", cache_control)
+        for name, value in extra_headers:
+            self.send_header(name, value)
         self.end_headers(csp)  # also emits the security headers
-        self.wfile.write(data)
+
+    def _send_stream(self, fh, length: int, ctype: str,
+                     cache_control: str | None = None, csp: str = _CSP_STRICT,
+                     extra_headers=()):
+        """Stream a file body in fixed-size chunks.
+
+        The alternative — ``f.read()`` — holds the whole file in the request
+        thread's memory. ``/api/file/`` serves ``.log``/``.csv``/``.pt``-adjacent
+        artifacts, and a tee'd training stdout log or a per-step metrics CSV is
+        routinely hundreds of MB, so one click could cost more RAM than the run
+        being inspected. Memory here is bounded by ``_STREAM_CHUNK`` regardless
+        of file size.
+        """
+        self._send_head(length, ctype, cache_control, csp, extra_headers)
+        remaining = length
+        while remaining > 0:
+            chunk = fh.read(min(_STREAM_CHUNK, remaining))
+            if not chunk:
+                break
+            self.wfile.write(chunk)
+            remaining -= len(chunk)
+        if remaining:
+            # The file shrank mid-send, so the Content-Length we promised is
+            # now a lie. Under keep-alive the client would read the next
+            # response as the missing tail — end the connection instead.
+            self.close_connection = True
 
     def _html(self):
         self._send_bytes(DASHBOARD_HTML.encode(), "text/html; charset=utf-8",
                          csp=_CSP_HTML)
 
     def _json(self, data):
-        self._send_bytes(json.dumps(data, default=str).encode(), "application/json")
+        # json_dumps, not json.dumps: a bare Infinity token from one non-finite
+        # metric value makes the whole response unparseable in the browser.
+        self._send_bytes(json_dumps(data, default=str).encode(), "application/json")
 
     def _serve_static(self, name: str):
         """Serve an assembled dashboard bundle from /static/dashboard.{js,css}.
@@ -623,24 +748,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Serve a file from the project root (images only, with path validation)."""
         import os
 
-        from exptrack.config import project_root
-        root = str(project_root())
-        if not root:
+        from exptrack.config import project_root, readable_project_path
+        if not str(project_root()):
             self.send_error(404, "No project root")
             return
-        real_root = os.path.realpath(root)
-        abs_path = os.path.realpath(os.path.join(root, rel_path))
-        # Security: ensure path is within project root (realpath resolves symlinks)
-        if not abs_path.startswith(real_root + os.sep) and abs_path != real_root:
+        # Inside the project and outside .exptrack/ — one shared predicate, so
+        # the rule can't drift between here and the scan-path routes.
+        resolved = readable_project_path(rel_path)
+        if resolved is None:
             self.send_error(403, "Access denied")
             return
-        # Never serve exptrack's own internals (.exptrack/ holds config.json with
-        # the dashboard token, the DB, notebook history). Legitimate assets live
-        # under outputs/ and the project tree, not here.
-        exptrack_dir = os.path.realpath(os.path.join(real_root, ".exptrack"))
-        if abs_path == exptrack_dir or abs_path.startswith(exptrack_dir + os.sep):
-            self.send_error(403, "Access denied")
-            return
+        abs_path = str(resolved)
         if not os.path.isfile(abs_path):
             self.send_error(404, "File not found")
             return
@@ -658,8 +776,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not content_type:
             self.send_error(403, "File type not allowed")
             return
+
+        size = os.path.getsize(abs_path)
+        # _CSP_FILE sandboxes every response below — see the constant for why an
+        # SVG artifact would otherwise be script execution on this origin.
+        # Every served type is either an image (must arrive whole) or text.
+        if not content_type.startswith("image/") and size > _TEXT_PREVIEW_MAX_BYTES:
+            # The viewers only ever render a window of a text file (the last
+            # 500 lines of a log, the first 200 rows of a CSV), so shipping the
+            # whole thing was wasted on both ends — the browser then walked
+            # every character of it to find that window. Serve the window.
+            tail = ext in _TAIL_EXTS
+            data = _read_bounded_text(abs_path, size, tail)
+            self._send_bytes(
+                data, content_type, "max-age=60", csp=_CSP_FILE,
+                extra_headers=(("X-Exptrack-Total-Bytes", str(size)),
+                               ("X-Exptrack-Truncated", "tail" if tail else "head")),
+            )
+            return
         with open(abs_path, 'rb') as f:
-            data = f.read()
-        # _CSP_FILE sandboxes the response — see the constant for why an SVG
-        # artifact would otherwise be script execution on the dashboard origin.
-        self._send_bytes(data, content_type, "max-age=60", csp=_CSP_FILE)
+            self._send_stream(f, size, content_type, "max-age=60", csp=_CSP_FILE)
