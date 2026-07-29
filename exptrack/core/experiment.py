@@ -31,6 +31,8 @@ from .db import get_db, rename_output_folder, store_git_diff
 from .git import git_info
 from .gpu import gpu_info
 from .naming import make_run_name, output_path
+from .script_snapshot import capture_script_snapshot
+from .utils import debug_log
 
 _VALID_STATUSES = {"running", "done", "failed"}
 
@@ -182,6 +184,10 @@ class Experiment:
     _metric_commit_interval_s = 0.25
     _last_metric_commit = float("-inf")
     _metrics_uncommitted = False
+    # Path of the script whose source this run has already captured, so a
+    # repeat capture is a no-op. Class default for the resume path
+    # (object.__new__, skips __init__) and any early reader.
+    _script_snapshotted = None
 
     def __new__(cls, *args, **kwargs):
         # A bare ``Experiment()`` created by a script running under
@@ -425,6 +431,36 @@ class Experiment:
             self.log_artifact(self._output_dir, label="output_dir")
         except Exception as e:
             print(f"[exptrack] warning: could not log output_dir artifact: {e}", file=sys.stderr)
+
+        self._maybe_snapshot_script()
+
+    def _maybe_snapshot_script(self, script: str | None = None):
+        """Snapshot the running script's source, if this run has a real one.
+
+        Without this the code snapshot was captured *only* under
+        ``exptrack run`` (``__main__`` called it explicitly), so a plain
+        ``python train.py`` that builds its own ``Experiment()`` — and every
+        shell-pipeline run — recorded no source at all. The consequence was a
+        direct contradiction on screen: the "vs previous run" strip reports
+        `code changed` from the repository-wide signature, which needs no
+        snapshot, while the Code-changes panel right below it had nothing to
+        diff and said no code was captured.
+
+        This is the single entry point: ``__main__`` calls it too (passing the
+        path it resolved, which ``Experiment.resume`` has no way to know), and
+        ``_script_snapshotted`` makes a repeat call for the same file a no-op
+        rather than a duplicate timeline event and a second set of params.
+        Best-effort throughout — a capture failure must never break a run.
+        """
+        script = script or self.script
+        # run-start passes a *label* ("pipeline", "train"), not a file; and a
+        # notebook has no script file. Both are handled by other capture paths.
+        if not script or not Path(script).is_file() or script.endswith(".ipynb"):
+            return
+        try:
+            capture_script_snapshot(self, script)
+        except Exception as e:
+            debug_log(f"could not snapshot script {script}: {e}")
 
     def _maybe_commit(self, conn):
         """Commit unless we're inside a batched_writes() block."""

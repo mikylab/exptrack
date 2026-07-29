@@ -23,6 +23,28 @@
   .img-path-add { display: flex; gap: 8px; margin-top: 6px; }
   .img-path-add input { font-family: inherit; font-size: 13px; border: 1px solid var(--border); padding: 4px 8px; border-radius: 3px; background: var(--card-bg); color: var(--fg); flex: 1; }
   .img-path-add button { font-family: inherit; font-size: 12px; padding: 4px 12px; border: none; background: var(--blue); color: #fff; cursor: pointer; border-radius: 3px; }
+  /* Click-to-add scan-path suggestions (Images + Data Files tabs). */
+  .scan-suggest {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px;
+  }
+  .scan-suggest-label { font-size: 11px; color: var(--text-3); }
+  .scan-suggest-chip {
+    display: inline-flex; align-items: baseline; gap: 6px; cursor: pointer;
+    font-family: inherit; font-size: 12px; padding: 3px 9px; border-radius: 12px;
+    border: 1px solid var(--border); background: var(--card-bg); color: var(--fg);
+    max-width: 100%;
+  }
+  .scan-suggest-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .scan-suggest-path {
+    font-family: var(--font-mono); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .scan-suggest-why { font-size: 10px; color: var(--text-3); white-space: nowrap; }
+  /* The scan hit the server-side file cap — a partial list must say so. */
+  .scan-trunc {
+    margin-top: 8px; font-size: 12px; color: var(--status-warning);
+  }
+  .scan-suggest-chip:hover .scan-suggest-why { color: var(--accent); }
   .study-chip { background: rgba(44,90,160,0.1); color: var(--blue); }
   .filter-dropdown-wrap { display: inline-block; position: relative; }
   .filter-search-input {

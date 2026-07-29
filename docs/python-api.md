@@ -92,6 +92,49 @@ With `exptrack run train.py`, params and artifacts are captured automatically �
 | `output_path(filename)` | Get namespaced path (no artifact registration) |
 | `save_output(filename)` | Get namespaced path + register as artifact |
 | `log_artifact(path, label="")` | Register an existing file |
+| `log_file(path, label="")` | Alias of `log_artifact` |
+| `log_event(...)` | Append a custom timeline event |
+| `batched_writes()` | *context manager* — collapse the writes inside it into one transaction |
+| `flush_metrics()` | Commit any metrics still inside the batching window |
 | `finish()` | Mark as done |
-| `fail(error="")` | Mark as failed |
+| `fail(error="", traceback=None)` | Mark as failed, storing the full traceback when given |
 | `resume(exp_id)` | *classmethod* — Reopen a finished experiment to continue it |
+
+## Constructor arguments
+
+```python
+Experiment(name=None, params=None, tags=None, notes="", script=None,
+           command=None, thin_every=None)
+```
+
+`name` — omit it and exptrack generates one (`Jul28_train__lr0.01__2aac1081`)
+and flags the run as auto-named, so the dashboard's **Needs naming** filter can
+find it later. `thin_every=N` stores every Nth metric point for this run,
+overriding the `metric_keep_every` config default. `command` records the real
+launch command for the dashboard's reproduce box.
+
+## Writing a lot of metrics
+
+Metric writes are committed at most once per `metric_commit_interval_ms`
+(default 250 ms), because a commit is an fsync and metrics are the only thing
+exptrack writes inside your training loop. You don't need to do anything for
+this — every ordinary exit flushes, including `finish()`, `fail()`, the context
+manager, and interpreter shutdown on a script that never called `finish()`.
+
+For a burst of *non-metric* writes (params, tags, timeline events), wrap them:
+
+```python
+with exp.batched_writes():
+    exp.log_params(big_config_dict)
+    exp.add_tag("sweep")
+```
+
+## Adoption under `exptrack run`
+
+A script written for plain `python train.py` that creates its own bare
+`Experiment()` does **not** get a second, metrics-less run when you launch it
+with `exptrack run train.py` — it adopts the wrapper exptrack already created.
+Adoption is deliberately narrow: only a bare `Experiment()` with no arguments
+adopts, and only the first one. A sweep that constructs experiments with its own
+names/params keeps its independent rows (and the empty wrapper is moved to
+Trash rather than left behind).

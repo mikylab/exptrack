@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
+  <!-- The header mascot at favicon size. Its 16x16 pixel grid is already a
+       favicon-native resolution, so it needs no separate artwork — but it does
+       need a background: the header renders it on the page, while a tab icon
+       sits on the browser's own chrome, where a transparent owl in #2c5aa0
+       disappears against a dark theme. -->
+  <rect width="16" height="16" rx="3" fill="#f7f6f3"/>
+  <!-- ear tufts -->
+  <rect x="4" y="1" width="1" height="1" fill="#7c3aed"/>
+  <rect x="11" y="1" width="1" height="1" fill="#7c3aed"/>
+  <rect x="4" y="2" width="1" height="1" fill="#7c3aed"/>
+  <rect x="11" y="2" width="1" height="1" fill="#7c3aed"/>
+  <!-- head -->
+  <rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/>
+  <rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/>
+  <rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/>
+  <!-- eyes -->
+  <rect x="5" y="4" width="2" height="1" fill="#fff"/>
+  <rect x="9" y="4" width="2" height="1" fill="#fff"/>
+  <rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/>
+  <rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/>
+  <!-- beak -->
+  <rect x="7" y="5" width="2" height="1" fill="#ffc107"/>
+  <!-- body -->
+  <rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/>
+  <rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/>
+  <rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/>
+  <rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/>
+  <!-- belly -->
+  <rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/>
+  <rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/>
+  <rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/>
+  <!-- wings -->
+  <rect x="3" y="6" width="1" height="2" fill="#7c3aed"/>
+  <rect x="12" y="6" width="1" height="2" fill="#7c3aed"/>
+  <!-- feet -->
+  <rect x="6" y="9" width="1" height="1" fill="#ffc107"/>
+  <rect x="9" y="9" width="1" height="1" fill="#ffc107"/>
+</svg>

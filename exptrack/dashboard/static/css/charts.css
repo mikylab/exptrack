@@ -40,6 +40,18 @@
   .chart-scale-actions {
     display: inline-flex; gap: 6px; align-items: center; margin-left: auto;
   }
+  /* Smoothing sits on its own row: it is display-only and applies to every
+     chart at once, unlike the per-axis bounds above it. */
+  .chart-smooth-bar {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 6px 14px; margin: -8px 0 14px;
+  }
+  .chart-smooth-bar input[type="range"] { width: 170px; accent-color: var(--accent); }
+  .chart-smooth-val {
+    font-family: var(--font-mono); font-size: 12px; color: var(--fg);
+    min-width: 30px; font-variant-numeric: tabular-nums;
+  }
+  .chart-smooth-note { font-size: 11px; color: var(--text-3); font-style: italic; }
   .chart-container { max-width: 700px; margin: 16px 0; }
   .chart-empty {
     padding: 40px 20px; text-align: center;

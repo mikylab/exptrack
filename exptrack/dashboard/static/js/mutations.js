@@ -224,11 +224,28 @@ function parseCSV(text, delimiter) {
   return rows.filter(r => r.length > 0 && !(r.length === 1 && r[0] === ''));
 }
 
+// Server-side truncation notice: the server sends a window of a large text
+// file rather than the whole thing (X-Exptrack-Truncated: head|tail), so the
+// viewer has to say the file continues past what it is showing.
+function _truncationNote(where, totalBytes) {
+  if (!where) return '';
+  const which = where === 'tail' ? 'end' : 'start';
+  return '<div style="color:var(--status-warning);margin-bottom:8px">' +
+         'Large file (' + esc(fmtBytes(totalBytes)) + ') — showing the ' + which +
+         ' of it only.</div>';
+}
+
 async function viewLogFile(path, label) {
   try {
     const resp = await fetch(fileUrl(path));
     if (!resp.ok) { alert('Could not load file: ' + resp.statusText); return; }
     const text = await resp.text();
+    // Whether the server sent a window rather than the file is a fact the row
+    // and line counts below both depend on — read it once, don't infer it from
+    // the truthiness of the note's markup.
+    const srvTrunc = resp.headers.get('X-Exptrack-Truncated') || '';
+    const truncNote = _truncationNote(
+      srvTrunc, parseInt(resp.headers.get('X-Exptrack-Total-Bytes') || '0', 10));
 
     const overlay = document.createElement('div');
     overlay.className = 'img-modal-overlay';
@@ -252,10 +269,11 @@ async function viewLogFile(path, label) {
       const rows = parseCSV(text, delimiter);
       const maxRows = 200;
       const truncated = rows.length > maxRows + 1;
-      logHtml += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + (rows.length - 1) + ' rows' + (truncated ? ' (showing first ' + maxRows + ')' : '') + '</span>';
+      logHtml += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + (rows.length - 1) + (srvTrunc ? ' rows loaded' : ' rows') + (truncated ? ' (showing first ' + maxRows + ')' : '') + '</span>';
       logHtml += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
       logHtml += '</div>';
       logHtml += '<div style="max-height:70vh;overflow:auto">';
+      logHtml += truncNote;
       if (rows.length > 0) {
         logHtml += '<table class="metrics-table" style="font-size:12px;white-space:nowrap">';
         // Header row
@@ -296,6 +314,7 @@ async function viewLogFile(path, label) {
         const maxRows = 200;
         const truncated = jsonRows.length > maxRows;
         logHtml += '<div style="max-height:70vh;overflow:auto">';
+        logHtml += truncNote;
         logHtml += '<table class="metrics-table" style="font-size:12px;white-space:nowrap">';
         logHtml += '<tr>' + keys.map(k => '<th style="position:sticky;top:0;background:var(--card-bg);z-index:1">' + esc(k) + '</th>').join('') + '</tr>';
         const display = truncated ? jsonRows.slice(0, maxRows) : jsonRows;
@@ -314,10 +333,14 @@ async function viewLogFile(path, label) {
       const truncated = lines.length > maxLines;
       const displayLines = truncated ? lines.slice(-maxLines) : lines;
       const lineNums = displayLines.map((_, i) => (truncated ? lines.length - maxLines + i + 1 : i + 1));
-      logHtml += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + lines.length + ' lines</span>';
+      // With a server-side window the file has more lines than we received,
+      // so don't report this count as the file's length.
+      logHtml += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' +
+                 lines.length + (srvTrunc ? ' lines loaded' : ' lines') + '</span>';
       logHtml += '<button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button>';
       logHtml += '</div>';
       logHtml += '<div class="source-view" style="max-height:70vh;font-size:12px;line-height:1.5">';
+      logHtml += truncNote;
       if (truncated) logHtml += '<div style="color:var(--muted);margin-bottom:8px">Showing last ' + maxLines + ' of ' + lines.length + ' lines</div>';
       for (let i = 0; i < displayLines.length; i++) {
         logHtml += '<div><span class="line-num">' + lineNums[i] + '</span>' + esc(displayLines[i]) + '</div>';

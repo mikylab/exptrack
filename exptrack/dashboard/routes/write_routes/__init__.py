@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from .admin import (
     api_clean_db,
+    api_prune_metrics,
     api_reset_db,
     api_storage_info,
     api_vacuum_db,
@@ -174,6 +175,7 @@ __all__ = [
     "api_manage_result_types",
     "api_propagate_study_rename",
     "api_propagate_tag_rename",
+    "api_prune_metrics",
     "api_remove_from_study",
     "api_rename",
     "api_rename_metric",

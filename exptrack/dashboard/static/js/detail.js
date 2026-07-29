@@ -109,16 +109,29 @@ function _renderCmpTruncNotice() {
   el.style.display = 'flex';
 }
 
-// Fetch the picker list once per Compare visit. `force` re-fetches; `limit`
-// overrides the page size for the "load all" path.
-async function _loadCmpExps(force, limit) {
+// Fetch the picker list once per Compare visit. `force` re-fetches; `all` pages
+// through the whole project instead of stopping after the first page.
+//
+// This pages with offsets rather than asking for one huge `limit`: the server
+// caps a single request, so an over-large ask comes back short — and a short
+// response is indistinguishable from "that is all of them", which would leave
+// the filter box quietly searching a subset while reporting it had loaded
+// everything. Pages are sequential because each needs the previous offset.
+async function _loadCmpExps(force, all) {
   if (_cmpExps.length && !force) return true;
-  const cap = limit || EXP_PAGE_SIZE;
-  const exps = await api('/api/experiments?limit=' + cap);
-  if (!Array.isArray(exps)) return false;
-  _cmpExps = _cmpEntries(exps);
-  _cmpTotal = Math.max(expTotal, exps.length);
-  _cmpHasMore = exps.length >= cap && _cmpTotal > exps.length;
+  let rows = [];
+  let lastPageFull = false;
+  let guard = 0;
+  do {
+    const page = await api('/api/experiments?limit=' + EXP_PAGE_SIZE +
+                           '&offset=' + rows.length);
+    if (!Array.isArray(page)) return rows.length > 0;
+    rows = rows.concat(page);
+    lastPageFull = page.length >= EXP_PAGE_SIZE;
+  } while (all && lastPageFull && guard++ < 100);
+  _cmpExps = _cmpEntries(rows);
+  _cmpTotal = Math.max(expTotal, rows.length);
+  _cmpHasMore = lastPageFull && _cmpTotal > rows.length;
   _renderCmpTruncNotice();
   return true;
 }
@@ -126,7 +139,7 @@ async function _loadCmpExps(force, limit) {
 async function loadAllCompareRuns() {
   const btn = document.querySelector('#cmp-trunc button');
   if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
-  if (await _loadCmpExps(true, Math.max(_cmpTotal, EXP_PAGE_SIZE) + 1)) filterCompareOptions();
+  if (await _loadCmpExps(true, true)) filterCompareOptions();
 }
 
 // Re-narrow both pair selects and the multi list from the cached runs,
@@ -170,14 +183,35 @@ async function populateCompareDropdowns() {
   }
 }
 
+// Coarse artifact type. Mirrors core/queries.py:artifact_kind — same vocabulary,
+// so the terminal, the export and the dashboard name the same file the same
+// thing. Kept separate from the badge renderer because counting artifacts by
+// type used to mean building badge markup and regex-parsing the class back out
+// of it, which made CSS class names a parsing contract.
+const ARTIFACT_KIND_EXTS = {
+  image: ['png','jpg','jpeg','svg','gif','bmp','tiff','webp'],
+  model: ['pt','pth','ckpt','safetensors','h5','hdf5','onnx','pkl','joblib','bin'],
+  data:  ['csv','json','jsonl','parquet','tsv','npy','npz','arrow','feather'],
+  log:   ['log','txt','out','err'],
+};
+// Badge CSS uses .img for images; every other kind is its own class name.
+const ARTIFACT_KIND_CLASS = { image: 'img' };
+
+function artifactKind(path) {
+  const p = String(path || '');
+  if (p.indexOf('.') === -1) return 'dir';
+  const ext = p.split('.').pop().toLowerCase();
+  if (!ext) return 'dir';
+  for (const kind of Object.keys(ARTIFACT_KIND_EXTS)) {
+    if (ARTIFACT_KIND_EXTS[kind].includes(ext)) return kind;
+  }
+  return 'file';
+}
+
 function artifactTypeBadge(path) {
-  const ext = (path || '').split('.').pop().toLowerCase();
-  if (['png','jpg','jpeg','svg','gif','bmp','tiff'].includes(ext)) return '<span class="artifact-type-badge img">image</span>';
-  if (['pt','pth','h5','hdf5','onnx','pkl','joblib','safetensors'].includes(ext)) return '<span class="artifact-type-badge model">model</span>';
-  if (['csv','json','jsonl','parquet','tsv','npy','npz'].includes(ext)) return '<span class="artifact-type-badge data">data</span>';
-  if (['log','txt','out','err'].includes(ext)) return '<span class="artifact-type-badge log">log</span>';
-  if (!ext || path.indexOf('.') === -1) return '<span class="artifact-type-badge dir">dir</span>';
-  return '<span class="artifact-type-badge">file</span>';
+  const kind = artifactKind(path);
+  const cls = ARTIFACT_KIND_CLASS[kind] || kind;
+  return '<span class="artifact-type-badge ' + cls + '">' + kind + '</span>';
 }
 
 function showAllArtifacts(expId) {
@@ -188,10 +222,77 @@ function showAllArtifacts(expId) {
   if (notice) notice.remove();
 }
 
+// ── Artifact grouping ────────────────────────────────────────────────────────
+//
+// A checkpoint-per-epoch run registers thousands of artifacts and a flat list
+// of them buries every other thing on the Overview. Rolling them up by
+// containing directory turns "4000 rows" into "outputs/ckpts (4000)", which is
+// the level the question is actually asked at.
+
+// One place for every "cap a long artifact list" threshold, mirroring
+// core/queries.py:ARTIFACT_LIST_LIMIT for the export cap.
+const ARTIFACT_LIST_LIMIT = 25;         // plain-text export lists this many
+const ARTIFACT_GROUP_THRESHOLD = 12;    // group by directory past this
+const ARTIFACT_COLLAPSE_THRESHOLD = 25; // section starts collapsed past this
+const ARTIFACT_TRUNCATE_THRESHOLD = 50; // flat (ungrouped) list row cap
+
+function _artifactDir(path) {
+  const p = String(path || '');
+  const i = p.lastIndexOf('/');
+  return i === -1 ? '.' : p.slice(0, i);
+}
+
+// Client-side mirror of core/queries.py:summarize_artifacts — one pass giving
+// both the by-directory groups (largest first) and the by-type counts, shared
+// by the Overview's grouped table and the plain-text export.
+function _summarizeArtifacts(artifacts) {
+  const dirs = new Map(), kinds = {};
+  for (const a of artifacts || []) {
+    const d = _artifactDir(a.path);
+    if (!dirs.has(d)) dirs.set(d, []);
+    dirs.get(d).push(a);
+    const k = artifactKind(a.path);
+    kinds[k] = (kinds[k] || 0) + 1;
+  }
+  return {
+    total: (artifacts || []).length,
+    byDir: [...dirs.entries()].sort((a, b) => b[1].length - a[1].length),
+    byType: Object.entries(kinds).sort((a, b) => b[1] - a[1]),
+  };
+}
+
+// Client-side mirror of core/queries.py:summarize_metric_series, for export
+// payloads that carry raw points (a `full` export, or an older server).
+function _summarizeMetricSeries(series) {
+  const out = {};
+  for (const [key, pts] of Object.entries(series || {})) {
+    const vals = (pts || []).map(p => p.value).filter(v => v != null);
+    out[key] = vals.length
+      ? {count: pts.length, first: vals[0], last: vals[vals.length - 1],
+         min: Math.min(...vals), max: Math.max(...vals)}
+      : {count: (pts || []).length, first: null, last: null, min: null, max: null};
+  }
+  return out;
+}
+
+function toggleArtifactGroup(expId, idx) {
+  const table = document.getElementById('artifact-table-' + expId);
+  if (!table) return;
+  const body = table.querySelector('tbody[data-art-group="' + idx + '"]');
+  if (body) body.classList.toggle('group-collapsed');
+}
+
+function expandAllArtifactGroups(expId) {
+  const table = document.getElementById('artifact-table-' + expId);
+  if (!table) return;
+  table.querySelectorAll('tbody[data-art-group]')
+       .forEach(b => b.classList.remove('group-collapsed'));
+}
+
 function filterArtifacts(expId, query) {
   const table = document.getElementById('artifact-table-' + expId);
   if (!table) return;
-  if (query) showAllArtifacts(expId);
+  if (query) { showAllArtifacts(expId); expandAllArtifactGroups(expId); }
   const q = (query || '').trim().toLowerCase();
   const rows = table.querySelectorAll('tr[data-artifact-search]');
   let visible = 0;
@@ -199,6 +300,13 @@ function filterArtifacts(expId, query) {
     const match = !q || (r.dataset.artifactSearch || '').includes(q);
     r.classList.toggle('filter-hidden', !match);
     if (match) visible++;
+  });
+  // A group whose every row was filtered out shouldn't keep its header on
+  // screen claiming a count the list no longer shows.
+  table.querySelectorAll('tbody[data-art-group]').forEach(b => {
+    const any = [...b.querySelectorAll('tr[data-artifact-search]')]
+      .some(r => !r.classList.contains('filter-hidden'));
+    b.classList.toggle('filter-hidden', !!q && !any);
   });
   let hint = table.querySelector('tr.artifact-filter-hint');
   if (q && visible === 0) {
@@ -506,20 +614,45 @@ async function refreshDetail(id, opts) {
     }
   }
 
-  const ARTIFACT_TRUNCATE_THRESHOLD = 50;
   const artTotal = exp.artifacts.length;
-  const artTruncated = artTotal > ARTIFACT_TRUNCATE_THRESHOLD;
-  const artRows = exp.artifacts.map((a, i) => {
-    const ext = (a.path || '').split('.').pop().toLowerCase();
-    const isLog = ['log', 'txt', 'out', 'err'].includes(ext);
-    const isData = ['csv', 'json', 'jsonl'].includes(ext);
-    const viewBtn = (isLog || isData)
+  const artSummary = _summarizeArtifacts(exp.artifacts);
+  const artGrouped = artTotal > ARTIFACT_GROUP_THRESHOLD && artSummary.byDir.length > 1;
+  // Grouping *is* the truncation, so the flat "first 50 rows" cap is switched
+  // off when it applies. Running both meant a group could be expanded and still
+  // show nothing, because its rows sat past the flat cutoff.
+  const artTruncated = !artGrouped && artTotal > ARTIFACT_TRUNCATE_THRESHOLD;
+  // `i` is only meaningful for the flat list; the grouped branch never
+  // truncates, so it passes no index and no row is marked overflow.
+  const artRowHtml = (a, i) => {
+    const kind = artifactKind(a.path);
+    const viewBtn = (kind === 'log' || kind === 'data')
       ? `<button onclick="viewLogFile('${escJsAttr(a.path)}','${escJsAttr(a.label)}')" title="View contents">view</button>`
       : '';
     const searchKey = ((a.label || '') + ' ' + (a.path || '')).toLowerCase();
     const overflow = i >= ARTIFACT_TRUNCATE_THRESHOLD ? ' overflow' : '';
     return `<tr data-artifact-search="${esc(searchKey)}" class="artifact-row-tr${overflow}"><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td class="artifact-path-cell" title="${esc(a.path)}">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${escJsAttr(a.label)}','${escJsAttr(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${escJsAttr(a.label)}','${escJsAttr(a.path)}')">del</button></div></td></tr>`;
-  }).join('');
+  };
+  const artGroupRowHtml = (a) => artRowHtml(a, 0);
+
+  // Group by directory once there are enough artifacts for a flat list to stop
+  // being readable — and only when they actually live in more than one place,
+  // since a single group header over the whole list adds nothing.
+  let artRows;
+  if (artGrouped) {
+    artRows = artSummary.byDir.map(([dir, items], gi) => {
+      // Big groups start collapsed; a small one is cheaper to just show.
+      const collapsed = items.length > 5 ? ' group-collapsed' : '';
+      const header = `<tr class="artifact-group-row" onclick="toggleArtifactGroup('${exp.id}',${gi})">`
+        + `<td colspan="3"><span class="art-group-caret"></span>`
+        + `<span class="art-group-dir">${esc(dir)}</span>`
+        + `<span class="art-group-count">${items.length}</span></td></tr>`;
+      return `<tbody data-art-group="${gi}" class="artifact-group${collapsed}">`
+        + header + items.map(artGroupRowHtml).join('') + '</tbody>';
+    }).join('');
+  } else {
+    artRows = '<tbody>' + exp.artifacts.map(artRowHtml).join('') + '</tbody>';
+  }
+
   const artFilterHtml = artTotal > 10
     ? `<div style="margin-bottom:6px"><input type="text" class="artifact-filter-input" id="art-filter-${exp.id}" placeholder="Filter artifacts..." oninput="filterArtifacts('${exp.id}', this.value)"></div>`
     : '';
@@ -530,6 +663,13 @@ async function refreshDetail(id, opts) {
        </div>`
     : '';
   const artTableClass = artTruncated ? 'params-table truncated' : 'params-table';
+  // Header summary + start-collapsed, so a run with thousands of checkpoints
+  // doesn't push params, metrics and charts off the screen on open.
+  const artTypeSummary = artTotal > ARTIFACT_GROUP_THRESHOLD
+    ? ' · ' + artSummary.byType.map(([k, n]) => n + ' ' + k).join(', ')
+    : '';
+  const artSectionClass = artTotal > ARTIFACT_COLLAPSE_THRESHOLD
+    ? 'section-toggle collapsed' : 'section-toggle';
 
   const addArtifactForm = `<div class="artifact-add-form" id="add-artifact-form-${exp.id}">
     <input type="text" id="art-label-${exp.id}" placeholder="Label (e.g. model_v2)" style="width:210px">
@@ -706,7 +846,8 @@ async function refreshDetail(id, opts) {
           <span style="position:relative;display:inline-block">
             <button class="action-btn primary" onclick="toggleDetailExport(this)">Export ▼</button>
             <div class="export-dropdown-menu" style="display:none">
-              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','json')">JSON</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','json')" title="Summary: one line per metric key, artifact list capped with a by-directory summary">JSON</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','json-full')" title="Every metric point and every artifact — for round-tripping">JSON (full)</button>
               <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','markdown')">Markdown</button>
               <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','csv')">CSV</button>
               <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','tsv')">TSV</button>
@@ -717,6 +858,7 @@ async function refreshDetail(id, opts) {
             <button class="action-btn" onclick="toggleDetailExport(this)">Copy ▼</button>
             <div class="export-dropdown-menu" style="display:none">
               <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json')">JSON</button>
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json-full')">JSON (full)</button>
               <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','markdown')">Markdown</button>
               <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','plain')">Plain Text</button>
             </div>
@@ -776,9 +918,9 @@ async function refreshDetail(id, opts) {
             ${logResultForm}
             <div id="overview-chart-preview" style="margin-top:12px"></div>
             </div>
-            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})</h2>
+            <h2 class="${artSectionClass}" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})<span class="section-sub">${esc(artTypeSummary)}</span></h2>
             <div class="section-body">
-            ${artTotal ? artFilterHtml + '<table class="' + artTableClass + '" id="artifact-table-' + exp.id + '"><thead><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr></thead><tbody>' + artRows + '</tbody></table>' + artTruncateNotice : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
+            ${artTotal ? artFilterHtml + '<table class="' + artTableClass + '" id="artifact-table-' + exp.id + '"><thead><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr></thead>' + artRows + '</table>' + artTruncateNotice : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
             ${addArtifactForm}
             </div>
           </div>
@@ -1156,11 +1298,18 @@ function _vsFmt(v) {
 
 let _autoRefreshExpId = null;
 let _autoRefreshMetricCount = 0;
+// Set for the whole fetch-and-render cycle, so a tick that fires while the
+// previous one is still working is skipped rather than stacked on top of it.
+// The interval is 5s and a poll can take longer than that — a large run, a
+// slow filesystem, a tunnel — and without this the requests pile up, each one
+// re-rendering the panel underneath the last.
+let _autoRefreshInFlight = false;
 
 function startAutoRefresh(expId) {
   stopAutoRefresh();
   _autoRefreshExpId = expId;
   _autoRefreshMetricCount = 0;
+  _autoRefreshInFlight = false;
   autoRefreshTimer = setInterval(() => _autoRefreshPoll(), 5000);
 }
 
@@ -1262,19 +1411,27 @@ async function _autoRefreshPoll() {
     stopAutoRefresh();
     return;
   }
+  if (_autoRefreshInFlight) return;  // previous tick still running
+  _autoRefreshInFlight = true;
   try {
     const exp = await api('/api/experiment/' + _autoRefreshExpId);
-    if (exp.error) return;
+    // api() returns null on a failed request (it has already surfaced the
+    // error bar) — reading .error off that throws into the catch below, which
+    // swallows it, so one bad poll used to look identical to a healthy one.
+    if (!exp || exp.error) return;
+
+    // The run may have been closed, or switched away from, while we waited.
+    if (!_autoRefreshExpId || currentDetailId !== _autoRefreshExpId) return;
 
     // Check if experiment finished
     if (exp.status !== 'running') {
       stopAutoRefresh();
-      refreshDetail(_autoRefreshExpId);
+      await refreshDetail(_autoRefreshExpId);
       return;
     }
 
     // Check if metrics or timeline changed — refresh relevant tabs
-    const newMetricCount = exp.metrics.reduce((s, m) => s + (m.n || 1), 0);
+    const newMetricCount = (exp.metrics || []).reduce((s, m) => s + (m.n || 1), 0);
     const metricsChanged = newMetricCount !== _autoRefreshMetricCount;
     _autoRefreshMetricCount = newMetricCount;
 
@@ -1282,13 +1439,16 @@ async function _autoRefreshPoll() {
       // Refresh the active tab if it shows metrics. Charts reloads just its own
       // container — a full refreshDetail would rebuild the entire panel (and
       // every other tab's DOM) to update one chart.
+      // Awaited so the in-flight guard covers the render, not just the fetch.
       if (currentDetailTab === 'charts') {
-        loadChartsTab(_autoRefreshExpId);
+        await loadChartsTab(_autoRefreshExpId);
       } else if (currentDetailTab === 'overview') {
-        refreshDetail(_autoRefreshExpId);
+        await refreshDetail(_autoRefreshExpId);
       }
     }
   } catch (e) {
-    // Silently ignore poll errors
+    // Silently ignore poll errors — api() has already surfaced the failure.
+  } finally {
+    _autoRefreshInFlight = false;
   }
 }

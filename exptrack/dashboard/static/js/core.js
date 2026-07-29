@@ -1537,20 +1537,194 @@ function fmtBytes(b) {
   return (b/(1024*1024)).toFixed(1) + ' MB';
 }
 
+// Row counts alone never told you what was actually taking the space. The
+// panel leads with bytes — metrics first, since they are the only table
+// written inside a training loop and so are almost always the largest — then
+// names the runs holding it, so the next click is an action rather than
+// another question.
+function _storageRow(label, value, strong) {
+  return '<div class="storage-row' + (strong ? ' storage-row-strong' : '') + '">' +
+    '<span>' + esc(label) + '</span>' +
+    '<span class="storage-val">' + esc(value) + '</span></div>';
+}
+
+function _metricKeyRows(keys) {
+  if (!keys || !keys.length) return '';
+  return '<div class="storage-sub">' + keys.map(k =>
+    '<div class="storage-row storage-row-sub" title="' +
+      esc(k.key + ' — ' + k.points.toLocaleString() + ' points across ' +
+          k.experiments + ' run(s), up to ' + k.max_per_exp.toLocaleString() +
+          ' in one run') + '">' +
+      '<span class="storage-key">' + esc(k.key) + '</span>' +
+      '<span class="storage-val">' + esc(fmtBytes(k.bytes)) + '</span></div>'
+  ).join('') + '</div>';
+}
+
+function _largestExpRows(exps) {
+  if (!exps || !exps.length) return '';
+  return '<div class="storage-sub">' + exps.map(e => {
+    const name = e.name || '(unnamed)';
+    const tip = name + ' — ' + fmtBytes(e.metrics_bytes) + ' of metrics (' +
+      e.n_metrics.toLocaleString() + ' points), ' + fmtBytes(e.timeline_bytes) +
+      ' timeline, ' + e.n_artifacts + ' artifacts' +
+      (e.trashed ? ' — in Trash' : '');
+    return '<div class="storage-row storage-row-sub" title="' + esc(tip) + '">' +
+      '<span class="storage-key storage-exp-link" onclick="showDetail(\'' +
+        escJsAttr(e.id) + '\')">' + esc(name) +
+        (e.trashed ? ' <span class="storage-trash-tag">trash</span>' : '') + '</span>' +
+      '<span class="storage-val">' + esc(fmtBytes(e.db_bytes)) + '</span></div>';
+  }).join('') + '</div>';
+}
+
+// Soft delete keeps every row and leaves output files where they are, so the
+// Trash is the one place storage builds up with nothing else in the panel
+// showing it. Rendered only when there is something in it — a permanent
+// "Trash: 0 B" row is noise on the common case.
+function _trashStorageSection(t) {
+  if (!t) return '';
+  const reclaim = (t.db_bytes || 0) + (t.output_bytes || 0);
+  if (!t.experiments && !t.nodes && !t.sessions && !t.local_files) return '';
+  let rows = '';
+  if (t.experiments) {
+    rows += _storageRow(t.experiments.toLocaleString() + ' trashed run' +
+                        (t.experiments === 1 ? '' : 's'), fmtBytes(t.exp_db_bytes));
+  }
+  if (t.nodes || t.sessions) {
+    rows += _storageRow(t.nodes.toLocaleString() + ' trashed session node' +
+                        (t.nodes === 1 ? '' : 's') +
+                        (t.sessions ? ' (' + t.sessions + ' whole session' +
+                          (t.sessions === 1 ? '' : 's') + ')' : ''),
+                        fmtBytes(t.node_db_bytes));
+  }
+  if (t.output_files) {
+    rows += '<div class="storage-row" title="Output files belonging to trashed ' +
+      'runs. Kept in place until you permanently delete with &quot;also move ' +
+      'files&quot;.">' +
+      '<span>' + esc(t.output_files.toLocaleString() + ' output files on disk') +
+      '</span><span class="storage-val">' + esc(fmtBytes(t.output_bytes)) +
+      '</span></div>';
+  }
+  if (t.local_files) {
+    rows += '<div class="storage-row" title="Files exptrack could not hand to ' +
+      'the OS Trash, kept in .exptrack/trash/. Nothing but you removes these.">' +
+      '<span>.exptrack/trash/</span><span class="storage-val">' +
+      esc(fmtBytes(t.local_bytes)) + '</span></div>';
+  }
+  return '<div class="storage-head">Trash' +
+      '<button class="storage-prune-btn" onclick="openTrashView()" ' +
+        'title="Open the Trash to restore or permanently delete">Open…</button>' +
+    '</div>' + rows +
+    (reclaim ? '<div class="storage-note">~' + esc(fmtBytes(reclaim)) +
+      ' reclaimable by deleting permanently (then Clean → vacuum to return the ' +
+      'freed database pages to the filesystem).</div>' : '');
+}
+
+// Rows whose experiment no longer exists — a database written by an older
+// version, hand-edited, or a process killed mid-delete. They are invisible in
+// every list while still occupying the file, and unlike the CLI the dashboard
+// never sweeps on its own (the per-request close skips it deliberately), so
+// the panel has to both name them and offer the sweep.
+function _orphanStorageSection(o) {
+  if (!o || !o.rows) return '';
+  const rows = Object.entries(o.tables || {}).map(([t, v]) =>
+    _storageRow(t + ' (' + v.rows.toLocaleString() + ' row' +
+                (v.rows === 1 ? '' : 's') + ')', fmtBytes(v.bytes))
+  ).join('');
+  return '<div class="storage-head">Orphaned rows' +
+      '<button class="storage-prune-btn" onclick="settingsCleanDb()" ' +
+        'title="Remove rows that reference an experiment which no longer exists">Clean…</button>' +
+    '</div>' + rows +
+    '<div class="storage-note">' + o.rows.toLocaleString() + ' row(s), ~' +
+      esc(fmtBytes(o.bytes)) + ' — they belong to experiments that no longer ' +
+      'exist and show up nowhere in the UI.</div>';
+}
+
 async function loadStorageInfo() {
   const el = document.getElementById('settings-storage');
   try {
     const res = await postApi('/api/storage-info');
-    if (!res.ok) { el.textContent = 'Could not load'; return; }
+    if (!res || !res.ok) { el.textContent = 'Could not load'; return; }
+    const est = res.exact_sizes ? '' :
+      '<div class="storage-note">Sizes estimated — this SQLite build has no dbstat.</div>';
+    const metricsPct = res.db_bytes
+      ? Math.round((res.metrics_bytes / res.db_bytes) * 100) : 0;
+
+    // Deleted rows leave their pages on SQLite's free list — the file itself
+    // never shrinks until a vacuum. Without this row the breakdown below
+    // simply doesn't add up to the DB file size after a delete, which reads
+    // as the delete having done nothing.
+    const freeRow = res.free_bytes
+      ? '<div class="storage-row" title="Space inside the database file left ' +
+          'by deleted rows. It is reused as the database grows; Clean → vacuum ' +
+          'returns it to the filesystem.">' +
+          '<span>of which free</span><span class="storage-val">' +
+          esc(fmtBytes(res.free_bytes) + ' (' + res.free_pct + '%)') +
+        '</span></div>'
+      : '';
     el.innerHTML =
-      '<div class="storage-row"><span>DB file</span><span class="storage-val">' + fmtBytes(res.db_bytes) + '</span></div>' +
-      '<div class="storage-row"><span>WAL file</span><span class="storage-val">' + fmtBytes(res.wal_bytes) + '</span></div>' +
-      '<div class="storage-row"><span>Experiments</span><span class="storage-val">' + res.experiments + '</span></div>' +
-      '<div class="storage-row"><span>Params</span><span class="storage-val">' + res.params + '</span></div>' +
-      '<div class="storage-row"><span>Metrics</span><span class="storage-val">' + res.metrics + '</span></div>' +
-      '<div class="storage-row"><span>Artifacts</span><span class="storage-val">' + res.artifacts + '</span></div>' +
-      '<div class="storage-row"><span>Timeline</span><span class="storage-val">' + res.timeline + '</span></div>';
+      _storageRow('DB file', fmtBytes(res.db_bytes), true) +
+      freeRow +
+      _storageRow('WAL file', fmtBytes(res.wal_bytes)) +
+      '<div class="storage-head">Metrics — ' + esc(fmtBytes(res.metrics_bytes)) +
+        ' (' + metricsPct + '% of DB)' +
+        '<button class="storage-prune-btn" onclick="openPruneMetrics()" ' +
+          'title="Thin stored metric points to reclaim space">Prune…</button>' +
+      '</div>' +
+      _metricKeyRows(res.metric_keys) +
+      (res.metric_key_count > (res.metric_keys || []).length
+        ? '<div class="storage-note">… and ' +
+            (res.metric_key_count - res.metric_keys.length) + ' more keys</div>'
+        : '') +
+      '<div class="storage-head">Largest runs (estimated)</div>' +
+      _largestExpRows(res.largest_experiments) +
+      _trashStorageSection(res.trash) +
+      _orphanStorageSection(res.orphans) +
+      '<div class="storage-head">Row counts</div>' +
+      _storageRow('Experiments', res.experiments.toLocaleString()) +
+      _storageRow('Params', res.params.toLocaleString()) +
+      _storageRow('Metrics', res.metrics.toLocaleString()) +
+      _storageRow('Artifacts', res.artifacts.toLocaleString()) +
+      _storageRow('Timeline', res.timeline.toLocaleString()) +
+      est;
   } catch(e) { el.textContent = 'Error loading storage info'; }
+}
+
+// Prune is destructive and unrecoverable, so it always previews first: the
+// confirm text quotes the real point count and byte figure the delete will
+// use, not an estimate computed separately.
+async function openPruneMetrics() {
+  const raw = prompt(
+    'Thin stored metric points down to at most how many per metric, per run?\n\n' +
+    'Charts downsample to 500 points anyway, so 500 loses nothing visible.\n' +
+    'The first, last, minimum and maximum of every series are always kept.',
+    '500');
+  if (raw === null) return;
+  const maxPoints = parseInt(raw, 10);
+  if (!maxPoints || maxPoints < 2) { alert('Enter a number of 2 or more.'); return; }
+
+  try {
+    const pre = await postApi('/api/prune-metrics',
+                              {max_points: maxPoints, dry_run: true});
+    if (!pre || pre.error) { alert('Error: ' + ((pre && pre.error) || 'failed')); return; }
+    if (!pre.points) {
+      owlSay('Nothing to prune — every series is already at or under ' + maxPoints + ' points');
+      return;
+    }
+    if (!confirm('Permanently remove ' + pre.points.toLocaleString() + ' of ' +
+                 pre.total_points.toLocaleString() + ' metric points (~' +
+                 fmtBytes(pre.freed) + '), leaving ' + pre.remaining.toLocaleString() +
+                 '?\n\nThis cannot be undone.')) return;
+
+    const res = await postApi('/api/prune-metrics', {max_points: maxPoints});
+    if (!res || res.error) { alert('Error: ' + ((res && res.error) || 'failed')); return; }
+    owlSay('Pruned ' + res.deleted.toLocaleString() + ' points (~' +
+           fmtBytes(res.freed) + '). Use Vacuum to return the space to disk.');
+    if (currentDetailId) refreshDetail(currentDetailId);
+  } catch(e) {
+    alert('Failed: ' + e.message);
+  } finally {
+    loadStorageInfo();
+  }
 }
 
 // Row cleanup runs unprompted (bookkeeping). Orphaned *files* are reported
@@ -1570,10 +1744,20 @@ async function settingsCleanDb() {
       owlSay(rowMsg + ' — files left alone');
       return;
     }
-    const res2 = await postApi('/api/clean-db', { delete_files: true });
+    // Post back exactly what the confirm listed — the server intersects it
+    // with the paths still orphaned, so anything written under outputs/
+    // since the dialog was built is never trashed unseen.
+    const res2 = await postApi('/api/clean-db', {
+      delete_files: true,
+      paths: orphans.map(o => o.path),
+    });
     if (res2.error) { alert('Error: ' + res2.error); return; }
-    owlSay('Moved ' + ((res2.details && res2.details.output_paths) || 0) +
-           ' orphaned path(s) to the Trash');
+    let msg = 'Moved ' + ((res2.details && res2.details.output_paths) || 0) +
+              ' orphaned path(s) to the Trash';
+    if (res2.skipped_unconfirmed) {
+      msg += ' — ' + res2.skipped_unconfirmed + ' new one(s) appeared since, left alone';
+    }
+    owlSay(msg);
   } catch(e) {
     alert('Failed: ' + e.message);
   } finally {

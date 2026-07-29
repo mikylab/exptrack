@@ -19,6 +19,14 @@ def api_clean_db(conn, body: dict | None = None) -> dict:
     heuristic that also matches files a user kept deliberately when permanently
     deleting a run). Without the flag this reports them under ``orphan_files``
     and touches nothing on disk.
+
+    The confirm dialog is built from a *previous* request, so the delete call
+    should pass back the exact ``paths`` it showed the user: this trashes only
+    the intersection of that list with the paths still orphaned right now.
+    Without it, anything written under ``outputs/`` between the two requests —
+    a run that started in the meantime, a file dropped in by hand — was moved
+    to the Trash having never appeared in the confirm. Omitting ``paths``
+    keeps the old discover-and-act behaviour for existing callers.
     """
     from exptrack.core.db import (
         describe_orphan_output_paths,
@@ -33,12 +41,19 @@ def api_clean_db(conn, body: dict | None = None) -> dict:
 
     file_stats: dict = {}
     orphan_files: list = []
+    skipped = 0
     try:
         # Discover once and hand the list to whichever step follows: annotating
         # walks every orphan tree with rglob+stat, so it is skipped entirely on
         # the delete request (which discards the annotation anyway).
         paths = find_orphan_output_paths(conn)
         if body.get("delete_files"):
+            confirmed = body.get("paths")
+            if confirmed is not None:
+                allowed = {str(p) for p in confirmed if p}
+                kept = [p for p in paths if str(p) in allowed]
+                skipped = len(paths) - len(kept)
+                paths = kept
             if paths:
                 file_stats = trash_orphan_output_paths(conn, paths)
                 counts["output_paths"] = sum(file_stats.values())
@@ -50,7 +65,8 @@ def api_clean_db(conn, body: dict | None = None) -> dict:
               file=sys.stderr)
 
     return {"ok": True, "removed": total, "details": counts,
-            "orphan_files": orphan_files, "file_stats": file_stats}
+            "orphan_files": orphan_files, "file_stats": file_stats,
+            "skipped_unconfirmed": skipped}
 
 
 def api_vacuum_db(conn) -> dict:
@@ -104,8 +120,22 @@ def api_reset_db(conn) -> dict:
 
 
 def api_storage_info(conn) -> dict:
-    """Return database size and WAL size info."""
+    """Database size, per-table bytes, metric hotspots and the biggest runs.
+
+    Row counts alone never answered the question the panel is opened to ask —
+    *what is taking the space, and which run do I act on*. The byte figures per
+    table are exact (SQLite's dbstat); everything per-key and per-experiment is
+    that total apportioned by row count, flagged as estimated in the UI.
+    """
     from exptrack import config as cfg
+    from exptrack.core.storage import (
+        experiment_storage,
+        free_space,
+        metric_storage,
+        orphan_storage,
+        table_byte_sizes,
+        trash_storage,
+    )
     root = cfg.project_root()
     conf = cfg.load()
     db_path = root / conf.get("db", ".exptrack/experiments.db")
@@ -117,6 +147,18 @@ def api_storage_info(conn) -> dict:
     n_metrics = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
     n_artifacts = conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
     n_timeline = conn.execute("SELECT COUNT(*) FROM timeline").fetchone()[0]
+
+    free = free_space(conn)
+    table_bytes = table_byte_sizes(conn)
+    metrics = metric_storage(conn, top=8, table_bytes=table_bytes)
+    largest = experiment_storage(conn, limit=8, table_bytes=table_bytes)
+    trash = trash_storage(conn, table_bytes=table_bytes)
+    # The dashboard never sweeps on its own — the per-request close deliberately
+    # skips it (anti-join counts are far too expensive per request), so unlike
+    # the CLI a dashboard-only user keeps a legacy database's orphans until
+    # something says they're there.
+    orphans = orphan_storage(conn, table_bytes=table_bytes)
+
     return {
         "ok": True,
         "db_bytes": db_size,
@@ -127,4 +169,42 @@ def api_storage_info(conn) -> dict:
         "metrics": n_metrics,
         "artifacts": n_artifacts,
         "timeline": n_timeline,
+        "exact_sizes": bool(table_bytes),
+        "free_bytes": free["bytes"],
+        "free_pct": round(free["pct"], 1),
+        "metrics_bytes": metrics["bytes"],
+        "metric_keys": metrics["keys"],
+        "metric_key_count": metrics["key_count"],
+        "largest_experiments": largest,
+        "trash": trash,
+        "orphans": orphans,
     }
+
+
+def api_prune_metrics(conn, body: dict) -> dict:
+    """Thin already-stored metric points. Destructive unless ``dry_run``.
+
+    body.ids: experiment ids to limit to (default: all)
+    body.keys: metric keys to limit to (default: all)
+    body.max_points / body.keep_every: the thinning target
+    body.dry_run: preview only
+    """
+    from exptrack.core.storage import preview_metric_prune, prune_metrics
+
+    keep_every = max(1, int(body.get("keep_every") or 1))
+    max_points = max(0, int(body.get("max_points") or 0))
+    if keep_every == 1 and not max_points:
+        return {"error": "pass max_points or keep_every"}
+
+    ids = [i for i in (body.get("ids") or []) if i] or None
+    keys = [k for k in (body.get("keys") or []) if k] or None
+    protect = body.get("protect_extremes", True)
+
+    fn = preview_metric_prune if body.get("dry_run") else prune_metrics
+    res = fn(conn, ids, keys, keep_every, max_points, protect)
+    # The selected row ids are an internal handoff between preview and delete
+    # within one process; a dry run over a large series would otherwise ship
+    # millions of integers to the browser.
+    res.pop("_ids", None)
+    res["ok"] = True
+    return res

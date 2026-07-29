@@ -120,18 +120,45 @@ function _formatExpPlainText(d) {
     Object.entries(vars).forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
     lines.push('');
   }
-  const ms = d.metrics_series || {};
+  // The export payload carries a per-key summary (`metrics`); a full export
+  // adds the raw points, which we summarise the same way rather than dumping.
+  const ms = d.metrics || _summarizeMetricSeries(d.metrics_series);
   if (Object.keys(ms).length) {
     lines.push('Metrics:');
-    Object.entries(ms).forEach(([k,pts]) => {
-      const last = pts.length ? pts[pts.length-1].value : '--';
-      lines.push('  ' + k + ' = ' + last + ' (' + pts.length + ' steps)');
+    Object.entries(ms).forEach(([k,s]) => {
+      const last = s.last == null ? '--' : s.last;
+      lines.push('  ' + k + ' = ' + last + ' (' + s.count + ' points' +
+        (s.min == null ? '' : ', min ' + s.min + ', max ' + s.max) + ')');
     });
     lines.push('');
   }
-  if (d.artifacts && d.artifacts.length) {
-    lines.push('Artifacts:');
-    d.artifacts.forEach(a => lines.push('  ' + a.label + ': ' + a.path));
+  const artSum = d.artifacts_summary;
+  if (artSum ? artSum.total : (d.artifacts || []).length) {
+    // Capped server-side for the same reason the markdown export is: a
+    // checkpoint-per-epoch run has thousands, and listing them all buries
+    // everything above. The summary states the shape of what is not listed.
+    const shown = d.artifacts || [];
+    const total = artSum ? artSum.total : shown.length;
+    const omitted = artSum ? artSum.omitted : Math.max(0, total - ARTIFACT_LIST_LIMIT);
+    lines.push('Artifacts (' + total + '):');
+    if (omitted) {
+      if (artSum) {
+        lines.push('  ' + artSum.by_type.map(t => t.count + ' ' + t.type).join(', '));
+        artSum.by_dir.slice(0, 5).forEach(g =>
+          lines.push('  ' + String(g.count).padStart(6) + ' in ' + g.dir));
+      } else {
+        const s = _summarizeArtifacts(shown);
+        lines.push('  ' + s.byType.map(([k, n]) => n + ' ' + k).join(', '));
+        s.byDir.slice(0, 5).forEach(([dir, items]) =>
+          lines.push('  ' + String(items.length).padStart(6) + ' in ' + dir));
+      }
+      lines.push('');
+    }
+    shown.slice(0, ARTIFACT_LIST_LIMIT)
+      .forEach(a => lines.push('  ' + a.label + ': ' + a.path));
+    if (omitted) {
+      lines.push('  … and ' + omitted + ' more (export as JSON (full) for the complete list)');
+    }
     lines.push('');
   }
   const changes = d.code_changes || {};

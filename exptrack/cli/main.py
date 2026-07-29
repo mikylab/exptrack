@@ -27,6 +27,7 @@ from .admin_cmds import (
     cmd_compact,
     cmd_init,
     cmd_notebook_guard,
+    cmd_prune,
     cmd_restore,
     cmd_run,
     cmd_stale,
@@ -232,6 +233,9 @@ def _build_parser():
                         help="Show execution timeline")
     p_show.add_argument("--json", action="store_true", dest="json_output",
                         help="Output as JSON")
+    p_show.add_argument("--max-artifacts", type=int, default=None, metavar="N",
+                        help="Artifacts to list before summarising the rest "
+                             "(0 for all)")
 
     p_diff = sub.add_parser("diff", help="Print captured git diff for an experiment")
     p_diff.add_argument("id")
@@ -303,6 +307,13 @@ def _build_parser():
     p_export.add_argument("--format", choices=["json", "markdown", "csv", "tsv", "params", "params-flags", "params-json", "params-md", "params-tsv"], default="json")
     p_export.add_argument("--all", action="store_true", dest="export_all",
                           help="Export all experiments (batch export)")
+    p_export.add_argument("--max-artifacts", type=int, default=None, metavar="N",
+                          help="Artifacts to list before summarising the rest "
+                               "by type and directory (0 for all)")
+    p_export.add_argument("--full", action="store_true",
+                          help="Complete export: every metric point (metrics_series) "
+                               "and every artifact, for round-tripping. Default is a "
+                               "summary — one line per metric key, capped artifact list")
 
     p_rm = sub.add_parser("rm", help="Delete one or more experiments and their output files")
     p_rm.add_argument("id", nargs="+", help="Experiment ID(s) to delete")
@@ -345,6 +356,32 @@ def _build_parser():
     p_storage = sub.add_parser("storage", help="Show data storage breakdown and tips")
     p_storage.add_argument("--checkpoint", action="store_true",
                            help="Force WAL checkpoint to reclaim space")
+    p_storage.add_argument("--top", type=int, default=5, metavar="N",
+                           help="How many of the largest experiments to list "
+                                "(default 5, 0 to hide)")
+    p_storage.add_argument("--by-metric", action="store_true",
+                           help="Break the metrics table down by metric key")
+
+    p_prune = sub.add_parser(
+        "prune", help="Thin stored metric points to reclaim space")
+    p_prune.add_argument("id", nargs="*",
+                         help="Experiment ID(s) to prune (default: all)")
+    p_prune.add_argument("--keep-every", type=int, default=1, metavar="N",
+                         help="Keep every Nth point of each metric series")
+    p_prune.add_argument("--max-points", type=int, default=0, metavar="N",
+                         help="Thin each series down to at most N points")
+    p_prune.add_argument("--key", action="append", default=None, metavar="KEY",
+                         help="Only prune this metric key (repeatable)")
+    p_prune.add_argument("--no-protect-extremes", action="store_true",
+                         help="Allow the min/max of a series to be pruned "
+                              "(they are kept by default)")
+    p_prune.add_argument("--vacuum", action="store_true",
+                         help="VACUUM afterwards to return the freed pages to "
+                              "the filesystem (stop the dashboard first)")
+    p_prune.add_argument("--dry-run", action="store_true", dest="dry_run",
+                         help="Show what would be removed without removing it")
+    p_prune.add_argument("--yes", "-y", action="store_true",
+                         help="Skip the confirmation prompt")
 
     p_backup = sub.add_parser("backup", help="Create a backup of the experiment database")
     p_backup.add_argument("path", nargs="?", default="",
@@ -505,6 +542,7 @@ _DISPATCH = {
     "stale":        cmd_stale,
     "upgrade":      cmd_upgrade,
     "storage":      cmd_storage,
+    "prune":        cmd_prune,
     "backup":       cmd_backup,
     "restore":      cmd_restore,
     "compact":      cmd_compact,

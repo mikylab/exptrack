@@ -11,7 +11,19 @@ from pathlib import Path
 
 from .. import config as cfg
 from ..core import get_db
+from ..core.utils import json_dumps
 from .formatting import STATUS_C, STATUS_I, C, G, M, R, W, Y, bold, col, die, dim, fmt_dt, fmt_dur
+
+# How many artifacts `exptrack show` lists before summarising the rest. Lower
+# than the export cap: a terminal has a screenful, not a page.
+ARTIFACT_SHOW_LIMIT = 15
+
+
+def _artifact_limit(args) -> int:
+    """`--max-artifacts`, defaulting to the shared export cap when not given."""
+    from ..core.queries import ARTIFACT_LIST_LIMIT
+    n = getattr(args, "max_artifacts", None)
+    return ARTIFACT_LIST_LIMIT if n is None else n
 
 
 def cmd_ls(args):
@@ -41,7 +53,7 @@ def cmd_ls(args):
                 "studies": exp.get("studies", []), "metrics": metrics,
                 "params": exp.get("params", {}),
             })
-        print(json.dumps(out, indent=2, default=str))
+        print(json_dumps(out, indent=2, default=str))
         return
 
     # Build dynamic metric columns from returned data
@@ -99,7 +111,7 @@ def cmd_show(args):
         # Strip large git_diff from JSON output, keep diff_lines count
         out = dict(exp)
         out.pop("git_diff", None)
-        print(json.dumps(out, indent=2, default=str))
+        print(json_dumps(out, indent=2, default=str))
         return
 
     print()
@@ -153,13 +165,28 @@ def cmd_show(args):
 
     artifacts = exp.get("artifacts", [])
     if artifacts:
-        sec("Outputs")
-        for a in artifacts:
+        from ..core.queries import summarize_artifacts
+        # A checkpoint-per-epoch run has thousands of these; printed flat they
+        # push the params and metrics the command exists to show off-screen.
+        limit = getattr(args, "max_artifacts", None)
+        limit = ARTIFACT_SHOW_LIMIT if limit is None else limit
+        s = summarize_artifacts(artifacts, limit)
+        sec(f"Outputs ({s['total']})")
+        if s["omitted"]:
+            types = ", ".join(f"{n} {k}" for k, n in s["by_type"])
+            print(f"    {dim(types)}")
+            for d, n in s["by_dir"][:5]:
+                print(f"    {dim(f'{n:>6} in {d}')}")
+            print()
+        for a in s["shown"]:
             exists = "[ok]" if Path(a["path"]).exists() else dim("[missing]")
             seq_info = ""
             if a.get("timeline_seq"):
                 seq_info = dim(f"  @seq={a['timeline_seq']}")
             print(f"    {col(a['label'] or 'file', Y):<30} {a['path']}  {exists}{seq_info}")
+        if s["omitted"]:
+            print(dim(f"    … and {s['omitted']} more "
+                      f"(--max-artifacts 0 to list them all)"))
         print()
 
     # Show timeline summary if --timeline flag
@@ -713,32 +740,37 @@ def cmd_export(args):
     conn = get_db()
     fmt = getattr(args, "format", "json")
     export_all = getattr(args, "export_all", False)
+    full = getattr(args, "full", False)
 
     if export_all or (fmt in ("csv", "tsv") and not args.id):
-        _export_batch(conn, fmt, export_all, getattr(args, "id", None))
+        _export_batch(conn, fmt, export_all, getattr(args, "id", None),
+                      _artifact_limit(args), full)
         return
 
     if not args.id:
         die("Error: experiment ID required (or use --all for batch export)")
 
-    data = get_export_data(conn, args.id)
+    data = get_export_data(conn, args.id, full=full,
+                           artifact_limit=_artifact_limit(args))
     if not data:
         die(f"Not found: {args.id}")
 
     if fmt == "markdown":
-        print(format_export_markdown(data))
+        print(format_export_markdown(data, _artifact_limit(args)))
     elif fmt in ("csv", "tsv"):
         delimiter = "\t" if fmt == "tsv" else ","
         print(format_export_csv([data], delimiter=delimiter), end="")
     elif fmt in PARAMS_EXPORT_FORMATS:
         print(format_export_params(data, style=PARAMS_EXPORT_FORMATS[fmt]))
     else:
-        print(json.dumps(data, indent=2, default=str))
+        print(json_dumps(data, indent=2, default=str))
 
 
-def _export_batch(conn, fmt, export_all, exp_id_prefix):
+def _export_batch(conn, fmt, export_all, exp_id_prefix, artifact_limit=None,
+                  full=False):
     """Export one or all experiments in CSV/TSV/JSON/markdown/params batch format."""
     from ..core.queries import (
+        ARTIFACT_LIST_LIMIT,
         PARAMS_EXPORT_FORMATS,
         format_export_csv,
         format_export_markdown,
@@ -756,7 +788,9 @@ def _export_batch(conn, fmt, export_all, exp_id_prefix):
     elif not export_all:
         die("Error: provide experiment ID or use --all")
 
-    batch = get_batch_export_data(conn, exp_ids=exp_ids, export_all=export_all)
+    limit = ARTIFACT_LIST_LIMIT if artifact_limit is None else artifact_limit
+    batch = get_batch_export_data(conn, exp_ids=exp_ids, export_all=export_all,
+                                  full=full, artifact_limit=limit)
     if not batch:
         print(dim("No experiments found."), file=sys.stderr); return
 
@@ -767,14 +801,14 @@ def _export_batch(conn, fmt, export_all, exp_id_prefix):
         for i, data in enumerate(batch):
             if i > 0:
                 print("\n---\n")
-            print(format_export_markdown(data))
+            print(format_export_markdown(data, artifact_limit))
     elif fmt in PARAMS_EXPORT_FORMATS:
         style = PARAMS_EXPORT_FORMATS[fmt]
         if style == "json":
             # Keep valid JSON: an array of {id, name, params} objects.
             out = [{"id": d["id"], "name": d["name"], "params": d.get("params", {})}
                    for d in batch]
-            print(json.dumps(out, indent=2, default=str))
+            print(json_dumps(out, indent=2, default=str))
         else:
             for i, data in enumerate(batch):
                 if i > 0:
@@ -782,7 +816,7 @@ def _export_batch(conn, fmt, export_all, exp_id_prefix):
                 print(f"# {data['id'][:8]}  {data['name']}")
                 print(format_export_params(data, style=style))
     else:
-        print(json.dumps(batch, indent=2, default=str))
+        print(json_dumps(batch, indent=2, default=str))
 
 
 def cmd_verify(args):

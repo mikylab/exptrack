@@ -1,5 +1,7 @@
-"""Tests for exptrack/core/utils.py — debug gating and safe_call."""
+"""Tests for exptrack/core/utils.py — debug gating, safe_call, json_dumps."""
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -86,3 +88,58 @@ def test_safe_call_silent_failure_without_debug(monkeypatch, capsys):
 
     assert utils.safe_call(boom, default=0) == 0
     assert capsys.readouterr().err == ""
+
+
+# ── json_dumps: output every JSON parser accepts ────────────────────────────
+#
+# json.dumps renders inf as the bare token `Infinity`. Python's json.loads
+# reads it back (a non-standard extension), so a server-side round-trip test
+# would never catch it — but JSON.parse rejects the whole document, which is
+# how one non-finite metric made the dashboard report "Experiment not found".
+# These assert against a *strict* parse, not Python's lenient default.
+
+def _strict_loads(text):
+    """json.loads with the NaN/Infinity extension disabled, like JSON.parse."""
+    def _reject(token):
+        raise ValueError(f"non-standard JSON token: {token}")
+    return json.loads(text, parse_constant=_reject)
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_json_dumps_renders_non_finite_as_null(bad):
+    out = utils.json_dumps({"value": bad})
+    assert _strict_loads(out) == {"value": None}
+
+
+def test_json_dumps_output_is_strictly_parseable_when_nested():
+    payload = {"series": [{"v": float("inf")}, {"v": 1.5}],
+               "summary": {"max": float("-inf"), "n": 2}}
+    parsed = _strict_loads(utils.json_dumps(payload))
+    assert parsed["series"] == [{"v": None}, {"v": 1.5}]
+    assert parsed["summary"] == {"max": None, "n": 2}
+
+
+def test_json_dumps_leaves_a_clean_payload_untouched():
+    payload = {"a": [1, 2.5, None], "b": {"c": "x"}, "d": True}
+    assert utils.json_dumps(payload) == json.dumps(payload)
+
+
+def test_json_dumps_forwards_kwargs():
+    out = utils.json_dumps({"a": 1}, indent=2)
+    assert "\n" in out and _strict_loads(out) == {"a": 1}
+
+
+def test_json_dumps_still_uses_default_for_unserializable_objects():
+    class Thing:
+        def __str__(self):
+            return "thing"
+
+    assert _strict_loads(utils.json_dumps({"t": Thing()}, default=str)) == {"t": "thing"}
+
+
+def test_json_dumps_reraises_a_non_finite_unrelated_value_error():
+    """A circular reference must still fail, not be swallowed by the retry."""
+    d = {}
+    d["self"] = d
+    with pytest.raises(ValueError):
+        utils.json_dumps(d)

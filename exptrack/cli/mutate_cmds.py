@@ -15,6 +15,34 @@ from ..core import delete_experiment, get_db
 from ..core.db import _sweep_blobs, _trash_or_local
 from .formatting import G, R, Y, col, die, dim, fmt_bytes
 
+# Below this a "freed space" note is noise — a couple of pages moving to the
+# free list is not something anyone acts on.
+_RECLAIM_NOTE_MIN_BYTES = 256 * 1024
+
+
+def _free_bytes(conn) -> int:
+    """Bytes on the database's free list right now (cheap: two pragmas)."""
+    from ..core.storage import free_space
+    return free_space(conn)["bytes"]
+
+
+def _print_reclaimed(conn, before: int):
+    """Say what a delete actually freed, and how to get it back from the file.
+
+    A delete removes the rows immediately, but SQLite moves their pages to the
+    file's free list rather than shrinking the file — so `ls` shows the same
+    size afterwards and the delete looks like it did nothing. Reporting the
+    delta (and naming the one command that returns it to the filesystem) is
+    the difference between "that worked" and "that silently failed". Call
+    after ``conn.commit()``; the free list only moves when the write lands.
+    """
+    freed = max(0, _free_bytes(conn) - before)
+    if freed < _RECLAIM_NOTE_MIN_BYTES:
+        return
+    print(dim(f"  ~{fmt_bytes(freed)} freed inside the database file — reusable "
+              f"immediately. Run \"exptrack clean --vacuum\" to return it to "
+              f"the filesystem."), file=sys.stderr)
+
 
 def cmd_tag(args):
     from ..core.queries import find_experiment, update_experiment_tags
@@ -135,12 +163,14 @@ def cmd_rm(args):
         prompt = f"Delete {len(to_delete)} experiment(s)? [y/N] "
 
     if input(prompt).lower() == "y":
+        free_before = _free_bytes(conn)
         for exp in to_delete:
             delete_experiment(conn, exp["id"], reclaim_blobs=False)
         _sweep_blobs(conn)  # once for the batch, not per run
         conn.commit()
         print(col(f"Deleted {len(to_delete)} experiment(s) (including output files).", G),
               file=sys.stderr)
+        _print_reclaimed(conn, free_before)
 
 
 def cmd_clean(args):
@@ -191,11 +221,13 @@ def cmd_clean(args):
     if dry_run:
         print(dim(f"Dry run: would delete {len(rows)} experiment(s).")); return
     if input("Delete all? [y/N] ").lower() == "y":
+        free_before = _free_bytes(conn)
         for r in rows:
             delete_experiment(conn, r["id"], reclaim_blobs=False)
         _sweep_blobs(conn)
         conn.commit()
         print(col(f"Cleaned {len(rows)} experiments (including output files).", G))
+        _print_reclaimed(conn, free_before)
 
 
 def _clean_reset(conn, dry_run: bool = False):
@@ -309,11 +341,13 @@ def _clean_older_than(conn, age_str: str, all_statuses: bool, dry_run: bool = Fa
     if dry_run:
         print(dim(f"Dry run: would delete {len(rows)} experiment(s).")); return
     if input(f"Delete {len(rows)} experiment(s)? [y/N] ").lower() == "y":
+        free_before = _free_bytes(conn)
         for r in rows:
             delete_experiment(conn, r["id"], reclaim_blobs=False)
         _sweep_blobs(conn)
         conn.commit()
         print(col(f"Cleaned {len(rows)} experiment(s).", G))
+        _print_reclaimed(conn, free_before)
 
 
 def _clean_vacuum(conn, dry_run: bool = False):

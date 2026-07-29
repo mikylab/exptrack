@@ -80,3 +80,43 @@ def test_no_raw_esc_in_handler_strings():
         "esc()/escapeHtml() without escJs() inside an inline-handler JS string:\n"
         + "\n".join(offenders)
     )
+
+
+# ── the live-run auto-refresh poll ──────────────────────────────────────────
+
+def _poll_source() -> str:
+    js = get_all_js()
+    start = js.index("async function _autoRefreshPoll(")
+    return js[start:js.index("\n}", start)]
+
+
+def test_auto_refresh_poll_guards_against_stacking():
+    """The poll fires every 5s and a request can take longer than that.
+
+    Without an in-flight guard the requests pile up, each re-rendering the
+    detail panel underneath the last.
+    """
+    js = get_all_js()
+    assert "_autoRefreshInFlight" in js
+    body = _poll_source()
+    assert "if (_autoRefreshInFlight) return;" in body
+    assert "_autoRefreshInFlight = true;" in body
+    assert "finally" in body and "_autoRefreshInFlight = false;" in body
+
+
+def test_auto_refresh_poll_survives_a_failed_request():
+    """api() returns null on failure, so `exp.error` threw into the poll's own
+    catch — making one bad poll indistinguishable from a healthy one."""
+    body = _poll_source()
+    assert "if (!exp || exp.error) return;" in body
+    assert "exp.metrics || []" in body
+
+
+def test_compare_picker_pages_instead_of_asking_for_one_huge_limit():
+    """The server caps `limit`, so an over-large ask comes back short — and a
+    short response reads exactly like "that is all of them"."""
+    js = get_all_js()
+    start = js.index("async function _loadCmpExps(")
+    body = js[start:js.index("\n}", start)]
+    assert "offset=' + rows.length" in body
+    assert "limit=' + EXP_PAGE_SIZE" in body

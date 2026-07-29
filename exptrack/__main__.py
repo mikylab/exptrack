@@ -91,7 +91,6 @@ def main(resume=None):
     from . import config as cfg
     from .capture import (
         capture_argv,
-        capture_script_snapshot,
         patch_argparse,
         patch_savefig,
         patch_tensorboard,
@@ -124,8 +123,11 @@ def main(resume=None):
     from .core.experiment import publish_run_wrapper
     publish_run_wrapper(exp)
 
-    # Snapshot the script source and diff against previous runs
-    capture_script_snapshot(exp, str(script_path))
+    # Snapshot the script source and diff against previous runs. The
+    # constructor already did this for a fresh run; it is still called here
+    # because `Experiment.resume` bypasses __init__ and cannot know the path
+    # this invocation resolved. Idempotent for the same file.
+    exp._maybe_snapshot_script(str(script_path))
 
     # Patch argparse BEFORE the script runs — so parse_args() auto-logs params
     if conf.get("auto_capture", {}).get("argparse", True):

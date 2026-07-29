@@ -162,6 +162,49 @@ def test_clean_db_reports_loose_files_but_keeps_them(tmp_project, db_conn):
     assert stray.read_text() == "my notes"
 
 
+def test_clean_db_only_trashes_the_paths_the_confirm_listed(tmp_project, db_conn):
+    """The confirm dialog is built by a *previous* request.
+
+    Anything that appears under outputs/ between the two calls must not be
+    trashed — the user never saw it.
+    """
+    from exptrack.dashboard.routes.write_routes import api_clean_db
+
+    (tmp_project / "outputs").mkdir(exist_ok=True)
+    shown = tmp_project / "outputs" / "old_orphan"
+    shown.mkdir()
+    (shown / "junk.txt").write_text("junk")
+
+    listed = api_clean_db(db_conn, {})["orphan_files"]
+    assert {o["name"] for o in listed} == {"old_orphan"}
+
+    # ... and now something new lands while the dialog is open.
+    fresh = tmp_project / "outputs" / "brand_new"
+    fresh.mkdir()
+    (fresh / "ckpt.pt").write_bytes(b"precious")
+
+    res = api_clean_db(db_conn, {"delete_files": True,
+                                 "paths": [o["path"] for o in listed]})
+
+    assert not shown.exists(), "the confirmed orphan should be trashed"
+    assert (fresh / "ckpt.pt").read_bytes() == b"precious"
+    assert res["skipped_unconfirmed"] == 1
+
+
+def test_clean_db_without_paths_keeps_legacy_behaviour(tmp_project, db_conn):
+    """An older client that sends no `paths` still gets discover-and-act."""
+    from exptrack.dashboard.routes.write_routes import api_clean_db
+
+    orphan = tmp_project / "outputs" / "orphan"
+    orphan.mkdir(parents=True)
+    (orphan / "junk.txt").write_text("junk")
+
+    res = api_clean_db(db_conn, {"delete_files": True})
+
+    assert not orphan.exists()
+    assert res["skipped_unconfirmed"] == 0
+
+
 def test_cli_clean_orphans_trashes_recoverably(tmp_project, monkeypatch, capsys):
     """`exptrack clean --orphans` moves orphans to trash rather than rmtree."""
     from exptrack.cli.mutate_cmds import cmd_clean
@@ -637,3 +680,164 @@ def test_gitignore_rules_established_when_the_token_is_written(tmp_path, monkeyp
     # Additive only — the pre-existing rule survives, and re-running is a no-op.
     assert ".exptrack/experiments.db" in ignored
     assert cfg.ensure_gitignore_rules() is False
+
+
+# ---------------------------------------------------------------------------
+# 5. A permanent delete never removes another run's output directory
+# ---------------------------------------------------------------------------
+
+def _rename(conn, exp_id, new_name):
+    """The dashboard rename path: update the row + move the folder."""
+    from exptrack.core.db import rename_output_folder
+    old = conn.execute("SELECT name FROM experiments WHERE id=?",
+                       (exp_id,)).fetchone()["name"]
+    conn.execute("UPDATE experiments SET name=? WHERE id=?", (new_name, exp_id))
+    rename_output_folder(conn, exp_id, old, new_name)
+    conn.commit()
+
+
+def test_permanent_delete_spares_a_duplicate_named_runs_outputs(tmp_project, db_conn):
+    """Names are not unique, so `outputs/<name>` may belong to a different run.
+
+    `rename_output_folder` refuses to move onto an existing directory, so after
+    renaming A to B's name only B owns `outputs/<name>` — deleting A used to
+    trash it anyway.
+    """
+    from exptrack.core.db import delete_experiment, get_db
+    from exptrack.core.experiment import Experiment
+
+    keeper = Experiment(name="baseline", script="train.py")
+    keep_dir = tmp_project / "outputs" / "baseline"
+    keep_dir.mkdir(parents=True, exist_ok=True)
+    (keep_dir / "model.pt").write_bytes(b"expensive")
+    keeper.finish()
+
+    doomed = Experiment(name="scratch", script="train.py")
+    doomed_dir = tmp_project / "outputs" / "scratch"
+    doomed_dir.mkdir(parents=True, exist_ok=True)
+    (doomed_dir / "tmp.pt").write_bytes(b"junk")
+    doomed.finish()
+
+    conn = get_db()
+    _rename(conn, doomed.id, "baseline")  # collides; the folder does not move
+
+    stats = delete_experiment(conn, doomed.id, delete_files=True)
+    conn.commit()
+
+    assert (keep_dir / "model.pt").read_bytes() == b"expensive", \
+        "deleting one run must not trash another run's output directory"
+    assert not doomed_dir.exists(), "the run's own output dir should still go"
+    assert stats["os_trash"] + stats["local_trash"] >= 1
+
+
+def test_delete_preview_sizes_only_the_dirs_the_delete_will_take(tmp_project, db_conn):
+    """The dialog must not quote bytes belonging to a run it will not touch."""
+    from exptrack.core.db import get_db, get_delete_preview
+    from exptrack.core.experiment import Experiment
+
+    keeper = Experiment(name="baseline", script="train.py")
+    keep_dir = tmp_project / "outputs" / "baseline"
+    keep_dir.mkdir(parents=True, exist_ok=True)
+    (keep_dir / "model.pt").write_bytes(b"x" * 5000)
+    keeper.finish()
+
+    doomed = Experiment(name="scratch", script="train.py")
+    doomed.finish()
+
+    conn = get_db()
+    conn.execute("UPDATE experiments SET name='baseline', output_dir=NULL WHERE id=?",
+                 (doomed.id,))
+    conn.commit()
+
+    prev = get_delete_preview(conn, doomed.id)
+
+    assert prev["output_dir_bytes"] == 0
+    assert prev["output_dir_files"] == 0
+
+
+def test_a_trashed_runs_outputs_still_count_as_claimed(tmp_project, db_conn):
+    """Restore has to stay lossless, so a soft-deleted run keeps its claim."""
+    from exptrack.core.db import (
+        delete_experiment,
+        get_db,
+        output_dirs_owned_by,
+        trash_experiment,
+    )
+    from exptrack.core.experiment import Experiment
+
+    keeper = Experiment(name="baseline", script="train.py")
+    keep_dir = tmp_project / "outputs" / "baseline"
+    keep_dir.mkdir(parents=True, exist_ok=True)
+    (keep_dir / "model.pt").write_bytes(b"expensive")
+    keeper.finish()
+
+    doomed = Experiment(name="scratch", script="train.py")
+    doomed.finish()
+
+    conn = get_db()
+    trash_experiment(conn, keeper.id)
+    conn.execute("UPDATE experiments SET name='baseline', output_dir=NULL WHERE id=?",
+                 (doomed.id,))
+    conn.commit()
+
+    assert output_dirs_owned_by(conn, doomed.id, "baseline", None) == []
+
+    delete_experiment(conn, doomed.id, delete_files=True)
+    conn.commit()
+    assert (keep_dir / "model.pt").read_bytes() == b"expensive"
+
+
+def test_the_only_claimant_still_gets_its_outputs_deleted(tmp_project, db_conn):
+    """The guard must not turn every delete into a no-op."""
+    from exptrack.core.db import delete_experiment, get_db
+    from exptrack.core.experiment import Experiment
+
+    exp = Experiment(name="solo", script="train.py")
+    out = tmp_project / "outputs" / "solo"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "model.pt").write_bytes(b"junk")
+    exp.finish()
+
+    conn = get_db()
+    conn.execute("UPDATE experiments SET output_dir=NULL WHERE id=?", (exp.id,))
+    conn.commit()
+
+    delete_experiment(conn, exp.id, delete_files=True)
+    conn.commit()
+
+    assert not out.exists(), "the name-derived dir is still ours when nobody else claims it"
+
+
+def test_a_dir_the_delete_protects_is_not_reported_as_an_orphan(tmp_project, db_conn):
+    """One claim rule, or the guarantee is undone one button over.
+
+    `output_dirs_owned_by` refuses to trash a directory another run claims; if
+    `find_orphan_output_paths` used a different rule and called that same
+    directory debris, the next Clean click would trash it anyway.
+    """
+    from exptrack.core.db import (
+        find_orphan_output_paths,
+        get_db,
+        output_dirs_owned_by,
+    )
+    from exptrack.core.experiment import Experiment
+
+    keeper = Experiment(name="baseline", script="train.py")
+    keep_dir = tmp_project / "outputs" / "baseline"
+    keep_dir.mkdir(parents=True, exist_ok=True)
+    (keep_dir / "model.pt").write_bytes(b"expensive")
+    keeper.finish()
+
+    doomed = Experiment(name="scratch", script="train.py")
+    doomed.finish()
+
+    conn = get_db()
+    conn.execute("UPDATE experiments SET name='baseline', output_dir=NULL WHERE id=?",
+                 (doomed.id,))
+    conn.commit()
+
+    protected = output_dirs_owned_by(conn, doomed.id, "baseline", None)
+    orphans = {str(p) for p in find_orphan_output_paths(conn)}
+
+    assert protected == [], "another run claims it, so the delete must skip it"
+    assert str(keep_dir) not in orphans, "…and Clean must not call it debris"

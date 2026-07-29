@@ -109,8 +109,20 @@ function _openDeleteModalSingle(id, name, p) {
       if (!r.ok) { alert(r.error || 'Failed'); return; }
       _closeDeleteModal();
       _afterMutation(id);
+      _reportFreedSpace(r);
     },
   });
+}
+
+// A permanent delete removes the rows immediately, but SQLite keeps the file
+// the same size — the freed pages go on its free list and only a vacuum hands
+// them back to the filesystem. Saying so is the difference between "that
+// worked" and "the database didn't get any smaller, so nothing happened".
+function _reportFreedSpace(r) {
+  const freed = r && r.freed_bytes;
+  if (!freed || freed < 256 * 1024) return;
+  owlSay(fmtBytes(freed) + ' freed inside the database (reusable now). ' +
+         'Settings \u2192 Clean → vacuum returns it to disk.');
 }
 
 // ── Bulk confirm (called from sidebar) ──────────────────────────────────────
@@ -180,6 +192,7 @@ function _openDeleteModalBulk(ids, p) {
       _closeDeleteModal();
       selectedIds.clear();
       _afterMutation('');
+      _reportFreedSpace(r);
     },
   });
 }
@@ -320,11 +333,30 @@ async function loadTrashList() {
     experiments: (data && data.experiments) || [],
     sessions: (data && data.sessions) || [],
     trashed_sessions: (data && data.trashed_sessions) || [],
+    storage: (data && data.storage) || null,
   };
   _trashSelected = new Set([..._trashSelected].filter(
     id => _trashCache.experiments.find(r => r.id === id)));
   _renderTrashView();
   _refreshTrashCount();
+}
+
+// Nothing in the Trash is reclaimed until you act, so the view has to say what
+// it is holding: database rows for the trashed records, plus the output files
+// left in place on disk (soft delete deliberately does not touch them).
+function _trashStorageLine(t) {
+  if (!t) return '';
+  const db = t.db_bytes || 0, files = t.output_bytes || 0, local = t.local_bytes || 0;
+  if (!db && !files && !local) return '';
+  const parts = [];
+  if (db) parts.push(fmtBytes(db) + ' in the database');
+  if (files) parts.push(fmtBytes(files) + ' of output files still on disk (' +
+                        t.output_files.toLocaleString() + ')');
+  if (local) parts.push(fmtBytes(local) + ' in .exptrack/trash/');
+  return '<div class="trash-storage" title="Database bytes are estimated by ' +
+    'apportioning each table\'s true size across its rows. Freed pages return to ' +
+    'the filesystem after a vacuum (Settings \u2192 Clean).">Holding ' +
+    esc(parts.join(' \u00b7 ')) + '</div>';
 }
 
 function _renderTrashView() {
@@ -342,6 +374,7 @@ function _renderTrashView() {
       '<button class="dc-button" onclick="closeTrashView()">Close</button>' +
     '</div>' +
   '</div>' +
+  _trashStorageLine(_trashCache.storage) +
   '<p class="trash-blurb">Soft-deleted items live here — both experiments and session-tree nodes. ' +
     'They are hidden from the dashboard and stats, but their database rows and files are untouched. ' +
     'Restore them, or use <b>Permanently delete</b> / <b>Delete forever</b> to remove the record. ' +
@@ -661,6 +694,7 @@ async function trashPermanent(id, name) {
       await loadTrashList();
       if (typeof loadStats === 'function') loadStats();
       if (typeof loadExperiments === 'function') loadExperiments();
+      _reportFreedSpace(r);
     },
   });
 }
@@ -695,6 +729,7 @@ async function trashBulkPermanent() {
       await loadTrashList();
       if (typeof loadStats === 'function') loadStats();
       if (typeof loadExperiments === 'function') loadExperiments();
+      _reportFreedSpace(r);
     },
   });
 }
