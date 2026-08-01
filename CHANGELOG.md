@@ -1159,9 +1159,10 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **`protect_on_rerun` config option** — artifact protection removed. The deduplication set in auto-detect already prevents double-logging without needing to copy files
 - **`artifact_protection.py` module** — no longer needed
 
-## [1.0.0] - 2026-03-26
+## [pre-1.0.0] - 2026-03-26
 
-Initial public release.
+First development milestone. Never published to PyPI — see the [1.0.0] entry at
+the top of this file for the first release that was.
 
 ### Core
 
