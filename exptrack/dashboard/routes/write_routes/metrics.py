@@ -5,6 +5,7 @@ Metric and result rows: log, edit, rename, delete.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 from exptrack.core.queries import find_experiment
@@ -36,6 +37,8 @@ def api_log_metric(conn, exp_id: str, body: dict) -> dict:
         num_val = float(value)
     except ValueError:
         return {"error": "value must be a number"}
+    if not math.isfinite(num_val):
+        return {"error": "value must be a finite number"}
 
     ts = datetime.now(timezone.utc).isoformat()
 
@@ -118,6 +121,8 @@ def api_edit_result(conn, exp_id: str, body: dict) -> dict:
         num_val = float(value)
     except ValueError:
         return {"error": "value must be a number"}
+    if not math.isfinite(num_val):
+        return {"error": "value must be a finite number"}
 
     ts = datetime.now(timezone.utc).isoformat()
     # Delete old manual entry and insert new one

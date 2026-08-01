@@ -63,10 +63,16 @@ async function loadTimeline(expId, filter) {
     ? '/api/timeline/' + expId + '?type=' + serverFilter
     : '/api/timeline/' + expId;
   let events = await api(url);
+  const container = document.getElementById('detail-tab-timeline');
+  // api() returns null on a failed request (already reported in the error bar) —
+  // reading through it threw mid-render and left the tab blank with no message.
+  if (!Array.isArray(events)) {
+    if (container) container.innerHTML = _apiFailedHtml('the timeline');
+    return;
+  }
   if (isLineageFilter) {
     events = events.filter(ev => ev.parent_hash);
   }
-  const container = document.getElementById('detail-tab-timeline');
 
   // Single source of truth for each event type's icon, plain-language label,
   // color, and a one-line meaning (used by the filter bar, the legend, the per-event
@@ -1010,8 +1016,12 @@ let _withinEvents = []; // cache timeline events
 
 async function loadCompareWithin(expId) {
   const events = await api('/api/timeline/' + expId);
-  _withinEvents = events;
   const container = document.getElementById('detail-tab-compare-within');
+  if (!Array.isArray(events)) {
+    if (container) container.innerHTML = _apiFailedHtml('the timeline');
+    return;
+  }
+  _withinEvents = events;
 
   // Group events into meaningful checkpoints: cell_exec, metric, artifact
   const checkpoints = events.filter(e =>

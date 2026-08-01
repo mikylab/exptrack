@@ -18,9 +18,12 @@ Magic commands:
     %exp_status           show current experiment id + params so far
     %exp_tag foo bar      add tags
     %exp_note "text"      add a note
+    %exp_log acc=0.93     log metrics onto this notebook's latest run — works
+                          after the run finished, for test/train numbers you
+                          only computed afterwards
 
 --- Option B: Explicit API ----
-    from exptrack.notebook import start, metric, out, done, current
+    from exptrack.notebook import start, metric, out, done, current, log_last
 
     run = start(lr=0.001, bs=32)      # kwargs become params
     metric("val/loss", 0.23, step=5)
@@ -113,6 +116,54 @@ def out(filename: str) -> Path:
     return _require().save_output(filename)
 
 
+def log_last(_nb_file: str = "", **kwargs: float) -> Experiment | None:
+    """Log metrics onto the most recent run of *this* notebook, after the fact.
+
+    The common notebook loop finishes the run before the numbers exist: you run
+    the notebook, close it out, then evaluate and finally have test/train
+    accuracy in hand. Every other logging path needs a live run (``metric()``)
+    or a run id you have to go find (``exptrack log-metric <id>``), so the
+    numbers most worth keeping were the most awkward to attach.
+
+    If a run is currently active this logs onto it. Otherwise it resumes the
+    latest surviving run of this notebook, logs, and finishes it again. The run
+    it chose is always printed — attaching a number to the wrong run silently
+    is worse than not attaching it.
+    """
+    if not kwargs:
+        print("[exptrack] log_last() needs at least one metric, e.g. "
+              "log_last(test_acc=0.93)", file=sys.stderr)
+        return None
+
+    if _active is not None:
+        _active.log_metrics(kwargs)
+        print(f"[exptrack] logged {', '.join(kwargs)} → {_active.name} (active run)")
+        return _active
+
+    from .core import get_db
+    from .core.queries import find_latest_by_script
+
+    script = _nb_file or _detect_nb_name() or "notebook"
+    row = find_latest_by_script(get_db(), script)
+    if row is None:
+        print(f"[exptrack] no previous run found for '{script}' — start one with "
+              "%exp_start (or pass the notebook name).", file=sys.stderr)
+        return None
+
+    try:
+        exp = Experiment.resume(row["id"])
+        exp.log_metrics(kwargs)
+        # Resume reopens the run; it was already complete, so hand it back in
+        # the state we found it rather than leaving it 'running' forever.
+        if not exp._finished:
+            exp.finish()
+    except Exception as e:
+        print(f"[exptrack] could not log onto {row['id'][:8]}: {e}", file=sys.stderr)
+        return None
+    print(f"[exptrack] logged {', '.join(kwargs)} → {row['name']} ({row['id'][:8]})")
+    return exp
+
+
 def done() -> None:
     """Explicitly finish the active run as successful.
 
@@ -177,6 +228,36 @@ def reset() -> None:
 
 def current() -> Experiment | None:
     return _active
+
+
+def _parse_metric_assignments(line: str) -> tuple[dict[str, float], list[str]]:
+    """Parse ``key=value [key=value ...]`` into floats.
+
+    Returns ``(values, rejected_tokens)`` — a token that isn't ``key=number``
+    is reported rather than dropped, so a typo can't look like a logged metric.
+    Non-finite values are rejected here too: they are what ``json.dumps``
+    renders as bare ``Infinity``/``NaN``, which no browser can parse back.
+    """
+    import math
+
+    vals: dict[str, float] = {}
+    bad: list[str] = []
+    for token in line.replace(",", " ").split():
+        key, sep, raw = token.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            bad.append(token)
+            continue
+        try:
+            num = float(raw)
+        except ValueError:
+            bad.append(token)
+            continue
+        if not math.isfinite(num):
+            bad.append(token)
+            continue
+        vals[key] = num
+    return vals, bad
 
 
 def _require() -> Experiment:
@@ -361,6 +442,21 @@ def load_ipython_extension(ip: Any) -> None:
             for k, v in exp._params.items():
                 print(f"    {k} = {v}")
 
+    def exp_log(line):
+        """Log metrics onto this notebook's latest run: %exp_log test_acc=0.93 f1=0.88
+
+        Works after the run has finished — the usual case, since you often only
+        have the test numbers once the run is over.
+        """
+        vals, bad = _parse_metric_assignments(line)
+        for token in bad:
+            print(f"[exptrack] skipping '{token}' — expected key=number", file=sys.stderr)
+        if vals:
+            log_last(**vals)
+        elif not bad:
+            print("[exptrack] usage: %exp_log test_acc=0.93 [train_acc=0.98]",
+                  file=sys.stderr)
+
     def exp_tag(line):
         """Add tags: %exp_tag baseline resnet"""
         tag(*line.strip().split())
@@ -374,6 +470,7 @@ def load_ipython_extension(ip: Any) -> None:
     ip.register_magic_function(exp_new, magic_kind='line')
     ip.register_magic_function(exp_done, magic_kind='line')
     ip.register_magic_function(exp_status, magic_kind='line')
+    ip.register_magic_function(exp_log, magic_kind='line')
     ip.register_magic_function(exp_tag, magic_kind='line')
     ip.register_magic_function(exp_note, magic_kind='line')
 
@@ -390,7 +487,8 @@ def load_ipython_extension(ip: Any) -> None:
     import atexit
     atexit.register(lambda: _finish_active(auto=True) if _active else None)
 
-    print("[exptrack] Loaded. Use %exp_new, %exp_status, %exp_done, %exp_tag, %exp_note")
+    print("[exptrack] Loaded. Use %exp_new, %exp_status, %exp_done, %exp_tag, "
+          "%exp_note, %exp_log")
 
 
 def _auto_start(nb_file: str = "", name: str = "", ip: Any = None) -> None:

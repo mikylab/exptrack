@@ -8,8 +8,17 @@
 let activeRename = null;
 
 function startInlineRename(id, el) {
+  // Seed from the run's real name, never from the rendered cell text: the main
+  // table middle-ellipsizes long names (midEllipsis), so `el.textContent` is
+  // `Jul28_ablate__…__2aac1081` — committing that wrote the literal `…` and
+  // destroyed the middle of the name. The row's `title` attribute holds the
+  // full name and is the fallback; the raw text is only a last resort.
+  const exp = (typeof allExperiments !== 'undefined' ? allExperiments : []).find(e => e.id === id);
   const iconEl = el.querySelector('.edit-icon');
-  const currentName = iconEl ? el.textContent.replace(iconEl.textContent, '').trim() : el.textContent.trim();
+  const rendered = iconEl ? el.textContent.replace(iconEl.textContent, '').trim() : el.textContent.trim();
+  const titleAttr = (el.getAttribute && el.getAttribute('title')) || '';
+  const currentName = (exp && typeof exp.name === 'string') ? exp.name
+                    : (titleAttr || rendered);
   const where = el.closest('#exp-sidebar') ? 'sidebar'
               : el.closest('#detail-view') ? 'detail'
               : 'table';
@@ -52,14 +61,18 @@ function startInlineRename(id, el) {
     if (e.key === 'Enter')  { e.preventDefault(); commit(true);  }
     if (e.key === 'Escape') { e.preventDefault(); commit(false); }
   });
-  // Commit on blur only when the user actually moved focus to another real
-  // element. Re-renders that detach the input from the DOM also fire blur, but
-  // by then renderExperiments/renderExpList have already preserved the input
-  // via _preserveActiveRename, so the blur is from the OLD orphaned node — not
-  // a real focus change. We guard by checking input.isConnected.
+  // A re-render clearing the input's focus is NOT the user finishing an edit.
+  // `remounting` is set while the input is detached by _preserveActiveRename and
+  // cleared only once it is back in the DOM *and* focused again (or the user
+  // focuses it themselves). Without it, a background loadExperiments() cycle
+  // that fails to restore focus auto-committed whatever was half-typed.
+  input.addEventListener('focus', () => {
+    if (activeRename && activeRename.input === input) activeRename.remounting = false;
+  });
   input.addEventListener('blur', () => {
     setTimeout(() => {
       if (!activeRename || activeRename.input !== input) return;
+      if (activeRename.remounting) return;  // re-render moved the input, not the user
       if (!input.isConnected) return;  // detached by re-render; preserve handler will re-mount
       if (document.activeElement === input) return;  // refocused
       commit(true);
@@ -67,22 +80,37 @@ function startInlineRename(id, el) {
   });
 }
 
-// Called by renderExperiments/renderExpList before they overwrite innerHTML.
-// Returns a function to call AFTER the re-render that re-mounts the input in
-// the row's name cell (preserving value and cursor). If no rename is active,
-// returns a no-op.
-function _preserveActiveRename() {
+// Called by renderExperiments/renderExpList/refreshDetail before they overwrite
+// innerHTML. Returns a function to call AFTER the re-render that re-mounts the
+// input in the row's name cell (preserving value and cursor). If no rename is
+// active, returns a no-op.
+//
+// `scopeId` is the element whose innerHTML is about to be replaced. It matters
+// because a single loadExperiments() cycle renders the table and the sidebar
+// back to back (_renderExpViews): without a scope check the sidebar render
+// would detach the input the table render had just re-mounted, re-mount it into
+// whichever slot it found first, and leave the user typing into a moving target.
+// Only the render that actually owns the input touches it.
+function _preserveActiveRename(scopeId) {
   if (!activeRename) return () => {};
   const input = activeRename.input;
   if (!input || !input.isConnected) return () => {};
-  const id = activeRename.id;
+  if (scopeId) {
+    const scope = document.getElementById(scopeId);
+    if (scope && !scope.contains(input)) return () => {};
+  }
+  const rename = activeRename;
+  const id = rename.id;
   const value = input.value;
   const selStart = input.selectionStart;
   const selEnd = input.selectionEnd;
-  // Detach so the parent's innerHTML reset doesn't destroy our node.
+  // Detach so the parent's innerHTML reset doesn't destroy our node. Until it's
+  // back and focused, a blur is a side effect of the re-render, not the user.
+  rename.remounting = true;
   input.remove();
-  const where = activeRename.where;
+  const where = rename.where;
   return () => {
+    if (activeRename !== rename) return;   // committed while we were re-rendering
     const rootId = where === 'sidebar' ? 'exp-sidebar' : where === 'detail' ? 'detail-view' : 'exp-body';
     const root = document.getElementById(rootId);
     let slot = root && root.querySelector('[data-rename-slot="' + id + '"]');
@@ -92,6 +120,9 @@ function _preserveActiveRename() {
       slot = document.querySelector('[data-rename-slot="' + id + '"]');
     }
     if (!slot) {
+      // Nowhere to put it back: drop the edit rather than committing text the
+      // user never confirmed.
+      rename.remounting = false;
       activeRename = null;
       return;
     }
@@ -99,6 +130,10 @@ function _preserveActiveRename() {
     input.value = value;
     try { input.setSelectionRange(selStart, selEnd); } catch (_) {}
     input.focus();
+    // Focus can fail (hidden/collapsed container). Staying "remounting" then
+    // keeps the blur handler from committing behind the user's back; their next
+    // click into the input clears it via the focus listener.
+    rename.remounting = document.activeElement !== input;
   };
 }
 

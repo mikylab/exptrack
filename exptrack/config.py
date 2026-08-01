@@ -39,7 +39,7 @@ DEFAULTS: dict = {
         "mse", "mae", "r2", "perplexity", "bleu",
     ],
     "var_fingerprint_max_mb": 100,   # cap content-hashing of vars for change detection; lower if per-cell capture is slow with big DataFrames
-    "metric_keep_every":     1,      # store every Nth metric point (1=all, 10=every 10th)
+    "metric_keep_every":     1,      # store 1 of every N points your code logs, per metric key (1=all). Counts points, not step values, so it works at any logging cadence
     "metric_commit_interval_ms": 250,  # coalesce metric commits (one fsync each) into at most one per this window; 0 = commit every call
     "max_cell_source_kb":    50,     # hard cap on cell source in cell_lineage
     "max_source_diff_kb":    20,     # hard cap on source_diff in timeline events

@@ -246,3 +246,78 @@ def test_second_experiment_retargets_capture(tmp_project):
 
     exp2.finish()
     ap_mod._patched = False
+
+
+# ── Negative numeric values (raw-argv capture) ────────────────────────────────
+
+def test_capture_argv_keeps_negative_values(tmp_project):
+    """`--lr -0.5` etc. must capture the value, not a boolean True."""
+    from exptrack.capture.argparse_patch import capture_argv
+    from exptrack.core import Experiment
+
+    exp = Experiment(script="train.py")
+
+    old_argv = sys.argv
+    sys.argv = ["train.py", "--lr", "-0.5", "--offset", "-3",
+                "--eps", "-1e-4", "-o", "-2.5"]
+    try:
+        capture_argv(exp)
+    finally:
+        sys.argv = old_argv
+
+    assert exp._params.get("lr") == -0.5
+    assert exp._params.get("offset") == -3
+    assert exp._params.get("eps") == -1e-4
+    assert exp._params.get("o") == -2.5
+
+    exp.finish()
+
+
+def test_capture_argv_following_flag_stays_boolean(tmp_project):
+    """A genuine following flag is still a boolean, not a value."""
+    from exptrack.capture.argparse_patch import capture_argv
+    from exptrack.core import Experiment
+
+    exp = Experiment(script="train.py")
+
+    old_argv = sys.argv
+    sys.argv = ["train.py", "--a", "--b", "-x", "-y", "--c", "--not-a-number"]
+    try:
+        capture_argv(exp)
+    finally:
+        sys.argv = old_argv
+
+    assert exp._params.get("a") is True
+    assert exp._params.get("b") is True
+    assert exp._params.get("x") is True
+    assert exp._params.get("y") is True
+    assert exp._params.get("c") is True
+
+    exp.finish()
+
+
+def test_capture_remaining_keeps_negative_values(tmp_project):
+    """The parse_known_args residual parser follows the same rule."""
+    from exptrack.capture.argparse_patch import _capture_remaining
+    from exptrack.core import Experiment
+
+    exp = Experiment(script="train.py")
+    _capture_remaining(exp, ["--lr", "-0.5", "--flag", "--eps", "-1e-4"])
+
+    assert exp._params.get("lr") == -0.5
+    assert exp._params.get("flag") is True
+    assert exp._params.get("eps") == -1e-4
+
+    exp.finish()
+
+
+def test_is_value_token_rule():
+    from exptrack.capture.argparse_patch import _is_value_token
+
+    assert _is_value_token("0.5")
+    assert _is_value_token("-0.5")
+    assert _is_value_token("-3")
+    assert _is_value_token("-1e-4")
+    assert not _is_value_token("--lr")
+    assert not _is_value_token("-x")
+    assert not _is_value_token("--3")

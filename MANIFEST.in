@@ -6,3 +6,8 @@ recursive-include exptrack *.py
 include exptrack/py.typed
 include exptrack/dashboard/vendor/*.js
 recursive-include exptrack/dashboard/static *.js *.css *.svg
+# The README links to these, so an sdist reader has them locally too.
+recursive-include docs *.md *.png
+recursive-include examples *.py *.sh *.md
+# The test suite is for developers working in the repo, not for installers.
+prune tests

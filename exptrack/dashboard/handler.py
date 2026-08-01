@@ -93,6 +93,13 @@ _CSP_FILE = (
 # are never rendered as documents, so nothing needs to be allowed.
 _CSP_STRICT = "default-src 'none'; frame-ancestors 'none'"
 
+# The only path prefix where a ``?token=`` query parameter is accepted as
+# credentials. Artifacts are loaded by <img src>/<a href> (``fileUrl()`` in the
+# JS), which cannot carry an Authorization header; every other route can and
+# must, so the token stays out of URLs — and therefore out of browser history,
+# proxy logs and Referer headers.
+_QS_TOKEN_PREFIX = "/api/file/"
+
 
 # ── GET routing tables ──────────────────────────────────────────────────────
 # Split in two so ordering only has to be reasoned about where it can actually
@@ -378,7 +385,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _check_auth(self) -> bool:
         """Check Bearer token auth if a dashboard_token is configured.
-        Returns True if authorized, False if rejected (error already sent)."""
+        Returns True if authorized, False if rejected (error already sent).
+
+        The token is normally read from the ``Authorization: Bearer`` header.
+        ``?token=`` is accepted **only** under ``_QS_TOKEN_PREFIX``
+        (``/api/file/``), where it is unavoidable: the Images tab loads
+        artifacts through ``<img src>`` (``fileUrl()`` in the JS) and a tag
+        cannot send a header. Everywhere else a query-string token would put
+        the credential into browser history, proxy logs and Referer headers,
+        and make every mutation reachable by URL alone.
+        """
         token = _get_auth_token()
         if not token:
             return True  # no auth configured
@@ -386,14 +402,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # on network-exposed dashboards.
         auth_header = self.headers.get("Authorization", "")
         presented = auth_header[7:] if auth_header.startswith("Bearer ") else ""
-        if not presented:
-            parsed = urllib.parse.urlparse(self.path)
+        parsed = urllib.parse.urlparse(self.path)
+        qs_allowed = parsed.path.startswith(_QS_TOKEN_PREFIX)
+        if not presented and qs_allowed:
             qs = dict(urllib.parse.parse_qsl(parsed.query))
             presented = qs.get("token", "")
         if presented and secrets.compare_digest(presented, token):
             return True
-        self.send_error(401, "Unauthorized - set Authorization: Bearer <token> header "
-                        "or ?token=<token> query param")
+        hint = (" or ?token=<token> query param" if qs_allowed else "")
+        self.send_error(401, "Unauthorized - set Authorization: Bearer <token> "
+                        f"header{hint}")
         return False
 
     # ── GET routing ──────────────────────────────────────────────────────────
@@ -511,6 +529,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "note":            lambda: write_routes.api_add_note(conn, exp_id, body),
                 "tag":             lambda: write_routes.api_add_tag(conn, exp_id, body),
                 "rename":          lambda: write_routes.api_rename(conn, exp_id, body),
+                "set-variant-of":  lambda: write_routes.api_set_variant_of(conn, exp_id, body),
                 "delete":          lambda: write_routes.api_delete(conn, exp_id),
                 "restore":         lambda: write_routes.api_restore(conn, exp_id),
                 "delete-permanent": lambda: write_routes.api_delete_permanent(conn, exp_id, body),

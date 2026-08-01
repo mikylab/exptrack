@@ -59,6 +59,7 @@ from .experiments import (
     api_restore,
     api_save_confusion,
     api_set_stage,
+    api_set_variant_of,
 )
 from .metrics import (
     api_delete_metric,
@@ -204,6 +205,7 @@ __all__ = [
     "api_set_metric_settings",
     "api_set_stage",
     "api_set_timezone",
+    "api_set_variant_of",
     "api_storage_info",
     "api_update_command",
     "api_update_todo",

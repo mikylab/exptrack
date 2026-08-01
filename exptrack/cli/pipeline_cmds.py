@@ -8,6 +8,7 @@ All output to stderr so stdout can be captured cleanly by eval $(...).
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -16,6 +17,28 @@ from pathlib import Path
 from .. import config as cfg
 from ..core import get_db
 from ..core.naming import make_run_name
+from .formatting import die
+
+
+def _finite_metric(cmd: str, key: str, value) -> float | None:
+    """Coerce ``value`` to a finite float, or warn on stderr and return None.
+
+    ``Experiment.log_metric`` refuses non-finite values, but the pipeline write
+    paths bypass it — and json round-trips NaN/Infinity, so a results.json
+    written by a diverged training run would otherwise land as a NULL metric row
+    (SQLite coerces NaN) or a stored ±inf.
+    """
+    try:
+        num = float(value)
+    except (ValueError, TypeError):
+        print(f"[exptrack] {cmd}: skipping non-numeric value: {key}={value}",
+              file=sys.stderr)
+        return None
+    if not math.isfinite(num):
+        print(f"[exptrack] {cmd}: skipping non-finite value: {key}={value}",
+              file=sys.stderr)
+        return None
+    return num
 
 
 def _coerce_str(v: str):
@@ -196,8 +219,13 @@ def _resolve_run_start_experiment(args, params, naming_hint, calling_script):
     if resume_id == "latest":
         resolved_script = (str(Path(calling_script).resolve())
                            if Path(calling_script).is_file() else calling_script)
+        # Trashed runs are skipped (they're gone from every list, so resuming
+        # one silently appends to something the user can't see), and the rowid
+        # tie-break keeps "latest" deterministic when two runs share a
+        # created_at — rowid is insertion, i.e. launch, order.
         row = get_db().execute(
-            "SELECT id FROM experiments WHERE script=? ORDER BY created_at DESC LIMIT 1",
+            "SELECT id FROM experiments WHERE script=? AND deleted_at IS NULL "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (resolved_script,)
         ).fetchone()
         if not row:
@@ -343,8 +371,17 @@ def _gather_finish_metrics(args, exp_id, step, ts):
     try:
         raw = json.loads(mpath.read_text())
         flat = _flatten_dict(raw)
-        numeric = {k: float(v) for k, v in flat.items()
-                   if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        numeric = {}
+        for k, v in flat.items():
+            # Strings (a script that formatted its numbers) and bools are not
+            # metrics — say so per key rather than dropping them silently.
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                print(f"[exptrack] run-finish: skipping non-numeric value: {k}={v}",
+                      file=sys.stderr)
+                continue
+            num = _finite_metric("run-finish", k, v)
+            if num is not None:
+                numeric[k] = num
     except Exception as e:
         print(f"[exptrack] Warning: could not parse metrics file: {e}", file=sys.stderr)
         return [], 0
@@ -395,6 +432,26 @@ def _gather_finish_artifacts(conn, exp_id, ts):
     return rows, files
 
 
+def _note_if_trashed(conn, exp_id: str, cmd: str) -> None:
+    """Print a stderr notice when writing to a run that is in Trash.
+
+    Explicit-ID pipeline commands keep working on a trashed run (a long job may
+    outlive a hasty delete, and its numbers are still worth keeping), but the
+    run is hidden from every list — so say so rather than letting the write
+    disappear silently. Best-effort: never blocks the command.
+    """
+    try:
+        row = conn.execute(
+            "SELECT deleted_at FROM experiments WHERE id=?", (exp_id,)
+        ).fetchone()
+        if row and row["deleted_at"]:
+            print(f"[exptrack] {cmd}: note: run {exp_id[:6]} is in Trash — "
+                  "writing to a run hidden from the experiment list",
+                  file=sys.stderr)
+    except Exception:
+        pass
+
+
 def cmd_run_finish(args):
     """Mark an experiment as done from a shell script.
 
@@ -411,6 +468,7 @@ def cmd_run_finish(args):
 
     exp_id = exp_row["id"]
     ts = datetime.now(timezone.utc).isoformat()
+    _note_if_trashed(conn, exp_id, "run-finish")
 
     metric_rows, metric_count = _gather_finish_metrics(args, exp_id, args.step, ts)
     param_rows = _gather_finish_params(args, exp_id)
@@ -475,6 +533,7 @@ def cmd_run_fail(args):
     if not exp_row:
         print(f"[exptrack] run-fail: not found: {args.id}", file=sys.stderr); sys.exit(1)
 
+    _note_if_trashed(conn, exp_row["id"], "run-fail")
     now = datetime.now(timezone.utc).isoformat()
     duration = (datetime.fromisoformat(now) -
                 datetime.fromisoformat(exp_row["created_at"])).total_seconds()
@@ -507,13 +566,23 @@ def cmd_log_metric(args):
             print(f"[exptrack] log-metric: file not found: {fpath}", file=sys.stderr); sys.exit(1)
         raw = json.loads(fpath.read_text())
         flat = _flatten_dict(raw)
-        rows = [(exp_id, k, float(v), args.step, ts)
-                for k, v in flat.items() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        rows = []
+        for k, v in flat.items():
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue
+            num = _finite_metric("log-metric", k, v)
+            if num is not None:
+                rows.append((exp_id, k, num, args.step, ts))
     else:
         if args.key is None or args.value is None:
             print("[exptrack] log-metric: provide KEY VALUE or --file FILE", file=sys.stderr)
             sys.exit(1)
-        rows = [(exp_id, args.key, float(args.value), args.step, ts)]
+        num = _finite_metric("log-metric", args.key, args.value)
+        if num is None:
+            sys.exit(1)
+        rows = [(exp_id, args.key, num, args.step, ts)]
+
+    _note_if_trashed(conn, exp_id, "log-metric")
 
     with conn:
         conn.executemany(
@@ -640,19 +709,17 @@ def cmd_log_result(args):
         for k, v in flat.items():
             if isinstance(v, bool):
                 continue
-            try:
-                results[k] = float(v)
-            except (ValueError, TypeError):
-                print(f"[exptrack] log-result: skipping non-numeric value: {k}={v}", file=sys.stderr)
+            num = _finite_metric("log-result", k, v)
+            if num is not None:
+                results[k] = num
     else:
         if args.key is None or args.value is None:
             print("[exptrack] log-result: provide KEY VALUE or --file FILE", file=sys.stderr)
             sys.exit(1)
-        try:
-            results[args.key] = float(args.value)
-        except ValueError:
-            print(f"[exptrack] log-result: value must be a number, got: {args.value}", file=sys.stderr)
+        num = _finite_metric("log-result", args.key, args.value)
+        if num is None:
             sys.exit(1)
+        results[args.key] = num
 
     if not results:
         return
@@ -736,6 +803,24 @@ def cmd_link_dir(args):
         print(f"[exptrack] Linked file: {dir_path}", file=sys.stderr)
 
 
+def _validated_created_at(date_str, now: str) -> str:
+    """Validate ``--date`` as ISO-8601, or die with a clear message.
+
+    ``created_at`` is later read back with ``datetime.fromisoformat`` (run-finish,
+    run-fail, ``db.finish_experiment``), so an arbitrary string crashes those
+    commands *before* the run is marked done — leaving it stuck 'running'.
+    """
+    if not date_str or not date_str.strip():
+        return now
+    value = date_str.strip()
+    try:
+        datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        die(f"create: --date must be an ISO-8601 timestamp "
+            f"(e.g. 2026-07-31 or 2026-07-31T14:30:00), got: {value}")
+    return value
+
+
 def cmd_create(args):
     """Create a manual experiment entry for runs done outside exptrack."""
     import uuid
@@ -743,7 +828,7 @@ def cmd_create(args):
     conn = get_db()
     exp_id = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc).isoformat()
-    created_at = args.date.strip() if args.date else now
+    created_at = _validated_created_at(args.date, now)
     name = args.name.strip()
 
     conf = cfg.load()
@@ -783,9 +868,8 @@ def cmd_create(args):
             metrics = json.loads(args.metrics)
             if isinstance(metrics, dict):
                 for k, v in metrics.items():
-                    try:
-                        num_val = float(v)
-                    except (ValueError, TypeError):
+                    num_val = _finite_metric("create", k, v)
+                    if num_val is None:
                         continue
                     conn.execute(
                         "INSERT INTO metrics (exp_id, key, value, step, ts, source) VALUES (?,?,?,0,?,?)",

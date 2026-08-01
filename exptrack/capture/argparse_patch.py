@@ -85,6 +85,26 @@ def _normalize_long_flag(key: str) -> str:
     return key.replace("-", "_")
 
 
+def _is_value_token(tok: str) -> bool:
+    """Is ``tok`` the *value* of the preceding flag, or the next flag?
+
+    Mirrors the rule the pipeline parser uses (``_parse_freeform_params``): a
+    ``--``-prefixed token is always a flag, and a single-dash token is a value
+    only when it parses as a number — so ``--lr -0.5`` / ``--offset -3`` /
+    ``--eps -1e-4`` keep their (negative) values instead of being recorded as
+    boolean flags with the value discarded, while ``--a --b`` and ``-a -b``
+    still read as two booleans.
+    """
+    if tok.startswith("--"):
+        return False
+    if tok.startswith("-"):
+        try:
+            float(tok)
+        except (ValueError, TypeError):
+            return False
+    return True
+
+
 def _capture_remaining(exp: Experiment, args: list[str]):
     """Parse residual --key value / --key=value / -k value from remaining args."""
     params = {}
@@ -96,14 +116,14 @@ def _capture_remaining(exp: Experiment, args: list[str]):
             if "=" in key:
                 k, v = key.split("=", 1)
                 params[_normalize_long_flag(k)] = _coerce(v)
-            elif i + 1 < len(args) and not args[i + 1].startswith("-"):
+            elif i + 1 < len(args) and _is_value_token(args[i + 1]):
                 params[_normalize_long_flag(key)] = _coerce(args[i + 1])
                 i += 1
             else:
                 params[_normalize_long_flag(key)] = True
         elif a.startswith("-") and len(a) == 2:
             key = a[1:]
-            if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            if i + 1 < len(args) and _is_value_token(args[i + 1]):
                 params[key] = _coerce(args[i + 1])
                 i += 1
             else:
@@ -130,14 +150,14 @@ def capture_argv(exp: Experiment):
             if "=" in key:
                 k, v = key.split("=", 1)
                 params[_normalize_long_flag(k)] = _coerce(v)
-            elif i + 1 < len(args) and not args[i + 1].startswith("-"):
+            elif i + 1 < len(args) and _is_value_token(args[i + 1]):
                 params[_normalize_long_flag(key)] = _coerce(args[i + 1])
                 i += 1
             else:
                 params[_normalize_long_flag(key)] = True
         elif a.startswith("-") and len(a) == 2:
             key = a[1:]
-            if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            if i + 1 < len(args) and _is_value_token(args[i + 1]):
                 params[key] = _coerce(args[i + 1])
                 i += 1
             else:

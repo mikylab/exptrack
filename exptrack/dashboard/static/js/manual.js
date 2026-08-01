@@ -199,13 +199,22 @@ function removeNewExpKvRow(btn) {
   row.remove();
 }
 
-function collectKv(containerId) {
+// Mirror of the server's _parse_param_value: JSON-decode so a typed number,
+// bool or list is stored as that type, falling back to the raw string. The
+// modal used to send everything as a string, so a run created here got
+// lr = "0.05" while the same value typed into "+ Add Param" got 0.05 — the two
+// then compared as different in every diff/compare surface.
+function _parseKvValue(s) {
+  try { return JSON.parse(s); } catch (e) { return s; }
+}
+
+function collectKv(containerId, parse) {
   const obj = {};
   const rows = document.querySelectorAll('#' + containerId + ' .new-exp-kv');
   rows.forEach(function(row) {
     const k = row.querySelector('.kv-key').value.trim();
     const v = row.querySelector('.kv-val').value.trim();
-    if (k && v) obj[k] = v;
+    if (k && v) obj[k] = parse ? _parseKvValue(v) : v;
   });
   return obj;
 }
@@ -228,7 +237,7 @@ async function submitNewExp() {
     command: document.getElementById('new-exp-command').value.trim(),
     tags: document.getElementById('new-exp-tags').value.trim(),
     notes: document.getElementById('new-exp-notes').value.trim(),
-    params: collectKv('new-exp-params'),
+    params: collectKv('new-exp-params', true),
     metrics: collectKv('new-exp-metrics')
   };
 

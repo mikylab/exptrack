@@ -53,7 +53,7 @@ def table_byte_sizes(conn: sqlite3.Connection) -> dict:
         rows = conn.execute("""
             SELECT COALESCE(m.tbl_name, d.name) AS owner, SUM(d.pgsize) AS bytes
             FROM dbstat d
-            LEFT JOIN sqlite_schema m ON m.name = d.name
+            LEFT JOIN sqlite_master m ON m.name = d.name
             GROUP BY owner
         """).fetchall()
     except Exception:
@@ -444,8 +444,9 @@ def _shared_diff_bytes(conn: sqlite3.Connection) -> dict:
             elif not marker.startswith(REF_PREFIX):
                 out[marker] = len(marker)      # inline (legacy) body
 
-        for r in conn.execute("SELECT hash, LENGTH(diff_text) AS sz FROM git_diffs"):
-            marker = f"{REF_PREFIX}{r['hash']}]"
+        for r in conn.execute(
+                "SELECT diff_hash, LENGTH(diff_text) AS sz FROM git_diffs"):
+            marker = f"{REF_PREFIX}{r['diff_hash']}]"
             if marker in holders:
                 out[marker] = int((r["sz"] or 0) / max(1, holders[marker]))
     except Exception as e:

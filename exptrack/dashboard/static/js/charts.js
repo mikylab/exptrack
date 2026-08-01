@@ -140,7 +140,12 @@ function createChart(canvas, key, points, colorIdx, scaleOpts) {
       responsive: true,
       plugins: {
         legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } },
-        tooltip: { callbacks: { afterLabel: () => 'Click to delete this point' } }
+        tooltip: { callbacks: { afterLabel: (ctx) => {
+          const pt = (ctx.chart.$points || [])[ctx.dataIndex];
+          return (pt && pt.step !== null && pt.step !== undefined)
+            ? 'Click to delete this point'
+            : 'This series logs no step — points can\'t be deleted from the chart';
+        } } }
       },
       scales: {
         x: buildChartScaleConfig('Step', scaleOpts, 'x'),
@@ -152,8 +157,17 @@ function createChart(canvas, key, points, colorIdx, scaleOpts) {
         const pt = self.$points[idx];
         const step = pt.step;
         const val = pt.value;
-        if (confirm('Delete point: ' + key + ' = ' + val + ' (step ' + (step ?? idx) + ')?')) {
-          deleteMetricPoint(currentDetailId, key, step ?? idx);
+        // Delete is by *stored* step. A step-less series has no stored identity
+        // to name here — the array index is an index into the *downsampled*
+        // display points, so on any series over metric_max_points the confirm
+        // would name one point and the server would delete another. Refuse
+        // rather than delete the wrong row.
+        if (step === null || step === undefined) {
+          owlSay('This metric was logged without a step, so a chart click can\'t identify the point to delete. Use the Metrics table.');
+          return;
+        }
+        if (confirm('Delete point: ' + key + ' = ' + val + ' (step ' + step + ')?')) {
+          deleteMetricPoint(currentDetailId, key, step);
         }
       }
     }
@@ -213,7 +227,9 @@ function renderSingleChart(container, selectedKey, metricsData, scaleOpts) {
   const points = metricsData[selectedKey];
   if (!points || points.length < 1) return;
 
-  const keyIdx = Object.keys(metricsData).indexOf(selectedKey);
+  // Colour by position in the shared chartMetricKeys() list — the same list the
+  // all-view colours from — so a metric keeps its colour across the two views.
+  const keyIdx = chartMetricKeys(metricsData).indexOf(selectedKey);
   charts._active = createChart(canvas, selectedKey, points, keyIdx, scaleOpts);
 }
 
@@ -225,16 +241,15 @@ function renderAllCharts(container, metricsData, scaleOpts) {
   if (!grid) return;
   grid.innerHTML = '';
 
-  let colorIdx = 0;
-  for (const [key, points] of Object.entries(metricsData)) {
-    if (points.length < 1) { colorIdx++; continue; }
+  const keys = chartMetricKeys(metricsData);
+  for (const key of keys) {
+    const points = metricsData[key];
     const div = document.createElement('div');
     div.className = 'chart-container';
     const canvas = document.createElement('canvas');
     div.appendChild(canvas);
     grid.appendChild(div);
-    charts['all_' + key] = createChart(canvas, key, points, colorIdx, scaleOpts);
-    colorIdx++;
+    charts['all_' + key] = createChart(canvas, key, points, keys.indexOf(key), scaleOpts);
   }
 }
 

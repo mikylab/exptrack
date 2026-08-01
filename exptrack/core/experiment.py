@@ -27,7 +27,7 @@ from typing import Any
 
 from .. import config as cfg
 from ..plugins import registry as plugins
-from .db import get_db, rename_output_folder, store_git_diff
+from .db import flush_pending, get_db, rename_output_folder, store_git_diff
 from .git import git_info
 from .gpu import gpu_info
 from .naming import make_run_name, output_path
@@ -81,6 +81,13 @@ def _flush_live_runs() -> None:
             exp.flush_metrics()
         except Exception:
             pass        # shutdown: never raise out of an atexit hook
+    # _live_runs holds weak references, so a run dropped without finish() is
+    # already gone from it with its coalescing window still open. flush_pending
+    # asks the *connection* whether rows are outstanding, so those land too —
+    # without it the next Experiment()'s BEGIN IMMEDIATE failed with "cannot
+    # start a transaction within a transaction" and its rollback destroyed the
+    # collected run's points.
+    flush_pending()
 
 
 atexit.register(_flush_live_runs)
@@ -188,6 +195,16 @@ class Experiment:
     # repeat capture is a no-op. Class default for the resume path
     # (object.__new__, skips __init__) and any early reader.
     _script_snapshotted = None
+    # Write-time metric thinning state (see _keep_metric_point): points logged
+    # per key so far, and whether the "thinning is on" notice has been printed.
+    # `None` here rather than a shared dict — a mutable class attribute would be
+    # shared by every run in the process. Set per instance in __init__/resume().
+    _metric_logged = None
+    _thin_notice_shown = False
+    # None = use the config default. Class-level so _keep_metric_point's
+    # build-us-bare guard below is reachable instead of dying on the attribute
+    # lookup that precedes it.
+    _thin_every = None
 
     def __new__(cls, *args, **kwargs):
         # A bare ``Experiment()`` created by a script running under
@@ -234,6 +251,7 @@ class Experiment:
         self.notes    = notes
         self.status   = "running"
         self._thin_every = thin_every  # None = use config default
+        self._metric_logged: dict[str, int] = {}
         self.duration_s: float | None = None
         # How long metric writes may sit uncommitted (see _commit_metrics).
         self._metric_commit_interval_s = max(
@@ -308,14 +326,26 @@ class Experiment:
 
     @classmethod
     def resume(cls, exp_id: str) -> Experiment:
-        """Reopen a finished/failed experiment to continue it."""
+        """Reopen a finished/failed experiment to continue it.
+
+        Refuses a run that is in Trash: it's hidden from every list, so
+        appending to it would write metrics nobody can see. Restore it first
+        (dashboard Trash view, or ``exptrack`` restore) and resume again. The
+        implicit "resume the latest run" lookups skip trashed rows instead and
+        start a fresh run, matching the ``_BASELINE_WHERE`` precedent.
+        """
         from .queries import find_experiment
         conn = get_db()
         row = find_experiment(conn, exp_id,
             "id, name, script, git_branch, git_commit, git_diff, "
-            "hostname, python_ver, notes, tags, created_at, output_dir, project")
+            "hostname, python_ver, notes, tags, created_at, output_dir, project, "
+            "deleted_at")
         if not row:
             raise ValueError(f"Experiment '{exp_id}' not found")
+        if row.get("deleted_at"):
+            raise ValueError(
+                f"Experiment '{row['id'][:6]}' is in Trash — restore it before resuming"
+            )
 
         exp = object.__new__(cls)
         for col in ("id", "name", "script", "git_branch", "git_commit",
@@ -327,6 +357,7 @@ class Experiment:
         exp.status, exp._finished, exp._start = "running", False, time.time()
         exp._resumed = True
         exp._thin_every = exp._snapshot_hash = None
+        exp._metric_logged = {}
         # __init__-only attrs the lifecycle methods read but object.__new__ skips.
         # (_defer_commit is covered by the class-level default.)
         exp.name_is_auto = False        # resumed runs already have a chosen name
@@ -583,20 +614,52 @@ class Experiment:
 
     # ── Metrics ───────────────────────────────────────────────────────────────
 
-    def _should_store_metric(self, step: int | None) -> bool:
-        """Check if this metric point should be stored based on thinning setting.
-
-        Uses thin_every from __init__ if set, otherwise falls back to
-        metric_keep_every from project config (default: 1 = keep all).
-        """
-        if step is None:
-            return True
+    def _keep_every(self) -> int:
+        """Write-time thinning factor: ``thin_every`` if set, else config."""
         keep_every = self._thin_every
         if keep_every is None:
             keep_every = cfg.load().get("metric_keep_every", 1)
+        try:
+            return max(1, int(keep_every))
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: json accepts 1e999 → float('inf'), and int(inf)
+            # raises it — a hand-edited config must degrade, never crash logging.
+            return 1
+
+    def _keep_metric_point(self, key: str) -> bool:
+        """Should this point be stored? Keeps 1 of every N *logged points*.
+
+        The count is per metric key, and the first point of every key is always
+        kept (count 0). This deliberately does NOT test the step value.
+
+        It used to be ``step % keep_every == 0``, which silently assumes you log
+        on every step. Log every 5th step (the common ``if (i+1) % 5 == 0``
+        pattern) with ``keep_every=999`` and the two are coprime, so no step ever
+        satisfies it and the run stores *nothing* — the setting reads as "thin
+        this a bit" and acts as "discard everything". Even a friendly factor was
+        wrong: ``keep_every=1000`` on a 200-step run kept only step 0. Counting
+        points delivers what the setting has always claimed — every Nth point —
+        for any logging cadence, and can never take a series to zero.
+        """
+        keep_every = self._keep_every()
         if keep_every <= 1:
             return True
-        return step % keep_every == 0
+        counts = self._metric_logged
+        if counts is None:                  # resume/early path built us bare
+            counts = self._metric_logged = {}
+        n = counts.get(key, 0)
+        counts[key] = n + 1
+        if n % keep_every == 0:
+            return True
+        # Thinning silently dropping data is what made this hard to diagnose:
+        # the dashboard just showed an empty chart. Say it once per run.
+        if not self._thin_notice_shown:
+            self._thin_notice_shown = True
+            print(f"[exptrack] metric thinning is on (keep_every={keep_every}): "
+                  f"storing 1 of every {keep_every} points per metric. "
+                  f"Set metric_keep_every to 1 to record every point.",
+                  file=sys.stderr)
+        return False
 
     def _commit_metrics(self, conn):
         """Commit metric writes, but at most once per commit interval.
@@ -630,8 +693,29 @@ class Experiment:
         if now - self._last_metric_commit >= interval:
             conn.commit()
             self._last_metric_commit = now
+            self._metrics_uncommitted = False
         else:
             self._metrics_uncommitted = True
+
+    def _tick_commit_window(self):
+        """Flush a pending coalescing window from a call that stored nothing.
+
+        A thinned-away point (or an all-non-finite `log_metrics`) writes no row,
+        but an *earlier* kept point may still be sitting uncommitted — and with
+        `metric_keep_every: 1000` the next call that would flush it is a thousand
+        iterations away, leaving it invisible to the dashboard's separate
+        connection for that whole stretch.
+
+        Deliberately checks the window against instance state *before* touching
+        the DB layer: `get_db()` re-derives the path, `mkdir`s the parent and
+        runs a `SELECT 1` liveness probe on every call, so calling it per dropped
+        point put a syscall and a round trip on the one path that is supposed to
+        be nearly free (~99k of each on a 100k-iteration run thinned at 100).
+        """
+        if not self._metrics_uncommitted or self._metric_commit_interval_s <= 0:
+            return
+        if time.monotonic() - self._last_metric_commit >= self._metric_commit_interval_s:
+            self.flush_metrics()
 
     def flush_metrics(self):
         """Commit any metric rows still held by the coalescing window above."""
@@ -639,10 +723,7 @@ class Experiment:
             return
         self._metrics_uncommitted = False
         self._last_metric_commit = time.monotonic()
-        try:
-            get_db().commit()
-        except Exception as e:
-            print(f"[exptrack] warning: metric flush failed: {e}", file=sys.stderr)
+        flush_pending()
 
     def log_metric(self, key: str, value: float, step: int | None = None):
         if self._finished:
@@ -654,7 +735,8 @@ class Experiment:
             print(f"[exptrack] warning: metric '{key}' has non-finite value: {fval} — skipping",
                   file=sys.stderr)
             return
-        if not self._should_store_metric(step):
+        if not self._keep_metric_point(key):
+            self._tick_commit_window()
             return
         ts = datetime.now(timezone.utc).isoformat()
         node_id = _active_session_node()
@@ -676,8 +758,6 @@ class Experiment:
             print("[exptrack] warning: logging metrics after experiment finished",
                   file=sys.stderr)
             return
-        if not self._should_store_metric(step):
-            return
         ts = datetime.now(timezone.utc).isoformat()
         node_id = _active_session_node()
         finite_metrics = {}
@@ -687,8 +767,14 @@ class Experiment:
                 print(f"[exptrack] warning: metric '{k}' has non-finite value: {fv} — skipping",
                       file=sys.stderr)
                 continue
+            # Per key, not once for the dict: each key carries its own count, so
+            # a caller logging {loss, acc} together thins both identically while
+            # a key logged on only some calls still keeps every Nth of its own.
+            if not self._keep_metric_point(k):
+                continue
             finite_metrics[k] = fv
         if not finite_metrics:
+            self._tick_commit_window()      # see the note on _tick_commit_window
             return
         conn = get_db()   # not `with` — see the note in log_metric
         conn.executemany(
@@ -1000,9 +1086,16 @@ class Experiment:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        # Guarded like every finish path in __main__: a script may finish()
+        # explicitly inside the with-block, and finish() raises on a second
+        # call — unguarded, a clean block crashed at exit and, worse, in the
+        # exception branch the RuntimeError from fail() replaced the user's
+        # real exception as the one propagating.
         if exc_type is not None:
-            tb = "".join(_tb.format_exception(exc_type, exc_val, exc_tb))
-            self.fail(str(exc_val), traceback=tb)
+            if not self._finished:
+                tb = "".join(_tb.format_exception(exc_type, exc_val, exc_tb))
+                self.fail(str(exc_val), traceback=tb)
             return False
-        self.finish()
+        if not self._finished:
+            self.finish()
         return False

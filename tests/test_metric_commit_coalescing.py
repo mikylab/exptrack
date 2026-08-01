@@ -153,6 +153,73 @@ def test_starting_another_run_with_metrics_pending(tmp_project):
     b.finish()
 
 
+def test_a_collected_run_cannot_strand_its_pending_window(tmp_project):
+    """`_live_runs` holds weak references, so a run dropped without finish()
+    vanished from it with its window still open: the rows sat in the shared
+    connection's implicit transaction unreachable by every flush, and the next
+    Experiment()'s BEGIN IMMEDIATE then died on "cannot start a transaction
+    within a transaction" — whose rollback destroyed those points and raised
+    into the user's script. `db.flush_pending` asks the connection instead of a
+    registry, so a collected run's rows still land."""
+    import gc
+
+    from exptrack.core.experiment import Experiment
+
+    _set_interval(tmp_project, 60_000)
+
+    def train():
+        exp = Experiment(name="dropped")
+        for i in range(10):
+            exp.log_metric("loss", float(i), step=i)
+        return exp.id           # exp goes out of scope with 9 points buffered
+
+    train()
+    gc.collect()
+
+    Experiment(name="after").finish()   # must not raise
+    assert _rows(tmp_project) == 10, "the collected run's pending window was lost"
+
+
+def test_close_db_lands_a_pending_window_instead_of_rolling_it_back(tmp_project):
+    """close_db() closed the connection without committing, so any rows still
+    inside the coalescing window were silently rolled back."""
+    from exptrack.core.db import close_db
+    from exptrack.core.experiment import Experiment
+
+    _set_interval(tmp_project, 60_000)
+    exp = Experiment(name="pending")
+    for i in range(5):
+        exp.log_metric("loss", float(i), step=i)
+    assert _rows(tmp_project) == 1          # first landed, 4 buffered
+    close_db(sweep=False, checkpoint=False)
+    assert _rows(tmp_project) == 5
+
+
+def test_a_thinned_stretch_still_flushes_an_earlier_kept_point(tmp_project):
+    """A thinned-away point stores nothing, but an earlier kept point may be
+    sitting uncommitted — with keep_every=1000 the next call that would flush it
+    is a thousand iterations away. The tick must not cost a get_db() per dropped
+    point, so it checks the window on instance state first."""
+    import json
+
+    from exptrack import config as cfg
+    from exptrack.core.experiment import Experiment
+
+    p = tmp_project / ".exptrack" / "config.json"
+    conf = json.loads(p.read_text())
+    conf["metric_commit_interval_ms"] = 0      # every flush lands immediately
+    conf["metric_keep_every"] = 50
+    p.write_text(json.dumps(conf))
+    cfg._cache = None
+
+    exp = Experiment(name="thinned")
+    for i in range(120):
+        exp.log_metric("loss", float(i), step=i)
+    # 1 of every 50 points kept, and all of them visible to another connection.
+    assert _rows(tmp_project) == 3
+    exp.finish()
+
+
 def test_batched_writes_still_owns_its_commit(tmp_project):
     """Inside batched_writes() the block commits, not the metric window."""
     from exptrack.core.experiment import Experiment

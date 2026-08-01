@@ -27,6 +27,18 @@ def api_add_note(conn, exp_id: str, body: dict) -> dict:
     return result
 
 
+def api_set_variant_of(conn, exp_id: str, body: dict) -> dict:
+    """Declare which run this one is a variant of (or clear it with an empty id).
+
+    The declared run becomes this run's baseline for the "vs previous" strip
+    and the "What changed" card, so re-running one notebook with a different
+    model compares against the run the user means rather than whatever happened
+    to run last.
+    """
+    from exptrack.core.queries import set_variant_of
+    return set_variant_of(conn, exp_id, body_str(body, "variant_of"))
+
+
 def api_add_tag(conn, exp_id: str, body: dict) -> dict:
     exp = find_experiment(conn, exp_id, "id, tags")
     if not exp:

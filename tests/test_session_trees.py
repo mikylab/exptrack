@@ -592,9 +592,11 @@ def test_branch_reactivates_abandoned(tmp_project):
     sm2.session_id = sid
     sm2._current_node_id = cp
     sm2._last_checkpoint_id = cp
-    # Restart sessions row so manipulations are valid
+    # Restart sessions row so manipulations are valid. Keyed on the captured
+    # `sid`, not `sm.session_id` — end() clears that to None, so the update
+    # silently matched no row and the session stayed 'ended'.
     conn.execute("UPDATE sessions SET status='active', ended_at=NULL WHERE id=?",
-                 (sm.session_id,))
+                 (sid,))
     conn.commit()
     revived = sm2.branch("dangling")
     assert revived == br

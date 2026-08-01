@@ -1054,7 +1054,7 @@ def _print_largest_experiments(conn, s, top=5):
     print(dim("    Sizes are database bytes only — output files are not counted."))
 
 
-def _print_trash_storage(conn):
+def _print_trash_storage(conn, stats=None):
     """What emptying the Trash would give back.
 
     Soft delete keeps every row and leaves output files in place, so this is
@@ -1063,7 +1063,9 @@ def _print_trash_storage(conn):
     on the overwhelmingly common case.
     """
     from ..core.storage import trash_storage
-    t = trash_storage(conn)
+    # Reuse the page walk collect_storage_stats already did — table_byte_sizes
+    # scans the whole file, and without this the report ran it three times.
+    t = trash_storage(conn, table_bytes=(stats or {}).get("table_bytes"))
     if not (t["experiments"] or t["nodes"] or t["sessions"] or t["local_files"]):
         return
     print()
@@ -1114,14 +1116,18 @@ def _print_storage_health(conn, s):
     # perfect health. They are invisible in every list while still occupying
     # the file, which is the whole reason to name them.
     from ..core.storage import orphan_storage
-    orphans = orphan_storage(conn)
+    orphans = orphan_storage(conn, table_bytes=s.get("table_bytes"))
     if orphans["rows"]:
         detail = ", ".join(f"{v['rows']:,} {t}" for t, v in orphans["tables"].items())
         print(col(f"    {orphans['rows']:,} orphaned row(s) "
                   f"(~{fmt_bytes(orphans['bytes'])}): {detail}", Y))
-        print(dim("    Rows whose experiment no longer exists — swept "
-                  "automatically when a CLI command exits, or now with "
-                  "\"exptrack clean --orphans\"."))
+        # Careful with the auto-sweep claim: the CLI-exit sweep deliberately
+        # skips the two blob tables (code_snapshots / git_diffs — their checks
+        # are expensive), so those only go via `exptrack clean` and would sit
+        # under a "swept automatically" line forever.
+        print(dim("    Rows whose experiment no longer exists. Remove with "
+                  "\"exptrack clean --orphans\" (row orphans are also swept "
+                  "when a CLI command exits; snapshot/diff blobs are not)."))
 
     # Runs left 'running' — usually a killed process, not a live job.
     stale_running = _q1(conn, "SELECT COUNT(*) FROM experiments WHERE status='running' "
@@ -1154,7 +1160,7 @@ def cmd_storage(args):
     _print_db_breakdown(stats)
     _print_storage_hotspots(stats, by_metric=getattr(args, "by_metric", False))
     _print_largest_experiments(conn, stats, top=getattr(args, "top", 5))
-    _print_trash_storage(conn)
+    _print_trash_storage(conn, stats)
     _print_storage_health(conn, stats)
 
 

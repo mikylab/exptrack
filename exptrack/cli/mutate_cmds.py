@@ -77,6 +77,26 @@ def cmd_note(args):
     print(col("Note saved.", G), file=sys.stderr)
 
 
+def cmd_variant_of(args):
+    """Point a run at the run it should be compared against.
+
+    Chronology is the wrong baseline for the "same notebook, different model"
+    loop — the previous run of the script is whatever happened to run last, not
+    the run you mean. Declaring a target overrides that everywhere the delta is
+    computed. Omit the baseline to clear the link.
+    """
+    from ..core.queries import set_variant_of
+    conn = get_db()
+    result = set_variant_of(conn, args.id, args.baseline)
+    if result.get("error"):
+        die(result["error"])
+    if result.get("variant_of"):
+        print(col(f"Baseline set: comparing against {result['name']}.", G), file=sys.stderr)
+    else:
+        print(col("Baseline cleared — back to the previous run by time.", G),
+              file=sys.stderr)
+
+
 def cmd_untag(args):
     from ..core.queries import find_experiment, update_experiment_tags
     conn = get_db()

@@ -104,6 +104,26 @@ def test_auto_refresh_poll_guards_against_stacking():
     assert "finally" in body and "_autoRefreshInFlight = false;" in body
 
 
+def test_poll_captures_the_run_id_before_stopping_auto_refresh():
+    """stopAutoRefresh() nulls _autoRefreshExpId; reading it afterwards
+    refreshed with null — the panel became an "Experiment not found" card the
+    moment a watched run finished."""
+    body = _poll_source()
+    assert "const finishedId = _autoRefreshExpId;" in body
+    assert "refreshDetail(finishedId)" in body
+    # The broken ordering must not come back.
+    assert not re.search(
+        r"stopAutoRefresh\(\);\s*\n\s*await refreshDetail\(_autoRefreshExpId\)",
+        body)
+
+
+def test_prune_confirm_round_trips_the_preview_token():
+    """The confirmed prune must delete the set the dialog described, not a
+    fresh selection that also takes points logged while it was open."""
+    js = get_all_js()
+    assert "preview_token: pre.preview_token" in js
+
+
 def test_auto_refresh_poll_survives_a_failed_request():
     """api() returns null on failure, so `exp.error` threw into the poll's own
     catch — making one bad poll indistinguishable from a healthy one."""

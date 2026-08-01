@@ -6,6 +6,9 @@ Database maintenance: clean, vacuum, reset, storage info.
 from __future__ import annotations
 
 import sys
+import threading
+import time
+import uuid
 from pathlib import Path
 
 
@@ -181,18 +184,75 @@ def api_storage_info(conn) -> dict:
     }
 
 
+# Doomed row-id sets from prune dry-runs, held server-side so the confirmed
+# delete removes exactly the set the confirm dialog described — a fresh
+# selection at delete time would also take any points logged while the dialog
+# was open, i.e. a delete larger than (and different from) the one confirmed.
+# The ids themselves never go to the browser (millions of integers), so unlike
+# the clean-orphans confirm — which round-trips the paths it displayed — the
+# client can only round-trip a token.
+#
+# Memory is bounded two ways, because each entry can be millions of ints: a TTL,
+# swept on both the stash and the claim path (sweeping only on stash left an
+# abandoned dialog's set resident until the *next* preview, which may never
+# come), and a hard cap on entries, oldest evicted first. The cap is above 1 so
+# two browser tabs don't invalidate each other, and an evicted token fails
+# closed — the claim refuses rather than re-selecting.
+_PRUNE_PREVIEW_TTL_S = 600
+_PRUNE_PREVIEW_MAX = 4
+# The dashboard serves requests on threads, so guard the dict like read_routes
+# guards its scan cache.
+_prune_previews: dict = {}
+_prune_previews_lock = threading.Lock()
+
+
+def _sweep_prune_previews(now: float) -> None:
+    for tok in [t for t, (ts, _, _) in _prune_previews.items()
+                if now - ts > _PRUNE_PREVIEW_TTL_S]:
+        del _prune_previews[tok]
+
+
+def _stash_prune_preview(doomed: list, table_bytes: dict | None) -> str:
+    token = uuid.uuid4().hex
+    now = time.monotonic()
+    with _prune_previews_lock:
+        _sweep_prune_previews(now)
+        while len(_prune_previews) >= _PRUNE_PREVIEW_MAX:
+            del _prune_previews[min(_prune_previews,
+                                    key=lambda t: _prune_previews[t][0])]
+        _prune_previews[token] = (now, doomed, table_bytes)
+    return token
+
+
+def _claim_prune_preview(token: str):
+    """The stashed (doomed, table_bytes) for `token`, or None if it's gone."""
+    with _prune_previews_lock:
+        _sweep_prune_previews(time.monotonic())
+        entry = _prune_previews.pop(token, None)
+    return None if entry is None else (entry[1], entry[2])
+
+
 def api_prune_metrics(conn, body: dict) -> dict:
     """Thin already-stored metric points. Destructive unless ``dry_run``.
 
     body.ids: experiment ids to limit to (default: all)
     body.keys: metric keys to limit to (default: all)
     body.max_points / body.keep_every: the thinning target
-    body.dry_run: preview only
+    body.dry_run: preview only (returns ``preview_token``)
+    body.preview_token: delete exactly the previewed set (see above)
     """
-    from exptrack.core.storage import preview_metric_prune, prune_metrics
+    from exptrack.core.db import checkpoint_truncate
+    from exptrack.core.storage import (
+        preview_metric_prune,
+        prune_metrics,
+        table_byte_sizes,
+    )
 
-    keep_every = max(1, int(body.get("keep_every") or 1))
-    max_points = max(0, int(body.get("max_points") or 0))
+    try:
+        keep_every = max(1, int(body.get("keep_every") or 1))
+        max_points = max(0, int(body.get("max_points") or 0))
+    except (TypeError, ValueError, OverflowError):
+        return {"error": "keep_every and max_points must be integers"}
     if keep_every == 1 and not max_points:
         return {"error": "pass max_points or keep_every"}
 
@@ -200,11 +260,34 @@ def api_prune_metrics(conn, body: dict) -> dict:
     keys = [k for k in (body.get("keys") or []) if k] or None
     protect = body.get("protect_extremes", True)
 
-    fn = preview_metric_prune if body.get("dry_run") else prune_metrics
-    res = fn(conn, ids, keys, keep_every, max_points, protect)
-    # The selected row ids are an internal handoff between preview and delete
-    # within one process; a dry run over a large series would otherwise ship
-    # millions of integers to the browser.
+    if body.get("dry_run"):
+        # Sizing walks every page of the database, so hand the result to the
+        # confirmed delete rather than letting it walk again.
+        table_bytes = table_byte_sizes(conn)
+        res = preview_metric_prune(conn, ids, keys, keep_every, max_points,
+                                   protect, table_bytes)
+        res["preview_token"] = _stash_prune_preview(res.pop("_ids", []),
+                                                   table_bytes)
+        res["ok"] = True
+        return res
+
+    doomed = table_bytes = None
+    token = body.get("preview_token")
+    if token:
+        claimed = _claim_prune_preview(token)
+        if claimed is None:
+            # The preview this confirm was built from is gone (server restart,
+            # TTL, eviction) — refuse rather than silently deleting a different
+            # set than the one the user was shown.
+            return {"error": "preview expired — run the preview again"}
+        doomed, table_bytes = claimed
+    res = prune_metrics(conn, ids, keys, keep_every, max_points, protect,
+                        table_bytes, doomed=doomed)
     res.pop("_ids", None)
+    # Same rationale as the delete-permanent routes: a prune is routinely the
+    # largest delete the dashboard performs, and the per-request checkpoint is
+    # deliberately PASSIVE — without a bounded TRUNCATE the freed pages sit in
+    # a ballooned -wal file until the server exits.
+    checkpoint_truncate(conn)
     res["ok"] = True
     return res

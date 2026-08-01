@@ -42,10 +42,14 @@ async function _fetchExportText(id, fmt) {
   let text;
   if (fmt === 'csv' || fmt === 'tsv') {
     const data = await postApi('/api/bulk-export', {ids: [id], format: fmt});
+    // api()/postApi() report the failure themselves; returning null lets the
+    // callers stop rather than throwing mid-download on a null body.
+    if (!data || data.error) return null;
     text = data.content || JSON.stringify(data, null, 2);
   } else {
     const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt) +
                            (full ? '&full=1' : ''));
+    if (!data || data.error) return null;
     if (fmt === 'markdown') text = data.markdown || JSON.stringify(data, null, 2);
     else if (fmt === 'plain') text = _formatExpPlainText(data.data || data);
     else if (fmt.startsWith('params')) {
@@ -62,12 +66,14 @@ async function _fetchExportText(id, fmt) {
 async function downloadExportFmt(id, fmt) {
   owlSpeak('export');
   const d = await _fetchExportText(id, fmt);
+  if (!d) return;
   await saveOrDownload(d.text, d.filename, d.mime);
 }
 
 async function copyExportFmt(id, fmt) {
   owlSpeak('export');
   const d = await _fetchExportText(id, fmt);
+  if (!d) return;
   navigator.clipboard.writeText(d.text).then(() => owlSay('Copied ' + fmt.toUpperCase() + ' to clipboard!'));
 }
 
@@ -163,10 +169,14 @@ async function doCompare() {
   }
   const e1 = data.exp1, e2 = data.exp2;
   const allPKeys = [...new Set([...Object.keys(e1.params), ...Object.keys(e2.params)])].filter(isUserParamKey).sort();
-  const [tlVars1, tlVars2] = await Promise.all([
+  // api() returns null on a failed request (already reported in the error bar);
+  // an unguarded read here threw mid-render and left the whole panel blank.
+  const [rawVars1, rawVars2] = await Promise.all([
     api('/api/vars-at/' + id1 + '?seq=999999'),
     api('/api/vars-at/' + id2 + '?seq=999999'),
   ]);
+  const tlVars1 = rawVars1 || {};
+  const tlVars2 = rawVars2 || {};
   const allVarKeysFromTimeline = [...new Set([...Object.keys(tlVars1), ...Object.keys(tlVars2)])].sort();
   const allMKeys = [...new Set([...e1.metrics.map(m=>m.key), ...e2.metrics.map(m=>m.key)])].sort();
   const m1 = latestMetricsMap(e1.metrics);
@@ -230,10 +240,12 @@ async function doCompare() {
   }
 
   // Overlay metric charts
-  const [metricsSeries1, metricsSeries2] = await Promise.all([
+  const [rawSeries1, rawSeries2] = await Promise.all([
     api('/api/metrics/' + id1),
     api('/api/metrics/' + id2),
   ]);
+  const metricsSeries1 = rawSeries1 || {};
+  const metricsSeries2 = rawSeries2 || {};
   const sharedMKeys = allMKeys.filter(k => metricsSeries1[k] && metricsSeries2[k] && (metricsSeries1[k].length > 1 || metricsSeries2[k].length > 1));
   if (sharedMKeys.length) {
     html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Metric Charts</summary><div class="compare-charts-grid">';
@@ -245,10 +257,12 @@ async function doCompare() {
 
   // ── Image comparison section ──
   crossCmpA = null; crossCmpB = null;
-  const [imgData1, imgData2] = await Promise.all([
+  const [rawImg1, rawImg2] = await Promise.all([
     api('/api/images/' + id1),
     api('/api/images/' + id2),
   ]);
+  const imgData1 = rawImg1 || {};
+  const imgData2 = rawImg2 || {};
   let imgs1 = (imgData1.images || []);
   let imgs2 = (imgData2.images || []);
   mergeArtifactImages(imgs1, imgData1.artifact_images);
@@ -314,27 +328,35 @@ async function doCompare() {
     if (!canvas) continue;
     const pts1 = metricsSeries1[k] || [];
     const pts2 = metricsSeries2[k] || [];
-    const maxLen = Math.max(pts1.length, pts2.length);
-    const labels = Array.from({length: maxLen}, (_, i) => {
-      const p = pts1[i] || pts2[i];
-      return p && p.step !== null ? p.step : i;
-    });
+    // Align the two runs on their x-values, never on array index. Two runs can
+    // log at a different cadence, and read-time downsampling can keep different
+    // points from each — so point i of one run is not point i of the other, and
+    // plotting positionally drew unrelated points on top of each other under
+    // whichever run's step label came first. Build the union of x-values, map
+    // each run onto it, and leave a null (spanGaps) wherever a run has no point.
+    const xOf = (p, i) => (p && p.step !== null && p.step !== undefined) ? p.step : i;
+    const xs = [...new Set([...pts1.map(xOf), ...pts2.map(xOf)])].sort((a, b) => a - b);
+    const alignTo = (pts) => {
+      const byX = new Map();
+      pts.forEach((p, i) => byX.set(xOf(p, i), p.value));
+      return xs.map(x => (byX.has(x) ? byX.get(x) : null));
+    };
     compareCharts[k] = new Chart(canvas, {
       type: 'line',
       data: {
-        labels: labels,
+        labels: xs,
         datasets: [{
           label: n1,
-          data: pts1.map(p => p.value),
+          data: alignTo(pts1),
           borderColor: '#2c5aa0',
           backgroundColor: 'rgba(44,90,160,0.1)',
-          fill: false, tension: 0.3, pointRadius: 2,
+          fill: false, tension: 0.3, pointRadius: 2, spanGaps: true,
         }, {
           label: n2,
-          data: pts2.map(p => p.value),
+          data: alignTo(pts2),
           borderColor: '#2d7d46',
           backgroundColor: 'rgba(45,125,70,0.1)',
-          fill: false, tension: 0.3, pointRadius: 2,
+          fill: false, tension: 0.3, pointRadius: 2, spanGaps: true,
         }]
       },
       options: {
@@ -363,7 +385,7 @@ async function doMultiCompare(ids) {
   if (ids.length < 2) return;
 
   const data = await api('/api/multi-compare?ids=' + ids.join(','));
-  if (data.error || !data.experiments || !data.experiments.length) {
+  if (!data || data.error || !data.experiments || !data.experiments.length) {
     document.getElementById('multi-compare-result').innerHTML = '<p>Could not load experiments.</p>';
     return;
   }

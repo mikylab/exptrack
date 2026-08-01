@@ -27,14 +27,18 @@ from . import _shared
 # split. (noqa: F401 — the names not used in this file are deliberately
 # re-exported.)
 from ._shared import (  # noqa: F401  (re-exported)
+    _ELIDED_MARKER,
     _NODE_CELLS_MAX_BYTES,
     _NODE_IMAGES_MAX,
     _NODE_SETUP_MAX_BYTES,
     _collect_descendants,
+    _count_cells,
     _count_node_images,
     _detach_experiments,
     _group_run_into_session_study,
     _image_paths_for_nodes,
+    _is_elided,
+    _nearest_live_checkpoint,
     _new_id,
     _node_images,
     _node_lineage_labels,
@@ -81,6 +85,9 @@ class SessionManager:
 
     def __init__(self):
         self.session_id: str | None = None
+        # Kept so start() can tell a replay of this session from a request to
+        # start a different one, without re-reading the row it wrote.
+        self.session_name: str | None = None
         self._current_node_id: str | None = None
         self._last_checkpoint_id: str | None = None
         # Mirror of the current node's cell_source / cell_outputs — avoids a
@@ -97,6 +104,15 @@ class SessionManager:
         # top. None = not replaying / nothing recorded yet.
         self._replay_idx: int | None = None
         self._last_cell_idx: int | None = None
+        # The same pair for the *setup* store (`%%setup` cells), which is its
+        # own blob and so needs its own cursors: without them the setup store
+        # deduped only against its last segment, so a Run-All over a node with
+        # two or more setup cells appended a fresh copy of every one on every
+        # pass — doubling the blob until the byte cap began evicting real
+        # content, and replaying each duplicate as its own timeline event on
+        # materialize.
+        self._setup_replay_idx: int | None = None
+        self._last_setup_idx: int | None = None
         # One-shot guard for `branch("X")` reusing an existing label. We can't
         # tell at branch() time whether this is a Run-All re-run (merge) or a
         # new idea reusing the name (fork) — the code hasn't run yet. So we arm
@@ -105,6 +121,12 @@ class SessionManager:
         self._pending_collision: dict[str, Any] | None = None
         # One-shot guard for auto-linking the notebook's run to this session.
         self._auto_linked_run_id: str | None = None
+        # True when the last start() re-adopted an existing session (kernel
+        # restart) rather than creating one — the magic reports which happened.
+        self.reattached: bool = False
+        # One-shot guard so a session removed in another process is reported
+        # once, not on every recorded cell.
+        self._liveness_warned: bool = False
 
     # ── cell capture ────────────────────────────────────────────────────────
 
@@ -115,8 +137,9 @@ class SessionManager:
     def _is_session_cell(source: str) -> bool:
         """True if the *entire* cell should be skipped from recording.
 
-        - Cell magics `%%scratch` / `%%pin` at the top: own the whole cell,
-          skip entirely (the magic handles it separately).
+        - Cell magics `%%scratch` / `%%setup` at the top: own the whole cell,
+          skip entirely (scratch is never recorded; setup goes to the node's
+          own demoted store).
         - Cells that are nothing but `%exptrack` line magics (plus blanks
           and comments): nothing to record.
 
@@ -124,6 +147,11 @@ class SessionManager:
         NOT session cells — the magic lines are stripped and the remainder
         is recorded. That covers the natural pattern of putting the magic
         at the top of a working cell.
+
+        **`%%pin` is not a session cell.** A pinned cell is real code whose
+        result the user thought worth keeping, and it was already tracked in the
+        experiment's cell lineage — excluding it from the node meant the one cell
+        most worth carrying was the one a materialized run didn't replay.
         """
         if not source:
             return True
@@ -131,8 +159,7 @@ class SessionManager:
             s = ln.strip()
             if not s:
                 continue
-            if (s.startswith("%%scratch") or s.startswith("%%pin")
-                    or s.startswith("%%setup")):
+            if s.startswith("%%scratch") or s.startswith("%%setup"):
                 return True
             break
         for ln in source.splitlines():
@@ -147,10 +174,12 @@ class SessionManager:
     @staticmethod
     def _strip_session_magics(source: str) -> str:
         """Remove any %exptrack ... lines from a cell's source so the recorded
-        version only contains the user's actual code. Cell magics (%%scratch
-        / %%pin) get the whole cell handled elsewhere."""
+        version only contains the user's actual code — plus a leading `%%pin`
+        line, whose body *is* recorded (see `_is_session_cell`). `%%scratch` /
+        `%%setup` cells are handled elsewhere."""
         kept = [ln for ln in source.splitlines()
-                if not ln.strip().startswith("%exptrack")]
+                if not ln.strip().startswith("%exptrack")
+                and not ln.strip().startswith("%%pin")]
         while kept and not kept[0].strip():
             kept.pop(0)
         while kept and not kept[-1].strip():
@@ -171,38 +200,109 @@ class SessionManager:
             out.append(ln)
         return "\n".join(out).strip()
 
-    @classmethod
-    def _append_cell_segment(cls, src_blob: str, out_blob: str, recorded: str,
-                             out_str: str, cap: int):
-        """Append one (source, output) segment to a SEP-joined pair of blobs.
+    # How far ahead of the replay cursor a Run-All may look for the segment it
+    # is re-running. A single inserted or edited cell mid-node shifts every
+    # later cell by one, and an exact-index-only cursor would never realign —
+    # the rest of the pass appended a second copy of every remaining cell, and
+    # every later pass did it again. A small bounded window realigns after such
+    # an edit while keeping the match local enough that a genuinely new cell
+    # that merely resembles a much later one is still recorded as new.
+    _REPLAY_LOOKAHEAD = 8
 
-        Returns (new_src, new_out) or None when nothing changed (an immediate
-        re-run of the same cell whose output is unchanged). Keeps the two blobs
-        segment-aligned and elides oldest segments together once over `cap`.
-        Shared by the setup store; record_cell keeps its own inline copy because
-        it interleaves git-diff/collision bookkeeping."""
-        src_parts = src_blob.split(cls._CELL_SEPARATOR) if src_blob else []
-        out_parts = out_blob.split(cls._CELL_SEPARATOR) if out_blob else []
+    @classmethod
+    def _match_segment(cls, parts: list[str], recorded: str,
+                       last_idx: int | None,
+                       replay_idx: int | None) -> int | None:
+        """Index of the already-recorded segment this execution repeats, else
+        None. Shared by the tracked-cell and `%%setup` stores, which each keep
+        their own cursor pair over their own blob.
+
+        Two ways an execution can be a repeat rather than new work:
+
+        - It re-runs the segment recorded most recently (`last_idx`) — the user
+          hit Ctrl-Enter twice.
+        - It matches at or just after the replay cursor (`replay_idx`) — a
+          Run-All is stepping through the store's existing segments in their
+          original order, possibly skipping one the user deleted or edited.
+
+        Anything else is genuinely new and gets appended.
+        """
+        target = recorded.strip()
+        if last_idx is not None and 0 <= last_idx < len(parts) \
+                and parts[last_idx].strip() == target:
+            return last_idx
+        if replay_idx is None:
+            return None
+        start = max(0, replay_idx)
+        for idx in range(start, min(len(parts), start + cls._REPLAY_LOOKAHEAD)):
+            if _is_elided(parts[idx]):
+                continue
+            if parts[idx].strip() == target:
+                return idx
+        return None
+
+    @classmethod
+    def _initial_replay_idx(cls, blob: str) -> int:
+        """Where to arm a replay cursor when entering a node.
+
+        Index 0, unless the store tripped its byte cap and starts with the
+        elision placeholder — a cursor parked on that marker can never match an
+        incoming cell, so one cap trip used to defeat replay dedup permanently
+        and the node re-appended its whole contents on every later pass.
+        """
+        if not blob:
+            return 0
+        first = blob.split(cls._CELL_SEPARATOR)[0]
+        return 1 if _is_elided(first) else 0
+
+    @classmethod
+    def _record_segment(cls, src_blob: str, out_blob: str, recorded: str,
+                        out_str: str, cap: int, last_idx: int | None,
+                        replay_idx: int | None):
+        """Append or refresh one (source, output) segment in a SEP-joined pair.
+
+        Returns ``(new_src, new_out, last_idx, replay_idx)`` with the cursors
+        already advanced. ``new_src`` is None when there is nothing to persist (a
+        repeat whose output is unchanged too) — the cursors still move, since a
+        Run-All whose outputs are identical must stay recognized past its first
+        segment.
+
+        The one implementation of the segment rules, used by both stores: keeps
+        the two blobs aligned (one output per source), refreshes a repeat in
+        place rather than appending a copy, and elides oldest segments in pairs
+        once over `cap`. `record_cell` used to carry its own inline copy of all
+        of that, so the byte-budget arithmetic and the elision sentinel existed
+        twice, 140 lines apart, with the tracked-cell and setup stores free to
+        drift apart on exactly the duplication bugs this logic exists to prevent.
+        """
+        sep = cls._CELL_SEPARATOR
+        src_parts = src_blob.split(sep) if src_blob else []
+        out_parts = out_blob.split(sep) if out_blob else []
+        # Older DBs / partial writes may leave a shorter outputs blob.
         while len(out_parts) < len(src_parts):
             out_parts.append("")
-        if src_parts and src_parts[-1].strip() == recorded.strip():
-            if out_str and out_parts and out_parts[-1] != out_str:
-                out_parts[-1] = out_str
-            else:
-                return None
-        else:
-            src_parts.append(recorded)
-            out_parts.append(out_str)
-            sep_len = len(cls._CELL_SEPARATOR)
-            total = sum(len(p) for p in src_parts) + sep_len * (len(src_parts) - 1)
-            if total > cap:
-                while len(src_parts) > 1 and total > cap:
-                    total -= len(src_parts.pop(0)) + sep_len
-                    out_parts.pop(0)
-                src_parts.insert(0, "# … earlier cells elided to bound memory …")
-                out_parts.insert(0, "")
-        return (cls._CELL_SEPARATOR.join(src_parts),
-                cls._CELL_SEPARATOR.join(out_parts))
+
+        idx = cls._match_segment(src_parts, recorded, last_idx, replay_idx)
+        if idx is not None:
+            # A repeat: cursors advance whether or not the output changed.
+            if not out_str or out_parts[idx] == out_str:
+                return None, None, idx, idx + 1
+            out_parts[idx] = out_str
+            return sep.join(src_parts), sep.join(out_parts), idx, idx + 1
+
+        src_parts.append(recorded)
+        out_parts.append(out_str)
+        sep_len = len(sep)
+        total = sum(len(p) for p in src_parts) + sep_len * (len(src_parts) - 1)
+        if total > cap:
+            while len(src_parts) > 1 and total > cap:
+                total -= len(src_parts.pop(0)) + sep_len
+                out_parts.pop(0)
+            src_parts.insert(0, _ELIDED_MARKER)
+            out_parts.insert(0, "")
+        # New work means we've diverged from whatever was recorded before, so
+        # any in-progress replay is over.
+        return sep.join(src_parts), sep.join(out_parts), len(src_parts) - 1, None
 
     def record_setup_cell(self, source: str, output: str | None = None) -> None:
         """Append a `%%setup` cell to the current node's *demoted* setup store.
@@ -211,45 +311,46 @@ class SessionManager:
         lineage and git-diff bookkeeping, stored in their own byte-budgeted
         columns so a big prep block can't evict real recorded cells. Used so the
         provenance of a `df` built under a branch survives a promote without a
-        rerun or a giant diff."""
+        rerun or a giant diff. Replay recognition is the same as for tracked
+        cells, against this store's own cursors."""
         if not self.session_id or not source or not self._current_node_id:
             return
         recorded = self._strip_setup_magic(source)
         if not recorded:
             return
-        row = self._get_node(self._current_node_id, "setup_source, setup_outputs")
-        src_blob = row["setup_source"] if row and row["setup_source"] else ""
-        out_blob = row["setup_outputs"] if row and row["setup_outputs"] else ""
-        res = self._append_cell_segment(
-            src_blob, out_blob, recorded, output or "", _NODE_SETUP_MAX_BYTES)
-        if res is None:
+        # Same collision arbitration tracked cells get: `branch("X")` on a reused
+        # label defers the merge-or-fork decision to the first cell that runs
+        # under it, and that first cell may well be a `%%setup` block.
+        self._resolve_branch_collision(recorded)
+        if self._write_setup_segment(recorded, output or ""):
             return
-        new_src, new_out = res
+        # The node was trashed out from under us (dashboard / CLI in another
+        # process). Re-anchor and write the cell where it can still be kept.
+        if self._recover_current_node():
+            self._write_setup_segment(recorded, output or "")
+
+    def _write_setup_segment(self, recorded: str, out_str: str) -> bool:
+        """Write one setup segment onto the current node. False if the node row
+        is gone or trashed (the caller re-anchors and retries)."""
+        row = self._get_node(self._current_node_id, "setup_source, setup_outputs")
+        if row is None:
+            return False
+        new_src, new_out, self._last_setup_idx, self._setup_replay_idx = \
+            self._record_segment(
+                row["setup_source"] if row["setup_source"] else "",
+                row["setup_outputs"] if row["setup_outputs"] else "",
+                recorded, out_str, _NODE_SETUP_MAX_BYTES,
+                self._last_setup_idx, self._setup_replay_idx)
+        if new_src is None:
+            return True
         conn = get_db()
-        conn.execute(
-            "UPDATE session_nodes SET setup_source=?, setup_outputs=? WHERE id=?",
+        cur = conn.execute(
+            "UPDATE session_nodes SET setup_source=?, setup_outputs=? "
+            "WHERE id=? AND deleted_at IS NULL",
             (new_src, new_out or None, self._current_node_id),
         )
         conn.commit()
-
-    def _match_recorded_cell(self, src_parts: list[str], recorded: str) -> int | None:
-        """Index of the already-recorded cell this execution repeats, else None.
-
-        Two ways a cell can be a repeat rather than a new execution:
-
-        - It re-runs the cell recorded most recently (`_last_cell_idx`) — the
-          user hit Ctrl-Enter twice.
-        - It matches the replay cursor (`_replay_idx`) — a Run-All is stepping
-          through the node's existing cells in their original order.
-
-        Anything else is genuinely new work and gets appended.
-        """
-        target = recorded.strip()
-        for idx in (self._last_cell_idx, self._replay_idx):
-            if idx is not None and 0 <= idx < len(src_parts) \
-                    and src_parts[idx].strip() == target:
-                return idx
-        return None
+        return cur.rowcount > 0
 
     def record_cell(self, source: str, output: str | None = None) -> None:
         """Record a cell's source (and its output) on the *current* node.
@@ -263,9 +364,9 @@ class SessionManager:
 
         **Re-running a cell refreshes it in place rather than appending a
         second copy.** That covers a back-to-back re-execution *and* a Run-All
-        replaying the whole node (see `_match_recorded_cell`); without the
-        replay cursor every Run-All doubled the node's stored cells until the
-        byte cap started evicting the real content.
+        replaying the whole node (see `_match_segment`); without the replay
+        cursor every Run-All doubled the node's stored cells until the byte cap
+        started evicting the real content.
         """
         if not self.session_id or not source or not self._current_node_id:
             return
@@ -275,51 +376,128 @@ class SessionManager:
         if not recorded:
             return
         self._resolve_branch_collision(recorded)
-        out_str = output or ""
-        src_parts = (self._current_cell_source.split(self._CELL_SEPARATOR)
-                     if self._current_cell_source else [])
-        out_parts = (self._current_cell_outputs.split(self._CELL_SEPARATOR)
-                     if self._current_cell_outputs else [])
-        # Keep the outputs list the same length as the sources list (older
-        # DBs / partial writes may have a shorter outputs blob).
-        while len(out_parts) < len(src_parts):
-            out_parts.append("")
+        if self._write_cell_segment(recorded, output or ""):
+            return
+        # Rowcount 0 means the node row is gone or trashed — another process
+        # (the dashboard's node delete, `exptrack session rm-node`) mutated the
+        # tree while this kernel kept recording. Re-anchor to a live node and
+        # write the cell there rather than dropping it silently.
+        if self._recover_current_node():
+            self._write_cell_segment(recorded, output or "")
 
-        repeat_idx = self._match_recorded_cell(src_parts, recorded)
-        if repeat_idx is not None:
-            self._last_cell_idx = repeat_idx
-            self._replay_idx = repeat_idx + 1
-            if not out_str or out_parts[repeat_idx] == out_str:
-                return  # same code, same result — nothing to write
-            out_parts[repeat_idx] = out_str
-        else:
-            src_parts.append(recorded)
-            out_parts.append(out_str)
-            # A new cell means we've diverged from whatever was recorded before,
-            # so any in-progress replay is over.
-            self._replay_idx = None
-            # Drop oldest cells (source + output together) if over the cap.
-            # Track the running byte total instead of re-joining each iteration.
-            sep_len = len(self._CELL_SEPARATOR)
-            total = sum(len(p) for p in src_parts) + sep_len * (len(src_parts) - 1)
-            if total > _NODE_CELLS_MAX_BYTES:
-                while len(src_parts) > 1 and total > _NODE_CELLS_MAX_BYTES:
-                    total -= len(src_parts.pop(0)) + sep_len
-                    out_parts.pop(0)
-                src_parts.insert(0, "# … earlier cells elided to bound memory …")
-                out_parts.insert(0, "")
-            self._last_cell_idx = len(src_parts) - 1
+    def _write_cell_segment(self, recorded: str, out_str: str) -> bool:
+        """Write one recorded cell onto the current node. Returns False if the
+        node row is gone or trashed (the caller re-anchors and retries).
 
-        new_blob = self._CELL_SEPARATOR.join(src_parts)
-        new_out = self._CELL_SEPARATOR.join(out_parts)
+        The liveness check rides the UPDATE's own ``deleted_at IS NULL`` filter,
+        so the common path costs nothing extra — no SELECT per recorded cell.
+        """
+        new_blob, new_out, self._last_cell_idx, self._replay_idx = \
+            self._record_segment(
+                self._current_cell_source, self._current_cell_outputs,
+                recorded, out_str, _NODE_CELLS_MAX_BYTES,
+                self._last_cell_idx, self._replay_idx)
+        if new_blob is None:
+            return True     # same code, same result — nothing to write
         conn = get_db()
-        conn.execute(
-            "UPDATE session_nodes SET cell_source=?, cell_outputs=? WHERE id=?",
+        cur = conn.execute(
+            "UPDATE session_nodes SET cell_source=?, cell_outputs=? "
+            "WHERE id=? AND deleted_at IS NULL",
             (new_blob, new_out or None, self._current_node_id),
         )
+        conn.commit()
+        if cur.rowcount == 0:
+            return False
         self._current_cell_source = new_blob
         self._current_cell_outputs = new_out
-        conn.commit()
+        return True
+
+    # ── cross-process liveness ──────────────────────────────────────────────
+
+    def _session_is_live(self) -> bool:
+        """True if this session's row is still active and not trashed.
+
+        The dashboard and the CLI can end, trash or purge a session while a
+        kernel is still recording into it. One indexed lookup, called on
+        structural operations only (checkpoint / branch / recovery) — never per
+        recorded cell, which rides its UPDATE's own filter instead.
+        """
+        if not self.session_id:
+            return False
+        row = get_db().execute(
+            "SELECT status FROM sessions WHERE id=? AND deleted_at IS NULL",
+            (self.session_id,),
+        ).fetchone()
+        return bool(row) and row["status"] == "active"
+
+    def _warn_session_gone(self) -> None:
+        """Say once that the session went away under this kernel."""
+        if getattr(self, "_liveness_warned", False):
+            return
+        self._liveness_warned = True
+        print("[exptrack] this session was ended, trashed or removed elsewhere "
+              "— session recording is paused. Restore it (or run "
+              "'%exptrack session start \"<name>\"' again) to resume.",
+              file=sys.stderr)
+
+    def _ensure_live_anchor(self) -> bool:
+        """Verify the session and the node a structural op will hang off are
+        still live, re-anchoring if only the node is gone.
+
+        Two indexed lookups at most, and only on `checkpoint()` / `branch()` —
+        the per-cell paths ride their UPDATE's `deleted_at IS NULL` filter.
+        """
+        if not self._session_is_live():
+            self._warn_session_gone()
+            return False
+        self._liveness_warned = False
+        conn = get_db()
+        # A trashed checkpoint anchor would otherwise be handed to the next
+        # branch() as a parent, hanging a live node under a dead one.
+        if self._last_checkpoint_id and not conn.execute(
+                "SELECT 1 FROM session_nodes WHERE id=? AND deleted_at IS NULL",
+                (self._last_checkpoint_id,)).fetchone():
+            self._last_checkpoint_id = None
+        anchor = self._current_node_id
+        if anchor and conn.execute(
+                "SELECT 1 FROM session_nodes WHERE id=? AND deleted_at IS NULL",
+                (anchor,)).fetchone():
+            if not self._last_checkpoint_id:
+                self._last_checkpoint_id = _nearest_live_checkpoint(conn, anchor)
+            return True
+        return self._recover_current_node()
+
+    def _recover_current_node(self) -> bool:
+        """Re-anchor after the current node disappeared under us.
+
+        Falls back to the live checkpoint anchor, else the session root — always
+        through `_switch_to_node`, so the cached blobs and both replay cursors
+        describe the node we actually landed on. Returns False (and pauses
+        recording) when the whole session is gone.
+        """
+        if not self._session_is_live():
+            self._warn_session_gone()
+            return False
+        conn = get_db()
+        from .lifecycle import _session_root_id
+        candidates = [self._last_checkpoint_id, _session_root_id(conn, self.session_id)]
+        for nid in candidates:
+            if not nid:
+                continue
+            row = conn.execute(
+                "SELECT id FROM session_nodes WHERE id=? AND deleted_at IS NULL",
+                (nid,),
+            ).fetchone()
+            if row:
+                if self._current_node_id != nid:
+                    print(f"[exptrack] the active session node was removed "
+                          f"elsewhere — recording continues on {nid[:8]}.",
+                          file=sys.stderr)
+                self._switch_to_node(nid)
+                self._last_checkpoint_id = _nearest_live_checkpoint(conn, nid)
+                return True
+        self._warn_session_gone()
+        return False
 
     def record_image(self, path: str, label: str | None = None) -> None:
         """Attach a saved plot to the current node *by reference* (no copy).
@@ -356,19 +534,37 @@ class SessionManager:
     def _switch_to_node(self, node_id: str) -> None:
         """Set _current_node_id and refresh the cached cell_source/outputs.
 
-        Arms the replay cursor at the node's first cell: entering a node is
+        Arms both replay cursors at their store's first cell: entering a node is
         exactly when a Run-All would start re-executing its cells from the top,
-        so this is what lets `record_cell` recognize the replay and refresh in
-        place instead of appending duplicates.
+        so this is what lets `record_cell` / `record_setup_cell` recognize the
+        replay and refresh in place instead of appending duplicates.
+
+        **Every path that changes the current node must go through here.**
+        Assigning `_current_node_id` directly leaves the cached blobs and both
+        cursors describing the *previous* node, so the next recorded cell is
+        written with the old node's cells prepended onto the new node — which is
+        exactly how a deleted branch's code used to reappear on the checkpoint
+        the deletion fell back to.
         """
         self._current_node_id = node_id
-        row = self._get_node(node_id, "cell_source, cell_outputs")
+        row = self._get_node(node_id, "cell_source, cell_outputs, setup_source") \
+            if node_id else None
         self._current_cell_source = (row["cell_source"]
                                      if row and row["cell_source"] else "")
         self._current_cell_outputs = (row["cell_outputs"]
                                       if row and row["cell_outputs"] else "")
-        self._replay_idx = 0
+        setup_src = row["setup_source"] if row and row["setup_source"] else ""
+        # Arm past the elision placeholder when a store tripped its byte cap —
+        # a cursor on the marker can never match, which killed dedup for good.
+        self._replay_idx = self._initial_replay_idx(self._current_cell_source)
         self._last_cell_idx = None
+        self._setup_replay_idx = self._initial_replay_idx(setup_src)
+        self._last_setup_idx = None
+        # A collision guard is armed for one specific node, so moving off that
+        # node retires it. Clearing it here rather than at each call site is what
+        # makes the "every path goes through here" invariant above cover all of
+        # the per-node state; branch() re-arms it *after* switching.
+        self._pending_collision = None
 
     def _get_node(self, node_id: str, cols: str = "*"):
         """Single-row id lookup — used in a few places."""
@@ -420,11 +616,17 @@ class SessionManager:
         fresh duplicate spine on every Run-All (each with its own cells and diff
         blob). Re-declaring a checkpoint that is already an ancestor means "the
         notebook is replaying from the top", so we return to it instead.
+
+        The walk starts at the **current node itself**, not its parent, so
+        re-declaring the checkpoint you are already standing on resolves here
+        like any other replay. Starting at the parent made that case structurally
+        invisible, and `checkpoint()` carried a special-cased early return to
+        cover it — which returned the id without re-arming the replay cursors (so
+        every cell of the node was appended again on each Run-All) and without
+        updating `_last_checkpoint_id`.
         """
         conn = get_db()
-        cur = self._get_node(self._current_node_id, "parent_id") \
-            if self._current_node_id else None
-        pid = cur["parent_id"] if cur else None
+        pid = self._current_node_id
         seen: set[str] = set()
         while pid and pid not in seen:
             seen.add(pid)
@@ -441,10 +643,87 @@ class SessionManager:
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
-    def start(self, name: str, notebook: str = "") -> str:
-        """Create a new session and write the root node. Returns session_id."""
+    def _find_reattachable_session(self, name: str, notebook: str) -> str | None:
+        """Id of the newest live session this kernel should re-adopt, or None.
+
+        A kernel restart (or a `%load_ext` in a fresh process) leaves the
+        `SessionManager` singleton empty while the session's rows are still in
+        the database, marked `active`. Re-running the notebook's first magic
+        then INSERTed a *second* session with the same name, so a restart —
+        routine in notebook work — silently forked the tree and split the
+        session's checkpoints across two entries no view ever joins.
+
+        Only an **active, non-trashed** session with the same name qualifies,
+        newest first. The notebook must match too, but leniently: a session
+        recorded without a detected notebook name (or a magic run before
+        detection works) must not block re-adoption of the obvious candidate.
+        """
+        rows = get_db().execute(
+            "SELECT id, notebook FROM sessions "
+            "WHERE name=? AND status='active' AND deleted_at IS NULL "
+            "ORDER BY created_at DESC",
+            (name,),
+        ).fetchall()
+        want = (notebook or "").strip()
+        for r in rows:
+            have = (r["notebook"] or "").strip()
+            if not want or not have or want == have:
+                return r["id"]
+        return None
+
+    def start(self, name: str, notebook: str = "", *, new: bool = False) -> str:
+        """Create a session and write its root node. Returns the session id, or
+        `""` when a *differently named* session is already active.
+
+        With no live session in *this* process, an existing active session of
+        the same name is **re-adopted** rather than duplicated (see
+        `_find_reattachable_session`) — that is what makes a session survive a
+        kernel restart. `self.reattached` records which happened so callers can
+        say so. Pass ``new=True`` to force a fresh session regardless.
+
+        Re-declaring the **same** session returns to its root, because that is
+        what re-executing the notebook's first magic means: it is replaying from
+        the top (the same reasoning `_find_ancestor_checkpoint` applies to a
+        re-declared checkpoint). Doing nothing left the current node wherever the
+        previous pass ended, so the pre-checkpoint cells — imports, data loading
+        — were recorded onto that node instead of the root, appending a copy on
+        every pass while the root's own copies sat untouched.
+
+        A **different** name while a session is live is a mistake rather than a
+        replay, and returning `""` is how every caller learns that: the rule
+        belongs here, next to the rewind it guards, not in the one magic that
+        happens to call this today.
+        """
+        from .lifecycle import _session_root_id
+        self.reattached = False
         if self.session_id:
+            if name and self.session_name and name != self.session_name:
+                return ""
+            root = _session_root_id(get_db(), self.session_id)
+            if root:
+                self._switch_to_node(root)
+                self._last_checkpoint_id = root
             return self.session_id
+
+        if not new:
+            existing = self._find_reattachable_session(name, notebook)
+            if existing:
+                root = _session_root_id(get_db(), existing)
+                if root:
+                    self.session_id = existing
+                    self.session_name = name
+                    self._liveness_warned = False
+                    self._auto_linked_run_id = None
+                    # Rewind to the root, exactly as a same-session re-declare
+                    # does: a restarted kernel re-runs the notebook from the top,
+                    # so the cells that follow belong to the root until the next
+                    # checkpoint magic — and the replay cursors armed here are
+                    # what keep them from being appended a second time.
+                    self._switch_to_node(root)
+                    self._last_checkpoint_id = root
+                    self.reattached = True
+                    return existing
+
         sid = _new_id()
         now = time.time()
         branch = _git("rev-parse", "--abbrev-ref", "HEAD")
@@ -464,6 +743,7 @@ class SessionManager:
         )
         conn.commit()
         self.session_id = sid
+        self.session_name = name
         self._switch_to_node(root_id)
         self._last_checkpoint_id = root_id
         return sid
@@ -475,39 +755,25 @@ class SessionManager:
         # Ending the session is the last chance to capture the open branch's
         # working-tree state.
         self._refresh_branch_diff()
-        conn = get_db()
-        # Mark any branch nodes whose deepest child is themselves (no checkpoint
-        # follows) as abandoned. A branch is "open" if no descendant is a
-        # checkpoint. Simpler heuristic: any branch with no child node at all.
-        # Both halves ignore trashed rows: a trashed branch shouldn't be
-        # relabelled, and a branch whose only children are trashed *is* open —
-        # counting those children left it un-abandoned forever.
-        rows = conn.execute(
-            "SELECT id FROM session_nodes WHERE session_id=? AND node_type='branch' "
-            "AND deleted_at IS NULL "
-            "AND id NOT IN (SELECT parent_id FROM session_nodes "
-            "WHERE session_id=? AND parent_id IS NOT NULL AND deleted_at IS NULL)",
-            (self.session_id, self.session_id),
-        ).fetchall()
-        for r in rows:
-            conn.execute(
-                "UPDATE session_nodes SET node_type='abandoned' WHERE id=?",
-                (r["id"],),
-            )
-        conn.execute(
-            "UPDATE sessions SET status='ended', ended_at=? WHERE id=?",
-            (time.time(), self.session_id),
-        )
-        conn.commit()
+        # Mark any branch with no live child as abandoned, and flip the session
+        # to 'ended'. Shared with the dashboard's end-session route so the two
+        # can't drift (see end_session_rows).
+        from .lifecycle import end_session_rows
+        end_session_rows(get_db(), self.session_id)
         self.session_id = None
+        self.session_name = None
         self._current_node_id = None
         self._last_checkpoint_id = None
         self._current_cell_source = ""
         self._current_cell_outputs = ""
         self._replay_idx = None
         self._last_cell_idx = None
+        self._setup_replay_idx = None
+        self._last_setup_idx = None
         self._pending_collision = None
         self._auto_linked_run_id = None
+        self.reattached = False
+        self._liveness_warned = False
 
     def autolink_run(self, exp_id: str) -> None:
         """Group a notebook's auto-created run under the current node, once.
@@ -562,19 +828,22 @@ class SessionManager:
         """Add a checkpoint under the current node, or reuse an existing
         checkpoint with the same label (idempotent re-runs).
 
-        A label already present as a child *or an ancestor* of the current node
-        resolves to that node — the ancestor case is what keeps a Run-All from
-        rebuilding the whole spine underneath itself (see
-        `_find_ancestor_checkpoint`).
+        A label already present as a child of the current node, *or anywhere on
+        its ancestor path including the current node itself*, resolves to that
+        node — which is what keeps a Run-All from rebuilding the whole spine
+        underneath itself (see `_find_ancestor_checkpoint`). Every one of those
+        cases lands on the single `_switch_to_node` below, so the replay cursors
+        and `_last_checkpoint_id` are re-armed no matter which way it resolved.
         """
-        self._pending_collision = None
         if not self.session_id:
             return None
-        if self._current_node_id:
-            row = self._get_node(self._current_node_id, "node_type, label")
-            if row and row["node_type"] == "checkpoint" and row["label"] == label:
-                return self._current_node_id
-        # Leaving a branch — freeze its diff before we move off it.
+        # One indexed check per structural op: the session (and the node we are
+        # about to hang this checkpoint off) may have been ended, trashed or
+        # purged from the dashboard/CLI since the last magic ran.
+        if not self._ensure_live_anchor():
+            return None
+        # Leaving a branch — freeze its diff before we move off it. A no-op when
+        # the current node isn't a branch, which includes the re-declare case.
         self._refresh_branch_diff()
         parent_id = self._current_node_id or self._last_checkpoint_id
         existing = (self._find_child_by_label(parent_id, label, ("checkpoint",))
@@ -619,22 +888,18 @@ class SessionManager:
         cells haven't run). We switch to the existing node and arm
         `_pending_collision`; the next recorded cell forks to a suffixed node
         if its first cell differs from the existing node's. See record_cell()."""
-        self._pending_collision = None
-        if not self.session_id or not self._last_checkpoint_id:
+        if not self.session_id:
+            return None
+        if not self._ensure_live_anchor():
+            return None
+        if not self._last_checkpoint_id:
             return None
         # Moving off whatever branch we were on — freeze its diff first.
         self._refresh_branch_diff()
         existing = self._find_child_by_label(
             self._last_checkpoint_id, label, ("branch", "abandoned"))
         if existing:
-            row = self._get_node(existing, "node_type")
-            if row and row["node_type"] == "abandoned":
-                conn = get_db()
-                conn.execute(
-                    "UPDATE session_nodes SET node_type='branch' WHERE id=?",
-                    (existing,),
-                )
-                conn.commit()
+            self._reactivate_branch(existing)
             self._switch_to_node(existing)
             first = (self._current_cell_source.split(self._CELL_SEPARATOR)[0]
                      if self._current_cell_source else "")
@@ -649,6 +914,22 @@ class SessionManager:
         nid = self._create_branch_node(self._last_checkpoint_id, label)
         self._switch_to_node(nid)
         return nid
+
+    @staticmethod
+    def _reactivate_branch(node_id: str) -> None:
+        """A branch re-entered by name becomes live again if it was abandoned.
+
+        The `WHERE node_type='abandoned'` makes this a no-op for a node that is
+        already live (or is a checkpoint), so no caller needs to read the row
+        first — which is what both callers used to do, in two copies.
+        """
+        conn = get_db()
+        conn.execute(
+            "UPDATE session_nodes SET node_type='branch' "
+            "WHERE id=? AND node_type='abandoned'",
+            (node_id,),
+        )
+        conn.commit()
 
     def _create_branch_node(self, checkpoint_id: str, label: str) -> str:
         """Insert a fresh branch node under `checkpoint_id`, capturing its diff
@@ -668,6 +949,45 @@ class SessionManager:
         )
         conn.commit()
         return nid
+
+    def _find_sibling_by_first_cell(self, parent_id: str,
+                                    recorded: str) -> str | None:
+        """A live sibling under `parent_id` whose first recorded cell is
+        `recorded`, else None.
+
+        This is what makes the collision fork idempotent. `_find_child_by_label`
+        only ever resolves the *unsuffixed* label, so a second Run-All of an
+        edited branch re-collided with the original node, compared against the
+        original's first cell again, and forked yet another suffix — `A (2)`,
+        `A (3)`, `A (4)`, one per pass, each with its own cells and diff blob:
+        precisely the duplicate growth the Run-All handling exists to prevent.
+        Recognizing the fork a previous pass already created merges into it.
+
+        Identity is the **first recorded cell**, not the label: matching on a
+        `"{label} ("` prefix instead looked reasonable and was defeated by the
+        very thing the fork notice invites the user to do — rename the fork.
+        A renamed (or promoted-to-checkpoint) fork stopped being findable and got
+        re-forked on the next pass, so the label heuristic re-created the bug it
+        was written to fix. Content matching is rename-proof and promote-proof,
+        which is also why no `node_type` filter is applied.
+
+        Only reached from the rare collision path, so reading the siblings'
+        `cell_source` is not on any hot path.
+        """
+        target = recorded.strip()
+        if not target:
+            return None
+        rows = get_db().execute(
+            "SELECT id, cell_source FROM session_nodes "
+            "WHERE session_id=? AND parent_id=? AND deleted_at IS NULL "
+            "ORDER BY seq",
+            (self.session_id, parent_id),
+        ).fetchall()
+        for r in rows:
+            first = (r["cell_source"] or "").split(self._CELL_SEPARATOR)[0]
+            if first.strip() == target:
+                return r["id"]
+        return None
 
     def _unique_branch_label(self, parent_id: str, label: str) -> str:
         """Return `label (2)`, `label (3)`, … — the first suffix not already
@@ -693,6 +1013,13 @@ class SessionManager:
         baseline = (pc["baseline_first"] or "").strip()
         if not baseline or baseline == recorded.strip():
             return  # first cell / identical re-run — merge as before
+        # A previous Run-All of this same edited branch already forked a node —
+        # return to it rather than forking another.
+        existing_fork = self._find_sibling_by_first_cell(pc["parent_id"], recorded)
+        if existing_fork:
+            self._reactivate_branch(existing_fork)
+            self._switch_to_node(existing_fork)
+            return
         new_label = self._unique_branch_label(pc["parent_id"], pc["label"])
         nid = self._create_branch_node(pc["parent_id"], new_label)
         self._switch_to_node(nid)
@@ -797,7 +1124,11 @@ def build_tree(session_id: str) -> dict[str, Any]:
     nodes = conn.execute(
         "SELECT n.*, e.id AS exp_id, e.name AS exp_name "
         "FROM session_nodes n "
+        # A trashed run is gone from every list, so its `→ exp` badge would link
+        # to something the user can't open — the node stays visible, the badge
+        # doesn't. Matches materialize's own already-filtered lookup.
         "LEFT JOIN experiments e ON e.session_node_id = n.id "
+        "  AND e.deleted_at IS NULL "
         "WHERE n.session_id=? AND n.deleted_at IS NULL ORDER BY n.seq",
         (session_id,),
     ).fetchall()

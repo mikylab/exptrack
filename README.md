@@ -1,6 +1,6 @@
 # exptrack
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![stdlib only](https://img.shields.io/badge/stdlib-only-brightgreen.svg)](#what-it-does)
 [![SQLite](https://img.shields.io/badge/storage-SQLite-003B57.svg)](https://www.sqlite.org/)
@@ -22,17 +22,17 @@ exptrack ui        # open the web dashboard
 
 ## Dashboard
 
-<img alt="exptrack dashboard — experiment list grouped by script, with tags, studies, and metric sparklines" src="docs/images/dashboard.png" />
+<img alt="exptrack dashboard — experiment list grouped by script, with tags, studies, and metric sparklines" src="https://raw.githubusercontent.com/mikylab/exptrack/main/docs/images/dashboard.png" />
 
 Filter, compare, tag, and explore experiments from a local web UI. Runs on localhost with no accounts or internet needed. Runs group by script by default, so a burst of near-identical attempts reads as one block instead of a flat list.
 
 Every run's detail view opens with **what changed** since the last run of the same script — the params you edited, the metric deltas they produced, and the code diff behind them — plus a filmstrip for stepping between runs without going back to the list.
 
-<img alt="Run detail — the What Changed card diffing params and metrics against the previous run of the same script" src="docs/images/dashboard-detail.png" />
+<img alt="Run detail — the What Changed card diffing params and metrics against the previous run of the same script" src="https://raw.githubusercontent.com/mikylab/exptrack/main/docs/images/dashboard-detail.png" />
 
 The **Charts** tab plots every logged metric with linear/log scales, typed axis bounds, and a display-only smoothing slider (the raw series stays visible behind it). Charts on a live run update in place every 5 seconds without resetting your tab, zoom, or metric pick.
 
-<img alt="Charts tab — a training loss curve with axis-range controls and a smoothing slider" src="docs/images/dashboard-charts.png" />
+<img alt="Charts tab — a training loss curve with axis-range controls and a smoothing slider" src="https://raw.githubusercontent.com/mikylab/exptrack/main/docs/images/dashboard-charts.png" />
 
 ---
 
@@ -60,7 +60,7 @@ The **Charts** tab plots every logged metric with linear/log scales, typed axis 
 
 **Delete safely.** Deleting a run moves it to a Trash you can restore from; permanent deletion is a separate, explicit step, and files go to the OS Trash rather than being unlinked.
 
-**Explore in a notebook without losing the thread.** Session Trees record the *shape* of exploration — checkpoints, branches, scratch and setup cells — as a tree you can compare, promote into experiments, and finalize into a study. See [Session Trees](docs/session-trees.md).
+**Explore in a notebook without losing the thread.** Session Trees record the *shape* of exploration — checkpoints, branches, scratch and setup cells — as a tree you can compare, promote into experiments, and finalize into a study. See [Session Trees](https://github.com/mikylab/exptrack/blob/main/docs/session-trees.md).
 
 **Run entirely on your machine.** One SQLite file, standard library only, no accounts or internet. Data stays local.
 
@@ -105,6 +105,21 @@ import exptrack.notebook as exp
 exp.start(lr=0.001, bs=32)
 exp.metric("val/loss", 0.23, step=5)
 exp.done()
+```
+
+**Got the test numbers after the run finished?** Attach them without hunting for
+the run id — this works after `%exp_done`, and prints which run it logged onto:
+
+```python
+%exp_log test_acc=0.93 train_acc=0.98
+```
+
+**Re-ran the same notebook with a different model?** Point the new run at the one
+you actually want to compare against, and the "vs previous" delta and "What
+changed" card both use it instead of whatever happened to run last:
+
+```bash
+exptrack variant-of <new_run_id> <original_run_id>
 ```
 
 ### 2b. Session Trees (notebook, opt-in)
@@ -152,7 +167,7 @@ exptrack session show <id>       # ASCII tree
 exptrack session note <node> "…" # annotate a node after the fact
 ```
 
-Full guide: [`docs/session-trees.md`](docs/session-trees.md).
+Full guide: [`docs/session-trees.md`](https://github.com/mikylab/exptrack/blob/main/docs/session-trees.md).
 
 ### 3. Shell / SLURM pipeline
 
@@ -221,7 +236,7 @@ exptrack run train.py --lr 0.01 --epochs 50 --output_dir results/
 exptrack run train.py --lr 0.01 --epochs 100 --output_dir results/ --resume --ckpt results/model.pt
 ```
 
-No extra flags for exptrack. Your script's `--resume` does double duty. See [Configuration](docs/configuration.md) if your script uses a different flag like `--continue` or `--load-checkpoint`.
+No extra flags for exptrack. Your script's `--resume` does double duty. See [Configuration](https://github.com/mikylab/exptrack/blob/main/docs/configuration.md) if your script uses a different flag like `--continue` or `--load-checkpoint`.
 
 ### 4. Python API (full control)
 
@@ -329,7 +344,7 @@ git clone https://github.com/mikylab/exptrack.git
 cd exptrack && pip install -e .
 ```
 
-Only standard library dependencies. Requires Python 3.8+.
+Only standard library dependencies. Requires Python 3.9+.
 
 **Does it affect other packages?** Patches only activate when you explicitly use `exptrack run` or `%load_ext exptrack`, and they're removed when the script or session ends.
 
@@ -337,21 +352,21 @@ Only standard library dependencies. Requires Python 3.8+.
 
 ## Examples
 
-The [`examples/`](examples/) directory has ready-to-run scripts:
+The [`examples/`](https://github.com/mikylab/exptrack/blob/main/examples/) directory has ready-to-run scripts:
 
 | Example | What it shows |
 |---------|---------------|
-| [`basic_script.py`](examples/basic_script.py) | Automatic tracking with `exptrack run`, no imports needed |
-| [`resnet_exptrack_run.py`](examples/resnet_exptrack_run.py) | Metric logging via the `__exptrack__` global |
-| [`resnet_python_api.py`](examples/resnet_python_api.py) | Same training using the explicit Python API |
-| [`manual_tracking.py`](examples/manual_tracking.py) | Full lifecycle: parameters, metrics, tags, artifacts |
-| [`notebook_example.py`](examples/notebook_example.py) | Notebook API as a plain script |
-| [`shell_script_example.sh`](examples/shell_script_example.sh) | Pure shell workflow (no Python in the workload) |
-| [`pipeline_example.sh`](examples/pipeline_example.sh) | Shell/SLURM single-step pipeline |
-| [`pipeline_multistep.sh`](examples/pipeline_multistep.sh) | Multi-step pipeline: train, test, analyze |
-| [`pipeline_wrapper.sh`](examples/pipeline_wrapper.sh) | Wrapper script with auto-inherited study and stages |
-| [`slurm_job.sh`](examples/slurm_job.sh) | SLURM sbatch script with error trapping |
-| [`resume_training.py`](examples/resume_training.py) | Resuming a run — metrics aggregate into one experiment |
+| [`basic_script.py`](https://github.com/mikylab/exptrack/blob/main/examples/basic_script.py) | Automatic tracking with `exptrack run`, no imports needed |
+| [`resnet_exptrack_run.py`](https://github.com/mikylab/exptrack/blob/main/examples/resnet_exptrack_run.py) | Metric logging via the `__exptrack__` global |
+| [`resnet_python_api.py`](https://github.com/mikylab/exptrack/blob/main/examples/resnet_python_api.py) | Same training using the explicit Python API |
+| [`manual_tracking.py`](https://github.com/mikylab/exptrack/blob/main/examples/manual_tracking.py) | Full lifecycle: parameters, metrics, tags, artifacts |
+| [`notebook_example.py`](https://github.com/mikylab/exptrack/blob/main/examples/notebook_example.py) | Notebook API as a plain script |
+| [`shell_script_example.sh`](https://github.com/mikylab/exptrack/blob/main/examples/shell_script_example.sh) | Pure shell workflow (no Python in the workload) |
+| [`pipeline_example.sh`](https://github.com/mikylab/exptrack/blob/main/examples/pipeline_example.sh) | Shell/SLURM single-step pipeline |
+| [`pipeline_multistep.sh`](https://github.com/mikylab/exptrack/blob/main/examples/pipeline_multistep.sh) | Multi-step pipeline: train, test, analyze |
+| [`pipeline_wrapper.sh`](https://github.com/mikylab/exptrack/blob/main/examples/pipeline_wrapper.sh) | Wrapper script with auto-inherited study and stages |
+| [`slurm_job.sh`](https://github.com/mikylab/exptrack/blob/main/examples/slurm_job.sh) | SLURM sbatch script with error trapping |
+| [`resume_training.py`](https://github.com/mikylab/exptrack/blob/main/examples/resume_training.py) | Resuming a run — metrics aggregate into one experiment |
 
 ---
 
@@ -359,14 +374,14 @@ The [`examples/`](examples/) directory has ready-to-run scripts:
 
 | Doc | What's in it |
 |-----|-------------|
-| [CLI Reference](docs/cli-reference.md) | All 24 subcommands |
-| [Configuration](docs/configuration.md) | Every `.exptrack/config.json` option |
-| [Python API](docs/python-api.md) | `Experiment` class properties and methods |
-| [Plugins](docs/plugins.md) | Writing plugins, GitHub Sync |
-| [How It Works](docs/how-it-works.md) | Capture mechanisms, storage design, schema |
-| [FAQ](docs/faq.md) | Common questions |
-| [Troubleshooting](docs/troubleshooting.md) | Solutions for common issues |
-| [Contributing](docs/contributing.md) | Development setup, linting, guidelines |
+| [CLI Reference](https://github.com/mikylab/exptrack/blob/main/docs/cli-reference.md) | Every subcommand |
+| [Configuration](https://github.com/mikylab/exptrack/blob/main/docs/configuration.md) | Every `.exptrack/config.json` option |
+| [Python API](https://github.com/mikylab/exptrack/blob/main/docs/python-api.md) | `Experiment` class properties and methods |
+| [Plugins](https://github.com/mikylab/exptrack/blob/main/docs/plugins.md) | Writing plugins, GitHub Sync |
+| [How It Works](https://github.com/mikylab/exptrack/blob/main/docs/how-it-works.md) | Capture mechanisms, storage design, schema |
+| [FAQ](https://github.com/mikylab/exptrack/blob/main/docs/faq.md) | Common questions |
+| [Troubleshooting](https://github.com/mikylab/exptrack/blob/main/docs/troubleshooting.md) | Solutions for common issues |
+| [Contributing](https://github.com/mikylab/exptrack/blob/main/docs/contributing.md) | Development setup, linting, guidelines |
 
 ---
 

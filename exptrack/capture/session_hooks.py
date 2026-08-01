@@ -51,9 +51,15 @@ def _exptrack_magic(line: str):
                   file=sys.stderr)
             return
         sub = args[1]
-        sub_rest = _strip_quotes(" ".join(args[2:]).strip())
+        rest_args = list(args[2:])
+        # `--new` forces a fresh session instead of re-adopting the live one of
+        # the same name (the kernel-restart path) — the escape hatch for "this
+        # really is a separate exploration that reuses the name".
+        force_new = any(a in ("--new", "-n") for a in rest_args)
+        rest_args = [a for a in rest_args if a not in ("--new", "-n")]
+        sub_rest = _strip_quotes(" ".join(rest_args).strip())
         if sub == "start":
-            return _session_start(sub_rest)
+            return _session_start(sub_rest, new=force_new)
         if sub == "end":
             return _session_end()
         print(f"[exptrack] unknown session subcommand: {sub}", file=sys.stderr)
@@ -69,14 +75,25 @@ def _exptrack_magic(line: str):
     print(f"[exptrack] unknown magic: %exptrack {cmd}", file=sys.stderr)
 
 
-def _session_start(name: str):
+def _session_start(name: str, new: bool = False):
     if not name:
         print("[exptrack] session start requires a name", file=sys.stderr)
         return
     sm = get_current_session()
     if sm is not None and sm.session_id:
-        print(f"[exptrack] session already active: {sm.session_id[:8]}",
-              file=sys.stderr)
+        # A live session in *this* kernel is handled first, `--new` or not: the
+        # only way to start a genuinely separate session here is to end this one
+        # (otherwise the abandoned one stays 'active' and gets re-adopted later).
+        # Re-declaring the same session is a Run-All replaying from the top (the
+        # normal way this notebook is re-executed) and start() rewinds to the
+        # root; a different name is a mistake and start() refuses it.
+        if sm.start(name):
+            print(f"[exptrack] session resumed from the top: {name}  "
+                  f"({sm.session_id[:8]})")
+        else:
+            print(f"[exptrack] session already active: {sm.session_id[:8]}"
+                  " — run \"%exptrack session end\" first",
+                  file=sys.stderr)
         return
     nb = ""
     try:
@@ -85,9 +102,17 @@ def _session_start(name: str):
     except Exception as e:
         debug_log(f"could not detect notebook name for session: {e}")
     sm = SessionManager()
-    sid = sm.start(name, notebook=nb)
+    sid = sm.start(name, notebook=nb, new=new)
     set_current_session(sm)
-    print(f"[exptrack] session started: {name}  ({sid[:8]})")
+    if sm.reattached:
+        # The rows were still there and still active — a kernel restart, not a
+        # new exploration. Say so, since the alternative (a second session with
+        # the same name) is what this replaces.
+        print(f"[exptrack] session reattached after restart: {name}  ({sid[:8]})"
+              " — recording continues in the existing tree "
+              "(use '%exptrack session start \"name\" --new' to force a new one)")
+    else:
+        print(f"[exptrack] session started: {name}  ({sid[:8]})")
 
 
 def _session_end():
@@ -248,8 +273,14 @@ def _pin_magic(line: str, cell: str):
     if err:
         body_parts += ["", "## Error", "", "```", err, "```"]
     try:
-        target: Path = exp.save_output(fname)
+        # Write the file *before* registering it: `log_artifact` hashes and
+        # sizes the file at registration time, so registering first (what
+        # `save_output` does) recorded every pin with an empty content hash and
+        # size 0 — the integrity check the artifact exists for.
+        target: Path = exp.output_path(fname)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("\n".join(body_parts))
+        exp.log_artifact(target, label=fname)
         print(f"[exptrack] pinned: {target.name} (artifact attached to {exp.id[:8]})")
     except Exception as e:
         print(f"[exptrack:pin] could not save artifact: {e}", file=sys.stderr)

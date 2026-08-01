@@ -68,11 +68,12 @@ HTML_BODY = r"""</style>
         <div class="settings-section">
           <div class="settings-section-title">Metrics</div>
           <div class="settings-row">
-            <label title="Only store every Nth metric point during training (1 = keep all)">Save every Nth step</label>
+            <label title="Write-time thinning: store only 1 of every N points your code logs. 1 = record every point. Thinned points are never written to the database, so this cannot be undone afterwards.">Store 1 of every N points</label>
             <input type="number" id="settings-keep-every" min="1" value="1" onchange="saveMetricSettings()">
           </div>
+          <div class="settings-note" id="keep-every-note"></div>
           <div class="settings-row">
-            <label title="Max points to show on charts (server-side downsampling)">Chart max points</label>
+            <label title="Max points to show on charts (server-side downsampling). Display only — every stored point is kept.">Chart max points</label>
             <input type="number" id="settings-max-points" min="10" max="50000" value="500" onchange="saveMetricSettings()">
           </div>
         </div>

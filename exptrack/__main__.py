@@ -248,10 +248,14 @@ def _find_latest_experiment(script_path: str):
 
     resolved = str(Path(script_path).resolve())
     with get_db() as conn:
+        # Trashed runs are excluded: they're gone from every list, so silently
+        # continuing one would append metrics to a run the user can't see.
+        # The rowid tie-break makes "latest" deterministic when two runs share
+        # a created_at (same clock tick) — rowid is insertion, i.e. launch, order.
         row = conn.execute(
             """SELECT id FROM experiments
-               WHERE script=?
-               ORDER BY created_at DESC LIMIT 1""",
+               WHERE script=? AND deleted_at IS NULL
+               ORDER BY created_at DESC, rowid DESC LIMIT 1""",
             (resolved,)
         ).fetchone()
     if not row:
@@ -272,10 +276,21 @@ def _maybe_trash_phantom_wrapper(exp, resume):
     then left with the code snapshot and no metrics of its own: a phantom row
     that clutters the experiment list and floods same-script comparisons.
 
-    When the wrapper saw such a foreign-built run AND logged no metrics itself,
-    move it to Trash (soft-delete — fully recoverable, no files touched). A
-    resumed run is never touched (it's a deliberate continuation), and a hybrid
-    wrapper that logged its own metrics is kept.
+    When the wrapper saw such a foreign-built run AND recorded no data of its
+    own, move it to Trash (soft-delete — fully recoverable, no files touched).
+    A resumed run is never touched (it's a deliberate continuation), and a
+    hybrid wrapper that logged its own metrics is kept.
+
+    "No data of its own" means neither metrics *nor* artifacts: savefig capture
+    and the auto output detection stay pointed at the wrapper for the whole
+    sweep, so a script that plots per iteration without logging a metric leaves
+    its only artifact rows on the wrapper. Trashing on the metric count alone
+    hid them.
+
+    The rows every wrapper gets for free are excluded, because counting them
+    means no wrapper is ever a phantom: the ``output_dir`` row, and the
+    ``[log] stdout.log`` / ``[log] stderr.log`` rows the stream tee registers.
+    They say nothing about whether the run did any work of its own.
     """
     if resume or exp._adopted:
         return
@@ -289,10 +304,18 @@ def _maybe_trash_phantom_wrapper(exp, resume):
             ).fetchone()["n"]
             if n:
                 return  # wrapper logged its own metrics — a real run, keep it
+            n_art = conn.execute(
+                "SELECT COUNT(*) AS n FROM artifacts "
+                "WHERE exp_id=? AND COALESCE(label,'') <> 'output_dir' "
+                "AND COALESCE(label,'') NOT LIKE '[log] %'",
+                (exp.id,)
+            ).fetchone()["n"]
+            if n_art:
+                return  # wrapper holds this run's plots/outputs — keep it
             if trash_experiment(conn, exp.id):
                 conn.commit()
                 print(
-                    f"[exptrack] wrapper run {exp.id[:6]} logged no metrics of its own "
+                    f"[exptrack] wrapper run {exp.id[:6]} logged no metrics or artifacts of its own "
                     "(the script created its own experiments) — moved to Trash",
                     file=sys.stderr,
                 )

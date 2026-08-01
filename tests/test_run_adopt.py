@@ -169,3 +169,30 @@ def test_sweep_phantom_wrapper_trashed(tmp_path):
     # The three sweep runs are all still live.
     live = [e for e in exps if not e["trashed"]]
     assert sum(1 for e in live if e["name"].startswith("run_lr")) == 3
+
+
+# A sweep that saves a file per iteration but logs no metric of its own. The
+# savefig/auto-output capture stays pointed at the *wrapper* for the whole run,
+# so those artifact rows are the only record of the files — trashing the
+# wrapper on a zero metric count alone used to take them with it.
+_SWEEP_ARTIFACTS = (
+    "from pathlib import Path\n"
+    "from exptrack.core import Experiment\n"
+    "wrapper = globals().get('__exptrack__')\n"
+    "for lr in (0.1, 0.2):\n"
+    "    with Experiment(name=f'run_lr{lr}', params={'lr': lr}) as e:\n"
+    "        pass\n"
+    "p = Path('plot.png'); p.write_bytes(b'x')\n"
+    "wrapper.log_artifact(str(p), label='plot')\n"
+)
+
+
+def test_wrapper_holding_artifacts_is_not_trashed(tmp_path):
+    # The wrapper logged no metrics, but it holds the run's only artifact rows.
+    # Trashing it would make the plots vanish from the Images tab with no hint.
+    _make_project(tmp_path)
+    (tmp_path / "sweep.py").write_text(_SWEEP_ARTIFACTS)
+    r = _run(tmp_path, "sweep.py")
+    assert r.returncode == 0, r.stderr
+    trashed = [e for e in _experiments(tmp_path) if e["trashed"]]
+    assert trashed == [], r.stderr

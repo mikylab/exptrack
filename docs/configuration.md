@@ -28,7 +28,7 @@ exptrack stores config in `.exptrack/config.json`. Safe to commit — no secrets
   "resume_flags":          ["--resume"],  // add "--continue", "--load-checkpoint", etc. as needed
 
   // --- Metrics ---
-  "metric_keep_every":     1,    // store every Nth metric point (increase to thin large series during training)
+  "metric_keep_every":     1,    // store 1 of every N points your code logs, per metric key (see below)
   "metric_max_points":     500,  // max points shown on dashboard charts (server-side downsampling)
   "metric_commit_interval_ms": 250,  // how long a metric write may sit uncommitted. A commit is an
                                      // fsync, and metrics are the only thing written inside your
@@ -69,6 +69,33 @@ exptrack stores config in `.exptrack/config.json`. Safe to commit — no secrets
 ```
 
 All values are optional — exptrack uses sensible defaults. You only need to add the keys you want to change.
+
+## Metric thinning (`metric_keep_every`)
+
+This is the one setting that discards data as your run writes it, so it's worth
+being precise about what it does.
+
+`metric_keep_every: N` stores **1 of every N points your code logs**, counted
+per metric key, and always keeps a key's first point. It counts *points*, not
+step numbers — so it behaves the same whether you log every step, every 5th
+step, or with no `step` at all:
+
+```python
+for i in range(1000):
+    if (i + 1) % 5 == 0:
+        exp.log_metric("loss", loss, step=i + 1)   # 200 points logged
+# metric_keep_every: 10  →  20 points stored
+```
+
+Points it drops are never written to the database, so thinning cannot be undone
+afterwards. If you aren't sure you want it, leave it at `1` and thin later with
+[`exptrack prune`](cli-reference.md), which works on what you already recorded
+and always keeps each series' first, last, minimum and maximum point. A run with
+thinning active prints a one-line notice to stderr the first time it drops a
+point.
+
+`metric_max_points` is unrelated and non-destructive: it's how many points the
+dashboard *draws*, downsampled server-side from everything you stored.
 
 Two capture settings are also editable from the dashboard under **Settings →
 Capture** (`auto_capture.notebook` and `var_fingerprint_max_mb`); both take
