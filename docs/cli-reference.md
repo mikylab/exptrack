@@ -54,6 +54,9 @@ Organize
   exptrack stage <id> <N> [--name]  Set stage number and label
   exptrack note <id> "text"         Append note
   exptrack edit-note <id> "text"    Replace notes
+  exptrack variant-of <id> <base>   Compare this run against <base> instead of
+                                      the previous run by time; omit <base> to
+                                      clear the link
   exptrack finish <id>              Manually mark running experiment as done
 
 Clean Up

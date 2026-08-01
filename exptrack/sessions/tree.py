@@ -122,7 +122,10 @@ def list_sessions() -> list[dict[str, Any]]:
         "  COUNT(DISTINCT e.id) AS promoted "
         "FROM sessions s "
         "LEFT JOIN session_nodes n ON n.session_id = s.id AND n.deleted_at IS NULL "
+        # Trashed runs don't count as promoted — they're absent from every list,
+        # so counting them made the card advertise runs the user can't reach.
         "LEFT JOIN experiments e ON e.session_node_id = n.id "
+        "  AND e.deleted_at IS NULL "
         "WHERE s.deleted_at IS NULL "
         "GROUP BY s.id "
         "ORDER BY s.created_at DESC",
@@ -138,9 +141,14 @@ def find_session(session_id_or_name: str,
     don't pick one up; pass ``include_trashed=True`` for restore/purge lookups."""
     from ..core.db import get_db
     conn = get_db()
-    q = "SELECT * FROM sessions WHERE (id LIKE ? OR name=?)"
+    # LIKE wildcards in the caller's string are escaped so an id fragment
+    # containing `%` or `_` can't prefix-match some arbitrary other session
+    # (same rule as materialize.link_experiment).
+    like = (session_id_or_name.replace("\\", "\\\\")
+            .replace("%", "\\%").replace("_", "\\_"))
+    q = "SELECT * FROM sessions WHERE (id LIKE ? ESCAPE '\\' OR name=?)"
     if not include_trashed:
         q += " AND deleted_at IS NULL"
     q += " ORDER BY created_at DESC LIMIT 1"
-    row = conn.execute(q, (session_id_or_name + "%", session_id_or_name)).fetchone()
+    row = conn.execute(q, (like + "%", session_id_or_name)).fetchone()
     return dict(row) if row else None

@@ -10,16 +10,52 @@ from typing import Any
 
 from ..core.db import get_db
 from ._shared import (
-    _CELL_SEPARATOR,
     _collect_descendants,
+    _count_cells,
     _count_node_images,
     _detach_experiments,
+    _nearest_live_checkpoint,
     _node_lineage_labels,
     _session_study_name,
     _trash_node_images,
     get_current_session,
 )
 from .materialize import materialize_experiment
+
+# How close two `deleted_at` stamps must be to count as the same delete batch.
+# `delete_node` writes one `time.time()` value across the whole subtree, so this
+# only has to absorb float round-tripping, not real elapsed time.
+_RESTORE_BATCH_EPS = 0.001
+
+
+def end_session_rows(conn, session_id: str) -> int:
+    """Mark a session ended and abandon its open branches. Returns how many
+    branches were abandoned.
+
+    The DB half of ending a session, shared by ``SessionManager.end()`` and the
+    dashboard's end-session route so the two cannot disagree — the route had its
+    own copy of this UPDATE without the ``deleted_at IS NULL`` filters, so it
+    relabelled *trashed* branches (which then came back wrong on restore) and
+    counted trashed children as children, leaving a branch whose only children
+    are trashed un-abandoned forever.
+
+    Both filters are load-bearing: a trashed branch must not be relabelled, and
+    a branch whose only remaining children are trashed *is* open.
+    """
+    cur = conn.execute(
+        "UPDATE session_nodes SET node_type='abandoned' "
+        "WHERE session_id=? AND node_type='branch' AND deleted_at IS NULL "
+        "AND id NOT IN (SELECT parent_id FROM session_nodes "
+        "WHERE session_id=? AND parent_id IS NOT NULL AND deleted_at IS NULL)",
+        (session_id, session_id),
+    )
+    abandoned = cur.rowcount
+    conn.execute(
+        "UPDATE sessions SET status='ended', ended_at=? WHERE id=?",
+        (time.time(), session_id),
+    )
+    conn.commit()
+    return abandoned
 
 
 def delete_session(session_id: str, *, permanent: bool = False) -> bool:
@@ -118,7 +154,6 @@ def finalize_session_preview(session_id: str) -> dict[str, Any]:
     ).fetchone()
     if not s:
         return {"ok": False, "error": "session not found"}
-    sep = _CELL_SEPARATOR
     rows = conn.execute(
         "SELECT id, node_type, label, cell_source "
         "FROM session_nodes "
@@ -139,8 +174,10 @@ def finalize_session_preview(session_id: str) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
     for r in rows:
         linked_exp = linked_by_node.get(r["id"])
-        src = r["cell_source"] or ""
-        cell_count = len([c for c in src.split(sep) if c.strip()]) if src else 0
+        # Counted through the shared helper so the cap-trip elision placeholder
+        # isn't mistaken for a recorded cell — a node whose real cells were all
+        # elided would otherwise read as "ran code" and get recommended.
+        cell_count = _count_cells(r["cell_source"])
         nodes.append({
             "id": r["id"],
             "label": r["label"] or "",
@@ -187,7 +224,6 @@ def finalize_session(session_id: str, node_ids: list[str] | None = None, *,
     # un-promoted, non-root nodes that actually ran code (matches the
     # `recommended` flag in finalize_session_preview, without rebuilding it).
     if node_ids is None:
-        sep = _CELL_SEPARATOR
         node_ids = [
             r["id"] for r in conn.execute(
                 "SELECT n.id, n.cell_source FROM session_nodes n "
@@ -197,7 +233,7 @@ def finalize_session(session_id: str, node_ids: list[str] | None = None, *,
                 "  WHERE e.session_node_id=n.id AND e.deleted_at IS NULL)",
                 (session_id,),
             ).fetchall()
-            if any(c.strip() for c in (r["cell_source"] or "").split(sep))
+            if _count_cells(r["cell_source"])
         ]
 
     else:
@@ -280,8 +316,12 @@ def preview_node_delete(node_id: str) -> dict[str, Any]:
     if not ids:
         return {}
     placeholders = ",".join("?" * len(ids))
+    # Trashed runs are invisible everywhere else, so counting them here made the
+    # confirm dialog warn about experiments the user can't see (and disagree with
+    # what delete_node reports afterwards).
     exp_count = conn.execute(
-        f"SELECT COUNT(*) AS c FROM experiments WHERE session_node_id IN ({placeholders})",
+        f"SELECT COUNT(*) AS c FROM experiments "
+        f"WHERE session_node_id IN ({placeholders}) AND deleted_at IS NULL",
         ids,
     ).fetchone()["c"]
     return {
@@ -321,8 +361,11 @@ def delete_node(node_id: str) -> dict[str, Any]:
         return {"ok": False, "error": "cannot delete session root — delete the session instead"}
     ids = _collect_descendants(conn, node_id)
     placeholders = ",".join("?" * len(ids))
+    # Same rule as the preview above: report the runs the user can actually see.
+    # (Trashed ones are still *detached* — the link must not dangle.)
     exp_count = conn.execute(
-        f"SELECT COUNT(*) AS c FROM experiments WHERE session_node_id IN ({placeholders})",
+        f"SELECT COUNT(*) AS c FROM experiments "
+        f"WHERE session_node_id IN ({placeholders}) AND deleted_at IS NULL",
         ids,
     ).fetchone()["c"]
     _detach_experiments(conn, ids)
@@ -343,10 +386,24 @@ def delete_node(node_id: str) -> dict[str, Any]:
             # Fall back to the live checkpoint anchor, else the session root —
             # never to None, which would make the next checkpoint() insert a
             # parentless node and give the session a second root.
-            mgr._current_node_id = mgr._last_checkpoint_id or _session_root_id(
+            #
+            # Through _switch_to_node, never by assignment: the manager caches
+            # the current node's cell blobs and its replay cursors, and a bare
+            # assignment left all of them describing the *deleted* node. The
+            # next recorded cell then wrote "deleted node's cells + this one"
+            # onto the surviving node — the trashed branch's code silently
+            # reappeared on the checkpoint, and restoring it duplicated them.
+            fallback = mgr._last_checkpoint_id or _session_root_id(
                 conn, row["session_id"])
+            mgr._switch_to_node(fallback)
+            mgr._pending_collision = None
         if mgr._last_checkpoint_id is None:
-            mgr._last_checkpoint_id = mgr._current_node_id
+            # The anchor is where the *next* branch attaches, so it has to be a
+            # checkpoint (or the root). Falling back to whatever node is current
+            # pointed it at a branch, and the next branch was then created as a
+            # child of a branch.
+            mgr._last_checkpoint_id = _nearest_live_checkpoint(
+                conn, mgr._current_node_id)
 
     return {"ok": True, "nodes": len(ids), "experiments": exp_count}
 
@@ -354,10 +411,19 @@ def delete_node(node_id: str) -> dict[str, Any]:
 def restore_node(node_id: str) -> dict[str, Any]:
     """Restore a soft-deleted node and all its (also-trashed) descendants.
 
+    **Only the delete batch this node belongs to comes back.** ``delete_node``
+    stamps one `deleted_at` across the whole subtree it trashes, so a descendant
+    carrying a *different* timestamp was trashed by an earlier, separate delete
+    — restoring the parent used to resurrect it too, silently undoing a deletion
+    the user never asked about. Descendants are matched within
+    ``_RESTORE_BATCH_EPS`` of the target's timestamp; anything else stays in the
+    Trash and can be restored on its own.
+
     If the node's parent is itself trashed, the parent is restored too — a
     restored child without a live ancestor would render as an orphan. We
     walk up `parent_id` and clear `deleted_at` on every trashed ancestor
-    until we hit either a live row or the root.
+    until we hit either a live row or the root (regardless of batch: an
+    ancestor has to be live for the restored node to be reachable).
 
     Returns {ok, nodes} (count of rows restored) or {ok: False, error: ...}.
     Linked experiments are not re-attached — delete cleared their
@@ -374,8 +440,21 @@ def restore_node(node_id: str) -> dict[str, Any]:
         return {"ok": False, "error": "node is not trashed"}
 
     # Collect the subtree (descendants are walked through trashed rows since
-    # restore is symmetric with delete).
-    ids = _collect_descendants(conn, node_id, include_trashed=True)
+    # restore is symmetric with delete), then keep only the rows trashed in the
+    # same batch as the target — plus any still-live rows, which the UPDATE
+    # leaves untouched anyway.
+    batch_ts = float(row["deleted_at"])
+    subtree = _collect_descendants(conn, node_id, include_trashed=True)
+    placeholders_all = ",".join("?" * len(subtree))
+    stamps = {
+        r["id"]: r["deleted_at"] for r in conn.execute(
+            f"SELECT id, deleted_at FROM session_nodes "
+            f"WHERE id IN ({placeholders_all})", subtree,
+        ).fetchall()
+    }
+    ids = [nid for nid in subtree
+           if stamps.get(nid) is None
+           or abs(float(stamps[nid]) - batch_ts) <= _RESTORE_BATCH_EPS]
 
     # Walk parents upward, restoring any that are also trashed. Stops at the
     # first live row (or the root with parent_id=NULL).

@@ -563,7 +563,7 @@ function renderTableHeader(exps) {
     const w = isEmpty ? EMPTY_COL_WIDTH : getColWidth(colId);
     const emptyCls = isEmpty ? ' col-empty' : '';
     const emptyTitle = isEmpty
-      ? ' title="' + escJsAttr(col.label) + ' — not set on any run in view"' : '';
+      ? ' title="' + esc(col.label) + ' — not set on any run in view"' : '';
     const resizer = '<span class="col-resizer" onmousedown="startColResize(event,\'' + escJsAttr(colId) + '\')"></span>';
     if (colId === 'cb') {
       html += '<th class="cb-col" style="width:' + w + 'px"><input type="checkbox" onclick="selectAllVisible()" title="Select all"></th>';
@@ -571,7 +571,7 @@ function renderTableHeader(exps) {
       html += '<th style="width:' + w + 'px;position:relative">' + resizer + '</th>';
     } else if (col.isParam) {
       html += '<th class="sortable param-col-th" style="width:' + w + 'px;position:relative"'
-        + ' title="param ' + escJsAttr(paramColKey(colId)) + '"'
+        + ' title="param ' + esc(paramColKey(colId)) + '"'
         + ' onclick="toggleSort(\'' + escJsAttr(colId) + '\')">' + esc(col.label)
         + '<span class="sort-arrow"></span>' + resizer + '</th>';
     } else if (col.sortable) {
@@ -690,9 +690,10 @@ function renderHiddenPanel() {
     html += '<div class="hidden-panel-list">';
     for (const e of hiddenExps) {
       html += '<div class="hidden-panel-item">';
-      html += '<span class="hidden-panel-name" title="' + esc(e.id) + '">' + esc(e.name.slice(0, 40)) + '</span>';
-      html += '<span class="hidden-panel-status status-' + e.status + '">' + e.status + '</span>';
-      html += '<button class="hidden-panel-unhide" onclick="unhideRow(\'' + e.id + '\')" title="Unhide">Unhide</button>';
+      const hpName = String(e.name || e.id || '');
+      html += '<span class="hidden-panel-name" title="' + esc(e.id) + '">' + esc(hpName.slice(0, 40)) + '</span>';
+      html += '<span class="hidden-panel-status status-' + esc(e.status || '') + '">' + esc(e.status || '--') + '</span>';
+      html += '<button class="hidden-panel-unhide" onclick="unhideRow(\'' + escJsAttr(e.id) + '\')" title="Unhide">Unhide</button>';
       html += '</div>';
     }
     html += '</div>';
@@ -891,7 +892,7 @@ function _showApiError(path, detail) {
   bar.innerHTML =
     '<span class="api-error-msg"><strong>Couldn\'t load data from the exptrack server.</strong> ' +
     esc(String(detail || 'request failed')) + ' <code>' + esc(path) + '</code></span>' +
-    '<button class="api-error-retry" onclick="location.reload()">Retry</button>' +
+    '<button class="api-error-retry" onclick="_retryApiError()">Retry</button>' +
     '<button class="api-error-close" onclick="_dismissApiError()" title="Dismiss">&times;</button>';
   bar.style.display = 'flex';
 }
@@ -899,6 +900,29 @@ function _showApiError(path, detail) {
 function _dismissApiError() {
   const bar = document.getElementById('api-error-bar');
   if (bar) bar.style.display = 'none';
+}
+
+// Retry re-issues the data the mounted views need, rather than reloading the
+// page: a full reload throws away scroll position, the open tab, an in-progress
+// rename and the Commands notepad's unsaved text — for a request that usually
+// just needs asking again. The bar re-appears by itself if the retry fails too.
+function _retryApiError() {
+  const btn = document.querySelector('#api-error-bar .api-error-retry');
+  if (btn) { btn.disabled = true; btn.textContent = 'Retrying…'; }
+  _dismissApiError();
+  const done = () => {
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+  };
+  Promise.resolve()
+    .then(() => (typeof loadStats === 'function' ? loadStats() : null))
+    .then(() => (typeof loadExperiments === 'function' ? loadExperiments() : null))
+    .then(() => {
+      if (typeof currentDetailId !== 'undefined' && currentDetailId &&
+          typeof refreshDetail === 'function') return refreshDetail(currentDetailId);
+      return null;
+    })
+    .catch(() => {})
+    .then(done, done);
 }
 
 // Parse a response body as JSON, reporting rather than throwing on a truncated
@@ -1381,7 +1405,11 @@ function updateAutoNamedCount() {
 function fmtTimeAgo(iso) {
   if (!iso) return '--';
   const now = new Date();
-  const then = new Date(iso);
+  // Stored timestamps are UTC but carry no zone suffix; parsing them raw reads
+  // them as local time, so "2h ago" was off by the viewer's UTC offset (and read
+  // as a future time west of UTC). expDate() is the shared normalization.
+  const then = expDate(iso);
+  if (!then || isNaN(then)) return '--';
   const diff = Math.floor((now - then) / 1000);
   if (diff < 60) return diff + 's ago';
   if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
@@ -1445,7 +1473,22 @@ async function loadMetricSettings() {
     const ptsEl = document.getElementById('settings-max-points');
     if (keepEl) keepEl.value = data.metric_keep_every || 1;
     if (ptsEl) ptsEl.value = data.metric_max_points || 500;
+    _updateKeepEveryNote(data.metric_keep_every || 1);
   } catch(e) {}
+}
+
+// Thinning is the one setting here that destroys data — points it drops are
+// never written, so an empty chart is the only feedback the user ever got. Say
+// what the value means, in the units they're about to see it in.
+function _updateKeepEveryNote(keepEvery) {
+  const el = document.getElementById('keep-every-note');
+  if (!el) return;
+  const n = parseInt(keepEvery, 10);
+  if (!(n > 1)) { el.textContent = ''; return; }
+  el.textContent = 'Recording 1 of every ' + n + ' points your code logs — a run '
+    + 'logging 1,000 points will store about ' + Math.max(1, Math.round(1000 / n))
+    + '. Dropped points are never written and cannot be recovered. Set this to 1 '
+    + 'to record everything, and thin later with exptrack prune.';
 }
 
 async function saveMetricSettings() {
@@ -1460,7 +1503,10 @@ async function saveMetricSettings() {
     });
     if (res.ok) {
       _chartsMaxPoints = res.metric_max_points;
-      owlSay('Metric settings saved!');
+      _updateKeepEveryNote(res.metric_keep_every);
+      owlSay(res.metric_keep_every > 1
+        ? 'Saved — storing 1 of every ' + res.metric_keep_every + ' metric points.'
+        : 'Metric settings saved!');
     } else {
       alert(res.error || 'Failed to save');
     }
@@ -1715,7 +1761,10 @@ async function openPruneMetrics() {
                  fmtBytes(pre.freed) + '), leaving ' + pre.remaining.toLocaleString() +
                  '?\n\nThis cannot be undone.')) return;
 
-    const res = await postApi('/api/prune-metrics', {max_points: maxPoints});
+    // preview_token: delete exactly the set the confirm above described, not a
+    // fresh selection that would also take points logged while it was open.
+    const res = await postApi('/api/prune-metrics',
+                              {max_points: maxPoints, preview_token: pre.preview_token});
     if (!res || res.error) { alert('Error: ' + ((res && res.error) || 'failed')); return; }
     owlSay('Pruned ' + res.deleted.toLocaleString() + ' points (~' +
            fmtBytes(res.freed) + '). Use Vacuum to return the space to disk.');

@@ -34,13 +34,13 @@ def api_set_metric_settings(body: dict) -> dict:
         try:
             val = max(1, int(keep_every))
             conf["metric_keep_every"] = val
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             return {"error": "metric_keep_every must be a positive integer"}
     if max_points is not None:
         try:
             val = max(10, min(50000, int(max_points)))
             conf["metric_max_points"] = val
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             return {"error": "metric_max_points must be an integer (10-50000)"}
     save(conf)
     reload()

@@ -29,6 +29,30 @@ _NODE_IMAGES_MAX = 30  # cap on plot paths tracked per node (most-recent kept)
 # (core/queries.py and tests reference it by that name).
 _CELL_SEPARATOR = "\n\n# ── cell ──\n\n"
 
+# Placeholder written in place of the oldest segments once a node's cell store
+# trips its byte cap. It is bookkeeping, not code: it must never be counted as a
+# recorded cell (finalize's "ran code?" test, the dashboard's cell counts) and
+# must never be the segment a replay cursor is armed on — a cursor sitting on it
+# can never match an incoming cell, which used to poison replay dedup for the
+# rest of the session once a node tripped the cap.
+_ELIDED_MARKER = "# … earlier cells elided to bound memory …"
+
+
+def _is_elided(segment: str | None) -> bool:
+    """True if a stored segment is the cap-trip elision placeholder."""
+    return (segment or "").strip() == _ELIDED_MARKER
+
+
+def _count_cells(blob: str | None) -> int:
+    """Number of *real* recorded cells in a SEP-joined blob (0 when empty).
+
+    Skips blank segments and the elision placeholder, so a node that tripped the
+    byte cap doesn't report a phantom extra cell."""
+    if not blob:
+        return 0
+    return sum(1 for c in blob.split(_CELL_SEPARATOR)
+               if c.strip() and not _is_elided(c))
+
 # The live SessionManager singleton. Read via get_current_session() and set via
 # set_current_session() — never `from ._shared import _current_session`, which
 # would freeze the None binding at import time.
@@ -273,6 +297,31 @@ def _collect_descendants(conn, node_id: str, *,
         stack.extend(children_by_parent.get(nid, []))
     out.reverse()  # children before parents
     return out
+
+
+def _nearest_live_checkpoint(conn, node_id: str | None) -> str | None:
+    """Walk up from `node_id` to the nearest live checkpoint (or root), or None.
+
+    The checkpoint anchor is where the next `branch()` attaches, so it has to be
+    a checkpoint/root — falling back to "whatever node is current" pointed it at
+    a *branch* after a delete, and the following branch was created as a child of
+    a branch, quietly flattening the tree's meaning. Starts at `node_id` itself,
+    which is the right answer when the current node already is a checkpoint."""
+    seen: set[str] = set()
+    cur = node_id
+    while cur and cur not in seen:
+        seen.add(cur)
+        r = conn.execute(
+            "SELECT id, parent_id, node_type FROM session_nodes "
+            "WHERE id=? AND deleted_at IS NULL",
+            (cur,),
+        ).fetchone()
+        if not r:
+            return None
+        if r["node_type"] in ("checkpoint", "root"):
+            return r["id"]
+        cur = r["parent_id"]
+    return None
 
 
 def _node_lineage_labels(conn, node_id: str) -> list[str]:

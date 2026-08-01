@@ -794,15 +794,24 @@ async function refreshDetail(id, opts) {
   // Failure traceback: when a run failed, show the full captured traceback
   // (file + line) in a prominent panel so the cause is visible without
   // digging through the params table or the stderr.log file.
-  const errorHtml = (exp.status === 'failed' && exp.error) ? (
+  // `exp.error` is the captured traceback, but a run failed via
+  // `fail("message")` has only the short `error` param — panelling on the
+  // traceback alone left those runs showing the failure as an ordinary param
+  // row, which reads like config rather than "this run broke". Show the panel
+  // when either exists, with the traceback preferred as the body.
+  const errShort = (exp.params && exp.params.error != null) ? String(exp.params.error) : '';
+  const errBody = exp.error || errShort;
+  const errorHtml = (exp.status === 'failed' && errBody) ? (
     '<div class="error-panel"><div class="error-panel-head">' +
       '<span class="error-panel-icon">✕</span> Run failed' +
-      '<button class="copy-btn" data-tb="' + esc(exp.error).replace(/"/g,'&quot;') +
+      '<button class="copy-btn" data-tb="' + esc(errBody).replace(/"/g,'&quot;') +
       '" onclick="navigator.clipboard.writeText(this.dataset.tb).then(()=>owlSay(\'Copied!\'))">Copy</button>' +
-      '</div><pre class="error-panel-tb">' + esc(exp.error) + '</pre></div>'
+      '</div><pre class="error-panel-tb">' + esc(errBody) + '</pre>' +
+      (!exp.error ? '<div class="error-panel-note">No traceback was captured for this run.</div>' : '') +
+      '</div>'
   ) : '';
 
-  const _restoreRename = _preserveActiveRename();
+  const _restoreRename = _preserveActiveRename('detail-panel');
   // #main-content is the scroller, and emptying the panel below collapses its
   // content — the browser then clamps scrollTop to 0. On a running experiment
   // that happens every metric poll, so anything below the fold scrolls itself
@@ -822,7 +831,7 @@ async function refreshDetail(id, opts) {
 
       <!-- Summary bar -->
       <div class="detail-summary">
-        <span class="sum-item"><strong class="status-${exp.status}">${exp.status}</strong>${exp.status === 'running' ? ' <span class="live-badge" id="live-badge"><span class="live-dot"></span>live</span>' : ''}</span>
+        <span class="sum-item"><strong class="status-${esc(exp.status||'')}">${esc(exp.status||'--')}</strong>${exp.status === 'running' ? ' <span class="live-badge" id="live-badge"><span class="live-dot"></span>live</span>' : ''}</span>
         <span class="sum-sep">|</span>
         <span class="sum-item">Branch: <strong>${esc(exp.git_branch||'--')}</strong></span>
         <span class="sum-item">Commit: <strong>${esc((exp.git_commit||'--').slice(0,7))}</strong></span>
@@ -893,8 +902,8 @@ async function refreshDetail(id, opts) {
             <div class="info-grid">
               <span class="label">ID</span><span>${exp.id}</span>
               <span class="label">Script</span><span id="detail-script" class="editable-hint" ondblclick="startDetailScriptEdit('${exp.id}',this)" title="Double-click to edit" style="font-size:12px">${esc(exp.script||'--')}</span>
-              <span class="label">Host</span><span>${exp.hostname||'--'}</span>
-              <span class="label">Python</span><span>${exp.python_ver||'--'}</span>
+              <span class="label">Host</span><span>${esc(exp.hostname||'--')}</span>
+              <span class="label">Python</span><span>${esc(exp.python_ver||'--')}</span>
               <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
               <span class="label">Studies</span><span class="tag-list" id="detail-studies">${studiesDetailHtml}</span>
               <span class="label">Stage</span><span id="detail-stage" class="editable-hint" ondblclick="startDetailStageEdit('${exp.id}',this)" title="Double-click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
@@ -1022,7 +1031,11 @@ function _fsMetricValue(e, key) {
 // lower-is-better metric (loss) colours the same here as everywhere else.
 function _fsDeltaHtml(prev, val, key, dir) {
   const d = val - prev;
-  if (d === 0) return '';
+  // Gate on the shared float-noise epsilon, not `d === 0`: a 1e-16 difference
+  // between two arithmetically-equal values is not a move, and treating it as
+  // one made the filmstrip badge contradict the "What changed" card, which has
+  // always used metricMoved().
+  if (!metricMoved(prev, val)) return '';
   const vis = _deltaVisual(key, d, dir);
   const txt = prev !== 0
     ? (d > 0 ? '+' : '') + (d / Math.abs(prev) * 100).toFixed(1) + '%'
@@ -1423,10 +1436,14 @@ async function _autoRefreshPoll() {
     // The run may have been closed, or switched away from, while we waited.
     if (!_autoRefreshExpId || currentDetailId !== _autoRefreshExpId) return;
 
-    // Check if experiment finished
+    // Check if experiment finished. Capture the id first: stopAutoRefresh()
+    // nulls _autoRefreshExpId, so reading it afterwards refreshed with null —
+    // the panel became an "Experiment not found" card the moment a watched
+    // run completed.
     if (exp.status !== 'running') {
+      const finishedId = _autoRefreshExpId;
       stopAutoRefresh();
-      await refreshDetail(_autoRefreshExpId);
+      await refreshDetail(finishedId);
       return;
     }
 

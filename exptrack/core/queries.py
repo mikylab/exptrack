@@ -224,7 +224,37 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
                        "timeline_seq": a["timeline_seq"]} for a in artifacts],
         "compact_status": _get_compact_status(conn, full_id, exp["git_diff"]),
         "session_origin": _session_origin(conn, exp["session_node_id"]),
+        # The run this one was declared a variant of, if any — the detail view
+        # renders it as the baseline the deltas are computed against.
+        "variant_of": get_variant_of(conn, full_id),
     }
+
+
+def find_latest_by_script(conn, script: str) -> dict | None:
+    """The most recent surviving run of *script*, newest first.
+
+    Backs post-hoc logging (``%exp_log`` / ``notebook.log_last``): "I ran the
+    notebook, it finished, and now I have the test numbers to attach." Trashed
+    runs are excluded for the same reason they can't be a baseline — a run the
+    user deleted is gone from every list, so silently appending today's
+    accuracy to it would put the number somewhere they cannot see it.
+
+    Ordered by ``(created_at, rowid)`` because two runs launched inside the
+    same clock tick tie on the timestamp; ``rowid`` is insertion order, so the
+    genuinely-latest run wins rather than whichever SQLite happened to emit.
+    """
+    if not script:
+        return None
+    row = conn.execute(
+        """
+        SELECT id, name, status, created_at
+        FROM experiments
+        WHERE script = ? AND deleted_at IS NULL
+        ORDER BY created_at DESC, rowid DESC LIMIT 1
+        """,
+        (script,),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def find_previous_by_script(conn, exp_id: str) -> dict | None:
@@ -235,7 +265,20 @@ def find_previous_by_script(conn, exp_id: str) -> dict | None:
     reran" workflow gets a param diff without the user ever renaming a run.
     Returns None if this experiment has no script recorded or no earlier run
     shares it. See ``_BASELINE_WHERE`` for which runs can be a baseline.
+
+    A run that declared a ``_variant_of`` target compares against *that* run
+    instead: re-running one notebook with a different model is the case where
+    "the previous run of this script" is the wrong baseline.
     """
+    explicit = _explicit_baseline(conn, exp_id)
+    if explicit:
+        return {
+            "id": explicit["id"], "name": explicit["name"],
+            "created_at": explicit["created_at"], "status": explicit["status"] or "",
+            "explicit": True,
+            "params": get_params_batch(conn, [explicit["id"]]).get(explicit["id"], {}),
+            "metrics": get_latest_metrics(conn, explicit["id"]),
+        }
     # (created_at, rowid) rather than created_at alone — see get_previous_run:
     # runs launched in the same clock tick tie, and the tie-break decided whether
     # "previous" pointed backwards or forwards in time.
@@ -533,6 +576,91 @@ def last_metrics(conn, exp_id: str) -> dict:
 _BASELINE_WHERE = "deleted_at IS NULL AND status != 'running'"
 
 
+VARIANT_OF_KEY = "_variant_of"
+
+
+def get_variant_of(conn, exp_id: str) -> str | None:
+    """The run this one was explicitly declared a variant of, if any.
+
+    Stored as the ``_variant_of`` param rather than a column: it is internal
+    bookkeeping, so the ``_`` prefix already keeps it out of run naming, the
+    params table and the "what changed" diff, and it needs no migration.
+    """
+    row = conn.execute(
+        "SELECT value FROM params WHERE exp_id=? AND key=?",
+        (exp_id, VARIANT_OF_KEY),
+    ).fetchone()
+    if not row:
+        return None
+    raw = row["value"]
+    try:
+        val = json.loads(raw)
+    except (TypeError, ValueError):
+        val = raw
+    return val if isinstance(val, str) and val else None
+
+
+def _explicit_baseline(conn, exp_id: str) -> dict | None:
+    """Resolve the declared ``_variant_of`` target to a usable baseline row.
+
+    "Same notebook, swapped the model" is the case chronology gets wrong: the
+    run you mean to compare against is often not the one that happened to run
+    last. When a target is declared it wins over the chronological pick.
+
+    Falls back to chronological (returns None) when the target is missing or
+    can't be a baseline (trashed, still running) — a stale link must degrade to
+    the old behaviour rather than leaving the run with no comparison at all.
+    """
+    target = get_variant_of(conn, exp_id)
+    if not target or target == exp_id:
+        return None
+    row = conn.execute(
+        "SELECT id, name, script, status, created_at, git_commit, git_diff "
+        f"FROM experiments WHERE id=? AND {_BASELINE_WHERE}",
+        (target,),
+    ).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    out["explicit"] = True
+    return out
+
+
+def set_variant_of(conn, exp_id: str, target_id: str) -> dict:
+    """Declare (or clear, with a falsy *target_id*) this run's baseline.
+
+    Returns ``{"ok": True, ...}`` or ``{"error": ...}``. Rejects self-links and
+    a target that doesn't exist; a one-step cycle (A→B while B→A) is refused
+    too, since neither run would then have a stable baseline.
+    """
+    this = find_experiment(conn, exp_id, "id")
+    if not this:
+        return {"error": "not found"}
+    exp_id = this["id"]
+
+    if not target_id:
+        conn.execute("DELETE FROM params WHERE exp_id=? AND key=?",
+                     (exp_id, VARIANT_OF_KEY))
+        conn.commit()
+        return {"ok": True, "variant_of": None}
+
+    target = find_experiment(conn, target_id, "id, name")
+    if not target:
+        return {"error": f"run '{target_id}' not found"}
+    if target["id"] == exp_id:
+        return {"error": "a run cannot be a variant of itself"}
+    if get_variant_of(conn, target["id"]) == exp_id:
+        return {"error": f"'{target['name']}' is already a variant of this run"}
+
+    conn.execute(
+        "INSERT INTO params (exp_id, key, value, source) VALUES (?,?,?,?) "
+        "ON CONFLICT(exp_id, key) DO UPDATE SET value=excluded.value",
+        (exp_id, VARIANT_OF_KEY, json.dumps(target["id"]), "manual"),
+    )
+    conn.commit()
+    return {"ok": True, "variant_of": target["id"], "name": target["name"]}
+
+
 def get_previous_run(conn, exp_id: str) -> dict | None:
     """The previous run of the same script (next-older by created_at).
 
@@ -551,6 +679,10 @@ def get_previous_run(conn, exp_id: str) -> dict | None:
     this = find_experiment(conn, exp_id, "id, script, created_at, rowid AS _rid")
     if not this:
         return None
+    # An explicitly declared baseline wins over chronology — see _explicit_baseline.
+    explicit = _explicit_baseline(conn, this["id"])
+    if explicit:
+        return explicit
     row = conn.execute(
         "SELECT id, name, script, status, created_at, git_commit, git_diff "
         "FROM experiments "
@@ -1478,7 +1610,7 @@ def get_export_data(conn, exp_id: str, full: bool = False,
     ).fetchall()
     metrics = conn.execute("""
         SELECT key, value, step, ts FROM metrics WHERE exp_id=?
-        ORDER BY key, COALESCE(step, 0)
+        ORDER BY key, COALESCE(step, 0), id
     """, (full_id,)).fetchall()
     artifacts = conn.execute(
         "SELECT label, path, created_at FROM artifacts WHERE exp_id=?",

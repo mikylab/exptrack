@@ -23,17 +23,23 @@ from ...core.queries import (
     list_experiments,
 )
 
+# SQLite binds Python ints as 64-bit; anything beyond raises OverflowError at
+# execute time, so every query-param int is clamped into range here.
+_SQLITE_INT_MAX = 2**63 - 1
+
 
 def _qint(qs: dict, key: str, default: int) -> int:
     """Parse an int query param, falling back to default on junk input.
 
     Keeps malformed query strings (?limit=abc) a 200-with-default instead of a
-    500 traceback.
+    500 traceback, and clamps to SQLite's integer range so a huge ?offset=
+    can't overflow the parameter binding into a 500 either.
     """
     try:
-        return int(qs.get(key, default))
+        val = int(qs.get(key, default))
     except (TypeError, ValueError):
         return default
+    return max(-_SQLITE_INT_MAX, min(val, _SQLITE_INT_MAX))
 
 
 def api_stats(conn) -> dict:

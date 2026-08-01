@@ -50,10 +50,16 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
+  # TestPyPI is a rehearsal target, not a gate. It rejects a version it already
+  # holds, and a version can never be replaced there either — so a re-run of a
+  # release, or a TestPyPI upload done by hand beforehand, would otherwise fail
+  # this job and paint a successful PyPI release red. It must not block, and it
+  # must not be something `needs:` depends on.
   publish-testpypi:
-    name: Publish to TestPyPI
+    name: Publish to TestPyPI (rehearsal, non-blocking)
     needs: build
     runs-on: ubuntu-latest
+    continue-on-error: true
     environment:
       name: testpypi
       url: https://test.pypi.org/p/exptrack
@@ -69,3 +75,4 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true

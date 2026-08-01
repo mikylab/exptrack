@@ -1,6 +1,15 @@
 
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
+// Honour the collapsed/open state toggleSidebar() persists. Without this the
+// write was dead: the sidebar always booted collapsed regardless of how the
+// user last left it. Absent/unknown value keeps the collapsed default.
+function restoreSidebarState() {
+  const sb = document.getElementById('exp-sidebar');
+  if (!sb) return;
+  sb.classList.toggle('collapsed', localStorage.getItem('exptrack-sidebar') !== 'open');
+}
+
 function toggleSidebar() {
   const sb = document.getElementById('exp-sidebar');
   sb.classList.toggle('collapsed');
@@ -55,7 +64,8 @@ function _sidebarGroupState(mode) {
 }
 
 function renderExpList() {
-  const restoreRename = _preserveActiveRename();
+  // Scoped to the list this render owns — see renderExperiments().
+  const restoreRename = _preserveActiveRename('exp-list');
   const list = document.getElementById('exp-list');
   if (!list) { restoreRename(); return; }
   const filtered = getFilteredExperiments();

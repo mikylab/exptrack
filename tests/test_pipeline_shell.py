@@ -1041,3 +1041,142 @@ class TestRunStartHelpers:
         rows, count = _gather_finish_metrics(args, "exp1", step=5, ts="T")
         assert count == 1
         assert rows == [("exp1", "acc", 0.9, 5, "T")]  # str + bool dropped
+
+
+# ---------------------------------------------------------------------------
+# Non-finite / non-numeric metric guards
+# ---------------------------------------------------------------------------
+
+class TestNonFiniteMetrics:
+    """NaN/Infinity round-trip through json; the pipeline write paths must
+    refuse them (SQLite coerces NaN to NULL and stores ±inf faithfully)."""
+
+    def test_gather_finish_metrics_drops_non_finite(self, tmp_project, capsys):
+        from exptrack.cli.pipeline_cmds import _gather_finish_metrics
+        mfile = tmp_project / "m.json"
+        mfile.write_text('{"loss": NaN, "acc": Infinity, "f1": 0.9}')
+        args = SimpleNamespace(metrics=str(mfile))
+        rows, count = _gather_finish_metrics(args, "exp1", step=1, ts="T")
+        assert count == 1
+        assert rows == [("exp1", "f1", 0.9, 1, "T")]
+        err = capsys.readouterr().err
+        assert "loss" in err and "acc" in err
+        assert "non-finite" in err
+
+    def test_gather_finish_metrics_warns_on_non_numeric(self, tmp_project, capsys):
+        from exptrack.cli.pipeline_cmds import _gather_finish_metrics
+        mfile = tmp_project / "m2.json"
+        mfile.write_text(json.dumps({"acc": "0.95", "ok": True, "f1": 0.9}))
+        args = SimpleNamespace(metrics=str(mfile))
+        rows, count = _gather_finish_metrics(args, "exp1", step=None, ts="T")
+        assert count == 1 and rows[0][1] == "f1"
+        err = capsys.readouterr().err
+        assert "acc" in err and "ok" in err
+        assert "non-numeric" in err
+
+    def test_log_metric_rejects_non_finite_value(self, tmp_project):
+        import pytest
+
+        from exptrack.cli.pipeline_cmds import cmd_log_metric
+        from exptrack.core.db import get_db
+
+        exp_id, _ = _start_exp()
+        with pytest.raises(SystemExit):
+            _capture(cmd_log_metric, SimpleNamespace(
+                id=exp_id, key="loss", value=float("inf"), step=1, file=None))
+
+        conn = get_db()
+        assert conn.execute(
+            "SELECT COUNT(*) c FROM metrics WHERE exp_id=?", (exp_id,)
+        ).fetchone()["c"] == 0
+
+    def test_log_metric_file_drops_non_finite(self, tmp_project):
+        from exptrack.cli.pipeline_cmds import cmd_log_metric
+        from exptrack.core.db import get_db
+
+        exp_id, _ = _start_exp()
+        mfile = tmp_project / "mm.json"
+        mfile.write_text('{"loss": NaN, "acc": 0.5}')
+        _, err = _capture(cmd_log_metric, SimpleNamespace(
+            id=exp_id, key=None, value=None, step=None, file=str(mfile)))
+        assert "non-finite" in err
+
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT key, value FROM metrics WHERE exp_id=?", (exp_id,)).fetchall()
+        assert [(r["key"], r["value"]) for r in rows] == [("acc", 0.5)]
+
+    def test_log_result_drops_non_finite(self, tmp_project):
+        from exptrack.cli.pipeline_cmds import cmd_log_result
+        from exptrack.core.db import get_db
+
+        exp_id, _ = _start_exp()
+        rfile = tmp_project / "r.json"
+        rfile.write_text('{"accuracy": -Infinity, "f1": 0.8}')
+        _, err = _capture(cmd_log_result, SimpleNamespace(
+            id=exp_id, key=None, value=None, file=str(rfile), source="pipeline"))
+        assert "non-finite" in err
+
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT key FROM metrics WHERE exp_id=?", (exp_id,)).fetchall()
+        assert [r["key"] for r in rows] == ["f1"]
+
+    def test_create_drops_non_finite_metrics(self, tmp_project):
+        from exptrack.cli.pipeline_cmds import cmd_create
+        from exptrack.core.db import get_db
+
+        _, err = _capture(cmd_create, SimpleNamespace(
+            name="manual-run", date=None, status="done", tags=None,
+            notes=None, script=None, command=None, params=None,
+            metrics='{"loss": NaN, "acc": 0.75}'))
+        assert "non-finite" in err
+
+        conn = get_db()
+        rows = conn.execute("SELECT key, value FROM metrics").fetchall()
+        assert [(r["key"], r["value"]) for r in rows] == [("acc", 0.75)]
+
+
+class TestCreateDateValidation:
+    """cmd_create --date is read back with datetime.fromisoformat later."""
+
+    def test_create_rejects_bad_date(self, tmp_project):
+        import pytest
+
+        from exptrack.cli.pipeline_cmds import cmd_create
+        from exptrack.core.db import get_db
+
+        with pytest.raises(SystemExit):
+            _capture(cmd_create, SimpleNamespace(
+                name="bad-date", date="last tuesday", status="done", tags=None,
+                notes=None, script=None, command=None, params=None, metrics=None))
+
+        conn = get_db()
+        assert conn.execute(
+            "SELECT COUNT(*) c FROM experiments").fetchone()["c"] == 0
+
+    def test_create_accepts_iso_date(self, tmp_project):
+        from exptrack.cli.pipeline_cmds import cmd_create
+        from exptrack.core.db import get_db
+
+        _capture(cmd_create, SimpleNamespace(
+            name="good-date", date="2026-07-31T14:30:00", status="done",
+            tags=None, notes=None, script=None, command=None,
+            params=None, metrics=None))
+
+        conn = get_db()
+        row = conn.execute(
+            "SELECT created_at FROM experiments WHERE name='good-date'").fetchone()
+        assert row["created_at"] == "2026-07-31T14:30:00"
+
+
+class TestTrashedRunNotice:
+    """Explicit-ID pipeline writes to a trashed run still work, but say so."""
+
+    def test_run_finish_notes_trashed_run(self, tmp_project):
+        from exptrack.core.db import get_db, trash_experiment
+
+        exp_id, _ = _start_exp()
+        trash_experiment(get_db(), exp_id)
+        _, err = _finish_exp(exp_id)
+        assert "Trash" in err

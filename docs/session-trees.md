@@ -390,7 +390,30 @@ So the two explorations stay distinct instead of silently merging. Rename the
 fork to something meaningful via the dashboard (double-click the node label),
 `exptrack session rename-node <id> "label"`, or just leave the `(2)` suffix.
 A genuine Run-All — where you replay the *same* first cell — still merges into
-the original node as before.
+the original node as before. And re-running the notebook again after the fork
+returns to the fork rather than creating another one: the guard recognizes the
+`(2)` node by its first cell, so you get one fork per distinct idea, not one per
+Run-All.
+
+### Run-All is idempotent throughout
+
+Re-executing the whole notebook re-runs the magics, so every one of them is
+written to recognize a replay and return to the node it already created rather
+than build a second copy:
+
+- `%exptrack session start "name"` with that session already active returns to
+  the session **root**, so the cells above your first checkpoint (imports, data
+  loading) are recognized as a replay of the root's cells instead of being
+  appended to whatever branch the previous pass ended on.
+- `%exptrack checkpoint "label"` resolves a label already present as a child *or
+  an ancestor* of the current node, including the checkpoint you are already
+  standing on.
+- `%exptrack branch "label"` merges, or forks once, as described above.
+- Recorded cells — both normal cells and `%%setup` cells — are matched against
+  what the node already holds and refreshed in place.
+
+So a session's tree reflects the shape of your exploration, not how many times
+you hit Run-All.
 
 ## Pinning results — `%%pin "label"`
 

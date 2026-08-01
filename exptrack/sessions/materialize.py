@@ -19,6 +19,17 @@ from ._shared import (
     _unix_to_iso,
 )
 
+# `metrics.source` marker stamped on rows copied onto a materialized run.
+#
+# The copies carry the node tag (that is their attribution), so a *second*
+# materialize of the same node — routine after unlinking the first run, which
+# clears the link but keeps the run and its metrics — re-copied them and doubled
+# every point, again on every repeat. The marker makes a copy recognizable, so
+# the copy query can take the originals only. It also reads correctly in the
+# dashboard's source-split metrics table: these points were not measured by this
+# run, they were attributed to it.
+_MATERIALIZED_SOURCE = "materialized"
+
 
 def link_experiment(node_id: str, exp_id: str) -> dict[str, Any]:
     """Link (promote) an experiment to a live session node — the dashboard
@@ -282,7 +293,8 @@ def _copy_node_window_metrics(conn, node_row, new_exp_id: str) -> int:
     tagged = conn.execute(
         "SELECT m.key, m.value, m.step, m.ts, m.source FROM metrics m "
         "JOIN experiments e ON e.id = m.exp_id "
-        "WHERE m.session_node_id=? AND e.deleted_at IS NULL AND m.exp_id != ?",
+        "WHERE m.session_node_id=? AND e.deleted_at IS NULL AND m.exp_id != ? "
+        f"AND COALESCE(m.source,'') != '{_MATERIALIZED_SOURCE}'",
         (node_id, new_exp_id),
     ).fetchall()
     if tagged:
@@ -290,7 +302,7 @@ def _copy_node_window_metrics(conn, node_row, new_exp_id: str) -> int:
             "INSERT INTO metrics (exp_id, key, value, step, ts, source, session_node_id) "
             "VALUES (?,?,?,?,?,?,?)",
             [(new_exp_id, r["key"], r["value"], r["step"], r["ts"],
-              r["source"] or "auto", node_id) for r in tagged],
+              _MATERIALIZED_SOURCE, node_id) for r in tagged],
         )
         return len(tagged)
 
@@ -317,6 +329,7 @@ def _copy_node_window_metrics(conn, node_row, new_exp_id: str) -> int:
         "JOIN session_nodes n ON n.id = e.session_node_id "
         "WHERE n.session_id=? AND e.deleted_at IS NULL AND e.id != ? "
         "AND m.session_node_id IS NULL "
+        f"AND COALESCE(m.source,'') != '{_MATERIALIZED_SOURCE}' "
         "AND m.ts >= ? AND (? IS NULL OR m.ts < ?)",
         (session_id, new_exp_id, lower_iso, upper_iso, upper_iso),
     ).fetchall()
@@ -326,7 +339,7 @@ def _copy_node_window_metrics(conn, node_row, new_exp_id: str) -> int:
         "INSERT INTO metrics (exp_id, key, value, step, ts, source, session_node_id) "
         "VALUES (?,?,?,?,?,?,?)",
         [(new_exp_id, r["key"], r["value"], r["step"], r["ts"],
-          r["source"] or "auto", node_id) for r in rows],
+          _MATERIALIZED_SOURCE, node_id) for r in rows],
     )
     return len(rows)
 
@@ -339,27 +352,42 @@ def _node_ancestor_chain(conn, node_id: str) -> list:
     meaningless without the ancestor cells that defined ``run_pipeline`` and
     ``data`` (typically on the session root / an upstream checkpoint). So
     materialization replays the whole ancestor chain's code, not just the
-    node's own cells. Trashed ancestors are skipped."""
-    # Fetch the node's whole (live) session in one query, then walk parent_id
-    # pointers in memory — avoids a SELECT per hop (which `finalize` would
-    # multiply across every materialized node).
+    node's own cells.
+
+    **Trashed ancestors are included, with a warning.** They are only skipped
+    from the *live tree*; their cells genuinely ran and the node's code depends
+    on them, and dropping them silently truncated the chain at the first trashed
+    ancestor — producing a "self-contained" run missing the very imports and
+    helper definitions this function exists to carry, with nothing saying so.
+    """
+    # Fetch the node's whole session in one query, then walk parent_id pointers
+    # in memory — avoids a SELECT per hop (which `finalize` would multiply
+    # across every materialized node).
     by_id = {
         r["id"]: r
         for r in conn.execute(
-            "SELECT id, parent_id, node_type, label, setup_source, setup_outputs, "
-            "cell_source, cell_outputs FROM session_nodes "
-            "WHERE session_id = (SELECT session_id FROM session_nodes WHERE id=?) "
-            "AND deleted_at IS NULL",
+            "SELECT id, parent_id, node_type, label, deleted_at, "
+            "setup_source, setup_outputs, cell_source, cell_outputs "
+            "FROM session_nodes "
+            "WHERE session_id = (SELECT session_id FROM session_nodes WHERE id=?)",
             (node_id,),
         ).fetchall()
     }
     chain: list = []
+    trashed: list[str] = []
     seen: set[str] = set()
     cur = node_id
     while cur and cur not in seen and cur in by_id:
         seen.add(cur)
         r = by_id[cur]
         chain.append(r)
+        if r["deleted_at"] is not None and r["id"] != node_id:
+            trashed.append(r["label"] or r["id"][:8])
         cur = r["parent_id"]
     chain.reverse()
+    if trashed:
+        import sys
+        print("[exptrack] note: this node's ancestry includes trashed node(s) "
+              f"{', '.join(reversed(trashed))} — their cells are replayed so the "
+              "materialized run stays self-contained.", file=sys.stderr)
     return chain

@@ -61,6 +61,7 @@ from .mutate_cmds import (
     cmd_tag,
     cmd_unstudy,
     cmd_untag,
+    cmd_variant_of,
 )
 from .pipeline_cmds import (
     cmd_create,
@@ -279,6 +280,13 @@ def _build_parser():
 
     p_note = sub.add_parser("note", help="Append a note to an experiment")
     p_note.add_argument("id"); p_note.add_argument("text")
+
+    p_variant = sub.add_parser(
+        "variant-of",
+        help="Declare which run this one is a variant of (its comparison baseline)")
+    p_variant.add_argument("id", help="The run being marked as a variant")
+    p_variant.add_argument("baseline", nargs="?", default="",
+                           help="The run to compare against; omit to clear the link")
 
     p_edit_note = sub.add_parser("edit-note", help="Replace an experiment's notes")
     p_edit_note.add_argument("id"); p_edit_note.add_argument("text")
@@ -557,6 +565,7 @@ _DISPATCH = {
     "untag":        cmd_untag,
     "delete-tag":   cmd_delete_tag,
     "note":         cmd_note,
+    "variant-of":   cmd_variant_of,
     "edit-note":    cmd_edit_note,
     "study":        cmd_study,
     "unstudy":      cmd_unstudy,

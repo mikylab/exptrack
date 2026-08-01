@@ -142,6 +142,34 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+def flush_pending(conn: sqlite3.Connection | None = None) -> None:
+    """Commit this thread's connection if it holds an open implicit transaction.
+
+    Writes that coalesce their commits (``Experiment._commit_metrics``, which
+    batches metric INSERTs into at most one commit per
+    ``metric_commit_interval_ms``) leave rows sitting in sqlite3's implicit
+    transaction. Two things then need them landed: anything about to run its own
+    ``BEGIN IMMEDIATE`` (which fails with "cannot start a transaction within a
+    transaction"), and anything about to drop the connection (``close_db``,
+    interpreter shutdown), since ``close()`` rolls an open transaction back.
+
+    ``conn.in_transaction`` is the authority — sqlite3 maintains it, so this
+    covers *every* writer on the connection rather than only the ones that
+    remembered to set a flag. An earlier version tracked a thread-local flag of
+    its own beside this, which was a hand-maintained mirror: it went stale
+    against ``close_db`` (the flag outlived the connection it described) and
+    reported nothing for writers that never touched it.
+    """
+    conn = conn if conn is not None else getattr(_local, "conn", None)
+    if conn is None:
+        return
+    try:
+        if conn.in_transaction:
+            conn.commit()
+    except sqlite3.Error as e:
+        debug_log(f"db: could not flush pending writes: {e}")
+
+
 def close_db(sweep: bool = True, checkpoint: bool = True) -> None:
     """Close the cached database connection for the current thread.
 
@@ -163,6 +191,10 @@ def close_db(sweep: bool = True, checkpoint: bool = True) -> None:
     """
     conn = getattr(_local, "conn", None)
     if conn is not None:
+        # Land any open implicit transaction first — e.g. metric rows still
+        # inside the commit-coalescing window (Experiment._commit_metrics).
+        # close() would roll them back silently.
+        flush_pending(conn)
         if sweep:
             try:
                 _sweep_orphans(conn)
@@ -382,21 +414,33 @@ def _ensure_schema(conn, force: bool = False):
     skipped entirely (the steady-state fast path) unless *force* is True —
     ``exptrack upgrade`` forces a full re-run so a manual upgrade always
     re-verifies every table.
+
+    The stamp is only written when *every* helper reported success. A helper
+    swallows its errors so one table's failure can't abort the others, but a
+    transient failure (``database is locked`` from a concurrent process) must
+    not be recorded as "schema is current" — the stamp is exactly what makes
+    ``get_db`` skip this function, so a premature stamp means no future
+    connection ever retries the migration and the missing column is permanent.
+    Leaving the old stamp in place costs one cheap re-probe per open until the
+    migration actually lands.
     """
     if not force and _stored_schema_version(conn) == _SCHEMA_VERSION:
         return
     _create_base_schema(conn)
-    _migrate_sessions(conn)
-    _migrate_session_nodes(conn)
-    _migrate_experiment_session_link(conn)
-    _migrate_artifacts(conn)
-    _migrate_metrics(conn)
-    _migrate_params(conn)
-    _migrate_experiments(conn)
+    ok = all([
+        _migrate_sessions(conn),
+        _migrate_session_nodes(conn),
+        _migrate_experiment_session_link(conn),
+        _migrate_artifacts(conn),
+        _migrate_metrics(conn),
+        _migrate_params(conn),
+        _migrate_experiments(conn),
+    ])
     # Stamp the DB so future connections skip the probes above. Constant is
     # a module-level int — never user input — so the f-string is safe
     # (PRAGMA doesn't accept bound parameters).
-    conn.execute(f"PRAGMA user_version = {int(_SCHEMA_VERSION)}")
+    if ok:
+        conn.execute(f"PRAGMA user_version = {int(_SCHEMA_VERSION)}")
     conn.commit()
 
 
@@ -577,7 +621,7 @@ def _add_columns(conn, table, columns, existing=None):
     return added
 
 
-def _migrate_sessions(conn):
+def _migrate_sessions(conn) -> bool:
     # Soft-delete column for whole sessions (Trash + restore), mirroring the
     # session_nodes / experiments soft-delete pattern. Non-null deleted_at = the
     # session is trashed (recoverable); a permanent purge hard-deletes the rows.
@@ -588,14 +632,16 @@ def _migrate_sessions(conn):
                 "CREATE INDEX IF NOT EXISTS idx_sessions_deleted "
                 "ON sessions(deleted_at)"
             )
+        return True
     except sqlite3.OperationalError:
-        pass
+        return False
     except Exception as e:
         print(f"[exptrack] warning: sessions migration error: {e}",
               file=sys.stderr)
+        return False
 
 
-def _migrate_session_nodes(conn):
+def _migrate_session_nodes(conn) -> bool:
     # Soft-delete column + per-cell output capture for session_nodes.
     #   deleted_at    — soft-delete / Trash marker
     #   cell_outputs  — mirrors cell_source: one SEP-joined output per cell, so
@@ -616,24 +662,28 @@ def _migrate_session_nodes(conn):
                 "CREATE INDEX IF NOT EXISTS idx_session_nodes_deleted "
                 "ON session_nodes(session_id, deleted_at)"
             )
+        return True
     except sqlite3.OperationalError:
-        pass
+        return False
     except Exception as e:
         print(f"[exptrack] warning: session_nodes migration error: {e}",
               file=sys.stderr)
+        return False
 
 
-def _migrate_experiment_session_link(conn):
+def _migrate_experiment_session_link(conn) -> bool:
     # Add session_node_id to experiments if missing
     try:
         _add_columns(conn, "experiments", {"session_node_id": "TEXT"})
+        return True
     except sqlite3.OperationalError:
-        pass
+        return False
     except Exception as e:
         print(f"[exptrack] warning: session_node_id migration error: {e}", file=sys.stderr)
+        return False
 
 
-def _migrate_artifacts(conn):
+def _migrate_artifacts(conn) -> bool:
     # Add timeline_seq, content_hash, size_bytes to artifacts if missing
     try:
         _add_columns(conn, "artifacts", {
@@ -641,13 +691,15 @@ def _migrate_artifacts(conn):
             "content_hash": "TEXT",
             "size_bytes": "INTEGER",
         })
+        return True
     except sqlite3.OperationalError:
-        pass  # column may already exist
+        return False  # column may already exist
     except Exception as e:
         print(f"[exptrack] warning: artifact migration error: {e}", file=sys.stderr)
+        return False
 
 
-def _migrate_metrics(conn):
+def _migrate_metrics(conn) -> bool:
     # Tag each metric with the Session Trees node that was active when it was
     # logged. A notebook session logs every metric() into one auto-run, so
     # attributing a metric to the branch that produced it used to be
@@ -671,6 +723,7 @@ def _migrate_metrics(conn):
     # query, the pre-column timestamp-window fallback in
     # sessions/materialize.py, is driven through the exp_id joins and never
     # wanted this index.)
+    ok = True
     try:
         _add_columns(conn, "metrics", {"session_node_id": "TEXT"})
         # Replace the older full index in place; DROP is a no-op when the
@@ -684,10 +737,11 @@ def _migrate_metrics(conn):
             "CREATE INDEX IF NOT EXISTS idx_metrics_session_node "
             "ON metrics(session_node_id) WHERE session_node_id IS NOT NULL")
     except sqlite3.OperationalError:
-        pass
+        ok = False
     except Exception as e:
         print(f"[exptrack] warning: metrics session_node_id migration error: {e}",
               file=sys.stderr)
+        ok = False
 
     # Add source column to metrics and migrate _result:* params
     try:
@@ -722,12 +776,14 @@ def _migrate_metrics(conn):
                     conn.executemany(
                         "DELETE FROM params WHERE exp_id=? AND key=?", to_delete)
     except sqlite3.OperationalError:
-        pass
+        ok = False
     except Exception as e:
         print(f"[exptrack] warning: metrics source migration error: {e}", file=sys.stderr)
+        ok = False
+    return ok
 
 
-def _migrate_params(conn):
+def _migrate_params(conn) -> bool:
     # Add source column to params (auto vs manual). Backfill existing params
     # on manually-created experiments (hostname/python_ver are NULL there).
     try:
@@ -738,13 +794,15 @@ def _migrate_params(conn):
                 "(SELECT id FROM experiments "
                 " WHERE hostname IS NULL AND python_ver IS NULL)"
             )
+        return True
     except sqlite3.OperationalError:
-        pass
+        return False
     except Exception as e:
         print(f"[exptrack] warning: params source migration error: {e}", file=sys.stderr)
+        return False
 
 
-def _migrate_experiments(conn):
+def _migrate_experiments(conn) -> bool:
     # Add output_dir, studies, stage columns to experiments if missing
     try:
         cols = _table_columns(conn, "experiments")  # snapshot for the 'groups' checks
@@ -783,10 +841,12 @@ def _migrate_experiments(conn):
                 conn.execute("ALTER TABLE experiments DROP COLUMN groups")
             except sqlite3.OperationalError:
                 pass  # SQLite < 3.35 doesn't support DROP COLUMN; harmless dead column
+        return True
     except sqlite3.OperationalError:
-        pass  # column may already exist
+        return False  # column may already exist
     except Exception as e:
         print(f"[exptrack] warning: experiment migration error: {e}", file=sys.stderr)
+        return False
 
 
 # ── Git diff deduplication ────────────────────────────────────────────────────
@@ -1461,6 +1521,10 @@ def get_delete_preview(conn: sqlite3.Connection, exp_id: str) -> dict:
     # Same ownership rule the delete applies, so the dialog never sizes a
     # directory that belongs to a different run (see output_dirs_owned_by).
     candidates = output_dirs_owned_by(conn, exp_id, exp["name"], output_dir)
+    # All of them, no break: _delete_experiment_files trashes every owned
+    # candidate, so the preview must size every one — stopping at the first
+    # under-stated the confirm whenever the recorded output_dir and the
+    # name-derived outputs/<name> diverged and both existed.
     for d in candidates:
         try:
             if d.is_dir():
@@ -1474,7 +1538,6 @@ def get_delete_preview(conn: sqlite3.Connection, exp_id: str) -> dict:
                             output_dir_bytes += sub.stat().st_size
                     except Exception:
                         pass
-                break
         except Exception:
             pass
 
@@ -1528,6 +1591,33 @@ def list_trashed_experiments(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _safe_output_dir(outputs_base: Path, name: str) -> Path | None:
+    """Resolve ``outputs_base / name`` as a *single* child directory, or None.
+
+    A run name is user-supplied (``POST /api/experiment/<id>/rename`` accepts
+    anything), while auto-generated names go through ``naming._path_safe``. So
+    a name like ``../../evil`` would otherwise relocate the run's output
+    directory outside ``outputs/`` — and outside the project — on rename.
+
+    Two checks, deliberately both: the name is reduced to its final path
+    component (so no separator or ``..`` survives), and the result is verified
+    to sit under *outputs_base* with the same realpath + separator-boundary
+    rule ``config.readable_project_path`` uses — a bare ``startswith`` would
+    accept a sibling whose name merely shares the base's prefix
+    (``outputs_evil`` vs ``outputs``), and skipping realpath would accept a
+    symlink pointing anywhere on disk.
+    """
+    component = Path(name).name
+    if not component or component in (".", ".."):
+        return None
+    candidate = outputs_base / component
+    base_real = os.path.realpath(outputs_base)
+    cand_real = os.path.realpath(candidate)
+    if not cand_real.startswith(base_real + os.sep):
+        return None
+    return candidate
+
+
 def rename_output_folder(conn: sqlite3.Connection, exp_id: str,
                          old_name: str, new_name: str) -> None:
     """Rename the output folder on disk and update artifact paths + output_dir.
@@ -1538,8 +1628,12 @@ def rename_output_folder(conn: sqlite3.Connection, exp_id: str,
     """
     conf = cfg.load()
     outputs_base = cfg.project_root() / conf.get("outputs_dir", "outputs")
-    old_dir = outputs_base / old_name
-    new_dir = outputs_base / new_name
+    old_dir = _safe_output_dir(outputs_base, old_name)
+    new_dir = _safe_output_dir(outputs_base, new_name)
+    if old_dir is None or new_dir is None:
+        print(f"[exptrack] warning: refusing to rename output dir "
+              f"{old_name!r} → {new_name!r} (unsafe path)", file=sys.stderr)
+        return
 
     renamed = False
     if old_dir.is_dir() and not new_dir.exists():

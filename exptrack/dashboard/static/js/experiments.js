@@ -273,11 +273,28 @@ function _emptyStateHtml() {
   }
   const hasFilters = !!(currentFilter || searchQuery || tagFilter || studyFilter ||
     autoNamedOnly || (dateRange && dateRange !== 'all' && dateRange !== ''));
+  // Failed runs are hidden by a toggle, not by any of the filter controls — so
+  // when every loaded run failed, "no match" plus a Clear-filters button that
+  // changes nothing is a dead end. Name the toggle that's actually hiding them.
+  const failedHidden = (allExperiments || []).filter(e => e.status === 'failed').length;
+  if (!showFailed && currentFilter !== 'failed' && failedHidden === total) {
+    return '<div class="empty-state">' +
+      '<div class="empty-state-icon">✕</div>' +
+      '<div class="empty-state-title">Every run here failed</div>' +
+      '<div class="empty-state-msg">' + total + ' failed run' + (total > 1 ? 's are' : ' is') +
+      ' hidden by the <strong>Show failed</strong> toggle.' +
+      ' <button class="action-btn" onclick="setShowFailed(true)">Show failed runs</button>' +
+      (hasFilters ? ' <button class="action-btn" onclick="clearAllFilters()">Clear filters</button>' : '') +
+      '</div></div>';
+  }
   return '<div class="empty-state">' +
     '<div class="empty-state-icon">🔍</div>' +
     '<div class="empty-state-title">No experiments match your filters</div>' +
     '<div class="empty-state-msg">' + total + ' run' + (total > 1 ? 's' : '') +
-    ' hidden by the current filters.' +
+    ' hidden by the current filters' +
+    (failedHidden ? ' (including ' + failedHidden + ' failed run' + (failedHidden > 1 ? 's' : '') +
+      ' behind the <strong>Show failed</strong> toggle)' : '') + '.' +
+    (failedHidden ? ' <button class="action-btn" onclick="setShowFailed(true)">Show failed</button>' : '') +
     (hasFilters ? ' <button class="action-btn" onclick="clearAllFilters()">Clear filters</button>' : '') +
     '</div></div>';
 }
@@ -294,7 +311,10 @@ function clearAllFilters() {
 }
 
 function renderExperiments() {
-  const restoreRename = _preserveActiveRename();
+  // Scope the preserve to the table body: loadExperiments() renders the table and
+  // the sidebar back to back (_renderExpViews), and an unscoped preserve in the
+  // second render would detach the input the first had just re-mounted.
+  const restoreRename = _preserveActiveRename('exp-body');
   const exps = getFilteredExperiments();
   const tbody = document.getElementById('exp-body');
   if (!tbody) { restoreRename(); return; }

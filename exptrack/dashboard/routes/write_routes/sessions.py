@@ -198,20 +198,25 @@ def api_session_empty_trash(conn, session_id: str, body: dict) -> dict:
 
 
 def api_session_end(conn, session_id: str, body: dict) -> dict:
-    """Mark a session as ended (and abandon any open branches)."""
-    import time
+    """Mark a session as ended (and abandon any open branches).
+
+    Goes through the same code as `%exptrack session end`, rather than its own
+    copy of the UPDATE: this route used to omit the `deleted_at IS NULL` filters,
+    so it relabelled trashed branches and treated trashed children as children.
+    When the session being ended is the one live in *this* process, the full
+    manager path runs so the open branch's working-tree diff is captured first
+    and the in-process state is cleared.
+    """
+    from exptrack.sessions import get_current_session
+    from exptrack.sessions.lifecycle import end_session_rows
+
     row = conn.execute("SELECT id, status FROM sessions WHERE id=?",
                        (session_id,)).fetchone()
     if not row:
         return {"error": "not found"}
-    conn.execute(
-        "UPDATE session_nodes SET node_type='abandoned' "
-        "WHERE session_id=? AND node_type='branch' "
-        "AND id NOT IN (SELECT parent_id FROM session_nodes "
-        "  WHERE session_id=? AND parent_id IS NOT NULL)",
-        (session_id, session_id),
-    )
-    conn.execute("UPDATE sessions SET status='ended', ended_at=? WHERE id=?",
-                 (time.time(), session_id))
-    conn.commit()
+    mgr = get_current_session()
+    if mgr and mgr.session_id == session_id:
+        mgr.end()
+    else:
+        end_session_rows(conn, session_id)
     return {"ok": True}
