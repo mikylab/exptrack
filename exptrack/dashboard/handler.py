@@ -173,6 +173,7 @@ _GET_PREFIXED = (
     ("/api/timeline/", "", lambda conn, qs, p: read_routes.api_timeline(conn, _last(p), qs)),
     ("/api/vars-at/", "", lambda conn, qs, p: read_routes.api_vars_at(conn, _last(p), qs)),
     ("/api/cell-source/", "", lambda conn, qs, p: read_routes.api_cell_source(conn, _last(p))),
+    ("/api/run-source/", "", lambda conn, qs, p: read_routes.api_run_source(conn, _last(p))),
     ("/api/export/", "", lambda conn, qs, p: read_routes.api_export(conn, _last(p), qs)),
     ("/api/confusion/", "", lambda conn, qs, p: read_routes.api_list_confusion(conn, _last(p))),
     # These two read segment 3 rather than the last segment, so a trailing

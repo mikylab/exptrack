@@ -15,6 +15,7 @@ from .. import config as cfg
 from ..core import get_db
 from ..core.db import COMPACT_PREFIX, is_diff_sentinel, resolve_git_diff
 from ..core.queries import find_experiment
+from ..core.storage import compact_git_diffs, preview_git_diff_compact
 from .formatting import C, G, R, W, Y, bold, col, die, dim, fmt_bytes
 
 
@@ -268,22 +269,6 @@ def cmd_upgrade(args):
         print(col("Reinstalled.", G))
 
 
-
-
-
-
-def _diff_file_summary(diff_text):
-    """Extract a short file-list summary from a git diff for the compact marker."""
-    from ..core.db import diff_b_path
-    files = []
-    for line in diff_text.splitlines():
-        if line.startswith("diff --git "):
-            parts = line.split()
-            if len(parts) >= 4:
-                files.append(diff_b_path(parts[3]))
-    return files
-
-
 def cmd_compact(args):
     """Strip git_diff and/or cell data from experiments to reclaim space."""
     conn = get_db()
@@ -294,8 +279,14 @@ def cmd_compact(args):
     do_timeline = getattr(args, "timeline", False) or do_deep
     do_snapshots = getattr(args, "snapshots", False) or do_deep
     do_dedup = getattr(args, "dedup", False)
+    # Deliberately NOT part of --deep: every other mode strips something whose
+    # only other copy is git or the notebook, while this one is safe precisely
+    # because a snapshot backs it. Folding it into --deep would hide that
+    # distinction behind a flag people reach for to "clean everything".
+    do_code_changes = getattr(args, "code_changes", False)
     # Default: compact git diffs (unless only cell/timeline/snapshot/dedup modes)
-    do_git_diff = not (do_cells or do_timeline or do_snapshots or do_dedup) or do_deep
+    do_git_diff = not (do_cells or do_timeline or do_snapshots or do_dedup
+                       or do_code_changes) or do_deep
 
     # ── Dedup mode (independent of experiment selection) ───────────────────
     if do_dedup:
@@ -320,28 +311,58 @@ def cmd_compact(args):
 
     if dry_run:
         modes = []
+        # Which runs each enabled mode would *actually* touch. The count used to
+        # be `len(rows)` — the whole selection — so `compact --code-changes` on a
+        # project of 50 runs announced "Would compact 50 experiment(s)" beside a
+        # modes line reading "1 row(s) in 1 run(s)". The selection is the set we
+        # considered; a dry-run has to name the set it would change.
+        affected: set = set()
         if do_git_diff:
-            # Same gate as the real path below, so the dry-run total can't
-            # promise bytes that the actual compact then skips.
-            diff_rows = [r for r in rows if r["git_diff"]
-                         and not is_diff_sentinel(r["git_diff"])]
-            total_diff = sum(r["diff_len"] for r in diff_rows)
-            modes.append(f"git_diff (~{fmt_bytes(total_diff)})")
+            # Same selection the write uses, so the dry-run provably describes
+            # it — down to the byte figure, which is neither the sum of the
+            # columns (pointers) nor of the bodies (counted once per run
+            # sharing them). See `storage._git_diff_selection`.
+            st = preview_git_diff_compact(conn, exp_ids)
+            modes.append(f"git_diff (~{fmt_bytes(st['bytes'])}, "
+                         f"{st['runs']} run(s))")
+            affected |= set(st["run_ids"])
         if do_cells:
             cell_bytes = _cell_lineage_size(conn, exp_ids)
-            modes.append(f"cell_lineage.source (~{fmt_bytes(cell_bytes)})")
+            ids = _cell_lineage_exp_ids(conn, exp_ids)
+            modes.append(f"cell_lineage.source (~{fmt_bytes(cell_bytes)}, "
+                         f"{len(ids)} run(s))")
+            affected |= ids
         if do_timeline:
             tl_bytes = _timeline_diff_size(conn, exp_ids)
-            modes.append(f"timeline.source_diff (~{fmt_bytes(tl_bytes)})")
+            ids = _timeline_diff_exp_ids(conn, exp_ids)
+            modes.append(f"timeline.source_diff (~{fmt_bytes(tl_bytes)}, "
+                         f"{len(ids)} run(s))")
+            affected |= ids
         if do_snapshots:
             snap_bytes = _snapshot_disk_size(exp_ids)
             modes.append(f"notebook_history/ (~{fmt_bytes(snap_bytes)})")
-        print(f"Would compact {len(rows)} experiment(s):")
+            if snap_bytes:
+                affected |= set(exp_ids)
+        if do_code_changes:
+            from ..core.storage import preview_code_change_compact
+            st = preview_code_change_compact(conn, exp_ids)
+            modes.append(f"_code_changes (~{fmt_bytes(st['bytes'])}, "
+                         f"{st['rows']} row(s) in {st['runs']} run(s))")
+            if st["skipped_no_snapshot"]:
+                modes.append(f"skipping {len(st['skipped_no_snapshot'])} run(s) "
+                             f"with no code snapshot")
+            affected |= set(st.get("run_ids") or ())
+        if not affected:
+            print(dim(f"Nothing to compact in {len(rows)} matching experiment(s)."))
+            print(dim(f"  Checked: {', '.join(modes)}"))
+            return
+        print(f"Would compact {len(affected)} of {len(rows)} experiment(s):")
         print(f"  Modes: {', '.join(modes)}")
-        for r in rows[:10]:
+        shown = [r for r in rows if r["id"] in affected]
+        for r in shown[:10]:
             print(f"  {col(r['id'][:8], C)}  {r['name'][:50]}")
-        if len(rows) > 10:
-            print(dim(f"  ... and {len(rows) - 10} more"))
+        if len(shown) > 10:
+            print(dim(f"  ... and {len(shown) - 10} more"))
         return
 
     # ── 1. Git diff compaction ────────────────────────────────────────────
@@ -354,27 +375,17 @@ def cmd_compact(args):
                     _export_one_diff(r, out_path)
             print(col(f"Exported diff(s) to {out_path}/", G))
 
-        diff_freed = 0
-        for r in rows:
-            if not r["git_diff"] or is_diff_sentinel(r["git_diff"]):
-                continue
-            commit = r["git_commit"] or "unknown"
-            full_diff = resolve_git_diff(conn, r["git_diff"])
-            if is_diff_sentinel(full_diff):
-                continue  # dangling ref / already-failed capture: no body to strip
-            files = _diff_file_summary(full_diff)
-            file_info = f"{len(files)} file(s): {', '.join(files[:5])}" if files else "no files"
-            if len(files) > 5:
-                file_info += f" +{len(files) - 5} more"
-            summary = (f"[compacted — {fmt_bytes(len(full_diff))} stripped — "
-                       f"{file_info} — see git commit {commit}]")
-            conn.execute("UPDATE experiments SET git_diff = ? WHERE id = ?",
-                         (summary, r["id"]))
-            diff_freed += len(full_diff)
-        if diff_freed:
-            conn.commit()
-            freed_total += diff_freed
-            print(col(f"  git_diff: freed ~{fmt_bytes(diff_freed)}", G))
+        st = compact_git_diffs(conn, exp_ids)
+        freed_total += st["bytes"]
+        n = st["blobs_swept"]
+        if st["bytes"]:
+            # What left the database, not what the pointers used to address.
+            extra = (f" ({n} shared diff bod{'y' if n == 1 else 'ies'})"
+                     if n else "")
+            print(col(f"  git_diff: freed ~{fmt_bytes(st['bytes'])}{extra}", G))
+        elif st["runs"]:
+            print(dim("  git_diff: pointers stripped; bodies still shared "
+                      "by other runs"))
 
     # ── 2. Cell lineage source compaction ─────────────────────────────────
     if do_cells:
@@ -396,6 +407,25 @@ def cmd_compact(args):
         freed_total += snap_freed
         if snap_freed:
             print(col(f"  notebook_history/: freed ~{fmt_bytes(snap_freed)}", G))
+
+    # ── 5. Code-change summary compaction ─────────────────────────────────
+    # A dry run reports above and returns before reaching here, so this path
+    # is always the real write.
+    if do_code_changes:
+        from ..core.storage import compact_code_changes
+        st = compact_code_changes(conn, exp_ids)
+        if st["rows"]:
+            print(col(f"  _code_changes: freed ~{fmt_bytes(st['bytes'])} "
+                      f"({st['rows']} row(s) across {st['runs']} run(s))", G))
+            freed_total += st["bytes"]
+        else:
+            print(dim("  _code_changes: nothing to compact"))
+        # Skipping is stated: for a run with no snapshot the summary is the only
+        # record of what changed, so it is never stripped — but staying silent
+        # would read as "compacted everything".
+        if st["skipped_no_snapshot"]:
+            print(dim(f"  skipped {len(st['skipped_no_snapshot'])} run(s) with no "
+                      f"code snapshot (summary is their only copy)"))
 
     if freed_total:
         print()
@@ -481,6 +511,40 @@ def _cell_lineage_size(conn, exp_ids):
         return row["sz"] if row else 0
     except Exception:
         return 0
+
+
+def _cell_lineage_exp_ids(conn, exp_ids) -> set:
+    """Runs whose cells still hold source — the ones `--cells` would change.
+
+    Mirrors `_cell_lineage_size`'s join so the dry-run's run count and its byte
+    figure describe the same set.
+    """
+    if not exp_ids:
+        return set()
+    placeholders = ",".join("?" * len(exp_ids))
+    try:
+        return {r["exp_id"] for r in conn.execute(f"""
+            SELECT DISTINCT t.exp_id FROM timeline t
+            JOIN cell_lineage cl ON cl.cell_hash = t.cell_hash
+            WHERE t.exp_id IN ({placeholders})
+              AND t.cell_hash IS NOT NULL AND cl.source IS NOT NULL
+        """, exp_ids)}
+    except Exception:
+        return set()
+
+
+def _timeline_diff_exp_ids(conn, exp_ids) -> set:
+    """Runs with a timeline diff left to strip — what `--timeline` would change."""
+    if not exp_ids:
+        return set()
+    placeholders = ",".join("?" * len(exp_ids))
+    try:
+        return {r["exp_id"] for r in conn.execute(f"""
+            SELECT DISTINCT exp_id FROM timeline
+            WHERE exp_id IN ({placeholders}) AND source_diff IS NOT NULL
+        """, exp_ids)}
+    except Exception:
+        return set()
 
 
 def _timeline_diff_size(conn, exp_ids):
@@ -577,24 +641,17 @@ def _compact_cells(conn, exp_ids):
 
 
 def _compact_timeline_diffs(conn, exp_ids):
-    """NULL out timeline.source_diff for given experiments."""
-    if not exp_ids:
-        return 0
-    placeholders = ",".join("?" * len(exp_ids))
+    """Freed bytes from `storage.compact_timeline_diffs` (the one implementation).
+
+    The dashboard runs the same operation, so the marker format, the
+    skip-already-marked rule and the byte accounting live in `core/storage.py`
+    and both entry points call it — they had drifted, and the dashboard's copy
+    still NULLed the column, re-introducing through the other door the exact
+    "claims a compaction that never happened" bug the marker exists to fix.
+    """
+    from ..core.storage import compact_timeline_diffs
     try:
-        size_row = conn.execute(f"""
-            SELECT COALESCE(SUM(LENGTH(source_diff)), 0) as sz
-            FROM timeline
-            WHERE exp_id IN ({placeholders}) AND source_diff IS NOT NULL
-        """, exp_ids).fetchone()
-        freed = size_row["sz"] if size_row else 0
-        if freed:
-            conn.execute(f"""
-                UPDATE timeline SET source_diff = NULL
-                WHERE exp_id IN ({placeholders}) AND source_diff IS NOT NULL
-            """, exp_ids)
-            conn.commit()
-        return freed
+        return compact_timeline_diffs(conn, exp_ids)["bytes"]
     except Exception as e:
         print(f"[exptrack] warning: could not compact timeline: {e}", file=sys.stderr)
         return 0
@@ -904,6 +961,34 @@ def _storage_metric_stats(conn):
     }
 
 
+def _storage_linked_dirs(conn):
+    """Whole directories runs wrote outside outputs/ (TensorBoard logs etc.).
+
+    These live wherever the writing library put them — PyTorch's default is
+    ``runs/<timestamp>_<hostname>/`` — so they are invisible to the outputs/
+    walk above and accumulated with nothing accounting for them.
+    """
+    seen, size, files = set(), 0, 0
+    try:
+        from ..core.db import DIR_ARTIFACT_PREFIX
+        rows = conn.execute(
+            "SELECT DISTINCT path FROM artifacts WHERE label LIKE ?",
+            (DIR_ARTIFACT_PREFIX + "%",)).fetchall()
+    except Exception:
+        rows = []
+    from ..core.db import dir_file_stats
+    for r in rows:
+        d = Path(r[0]) if r[0] else None
+        if d is None or str(d) in seen or not d.is_dir():
+            continue
+        seen.add(str(d))
+        n_files, n_bytes, _ = dir_file_stats(d)
+        files += n_files
+        size += n_bytes
+    return {"linked_dir_count": len(seen), "linked_dir_size": size,
+            "linked_dir_files": files}
+
+
 def collect_storage_stats(conn, conf=None, root=None):
     """Every number the storage report shows, as one flat dict.
 
@@ -919,8 +1004,10 @@ def collect_storage_stats(conn, conf=None, root=None):
     stats.update(_storage_git_diff_stats(conn))
     stats.update(_storage_cell_stats(conn))
     stats.update(_storage_session_stats(conn))
-    from ..core.storage import free_space
+    stats.update(_storage_linked_dirs(conn))
+    from ..core.storage import free_space, source_code_storage
     stats["free_space"] = free_space(conn)
+    stats["source_code"] = source_code_storage(conn)
     return stats
 
 
@@ -938,6 +1025,12 @@ def _print_storage_summary(s):
                     f"returned to disk by \"exptrack clean --vacuum\")"))
     print(f"  {bold('Outputs directory:')} {fmt_bytes(s['outputs_size'])}  "
           f"({s['outputs_count']} files)")
+    if s.get("linked_dir_count"):
+        # Outside outputs/, so not in the line above — and named, because a
+        # user who never opened runs/ won't recognise it as theirs.
+        print(f"  {bold('Linked dirs:')}       {fmt_bytes(s['linked_dir_size'])}  "
+              f"({s['linked_dir_files']} files in {s['linked_dir_count']} dir(s), "
+              f"e.g. TensorBoard logs)")
     print(f"  {bold('Total:')}             {fmt_bytes(s['db_size'] + s['outputs_size'])}")
 
 
@@ -995,6 +1088,16 @@ def _print_storage_hotspots(s, by_metric=False):
         print(f"  git_diff total:       {fmt_bytes(s['git_diff_inline'])}  "
               f"(avg {fmt_bytes(avg)}/experiment, {s['git_diff_rows']} with diffs)")
 
+    src = s.get("source_code") or {}
+    if src.get("bytes"):
+        print(f"  source code:          {fmt_bytes(src['bytes'])}  "
+              f"({src['snapshot_count']} snapshots {fmt_bytes(src['snapshot_bytes'])}, "
+              f"{src['summary_rows']} change summaries {fmt_bytes(src['summary_bytes'])})")
+        # The snapshot is the durable record; the summaries are derived from it
+        # and reclaimable without losing anything.
+        if src["summary_bytes"] > 1024 * 1024:
+            print(col("    Tip: Run \"exptrack compact --code-changes\" to strip "
+                      "change summaries for runs whose snapshot survives.", Y))
     print(f"  cell_lineage.source:  {fmt_bytes(s['cl_size'])}  "
           f"({s['cl_count']} cells with source, {s['cl_compacted']} compacted)")
     print(f"  timeline.source_diff: {fmt_bytes(s['tl_diff_total'])}")

@@ -145,7 +145,7 @@ def _patch_writer_module(module) -> None:
 
 
 def _patch_writer_class(cls) -> None:
-    """Wrap add_scalar / add_scalars / add_histogram to mirror onto exptrack.
+    """Wrap __init__ / add_scalar / add_scalars / add_histogram.
 
     Idempotent per class via an ``_exptrack_patched`` marker. Originals are
     called unchanged, so TensorBoard still receives everything it always did.
@@ -153,6 +153,14 @@ def _patch_writer_class(cls) -> None:
     if getattr(cls, "_exptrack_patched", False):
         return
     cls._exptrack_patched = True
+
+    _orig_init = cls.__init__
+
+    def __init__(self, *args, **kwargs):
+        _orig_init(self, *args, **kwargs)
+        safe_call(_record_log_dir, self, context="tensorboard log_dir")
+
+    cls.__init__ = __init__
 
     _orig_add_scalar = cls.add_scalar
 
@@ -179,6 +187,56 @@ def _patch_writer_class(cls) -> None:
             return _orig_add_histogram(self, tag, values, global_step, *args, **kwargs)
 
         cls.add_histogram = add_histogram
+
+
+# ── Log directory capture (writer construction → linked dir) ──────────────────
+
+# The label convention `exptrack link-dir --label tensorboard` already writes;
+# reusing it means the dashboard, the delete preview and the cleanup path all
+# treat an auto-captured writer dir exactly like a hand-linked one.
+_TB_DIR_LABEL = "[dir] tensorboard"
+
+
+def _writer_log_dir(writer) -> str | None:
+    """The directory a SummaryWriter is writing events to, if we can find it.
+
+    torch exposes ``log_dir``, tensorboardX has carried both ``logdir`` and
+    ``log_dir`` across versions, and both provide ``get_logdir()`` — so ask in
+    that order rather than binding to one library's attribute name.
+    """
+    for attr in ("log_dir", "logdir"):
+        value = getattr(writer, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    getter = getattr(writer, "get_logdir", None)
+    if callable(getter):
+        value = getter()
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _record_log_dir(writer) -> None:
+    """Register the writer's log directory as a `[dir]` artifact on the run.
+
+    Without this the directory `SummaryWriter()` creates — by default
+    ``runs/<timestamp>_<hostname>/``, named and created entirely by PyTorch —
+    is invisible to exptrack: it shows in no storage report and no delete
+    touches it, so a project accumulates one orphaned event-file tree per run
+    with nothing anywhere accounting for them. Mirroring the *values* without
+    recording *where they were written* was only half the integration.
+    """
+    exp = _current_exp()
+    if exp is None:
+        return
+    path = _writer_log_dir(writer)
+    if not path:
+        debug_log("tensorboard writer exposed no log dir")
+        return
+    # log_artifact resolves + dedupes by path, so a script that reopens the
+    # same writer (or several writers on one dir) records it once.
+    safe_call(exp.log_artifact, path, label=_TB_DIR_LABEL,
+              context="tensorboard log_dir")
 
 
 # ── Mirroring (writer call → exptrack metric) ─────────────────────────────────

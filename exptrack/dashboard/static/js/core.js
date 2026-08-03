@@ -43,15 +43,20 @@ let currentTimezone = localStorage.getItem('exptrack-tz') || '';
 let allKnownTags = []; // {name, count}[]
 let allKnownStudies = []; // {name, count}[]
 let highlightMode = localStorage.getItem('exptrack-highlight') === 'true';
-// Sidebar grouping mode: '' | 'study' | 'script'. Cycled by the sidebar
-// header button. Migrates the old boolean 'exptrack-sidebar-group-study' key.
+// Sidebar grouping mode: '' | 'study' | 'script' | 'day' | 'git_branch'.
+// Cycled by the sidebar header button; see SIDEBAR_GROUP_MODES in sidebar.js
+// for the per-mode key/label/collapse state. Migrates the old boolean
+// 'exptrack-sidebar-group-study' key.
 let sidebarGroupBy = localStorage.getItem('exptrack-sidebar-group-by') ||
   (localStorage.getItem('exptrack-sidebar-group-study') === 'true' ? 'study' : '');
-// Study/script groups default to collapsed: we track which ones are EXPANDED.
-// expandedStudyGroups is shared between the sidebar and the main table when
-// groupBy === 'study'; expandedScriptGroups only backs the sidebar's script mode.
+// Groups default to collapsed: we track which ones are EXPANDED. Each mode
+// keeps its own set, so collapsing "May 20" cannot silently collapse a study
+// of the same name when the user cycles back. expandedStudyGroups is the one
+// exception — it is shared with the main table when groupBy === 'study'.
 let expandedStudyGroups = new Set(JSON.parse(localStorage.getItem('exptrack-expanded-studies') || '[]'));
 let expandedScriptGroups = new Set(JSON.parse(localStorage.getItem('exptrack-expanded-scripts') || '[]'));
+let expandedDayGroups = new Set(JSON.parse(localStorage.getItem('exptrack-expanded-days') || '[]'));
+let expandedBranchGroups = new Set(JSON.parse(localStorage.getItem('exptrack-expanded-branches') || '[]'));
 let autoRefreshTimer = null;
 // Date-range filter ('' = all time, 'today', '7d', '30d') and "needs naming"
 // (only runs that still carry their auto-generated name). Both apply globally
@@ -400,6 +405,8 @@ function getColWidth(colId) {
 // `th.col-empty`), which both fits the longest of them in this width and marks
 // the column as holding nothing.
 const EMPTY_COL_WIDTH = 60;
+// Max tag/study chips drawn in a table cell before collapsing to a `+N` chip.
+const CHIP_CELL_MAX = 3;
 const COLLAPSIBLE_COLS = ['tags', 'studies', 'stage', 'notes', 'changes'];
 
 function _colHasData(colId, exps) {
@@ -488,11 +495,24 @@ function toggleColumnSettings() {
   html += '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px"><button class="col-reset-btn" onclick="resetColumnDefaults()">Reset to defaults</button></div>';
   panel.innerHTML = html;
   panel.style.display = 'block';
-  // close on outside click
-  setTimeout(() => {
-    function closePanel(ev) { if (!panel.contains(ev.target) && !ev.target.closest('.col-settings-btn')) { panel.style.display = 'none'; document.removeEventListener('click', closePanel); } }
-    document.addEventListener('click', closePanel);
-  }, 0);
+  _dismissOnOutsideClick(panel, '.col-settings-btn');
+}
+
+// Close `panel` on the next click that lands neither inside it nor on the
+// button that opened it. The containment test is the load-bearing part: a
+// one-shot `{once: true}` listener is consumed by a click on the panel's own
+// padding, which leaves the panel open with nothing left to close it — and it
+// forces the anchor button to carry an `event.stopPropagation()`, putting
+// dismissal logic in the markup, a file away from the panel it dismisses.
+function _dismissOnOutsideClick(panel, anchorSelector, onClose) {
+  function close(ev) {
+    if (panel.contains(ev.target)) return;
+    if (anchorSelector && ev.target.closest(anchorSelector)) return;
+    document.removeEventListener('click', close);
+    if (onClose) onClose(); else panel.style.display = 'none';
+  }
+  // Deferred so the click that opened the panel doesn't immediately close it.
+  setTimeout(() => document.addEventListener('click', close), 0);
 }
 
 function resetColumnDefaults() {
@@ -1279,18 +1299,29 @@ function expDate(iso) {
   return new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
 }
 
+// The day formatter, memoized on the timezone it was built for. dayKeyOf runs
+// once per experiment per render — up to EXP_PAGE_SIZE rows, on every debounced
+// keystroke and every mutation, in the table, the rail and the date filter — so
+// building an Intl.DateTimeFormat per call was pure churn. setTimezone
+// reassigns currentTimezone, which is the whole cache key.
+let _dayFmt = null, _dayFmtTz = null;
+
+function _dayFormatter() {
+  if (_dayFmt && _dayFmtTz === currentTimezone) return _dayFmt;
+  _dayFmtTz = currentTimezone;
+  _dayFmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: currentTimezone, year: 'numeric', month: '2-digit', day: '2-digit'
+  });
+  return _dayFmt;
+}
+
 // Calendar-day key (YYYY-MM-DD) in the active timezone — stable group/filter key.
 function dayKeyOf(iso) {
   const d = expDate(iso);
   if (!d || isNaN(d)) return '';
   if (currentTimezone) {
-    try {
-      const parts = new Intl.DateTimeFormat('en-CA', {
-        timeZone: currentTimezone, year: 'numeric', month: '2-digit', day: '2-digit'
-      }).formatToParts(d);
-      const get = t => (parts.find(p => p.type === t) || {}).value || '';
-      return get('year') + '-' + get('month') + '-' + get('day');
-    } catch (e) {}
+    // en-CA already formats as YYYY-MM-DD, so no part-picking is needed.
+    try { return _dayFormatter().format(d); } catch (e) { _dayFmt = null; }
   }
   const p = n => String(n).padStart(2, '0');
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
@@ -1308,6 +1339,45 @@ function dayLabelOf(iso) {
   const opts = { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' };
   if (currentTimezone) opts.timeZone = currentTimezone;
   try { return d.toLocaleDateString('en-US', opts); } catch (e) { return key; }
+}
+
+// ── Grouping modes (shared by the main table and the sidebar rail) ───────────
+// How each mode keys and labels a run. The two views used to derive the same
+// six modes independently and had already drifted: the table keyed an unset
+// branch as the literal `'no branch'` while the rail used a `'__no_branch__'`
+// sentinel, the day key was computed in three places, and the table rendered
+// its italic "(no X)" placeholder for Study only — so its Script and Branch
+// modes showed a bare `no script` header. The *rendering* and the collapse
+// state stay per-view on purpose (different markup, and opposite
+// expanded-by-default conventions); only the derivation is shared.
+//
+// `keyOf` returns NO_GROUP when the run has no value for the mode; `labelOf`
+// is plain text (never markup — the views escape and decorate it themselves).
+const NO_GROUP = '__none__';
+
+const GROUP_MODES = {
+  git_commit: { empty: '(no commit)',
+    keyOf: e => e.git_commit ? e.git_commit.slice(0, 7) : NO_GROUP },
+  git_branch: { empty: '(no branch)', keyOf: e => e.git_branch || NO_GROUP },
+  script: { empty: '(no script)',
+    keyOf: e => e.script ? e.script.split('/').pop() : NO_GROUP },
+  status: { empty: '(no status)', keyOf: e => e.status || NO_GROUP },
+  day: { empty: '(no date)',
+    keyOf: e => dayKeyOf(e.created_at) || NO_GROUP,
+    labelOf: (key, items) => dayLabelOf(items[0].created_at) },
+  study: { empty: '(no study)',
+    keyOf: e => (e.studies && e.studies.length) ? e.studies[0] : NO_GROUP },
+};
+
+// The group header text for a key, as escaped HTML — the italic placeholder
+// for the empty group, the plain escaped label otherwise.
+function groupLabelHtml(modeId, key, items) {
+  const mode = GROUP_MODES[modeId];
+  if (!mode) return esc(key);
+  if (key === NO_GROUP) {
+    return '<span style="color:var(--muted);font-style:italic">' + esc(mode.empty) + '</span>';
+  }
+  return esc(mode.labelOf ? mode.labelOf(key, items) : key);
 }
 
 function setDateRange(r) {
@@ -1685,6 +1755,26 @@ function _orphanStorageSection(o) {
       'exist and show up nowhere in the UI.</div>';
 }
 
+// Captured source code, split by what reclaims it: snapshots (the durable
+// record — freed only by deleting the last run holding a blob) vs. the
+// derived change summaries (freed by compact --code-changes). Both figures
+// are exact text sums, so no "estimated" label.
+function _sourceCodeStorageSection(sc) {
+  if (!sc || !sc.bytes) return '';
+  return '<div class="storage-head">Source code — ' + esc(fmtBytes(sc.bytes)) + '</div>' +
+    '<div class="storage-row" title="Content-addressed full source, one copy per ' +
+      'distinct script version. The durable record — kept until the last run ' +
+      'referencing it is permanently deleted.">' +
+      '<span>Snapshots</span><span class="storage-val">' +
+      esc(sc.snapshot_count.toLocaleString() + ' (' + fmtBytes(sc.snapshot_bytes) + ')') +
+    '</span></div>' +
+    '<div class="storage-row" title="Derived per-run change summaries. Reclaimable ' +
+      'with exptrack compact --code-changes for runs whose snapshot survives.">' +
+      '<span>Change summaries</span><span class="storage-val">' +
+      esc(sc.summary_rows.toLocaleString() + ' (' + fmtBytes(sc.summary_bytes) + ')') +
+    '</span></div>';
+}
+
 async function loadStorageInfo() {
   const el = document.getElementById('settings-storage');
   try {
@@ -1721,6 +1811,7 @@ async function loadStorageInfo() {
         ? '<div class="storage-note">… and ' +
             (res.metric_key_count - res.metric_keys.length) + ' more keys</div>'
         : '') +
+      _sourceCodeStorageSection(res.source_code) +
       '<div class="storage-head">Largest runs (estimated)</div>' +
       _largestExpRows(res.largest_experiments) +
       _trashStorageSection(res.trash) +
@@ -1817,9 +1908,13 @@ async function settingsCleanDb() {
 // Itemised confirm text for orphaned output paths. Spells out that "orphan" is
 // a heuristic — files kept when a run was permanently deleted land here too.
 function _orphanFilesPrompt(removedRows, orphans) {
+  // Through the same helper the delete dialogs use: this confirm reports the
+  // identical capped-walk figures, and two spellings of "≥" (or two byte
+  // formatters) would have the same directory read differently in the two
+  // places the user meets it.
   const shown = orphans.slice(0, 12).map(o =>
     '  ' + o.name + (o.is_dir ? '/' : '') +
-    '  (' + o.files + ' file' + (o.files === 1 ? '' : 's') + ', ' + fmtBytes(o.bytes) + ')'
+    '  (' + _dirFigures(o.files, o.bytes, o.truncated, true) + ')'
   ).join('\n');
   const more = orphans.length > 12 ? '\n  …and ' + (orphans.length - 12) + ' more' : '';
   const totalBytes = orphans.reduce((s, o) => s + (o.bytes || 0), 0);

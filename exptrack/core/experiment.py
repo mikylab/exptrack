@@ -387,17 +387,67 @@ class Experiment:
         print(f"[exptrack] resumed: {exp.name}  ({exp.id[:6]})", file=sys.stderr)
         return exp
 
+    # `sys.argv` shapes that are not a command anyone can re-run. Only the two
+    # genuine argv *forms* are listed — `python -c "…"` and the bare REPL. Which
+    # front end is running is answered structurally by `_in_ipython()` instead,
+    # because a list of launcher *names* is a list of the front ends we happened
+    # to know about: Jupyter, Colab, VS Code, papermill and qtconsole all launch
+    # differently, and any one missing from such a list silently reintroduces
+    # the bug (see `_build_command`).
+    _NON_COMMAND_ARGV0 = frozenset({"-c", ""})
+
+    @staticmethod
+    def _in_ipython() -> bool:
+        """True inside any live IPython front end (notebook, qtconsole, …).
+
+        Asks `sys.modules` rather than importing IPython — it is an optional
+        dependency and exptrack is stdlib-only. A script that merely imports
+        IPython without starting a shell gets `get_ipython() is None`, which is
+        the right answer for it.
+        """
+        ipy = sys.modules.get("IPython")
+        try:
+            return ipy is not None and ipy.get_ipython() is not None
+        except Exception:
+            return False
+
     @staticmethod
     def _build_command() -> str:
-        """Build a clean command string from sys.argv.
+        """Build a clean command string from sys.argv, or "" if argv isn't one.
 
         Replaces the full path to the Python entry point (e.g.
         /Users/.../venv/bin/exptrack) with just the binary name.
+
+        Under IPython `sys.argv` is the *kernel's* launch line, so a notebook run
+        would otherwise record a Reproduce command like
+        `ipykernel_launcher.py -f /tmp/kernel-1a2b.json` — a connection file
+        deleted when the kernel stopped. It is unrunnable, and carries no
+        `python`/`exptrack` prefix so the box cannot even offer its plain/tracked
+        toggle. A blank command is better than a false one: the box then invites
+        you to add the real one, and a notebook run falls back to its own path.
         """
         argv = list(sys.argv)
-        if argv:
-            argv[0] = Path(argv[0]).name
+        if not argv or Experiment._in_ipython():
+            return ""
+        argv[0] = Path(argv[0]).name
+        if argv[0] in Experiment._NON_COMMAND_ARGV0:
+            return ""
         return " ".join(argv)
+
+    def _resolved_command(self) -> str:
+        """The command to record: explicit, else rebuilt from argv, else the
+        notebook itself.
+
+        Reproducing a notebook run means opening the notebook, and exptrack
+        cannot know whether that is lab, notebook, nbclassic or an editor — so
+        naming a launcher would be a guess printed as an instruction. The path
+        is the honest answer, and it belongs here rather than at each notebook
+        entry point, which had to repeat it verbatim.
+        """
+        cmd = self._command or self._build_command()
+        if not cmd and (self.script or "").endswith(".ipynb"):
+            return self.script
+        return cmd
 
     # ── Snapshot dedup ─────────────────────────────────────────────────────
 
@@ -444,7 +494,7 @@ class Experiment:
             """, (
                 self.id, self.project, self.name, self.status,
                 self.created_at, self.created_at,
-                self.script, self._command or self._build_command(),
+                self.script, self._resolved_command(),
                 self.git_branch, self.git_commit, diff_for_db,
                 self.hostname, self.python_ver,
                 self.notes, json.dumps(self.tags),

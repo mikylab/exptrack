@@ -375,3 +375,153 @@ if __name__ == "__main__":
             failed += 1
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
+
+
+# ── Deduplicated diff bodies are actually reclaimed ─────────────────────────
+#
+# `store_git_diff` content-addresses every diff into `git_diffs` and leaves a
+# `[ref:sha256:…]` pointer on the run. Compaction replaces that pointer — which
+# by itself frees nothing, because the body survives until nothing references
+# it. On a project whose diffs were 90% of the database, `compact` reclaimed 0
+# bytes while reporting success, and `clean`'s default path never swept them.
+
+def _compact_args(**kw):
+    base = dict(ids=[], all=False, older_than=None, dry_run=False, export=None,
+                cells=False, timeline=False, snapshots=False, deep=False,
+                dedup=False, code_changes=False)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _diff_blob_count(conn):
+    return conn.execute("SELECT COUNT(*) FROM git_diffs").fetchone()[0]
+
+
+def _run_with_stored_diff(conn, exp_id, body):
+    from exptrack.core.db import store_git_diff
+    ref = store_git_diff(conn, body)
+    _insert_experiment(conn, exp_id, git_diff=ref)
+    conn.commit()
+    return ref
+
+
+def test_compact_reclaims_an_unreferenced_diff_body():
+    with tempfile.TemporaryDirectory() as td:
+        os.chdir(td)
+        conn = _setup_project()
+        body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 400
+        _run_with_stored_diff(conn, "solo", body)
+        assert _diff_blob_count(conn) == 1
+
+        from exptrack.cli.admin_cmds import cmd_compact
+        _capture_stdout(cmd_compact, _compact_args())
+
+        # Nothing points at the body any more, so it must be gone — not merely
+        # unreferenced and still occupying the file.
+        assert _diff_blob_count(conn) == 0
+
+
+def test_compact_keeps_a_body_another_run_still_shares():
+    with tempfile.TemporaryDirectory() as td:
+        os.chdir(td)
+        conn = _setup_project()
+        body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 400
+        ref = _run_with_stored_diff(conn, "first", body)
+        _insert_experiment(conn, "second", git_diff=ref)   # same shared body
+        conn.commit()
+
+        from exptrack.cli.admin_cmds import cmd_compact
+        _capture_stdout(cmd_compact, _compact_args(ids=["first"]))
+
+        # `second` still resolves its diff, so the body must survive.
+        assert _diff_blob_count(conn) == 1
+        row = conn.execute(
+            "SELECT git_diff FROM experiments WHERE id='second'").fetchone()
+        assert row[0].startswith("[ref:sha256:")
+
+
+def test_dry_run_estimates_the_body_not_the_pointer():
+    """`diff_len` is the length of the column, which for a deduplicated diff is
+    a ~45-byte pointer — so the dry-run promised ~1 KB where 1.7 MB would go."""
+    with tempfile.TemporaryDirectory() as td:
+        os.chdir(td)
+        conn = _setup_project()
+        body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 2000
+        _run_with_stored_diff(conn, "big", body)
+
+        from exptrack.cli.admin_cmds import cmd_compact
+        out = _capture_stdout(cmd_compact, _compact_args(dry_run=True))
+        assert "KB" in out or "MB" in out, out
+        assert " B," not in out, f"reported the pointer, not the body: {out}"
+
+
+def test_dry_run_reports_nothing_reclaimable_for_a_shared_body():
+    with tempfile.TemporaryDirectory() as td:
+        os.chdir(td)
+        conn = _setup_project()
+        body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 2000
+        ref = _run_with_stored_diff(conn, "first", body)
+        _insert_experiment(conn, "second", git_diff=ref)
+        conn.commit()
+
+        from exptrack.cli.admin_cmds import cmd_compact
+        out = _capture_stdout(cmd_compact, _compact_args(ids=["first"], dry_run=True))
+        assert "~0 B" in out, out
+
+
+def test_dashboard_freed_counts_the_body_once_not_once_per_run():
+    """Shared bodies used to be counted per run: 30 runs sharing one 34 KB body
+    reported ~1 MB freed when 34 KB left the database."""
+    with tempfile.TemporaryDirectory() as td:
+        os.chdir(td)
+        conn = _setup_project()
+        body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 2000
+        ref = _run_with_stored_diff(conn, "run0", body)
+        for i in range(1, 8):
+            _insert_experiment(conn, f"run{i}", git_diff=ref)
+        conn.commit()
+        ids = [f"run{i}" for i in range(8)]
+
+        from exptrack.dashboard.routes.write_routes import api_compact
+        res = api_compact(conn, {"ids": ids, "mode": "diff"})
+
+        # One body left the database, so that is what may be reported.
+        assert _diff_blob_count(conn) == 0
+        assert res["freed"] == len(body), (res["freed"], len(body))
+
+
+def test_dashboard_dry_run_and_write_agree_on_freed_bytes():
+    with tempfile.TemporaryDirectory() as td:
+        os.chdir(td)
+        conn = _setup_project()
+        body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 2000
+        ref = _run_with_stored_diff(conn, "a", body)
+        _insert_experiment(conn, "b", git_diff=ref)
+        conn.commit()
+        ids = ["a", "b"]
+
+        from exptrack.dashboard.routes.write_routes import api_compact
+        preview = api_compact(conn, {"ids": ids, "mode": "diff", "dry_run": True})
+        wrote = api_compact(conn, {"ids": ids, "mode": "diff"})
+        assert preview["total_bytes"] == wrote["freed"] == len(body)
+
+
+def test_cli_and_dashboard_compact_report_the_same_bytes():
+    """The two entry points share one implementation — they had drifted, and
+    only the CLI's copy was fixed to sweep the bodies it orphaned."""
+    def _freed(fn):
+        with tempfile.TemporaryDirectory() as td:
+            os.chdir(td)
+            conn = _setup_project()
+            body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 900
+            ref = _run_with_stored_diff(conn, "one", body)
+            _insert_experiment(conn, "two", git_diff=ref)
+            conn.commit()
+            return fn(conn, ["one", "two"]), _diff_blob_count(conn)
+
+    from exptrack.core.storage import compact_git_diffs
+    from exptrack.dashboard.routes.write_routes import api_compact
+    dash, dash_blobs = _freed(
+        lambda c, ids: api_compact(c, {"ids": ids, "mode": "diff"})["freed"])
+    core, core_blobs = _freed(lambda c, ids: compact_git_diffs(c, ids)["bytes"])
+    assert dash == core and dash_blobs == core_blobs == 0

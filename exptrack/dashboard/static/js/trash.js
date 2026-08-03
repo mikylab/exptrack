@@ -1,5 +1,126 @@
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+// Sizing a directory is capped (see core/db.py dir_file_stats): a
+// checkpoint-per-epoch tree would otherwise be tens of thousands of stats per
+// previewed run. A capped walk returns a lower bound, so every figure derived
+// from it is prefixed "≥" and the dialog carries a note. Under-counting what a
+// delete is about to remove without saying so is the failure this prevents —
+// the delete itself still takes the whole directory either way.
+function _atLeast(truncated) { return truncated ? '≥ ' : ''; }
+
+// The "N files, X bytes" pair a directory walk produces, marked as a lower
+// bound when the walk was capped. One helper rather than two `_atLeast` calls
+// per site: marking only one of the two halves gives a dialog that calls the
+// file count approximate and the byte total exact — precisely the half-honest
+// output this feature exists to prevent, and it would read as correct.
+function _dirFigures(files, bytes, truncated, singular) {
+  const a = _atLeast(truncated);
+  return a + files + ' ' + (singular && files === 1 ? 'file' : 'files') +
+         ', ' + a + _fmtBytes(bytes);
+}
+
+function _dirTruncNote(truncated, maxFiles) {
+  if (!truncated) return '';
+  const cap = maxFiles ? maxFiles.toLocaleString() + ' files' : 'the walk limit';
+  return '<div class="dc-trunc-note">Directory sizes stopped counting at ' + cap +
+    ' — figures marked ≥ are a lower bound. The delete still removes the ' +
+    'whole directory.</div>';
+}
+// Snapshots are reference-counted, so deleting a run that shares its source
+// loses nothing. Deleting the LAST holder destroys the only copy of that code —
+// which for an uncommitted or never-committed edit exists nowhere else, not in
+// git and not on disk. Say so before the delete, and offer the way to keep it.
+// Directories linked to the run that live outside outputs/ — a TensorBoard
+// log dir, a `link-dir` tree. They are named individually rather than rolled
+// into a byte total: `runs/Jul23_15-27-29_host/` is created by PyTorch, not by
+// the user, so a path is the only thing that makes it recognisable.
+function _linkedDirsRows(p) {
+  const dirs = (p && p.linked_dirs) || [];
+  if (!dirs.length) return '';
+  return '<div class="dc-scope-key">Linked dirs</div>' +
+    '<div class="dc-scope-val">' + dirs.map(d =>
+      esc(d.path) + ' <span style="color:var(--muted)">(' +
+      _dirFigures(d.files, d.size_bytes, d.truncated, true) +
+      ')</span>').join('<br>') +
+    '</div>';
+}
+
+// The single-run "Output dir" row, shared by both places that render a
+// per-run scope grid — they had two copies of it, which is how one of them
+// would have kept reporting a capped walk as a complete total.
+function _outputDirRow(p) {
+  const t = p.output_dir_truncated;
+  const detail = p.output_dir_exists
+    ? ' <span style="color:var(--muted)">(' +
+      _dirFigures(p.output_dir_files, p.output_dir_bytes, t) + ')</span>'
+    : ' <span style="color:var(--muted)">(missing)</span>';
+  return '<div class="dc-scope-key">Output dir</div>' +
+    '<div class="dc-scope-val">' +
+      (p.output_dir ? esc(p.output_dir) + detail
+                    : '<span style="color:var(--muted)">none</span>') +
+    '</div>';
+}
+
+// Bulk form: paths would run to dozens, so the batch reports a count + total.
+function _linkedDirsTotalRow(t) {
+  if (!t || !t.linked_dirs) return '';
+  const tr = t.dir_sizes_truncated;
+  return '<div class="dc-scope-key">Linked dirs</div>' +
+    '<div class="dc-scope-val">' + t.linked_dirs + ' (' +
+      _dirFigures(t.linked_dir_files || 0, t.linked_dir_bytes || 0, tr) + ')</div>';
+}
+
+// One warning box, two callers: the wording of a safety warning maintained in
+// duplicate is exactly what drifts. Callers supply only the headline and the
+// action; the shell, the "exists nowhere else" sentence and the line count are
+// shared.
+function _sourceWarnBox(headlineHtml, lines, actionHtml) {
+  return '<div class="dc-source-warn">' +
+    '<b>⚠ ' + headlineHtml + '</b> (' + lines + ' line' +
+    (lines === 1 ? '' : 's') + ').' +
+    ' Deleting permanently removes the captured code — if that edit was never' +
+    ' committed, it exists nowhere else. ' + actionHtml +
+  '</div>';
+}
+
+function _sourceLossHtml(p, id) {
+  const s = p && p.source_only_copy;
+  if (!s || !s.sole) return '';
+  return _sourceWarnBox('This is the only run holding its source', s.lines,
+    '<button class="dc-source-save" onclick="_saveRunSource(\'' + escJsAttr(id) +
+    '\')">Save source first</button>');
+}
+
+// Bulk variant. The server computes this batch-aware: a snapshot shared only
+// by runs inside the doomed batch dies with it, which a per-run check misses.
+// There is no single run to save, so point at the export command instead.
+function _sourceLossBulkHtml(p) {
+  const s = p && p.source_only_copy;
+  if (!s || !s.sole) return '';
+  const v = s.hashes.length;
+  return _sourceWarnBox(
+    'These runs hold the only copy of ' + v + ' script version' +
+      (v === 1 ? '' : 's'),
+    s.lines,
+    'Export first with <code>exptrack source --all --out DIR</code>.');
+}
+
+// Download the run's captured source before it is deleted. Uses the same
+// endpoint the Timeline's source fold reads, so what is saved is exactly what
+// was shown.
+async function _saveRunSource(id) {
+  const data = await api('/api/run-source/' + encodeURIComponent(id));
+  if (!data || data.error || !data.files || !data.files.length) {
+    alert('No source captured for this run.');
+    return;
+  }
+  const body = data.files.length === 1
+    ? data.files[0].content
+    : data.files.map(f => '# ── ' + f.label + ' ──\n' + f.content).join('\n\n');
+  const safe = String(data.name || id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80);
+  saveOrDownload(body, safe + '.py', 'text/x-python');
+}
+
 function _fmtBytes(n) {
   if (!n) return '0 B';
   if (n < 1024) return n + ' B';
@@ -82,17 +203,14 @@ function _openDeleteModalSingle(id, name, p) {
         '<div class="dc-scope-val">' + p.artifacts_count +
           ' (' + p.artifacts_existing + ' file' + (p.artifacts_existing === 1 ? '' : 's') +
           ' on disk, ' + _fmtBytes(p.artifact_bytes) + ')</div>' +
-      '<div class="dc-scope-key">Output dir</div>' +
-        '<div class="dc-scope-val">' +
-          (p.output_dir ? esc(p.output_dir) +
-            (p.output_dir_exists
-              ? ' <span style="color:var(--muted)">(' + p.output_dir_files + ' files, ' + _fmtBytes(p.output_dir_bytes) + ')</span>'
-              : ' <span style="color:var(--muted)">(missing)</span>')
-            : '<span style="color:var(--muted)">none</span>') +
-        '</div>' +
+      _outputDirRow(p) +
+      _linkedDirsRows(p) +
       '<div class="dc-scope-key">Notebook history</div>' +
         '<div class="dc-scope-val">' + p.notebook_history_count + ' snapshot' + (p.notebook_history_count === 1 ? '' : 's') + '</div>' +
-    '</div>';
+    '</div>' +
+    _dirTruncNote(p.output_dir_truncated || p.linked_dir_truncated,
+                  p.dir_stat_max_files) +
+    _sourceLossHtml(p, id);
   _renderDeleteModal({
     title: 'Delete experiment',
     trashSummaryHtml: trashSummary,
@@ -156,24 +274,12 @@ function _openDeleteModalBulk(ids, p) {
   const trashSummary = '<p>Move <b>' + (t.experiments || 0) + '</b> experiments to Trash. ' +
     'Nothing on disk is touched. You can restore them from the Trash view.</p>' +
     '<div class="dc-bulk-list">' + itemRows + moreNote + '</div>';
-  const scopeHtml =
-    '<div class="dc-scope-grid">' +
-      '<div class="dc-scope-key">Experiments</div>' +
-        '<div class="dc-scope-val">' + (t.experiments || 0) + '</div>' +
-      '<div class="dc-scope-key">Metrics</div>' +
-        '<div class="dc-scope-val">' + (t.metrics || 0) + '</div>' +
-      '<div class="dc-scope-key">Params</div>' +
-        '<div class="dc-scope-val">' + (t.params || 0) + '</div>' +
-      '<div class="dc-scope-key">Artifacts</div>' +
-        '<div class="dc-scope-val">' + (t.artifacts || 0) +
-          ' (' + (t.artifacts_existing || 0) + ' on disk, ' + _fmtBytes(t.artifact_bytes || 0) + ')</div>' +
-      '<div class="dc-scope-key">Output dirs</div>' +
-        '<div class="dc-scope-val">' + (t.output_dirs_existing || 0) + ' (' +
-          (t.output_dir_files || 0) + ' files, ' + _fmtBytes(t.output_dir_bytes || 0) + ')</div>' +
-      '<div class="dc-scope-key">Notebook history</div>' +
-        '<div class="dc-scope-val">' + (t.notebook_history || 0) + '</div>' +
-    '</div>' +
-    '<div class="dc-bulk-list" style="margin-top:8px">' + itemRows + moreNote + '</div>';
+  // Same grid the Trash view's permanent-delete modal renders — kept as one
+  // function because the two drifted before (only one of them grew the
+  // Linked-dirs row), and nothing tests that they match.
+  const scopeHtml = _scopeGridHtmlBulk(t) +
+    '<div class="dc-bulk-list" style="margin-top:8px">' + itemRows + moreNote + '</div>' +
+    _sourceLossBulkHtml(p);
   _renderDeleteModal({
     title: 'Delete ' + ids.length + ' experiment' + (ids.length === 1 ? '' : 's'),
     trashSummaryHtml: trashSummary,
@@ -740,15 +846,13 @@ function _scopeGridHtml(p) {
       '<div class="dc-scope-key">Params</div><div class="dc-scope-val">' + p.params_count + '</div>' +
       '<div class="dc-scope-key">Artifacts</div><div class="dc-scope-val">' + p.artifacts_count +
         ' (' + p.artifacts_existing + ' on disk, ' + _fmtBytes(p.artifact_bytes) + ')</div>' +
-      '<div class="dc-scope-key">Output dir</div><div class="dc-scope-val">' +
-        (p.output_dir ? esc(p.output_dir) +
-          (p.output_dir_exists ? ' <span style="color:var(--muted)">(' + p.output_dir_files +
-            ' files, ' + _fmtBytes(p.output_dir_bytes) + ')</span>' : ' <span style="color:var(--muted)">(missing)</span>')
-          : '<span style="color:var(--muted)">none</span>') +
-      '</div>' +
+      _outputDirRow(p) +
+      _linkedDirsRows(p) +
       '<div class="dc-scope-key">Notebook history</div><div class="dc-scope-val">' +
         p.notebook_history_count + '</div>' +
-    '</div>';
+    '</div>' +
+    _dirTruncNote(p.output_dir_truncated || p.linked_dir_truncated,
+                  p.dir_stat_max_files);
 }
 
 function _scopeGridHtmlBulk(t) {
@@ -759,9 +863,11 @@ function _scopeGridHtmlBulk(t) {
       '<div class="dc-scope-key">Artifacts</div><div class="dc-scope-val">' + (t.artifacts || 0) +
         ' (' + (t.artifacts_existing || 0) + ' on disk, ' + _fmtBytes(t.artifact_bytes || 0) + ')</div>' +
       '<div class="dc-scope-key">Output dirs</div><div class="dc-scope-val">' + (t.output_dirs_existing || 0) +
-        ' (' + (t.output_dir_files || 0) + ' files, ' + _fmtBytes(t.output_dir_bytes || 0) + ')</div>' +
+        ' (' + _dirFigures(t.output_dir_files || 0, t.output_dir_bytes || 0,
+                             t.dir_sizes_truncated) + ')</div>' +
+      _linkedDirsTotalRow(t) +
       '<div class="dc-scope-key">Notebook history</div><div class="dc-scope-val">' + (t.notebook_history || 0) + '</div>' +
-    '</div>';
+    '</div>' + _dirTruncNote(t.dir_sizes_truncated, t.dir_stat_max_files);
 }
 
 function _renderPermanentOnlyModal(opts) {

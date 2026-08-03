@@ -132,7 +132,7 @@ def test_compaction_skips_a_dangling_ref(tmp_project, db_conn):
     """Compacting must not replace a sentinel with a '[compacted 17 B]' marker."""
     from exptrack.core.db import get_db, store_git_diff
     from exptrack.core.experiment import Experiment
-    from exptrack.dashboard.routes.write_routes import _compact_git_diffs
+    from exptrack.core.storage import compact_git_diffs
 
     exp = Experiment(name="dangling", script="train.py")
     conn = get_db()
@@ -144,9 +144,9 @@ def test_compaction_skips_a_dangling_ref(tmp_project, db_conn):
     conn.execute("DELETE FROM git_diffs")
     conn.commit()
 
-    freed, count = _compact_git_diffs(conn, [exp.id])
+    st = compact_git_diffs(conn, [exp.id])
 
-    assert (freed, count) == (0, 0)
+    assert (st["bytes"], st["runs"]) == (0, 0)
     stored = conn.execute("SELECT git_diff FROM experiments WHERE id=?",
                           (exp.id,)).fetchone()[0]
     assert stored == ref, "the pointer is left as-is, not overwritten"

@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import sys
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -1088,6 +1089,60 @@ def find_orphan_output_paths(conn: sqlite3.Connection) -> list[Path]:
     return orphans
 
 
+# Cap on the per-directory walk below. A checkpoint-per-epoch tree runs to
+# tens of thousands of files, and a bulk delete previews every run in the
+# batch, so an unbounded rglob + stat-per-file is seconds of held request
+# thread on a network filesystem. The number is well above any real output
+# directory, so the cap is a backstop rather than a routine truncation.
+DIR_STAT_MAX_FILES = 20000
+
+
+def dir_file_stats(path: Path,
+                   max_files: int | None = None) -> tuple[int, int, bool]:
+    """``(files, bytes, truncated)`` under *path*, counting regular files
+    recursively.
+
+    The one implementation of "how big is this tree", shared by every confirm
+    dialog and storage report that has to size a directory. A per-file
+    ``stat`` can fail on its own (a race with the writing run, a broken
+    symlink, a permission hole) without the total being worthless, so those
+    are skipped rather than abandoning the walk.
+
+    The walk stops after *max_files* and says so in the third element, which
+    every caller has to carry through to whatever it renders: a confirm dialog
+    that quietly under-counts what it is about to remove is worse than one
+    that says "at least". A partial total is still a lower bound, so the
+    figures stay true — they just stop being complete.
+    """
+    # Resolved per call rather than bound as a default, so the cap is one
+    # module-level number the whole codebase (and a test) can move.
+    if max_files is None:
+        max_files = DIR_STAT_MAX_FILES
+    files = size = 0
+    try:
+        if path.is_file():
+            return 1, path.stat().st_size, False
+        if not path.is_dir():
+            return 0, 0, False
+        for fp in path.rglob("*"):
+            try:
+                # One stat, not two: `is_file()` and `stat()` each issue a full
+                # os.stat, and halving the syscall count is the same win the
+                # cap above exists for — it is the per-file syscall that hurts
+                # on a network filesystem, not the arithmetic.
+                st = fp.stat()
+                if stat.S_ISREG(st.st_mode):
+                    files += 1
+                    size += st.st_size
+                    if files >= max_files:
+                        return files, size, True
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return files, size, False
+
+
 def describe_orphan_output_paths(conn: sqlite3.Connection,
                                  paths: list[Path] | None = None) -> list[dict]:
     """``find_orphan_output_paths`` annotated with file count and total bytes,
@@ -1099,19 +1154,9 @@ def describe_orphan_output_paths(conn: sqlite3.Connection,
     """
     out: list[dict] = []
     for p in (find_orphan_output_paths(conn) if paths is None else paths):
-        files, size = 0, 0
-        try:
-            if p.is_dir():
-                for f in p.rglob("*"):
-                    if f.is_file():
-                        files += 1
-                        size += f.stat().st_size
-            elif p.is_file():
-                files, size = 1, p.stat().st_size
-        except OSError:
-            pass
+        files, size, trunc = dir_file_stats(p)
         out.append({"name": p.name, "path": str(p), "is_dir": p.is_dir(),
-                    "files": files, "bytes": size})
+                    "files": files, "bytes": size, "truncated": trunc})
     return out
 
 
@@ -1343,12 +1388,98 @@ def output_dirs_owned_by(conn: sqlite3.Connection, exp_id: str,
 
     claimed = claimed_output_paths(conn, exclude_id=exp_id)
     owned: list[Path] = []
+    # The two candidates are normally the *same* directory — a run's recorded
+    # output_dir is outputs/<name> unless it was renamed or set explicitly — so
+    # without deduping, the preview sized it twice and the confirm reported
+    # double the files and double the bytes for every ordinary run, while the
+    # delete (correctly) trashed it once.
+    seen: set[str] = set()
     for c in candidates:
-        if _norm_path(c) in claimed:
+        norm = _norm_path(c)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if norm in claimed:
             print(f"[exptrack] note: leaving {c} in place — another experiment "
                   f"claims that output directory", file=sys.stderr)
             continue
         owned.append(c)
+    return owned
+
+
+DIR_ARTIFACT_PREFIX = "[dir] "
+
+
+def linked_dirs_owned_by(conn: sqlite3.Connection, exp_id: str) -> list[Path]:
+    """Directories linked to a run (`[dir] …` artifacts) a delete may remove.
+
+    These are whole trees the run wrote *outside* ``outputs/`` — a TensorBoard
+    ``runs/<timestamp>_<hostname>/``, a `exptrack link-dir` checkpoint folder.
+    Individual artifact rows are skipped by the delete when they aren't files,
+    so before this a linked directory was recorded and then never cleaned up
+    by anything.
+
+    Removing a directory is far less forgiving than removing a file, so three
+    rules gate it, and `get_delete_preview` shares this function for the same
+    reason `output_dirs_owned_by` is shared — the dialog must never size a
+    directory the delete leaves alone, or the reverse:
+
+    1. **No other run may claim it.** Two runs pointed at one TensorBoard dir
+       is normal (`SummaryWriter("runs/sweep")` in a loop), and trashing it
+       with the first delete would take the survivors' logs.
+    2. **It must live under the project root.** A shared ``~/tb-logs`` or
+       ``/tmp`` path belongs to the user, not to this project.
+    3. **It must not be the project root or an ancestor of it.** A stray
+       ``SummaryWriter(log_dir=".")`` records the project directory itself,
+       and nothing exptrack does may trash a user's whole project.
+    """
+    rows = conn.execute(
+        "SELECT path FROM artifacts WHERE exp_id=? AND label LIKE ?",
+        (exp_id, DIR_ARTIFACT_PREFIX + "%"),
+    ).fetchall()
+    if not rows:
+        return []
+    try:
+        root = cfg.project_root().resolve()
+    except Exception:
+        return []
+
+    claimed = {
+        _norm_path(Path(r["path"]))
+        for r in conn.execute(
+            "SELECT path FROM artifacts WHERE exp_id != ? AND label LIKE ?",
+            (exp_id, DIR_ARTIFACT_PREFIX + "%"),
+        )
+        if r["path"]
+    }
+
+    owned: list[Path] = []
+    seen: set[str] = set()
+    for r in rows:
+        if not r["path"]:
+            continue
+        p = Path(r["path"])
+        norm = _norm_path(p)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if norm in claimed:
+            print(f"[exptrack] note: leaving {p} in place — another experiment "
+                  f"links that directory", file=sys.stderr)
+            continue
+        try:
+            rp = p.resolve()
+        except Exception:
+            continue
+        if rp == root or rp in root.parents:
+            print(f"[exptrack] note: leaving {p} in place — it is the project "
+                  f"directory (or contains it)", file=sys.stderr)
+            continue
+        if root not in rp.parents:
+            print(f"[exptrack] note: leaving {p} in place — it is outside the "
+                  f"project", file=sys.stderr)
+            continue
+        owned.append(p)
     return owned
 
 
@@ -1373,6 +1504,10 @@ def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str) -> dict:
         output_dirs = output_dirs_owned_by(
             conn, exp_id, exp_row["name"], exp_row["output_dir"]
         )
+    # Linked directories (TensorBoard log dirs, `link-dir` trees) are trashed
+    # alongside the output dirs, and go into handled_dirs the same way so the
+    # per-file loop below doesn't try to move files already inside them.
+    output_dirs = output_dirs + linked_dirs_owned_by(conn, exp_id)
     handled_dirs: list[str] = []
     for out_dir in output_dirs:
         try:
@@ -1468,8 +1603,15 @@ def restore_experiment(conn: sqlite3.Connection, exp_id: str) -> bool:
     return cur.rowcount > 0
 
 
-def get_delete_preview(conn: sqlite3.Connection, exp_id: str) -> dict:
-    """Summarize what permanent deletion of an experiment would remove."""
+def get_delete_preview(conn: sqlite3.Connection, exp_id: str,
+                       source_check: bool = True) -> dict:
+    """Summarize what permanent deletion of an experiment would remove.
+
+    ``source_check=False`` skips the sole-source scan (a full pass over the
+    `_code_snapshot` params): the bulk preview calls this once per selected
+    run and then answers the sole-source question batch-aware itself, so the
+    per-run answers would be N discarded full scans.
+    """
     exp = conn.execute(
         "SELECT id, name, output_dir, deleted_at FROM experiments WHERE id=?", (exp_id,)
     ).fetchone()
@@ -1518,28 +1660,36 @@ def get_delete_preview(conn: sqlite3.Connection, exp_id: str) -> dict:
     output_dir_exists = False
     output_dir_bytes = 0
     output_dir_files = 0
+    output_dir_truncated = False
     # Same ownership rule the delete applies, so the dialog never sizes a
     # directory that belongs to a different run (see output_dirs_owned_by).
     candidates = output_dirs_owned_by(conn, exp_id, exp["name"], output_dir)
+    # Linked dirs (TensorBoard logs, `link-dir` trees) are trashed by the same
+    # delete, so they are sized here too — reported separately below so the
+    # confirm can name them, since a user who has never opened `runs/` will
+    # not recognise it as something this delete removes.
+    linked = linked_dirs_owned_by(conn, exp_id)
+    linked_dirs: list[dict] = []
+    for d in linked:
+        if not d.is_dir():
+            continue
+        files, n_bytes, trunc = dir_file_stats(d)
+        linked_dirs.append({"path": str(d), "files": files,
+                            "size_bytes": n_bytes, "truncated": trunc})
     # All of them, no break: _delete_experiment_files trashes every owned
     # candidate, so the preview must size every one — stopping at the first
     # under-stated the confirm whenever the recorded output_dir and the
     # name-derived outputs/<name> diverged and both existed.
     for d in candidates:
-        try:
-            if d.is_dir():
-                output_dir_exists = True
-                if not output_dir:
-                    output_dir = str(d)
-                for sub in d.rglob("*"):
-                    try:
-                        if sub.is_file():
-                            output_dir_files += 1
-                            output_dir_bytes += sub.stat().st_size
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        if not d.is_dir():
+            continue
+        output_dir_exists = True
+        if not output_dir:
+            output_dir = str(d)
+        files, n_bytes, trunc = dir_file_stats(d)
+        output_dir_files += files
+        output_dir_bytes += n_bytes
+        output_dir_truncated = output_dir_truncated or trunc
 
     n_history = 0
     try:
@@ -1576,8 +1726,41 @@ def get_delete_preview(conn: sqlite3.Connection, exp_id: str) -> dict:
         "output_dir_exists": output_dir_exists,
         "output_dir_files": output_dir_files,
         "output_dir_bytes": output_dir_bytes,
+        # The walk hit DIR_STAT_MAX_FILES, so the two figures above are a
+        # lower bound, not the total. Carried to the confirm dialog, which
+        # renders them as "at least" — under-counting what a delete is about
+        # to remove without saying so is the one thing this must not do.
+        "output_dir_truncated": output_dir_truncated,
+        # The cap the walk stopped at, so the dialog can name the number
+        # rather than saying "the walk limit".
+        "dir_stat_max_files": DIR_STAT_MAX_FILES,
         "notebook_history_count": n_history,
+        # Whole directories linked to the run (TensorBoard log dirs, link-dir
+        # trees). Reported separately from output_dir rather than folded into
+        # its byte total: they live outside outputs/, so the confirm has to
+        # name the path or the user has no way to know what is being removed.
+        "linked_dirs": linked_dirs,
+        "linked_dir_bytes": sum(d["size_bytes"] for d in linked_dirs),
+        "linked_dir_files": sum(d["files"] for d in linked_dirs),
+        "linked_dir_truncated": any(d["truncated"] for d in linked_dirs),
+        # Is this run the last thing holding its captured source? Snapshots are
+        # reference-counted, so deleting a run that shares its code loses
+        # nothing — but deleting the last holder destroys the only copy, and
+        # nothing in the confirm used to say so.
+        "source_only_copy": (_sole_source(conn, exp_id) if source_check
+                             else {"sole": False, "hashes": [], "lines": 0}),
     }
+
+
+def _sole_source(conn: sqlite3.Connection, exp_id: str) -> dict:
+    """`sole_source_holder` for the delete preview.
+
+    The check is best-effort inside `sole_source_holders` itself (one guard,
+    one fallback shape, for every caller); this wrapper only keeps the import
+    function-local — storage imports db, so a top-level import would cycle.
+    """
+    from .storage import sole_source_holder
+    return sole_source_holder(conn, exp_id)
 
 
 def list_trashed_experiments(conn: sqlite3.Connection) -> list[dict]:

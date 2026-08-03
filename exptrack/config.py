@@ -49,6 +49,7 @@ DEFAULTS: dict = {
     "notebook_history":      False,  # write snapshot JSON files to disk
     "auto_trash_failed":     False,  # soft-trash a run when it finishes 'failed'
     "snapshot_max_kb":       512,    # cap on a single stored script/source snapshot
+    "code_change_max_chars": 20000,  # cap on the _code_changes summary (truncation is marked)
     "plugins": {
         "enabled": [],
     },

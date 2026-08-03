@@ -14,7 +14,7 @@ import hashlib
 import subprocess
 from typing import TYPE_CHECKING
 
-from .utils import debug_log
+from .utils import debug_log, summarize_changed_lines
 
 if TYPE_CHECKING:
     from . import Experiment
@@ -31,8 +31,29 @@ _facts_cache: dict = {}
 _FACTS_CACHE_MAX = 64
 
 
+def _tracked_status(root, rel) -> str:
+    """``"clean"`` or ``"untracked"`` for a script whose diff came back empty.
+
+    ``git diff HEAD -- untracked.py`` exits 0 with no output — byte-identical to
+    the answer for a clean tree — so an empty diff on its own cannot say whether
+    the script's source is recoverable from the commit. That difference is the
+    whole point of the panel's empty state, so it is worth one extra process:
+    it runs only on the empty-diff path and ``_script_facts`` memoizes the
+    result per (path, mtime, size).
+    """
+    try:
+        r = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", str(rel)],
+            capture_output=True, text=True, timeout=10, cwd=str(root),
+        )
+        return "clean" if r.returncode == 0 else "untracked"
+    except Exception as e:
+        debug_log(f"git ls-files failed for script: {e}")
+        return ""
+
+
 def _script_facts(script_path: str) -> dict | None:
-    """`{src_hash, snapshot_hash, code_changes}` for a script, memoized.
+    """`{src_hash, snapshot_hash, code_changes, code_status}` for a script, memoized.
 
     Returns None when the file can't be read. Does all the expensive work —
     read, hash, content-addressed store, `git diff` subprocess — exactly once
@@ -63,6 +84,10 @@ def _script_facts(script_path: str) -> dict | None:
         "src_hash": hashlib.md5(src.encode()).hexdigest()[:12],
         "snapshot_hash": None,
         "code_changes": "",
+        # Why `code_changes` is empty, when it is — see `_tracked_status`. An
+        # empty diff has three unrelated causes and only one of them means
+        # "this script matches the commit".
+        "code_status": "",
     }
 
     # Store the full script source, content-addressed + deduped, so the code
@@ -92,10 +117,18 @@ def _script_facts(script_path: str) -> dict | None:
             capture_output=True, text=True, timeout=10,
             cwd=str(root),
         )
-        script_diff = r.stdout.strip() if r.returncode == 0 else ""
+        if r.returncode != 0:
+            # No repository here, or git is unusable. Either way there is no
+            # commit to diff against, which is a different fact from "the
+            # script matches the last commit" and must not render as one.
+            script_diff, facts["code_status"] = "", "no_git"
+        else:
+            script_diff = r.stdout.strip()
+            facts["code_status"] = ("changed" if script_diff
+                                    else _tracked_status(root, rel))
     except Exception as e:
         debug_log(f"git diff failed for script: {e}")
-        script_diff = ""
+        script_diff, facts["code_status"] = "", "no_git"
 
     changed = []
     for line in script_diff.splitlines():
@@ -103,7 +136,7 @@ def _script_facts(script_path: str) -> dict | None:
             changed.append(f"+ {line[1:].strip()}")
         elif line.startswith("-") and not line.startswith("---"):
             changed.append(f"- {line[1:].strip()}")
-    facts["code_changes"] = "; ".join(changed)[:1000]
+    facts["code_changes"] = summarize_changed_lines(changed)
 
     if len(_facts_cache) >= _FACTS_CACHE_MAX:
         _facts_cache.clear()      # bounded; a sweep only ever touches a few files
@@ -138,6 +171,12 @@ def capture_script_snapshot(exp: Experiment, script_path: str):
                         "path": str(script_path)}])
     if facts["code_changes"]:
         exp.log_param("_code_changes", facts["code_changes"])
+    elif facts["code_status"] in ("untracked", "no_git"):
+        # Only the two cases where an empty code panel would mislead. A clean
+        # tree deliberately writes nothing: no `_code_changes` plus a captured
+        # commit already means "matched that commit", and a row on every clean
+        # run would be pure noise on the most common path there is.
+        exp.log_param("_code_status", facts["code_status"])
 
     exp.log_event(
         event_type="cell_exec",

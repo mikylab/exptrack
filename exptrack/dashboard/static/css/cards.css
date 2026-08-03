@@ -26,6 +26,22 @@
   .sidebar-study-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sidebar-study-count { color: var(--muted); font-weight: 500; font-size: 11px; padding: 1px 6px; background: var(--bg); border-radius: 8px; flex-shrink: 0; }
   #sidebar-group-btn.active { color: var(--blue); border-color: var(--blue); }
+  /* Grouping picker. The header is the positioning context (position:relative
+     lives on .sidebar-header), so the menu hangs under the ☷ button. */
+  .sidebar-group-menu {
+    position: absolute; right: 34px; top: 100%; z-index: 40;
+    min-width: 150px; padding: 4px;
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+  }
+  .sgm-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 9px; border-radius: 4px; cursor: pointer;
+    font-size: var(--text-sm); color: var(--text-1); user-select: none;
+  }
+  .sgm-item:hover { background: var(--surface-2); }
+  .sgm-item.active { color: var(--accent); font-weight: 600; }
+  .sgm-icon { width: 16px; text-align: center; flex-shrink: 0; }
   .sidebar-actions-bar { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--code-bg); display: flex; flex-direction: column; gap: 4px; }
   .sidebar-actions-bar button { font-family: inherit; font-size: 13px; border: none; padding: 6px 12px; cursor: pointer; border-radius: 3px; width: 100%; }
   .sidebar-actions-bar button.primary { background: var(--blue); color: #fff; }

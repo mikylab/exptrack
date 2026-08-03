@@ -300,7 +300,8 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
     <div class="sidebar-content">
       <div class="sidebar-header">
         <input type="text" id="search-input" placeholder="Search name, params, tags…" oninput="onSidebarSearch(this.value)">
-        <button class="collapse-btn" id="sidebar-group-btn" onclick="cycleSidebarGroupBy()" title="Group by study">&#9783;</button>
+        <button class="collapse-btn" id="sidebar-group-btn" onclick="toggleSidebarGroupMenu()" title="Group runs">&#9783;</button>
+        <div id="sidebar-group-menu" class="sidebar-group-menu" style="display:none"></div>
         <button class="collapse-btn" onclick="toggleSidebar()" title="Collapse sidebar">&#8249;</button>
       </div>
       <div class="status-chips" id="status-chips"></div>

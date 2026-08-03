@@ -1113,41 +1113,6 @@ function setDiffMode(mode) {
   if (_selectedNodeId) renderSelectedNodeDetail(_selectedNodeId);
 }
 
-function _parseDiff(diff) {
-  const files = [];
-  let curFile = null;
-  let curHunk = null;
-  let totalAdd = 0, totalDel = 0;
-  const newFile = (header) => {
-    curFile = { header: header || '', hunks: [], plus: 0, minus: 0 };
-    files.push(curFile);
-    curHunk = null;
-  };
-  for (const ln of diff.split('\n')) {
-    if (ln.startsWith('diff --git')) { newFile(ln); continue; }
-    if (ln.startsWith('--- ') || ln.startsWith('+++ ')
-        || ln.startsWith('index ') || ln.startsWith('new file')
-        || ln.startsWith('deleted file') || ln.startsWith('similarity')
-        || ln.startsWith('rename ')) {
-      if (!curFile) newFile('');
-      curFile.header += (curFile.header ? '\n' : '') + ln;
-      continue;
-    }
-    if (ln.startsWith('@@')) {
-      if (!curFile) newFile('');
-      curHunk = { header: ln, rows: [] };
-      curFile.hunks.push(curHunk);
-      continue;
-    }
-    if (!curHunk) continue;
-    let kind = 'ctx';
-    if (ln.startsWith('+')) { kind = 'add'; curFile.plus++; totalAdd++; }
-    else if (ln.startsWith('-')) { kind = 'del'; curFile.minus++; totalDel++; }
-    curHunk.rows.push({ kind, text: ln.length ? ln.slice(1) : '' });
-  }
-  return { files, plus: totalAdd, minus: totalDel };
-}
-
 function _pairHunkRows(rows) {
   const pairs = [];
   let i = 0;
@@ -1167,15 +1132,6 @@ function _pairHunkRows(rows) {
     }
   }
   return pairs;
-}
-
-function _shortFileLabel(header) {
-  if (!header) return '(file)';
-  const m = header.match(/^diff --git a\/(.+?) b\/(.+)$/m);
-  if (m) return m[1] === m[2] ? m[1] : m[1] + ' → ' + m[2];
-  const mm = header.match(/^\+\+\+ b\/(.+)$/m);
-  if (mm) return mm[1];
-  return header.split('\n')[0].slice(0, 80);
 }
 
 function renderDiffSection(diff, title) {

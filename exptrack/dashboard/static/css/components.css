@@ -266,13 +266,52 @@
   .editable-cell { cursor: default; padding: 5px 8px; border-radius: 3px; position: relative; min-height: 32px; }
   .editable-cell:hover { background: rgba(44,90,160,0.08); }
   /* The pencil is the one-click edit affordance (the cell itself needs a
-     double-click, so a stray single click still opens the run). */
+     double-click, so a stray single click still opens the run) — which makes
+     it the *only* fast way in, so it has to be findable and hittable. It was
+     an 11px glyph with 2px of padding that appeared only once the pointer was
+     already inside the right cell: you had to find the cell to reveal the
+     thing that tells you the cell is editable. Now it appears for the whole
+     row on row hover and carries a real button-sized target. */
   .edit-icon {
-    display: none; font-size: 11px; color: var(--muted); margin-left: 4px;
-    vertical-align: middle; cursor: pointer; padding: 0 2px; border-radius: 2px;
+    display: none; font-size: 12px; color: var(--text-3); margin-left: 4px;
+    vertical-align: middle; cursor: pointer; padding: 3px 6px;
+    border: 1px solid transparent; border-radius: 4px;
   }
-  .edit-icon:hover { color: var(--accent); background: var(--surface-2); }
-  .editable-cell:hover .edit-icon { display: inline; }
+  .edit-icon:hover {
+    color: var(--accent); background: var(--surface-2); border-color: var(--border);
+  }
+  .editable-cell:hover .edit-icon,
+  #exp-table tr:hover .edit-icon { display: inline-block; }
+  /* The cell holding the one open editor, and the panel the editor renders in.
+     The panel is positioned rather than in-flow because these columns are
+     narrow — Tags/Studies/Stage/Notes collapse to EMPTY_COL_WIDTH (60px) when
+     nothing on screen has a value, which is exactly when you go to add the
+     first one. An in-flow editor then had nowhere to render: the input
+     overflowed the column and the chips, the × buttons and the ✓ were pushed
+     out of reach. Floating it gives every editor the same usable width
+     regardless of the column it belongs to. */
+  .cell-editing { position: relative; z-index: 20; background: var(--card-bg); overflow: visible; }
+  #exp-table td.cell-editing { overflow: visible; }
+  .cell-edit-pop {
+    position: absolute; top: -5px; left: -7px; z-index: 21;
+    min-width: 250px; max-width: 360px; box-sizing: border-box;
+    display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+    padding: 8px; border-radius: var(--radius-sm);
+    background: var(--card-bg); border: 1px solid var(--accent);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+  }
+  /* Anchor to the right edge for the last columns, so the panel opens inward
+     instead of off the side of the table. */
+  #exp-table td.cell-editing:nth-last-child(-n+2) .cell-edit-pop { left: auto; right: -7px; }
+  /* Chips inside the editor are targets, not labels: each carries a remove
+     button you have to be able to hit. */
+  .cell-edit-pop .tag { font-size: 12px; padding: 4px 6px 4px 9px; }
+  .cell-edit-pop .chip-x {
+    cursor: pointer; margin-left: 5px; color: var(--red); font-weight: bold;
+    line-height: 1; padding: 2px 5px; border-radius: 4px; font-size: 13px;
+  }
+  .cell-edit-pop .chip-x:hover { background: var(--status-danger-soft, rgba(200,40,40,0.12)); }
+  .cell-edit-pop input[type="text"] { min-width: 110px; }
   .col-resizer {
     position: absolute; right: -3px; top: 0; width: 7px; height: 100%;
     cursor: col-resize; z-index: 2;
@@ -355,6 +394,18 @@
   .name-edit-input { font-family: inherit; font-size: 14px; color: var(--fg); border: 1px solid var(--blue); padding: 5px 8px; border-radius: 4px; background: var(--card-bg); width: 100%; max-width: 300px; position: relative; z-index: 5; }
   .notes-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   .tags-cell .tag { font-size: 13px; padding: 3px 8px; }
+  /* A single very long tag has nothing to wrap on (word-break is `normal` here
+     so `#needs-review` stays intact), so it would spill past the fixed column
+     and paint under the next one. Let an over-long chip break rather than
+     escape the cell — the multi-tag case is handled by the `+N` cap in JS. */
+  #exp-table td.tags-cell .tag { max-width: 100%; overflow-wrap: anywhere; }
+  /* Collapsed-overflow chip: one click opens the editor, so a heavily tagged
+     run stays editable even though the cell itself needs a double-click. */
+  #exp-table td.tags-cell .tag-more {
+    cursor: pointer; background: transparent; color: var(--text-2);
+    border: 1px dashed var(--border-strong, var(--border)); font-variant-numeric: tabular-nums;
+  }
+  #exp-table td.tags-cell .tag-more:hover { color: var(--accent); border-color: var(--accent); }
   .hidden-panel { display: none; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); font-size: 13px; }
   .hidden-panel-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; color: var(--muted); user-select: none; }
   .hidden-panel-header:hover { background: var(--code-bg); }

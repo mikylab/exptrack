@@ -136,6 +136,7 @@ def api_storage_info(conn) -> dict:
         free_space,
         metric_storage,
         orphan_storage,
+        source_code_storage,
         table_byte_sizes,
         trash_storage,
     )
@@ -181,6 +182,7 @@ def api_storage_info(conn) -> dict:
         "largest_experiments": largest,
         "trash": trash,
         "orphans": orphans,
+        "source_code": source_code_storage(conn),
     }
 
 

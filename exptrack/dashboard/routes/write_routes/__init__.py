@@ -32,7 +32,6 @@ from .bulk import (
 )
 from .compact import (  # noqa: F401
     _compact_cell_sources,
-    _compact_git_diffs,
     _compact_preview,
     _compact_timeline_sources,
     api_compact,

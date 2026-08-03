@@ -294,7 +294,7 @@ def _trashed_output_bytes(conn: sqlite3.Connection, trashed: list) -> dict:
     permanent delete uses — so this can never advertise space that deleting
     the run would leave alone because a surviving run also claims it.
     """
-    from .db import output_dirs_owned_by
+    from .db import dir_file_stats, output_dirs_owned_by
 
     if not trashed:
         return {}
@@ -311,25 +311,20 @@ def _trashed_output_bytes(conn: sqlite3.Connection, trashed: list) -> dict:
                 continue
             seen.add(key)
             dirs += 1
-            for fp in d.rglob("*"):
-                if fp.is_file():
-                    total += fp.stat().st_size
-                    files += 1
+            n_files, n_bytes, _ = dir_file_stats(d)
+            files += n_files
+            total += n_bytes
     return {"output_bytes": total, "output_files": files, "output_dirs": dirs}
 
 
 def _local_trash_bytes() -> dict:
     """Size of the ``.exptrack/trash/`` OS-trash fallback directory."""
-    from .db import local_trash_dir
+    from .db import dir_file_stats, local_trash_dir
 
     d = local_trash_dir()
     if not d.is_dir():
         return {}
-    total = files = 0
-    for fp in d.rglob("*"):
-        if fp.is_file():
-            total += fp.stat().st_size
-            files += 1
+    files, total, _ = dir_file_stats(d)
     return {"local_bytes": total, "local_files": files}
 
 
@@ -584,3 +579,442 @@ def prune_metrics(conn: sqlite3.Connection, exp_ids: list | None = None,
     conn.commit()
     report["deleted"] = len(doomed)
     return report
+
+
+# ── Code-change summary compaction ──────────────────────────────────────────
+#
+# `_code_changes` / `_code_change/cell_N` are *derived* text: a per-run copy of
+# the changed lines. The run's full source already lives in `code_snapshots`,
+# content-addressed and deduped by hash — so N runs of an unchanged file store
+# one copy of the source while each still pays for its own summary. Measured on
+# a real pair of runs the summaries cost ~2x the snapshots while holding strictly
+# less information, which is what makes this the cheapest thing to reclaim.
+#
+# It is only cheap where a snapshot exists. For a run with no snapshot — a
+# notebook-only run, or one recorded before snapshot capture — the summary IS
+# the only record of what changed, so compacting it is real, unrecoverable data
+# loss. `_runs_with_snapshot` is that guard and every path here goes through it.
+
+_CODE_CHANGE_KEYS_SQL = "(key = '_code_changes' OR key LIKE '\\_code\\_change/%' ESCAPE '\\')"
+
+# Param values are JSON-encoded, so a stored marker reads `"[compacted …]"` —
+# leading quote and all. Matching only the bare form silently re-compacted an
+# already-compacted row on every run, which broke idempotence and let the
+# reported "freed" bytes count the marker itself over and over.
+_NOT_ALREADY_COMPACT_SQL = (
+    "value NOT LIKE '[compacted%' AND value NOT LIKE '\"[compacted%'"
+)
+
+
+def _snapshot_refs(conn, exp_ids: list | None = None) -> dict:
+    """{exp_id: set(hash)} from `_code_snapshot` params, optionally filtered.
+
+    The one hash-token scan behind `_runs_with_snapshot` and
+    `sole_source_holders` — like `db._referenced_snapshot_hashes` it is
+    deliberately generous (regex over the raw value, tolerating all three
+    encodings the param has had), and keeping the scan in one place keeps the
+    compaction guard and the sole-holder warning superset-compatible.
+    """
+    from .db import _SNAPSHOT_HASH_RE
+    sql = ("SELECT exp_id, value FROM params WHERE key='_code_snapshot' "
+           "AND value IS NOT NULL")
+    args: list = []
+    if exp_ids is not None:
+        if not exp_ids:
+            return {}
+        sql += f" AND exp_id IN ({','.join('?' * len(exp_ids))})"
+        args = list(exp_ids)
+    refs: dict = {}
+    for exp_id, value in conn.execute(sql, args):
+        hashes = set(_SNAPSHOT_HASH_RE.findall(value))
+        if hashes:
+            refs.setdefault(exp_id, set()).update(hashes)
+    return refs
+
+
+def _runs_with_snapshot(conn, exp_ids: list) -> set:
+    """Of `exp_ids`, those whose source is recoverable from `code_snapshots`.
+
+    A run qualifies only when its `_code_snapshot` param names a hash whose row
+    is actually still present — a dangling reference is not a backstop.
+    """
+    if not exp_ids:
+        return set()
+    stored = {h for (h,) in conn.execute("SELECT hash FROM code_snapshots")}
+    if not stored:
+        return set()
+    return {exp_id for exp_id, hashes in _snapshot_refs(conn, exp_ids).items()
+            if hashes & stored}
+
+
+def _code_change_selection(conn, exp_ids: list) -> tuple:
+    """(stats, eligible) — the one selection preview and compact both use.
+
+    Shared so the preview provably describes the write that follows it (the
+    same rule `prune_metrics` follows): two independent computations can only
+    *happen* to agree, and the eligibility scan is the expensive half.
+
+    `eligible` is "recoverable from a snapshot", which is not the same as "has a
+    summary to strip": the runs actually written are those holding an
+    un-compacted summary *and* backed by a snapshot. `stats["run_ids"]` names
+    exactly that set, so a caller reporting which runs would change reads it
+    from here rather than re-deriving it — the CLI dry-run did the latter and
+    announced every run it had merely considered.
+    """
+    eligible = _runs_with_snapshot(conn, exp_ids)
+    # "Skipped" means a summary exists but its snapshot backstop doesn't — a
+    # run holding no summary at all has nothing to skip, and naming it reads
+    # as data being withheld.
+    unbacked = [e for e in exp_ids if e not in eligible]
+    skipped = []
+    if unbacked:
+        marks = ",".join("?" * len(unbacked))
+        has_rows = {r[0] for r in conn.execute(
+            f"SELECT DISTINCT exp_id FROM params WHERE exp_id IN ({marks}) "
+            f"AND {_CODE_CHANGE_KEYS_SQL} AND {_NOT_ALREADY_COMPACT_SQL}",
+            unbacked)}
+        skipped = [e for e in unbacked if e in has_rows]
+    if not eligible:
+        return ({"runs": 0, "rows": 0, "bytes": 0, "run_ids": [],
+                 "skipped_no_snapshot": skipped}, eligible)
+    marks = ",".join("?" * len(eligible))
+    row = conn.execute(
+        f"SELECT COUNT(*), COALESCE(SUM(LENGTH(value)),0), COUNT(DISTINCT exp_id) "
+        f"FROM params WHERE exp_id IN ({marks}) AND {_CODE_CHANGE_KEYS_SQL} "
+        f"AND {_NOT_ALREADY_COMPACT_SQL}", list(eligible)
+    ).fetchone()
+    run_ids = [r[0] for r in conn.execute(
+        f"SELECT DISTINCT exp_id FROM params WHERE exp_id IN ({marks}) "
+        f"AND {_CODE_CHANGE_KEYS_SQL} AND {_NOT_ALREADY_COMPACT_SQL}",
+        list(eligible))]
+    return ({"runs": row[2], "rows": row[0], "bytes": row[1],
+             "run_ids": run_ids, "skipped_no_snapshot": skipped}, eligible)
+
+
+def preview_code_change_compact(conn, exp_ids: list) -> dict:
+    """What `compact_code_changes` would reclaim — same selection, no delete."""
+    return _code_change_selection(conn, exp_ids)[0]
+
+
+def compact_code_changes(conn, exp_ids: list) -> dict:
+    """Replace stored code-change summaries with a `[compacted…]` marker.
+
+    Returns the same shape as the preview, so a dry-run provably describes the
+    write that follows it. Runs whose source is not recoverable from a snapshot
+    are skipped and reported, never compacted.
+    """
+    stats, eligible = _code_change_selection(conn, exp_ids)
+    if not eligible or not stats["rows"]:
+        return stats
+    marks = ",".join("?" * len(eligible))
+    # The marker keeps the panel honest: it says the summary was reclaimed,
+    # rather than rendering as "nothing changed" — the exact failure the
+    # truncation fix exists to prevent. The byte count is stamped per row in
+    # SQL (LENGTH(value), the same basis the preview sums) — a single
+    # aggregate figure stamped into every row named the wrong number on each.
+    conn.execute(
+        f"UPDATE params SET value = "
+        f"'\"[compacted — ' || LENGTH(value) || "
+        f"' B stripped; full source in snapshot]\"' "
+        f"WHERE exp_id IN ({marks}) "
+        f"AND {_CODE_CHANGE_KEYS_SQL} AND {_NOT_ALREADY_COMPACT_SQL}",
+        list(eligible),
+    )
+    conn.commit()
+    return stats
+
+
+# `timeline.source_diff` is a bare column (not JSON-encoded like a param
+# value), so only the unquoted marker form can appear here.
+_TIMELINE_NOT_COMPACT_SQL = "source_diff NOT LIKE '[compacted%'"
+
+
+def _timeline_diff_selection(conn, exp_ids: list) -> tuple:
+    """(stats, where-params) — the one selection preview and compact share.
+
+    Same rule as `_code_change_selection`: the dry-run must provably describe
+    the write that follows it, and both had to skip already-marked rows or a
+    second pass counts the marker itself as reclaimable and then destroys the
+    evidence it stands for.
+    """
+    if not exp_ids:
+        return ({"events": 0, "bytes": 0}, [])
+    marks = ",".join("?" * len(exp_ids))
+    where = (f"exp_id IN ({marks}) AND source_diff IS NOT NULL "
+             f"AND {_TIMELINE_NOT_COMPACT_SQL}")
+    row = conn.execute(
+        f"SELECT COUNT(*), COALESCE(SUM(LENGTH(source_diff)), 0) "
+        f"FROM timeline WHERE {where}", exp_ids).fetchone()
+    return ({"events": row[0], "bytes": row[1]}, where)
+
+
+def preview_timeline_diff_compact(conn, exp_ids: list) -> dict:
+    """What `compact_timeline_diffs` would reclaim — same selection, no write."""
+    return _timeline_diff_selection(conn, exp_ids)[0]
+
+
+def compact_timeline_diffs(conn, exp_ids: list) -> dict:
+    """Replace `timeline.source_diff` with a `[compacted…]` marker.
+
+    Returns the preview's shape. This used to NULL the column, which left no
+    evidence the diff had ever existed — and "no diff stored" is the *normal*
+    state for a script run against a clean tree, so the status check read every
+    such run as compacted and the detail header claimed a compaction that never
+    happened. A marker makes the claim provable, and states each row's own byte
+    count (a single aggregate figure stamped into every row names the wrong
+    number on each).
+    """
+    stats, where = _timeline_diff_selection(conn, exp_ids)
+    if not stats["bytes"]:
+        return stats
+    conn.execute(
+        f"UPDATE timeline SET source_diff = "
+        f"'[compacted — ' || LENGTH(source_diff) || ' B stripped]' "
+        f"WHERE {where}", exp_ids)
+    conn.commit()
+    return stats
+
+
+# ── git-diff compaction ───────────────────────────────────────────────────
+# Same rule as the two selections above — one implementation shared by the
+# preview and the write — for the same reason it was needed there, plus one
+# specific to this mode. A deduplicated diff stores a ~45-byte
+# `[ref:sha256:…]` pointer in the column and its body once in `git_diffs`,
+# shared by every run with the same working tree. So the UPDATE alone frees the
+# pointer and nothing else, and a byte figure is wrong in two opposite ways:
+# summing the *columns* under-reports a thousandfold (the CLI dry-run promised
+# ~1 KB where 1.6 MB would go), while summing the *bodies* those pointers
+# address over-reports by however many runs share each one (the dashboard
+# reported 1,030,170 bytes freed for 30 runs sharing one 34 KB body — 30x).
+# N runs sharing one body reclaim one body, and a body still held by a run
+# outside the selection, or by a session node, is not reclaimed at all.
+
+
+def _diff_files(diff_text: str) -> list:
+    """`b/`-side paths named by a unified diff's `diff --git` headers."""
+    from .db import diff_b_path
+    out = []
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            if len(parts) >= 4:
+                out.append(diff_b_path(parts[3]))
+    return out
+
+
+def _compacted_diff_summary(diff_len: int, files: list, commit: str) -> str:
+    """The `[compacted…]` marker left in place of a stripped diff."""
+    from .utils import fmt_bytes
+    info = f"{len(files)} file(s): {', '.join(files[:5])}" if files else "no files"
+    if len(files) > 5:
+        info += f" +{len(files) - 5} more"
+    return (f"[compacted — {fmt_bytes(diff_len)} stripped — {info} "
+            f"— see git commit {commit}]")
+
+
+def _doomed_blob_bytes(conn, hashes: set, exp_ids: list) -> int:
+    """Bytes of `git_diffs` bodies left unreferenced once `exp_ids` let go.
+
+    Simulated rather than measured after the fact, so the preview and the write
+    quote the same number: a hash still pointed at by a run outside the
+    selection, or by any session node, survives and is not counted.
+
+    This is deliberately a hand-written twin of `db._GIT_DIFFS_ORPHAN_COND`
+    (the condition `_sweep_blobs` deletes on) rather than a use of it: the
+    constant is evaluated against the database as it stands, and what is wanted
+    here is the state *after* `exp_ids` let go, which no current-state
+    condition can express. The two must stay in step — a third table that ever
+    references `git_diffs` has to be added in both places.
+    """
+    if not hashes:
+        return 0
+    marks = ",".join("?" * len(exp_ids)) if exp_ids else "''"
+    cut = len(REF_PREFIX) + 1
+    try:
+        held = {r[0] for r in conn.execute(
+            f"SELECT SUBSTR(git_diff, {cut}, LENGTH(git_diff) - {cut}) "
+            f"FROM experiments WHERE git_diff LIKE '{REF_PREFIX}%' "
+            f"AND id NOT IN ({marks})", list(exp_ids))}
+        held |= {r[0] for r in conn.execute(
+            f"SELECT SUBSTR(git_diff, {cut}, LENGTH(git_diff) - {cut}) "
+            f"FROM session_nodes WHERE git_diff LIKE '{REF_PREFIX}%'")}
+        doomed = [h for h in hashes if h not in held]
+        if not doomed:
+            return 0
+        row = conn.execute(
+            f"SELECT COALESCE(SUM(LENGTH(diff_text)), 0) FROM git_diffs "
+            f"WHERE diff_hash IN ({','.join('?' * len(doomed))})", doomed).fetchone()
+        return row[0] if row else 0
+    except sqlite3.Error as e:
+        debug_log(f"doomed-blob measurement failed: {e}")
+        return 0
+
+
+def _git_diff_selection(conn, exp_ids: list) -> tuple:
+    """(stats, targets) — the one selection preview and compact both use.
+
+    `targets` is one record per run to be written (`id`, `raw`, `summary`,
+    `bytes`, `files`) and `stats["details"]` *is* that list, not a parallel
+    copy of it: the write needs the first three fields and callers render the
+    last two, and building two lists in lockstep from one loop is two things to
+    keep in step for no gain.
+    """
+    stats = {"runs": 0, "bytes": 0, "run_ids": [], "details": []}
+    if not exp_ids:
+        return stats, []
+    from .db import resolve_git_diff
+    rows = {r["id"]: r for r in conn.execute(
+        f"SELECT id, git_diff, git_commit FROM experiments "
+        f"WHERE id IN ({','.join('?' * len(exp_ids))})", list(exp_ids))}
+    targets, inline, hashes, bodies = [], 0, set(), {}
+    for eid in exp_ids:
+        row = rows.get(eid)
+        if not row or not row["git_diff"] or is_diff_sentinel(row["git_diff"]):
+            continue
+        raw = row["git_diff"]
+        # Memoized by pointer, as `_resolve_node_diff` is for session nodes and
+        # for the same reason: runs sharing a working tree share one body, which
+        # would otherwise be read once per run holding a pointer at it.
+        if raw not in bodies:
+            resolved = resolve_git_diff(conn, raw)
+            bodies[raw] = (resolved, _diff_files(resolved))
+        body, files = bodies[raw]
+        # A dangling ref has no body to strip, so counting it here would promise
+        # bytes the write then skips.
+        if is_diff_sentinel(body):
+            continue
+        targets.append({
+            "id": row["id"], "raw": raw, "bytes": len(body), "files": files,
+            "summary": _compacted_diff_summary(
+                len(body), files, row["git_commit"] or "unknown"),
+        })
+        if raw.startswith(REF_PREFIX) and raw.endswith("]"):
+            hashes.add(raw[len(REF_PREFIX):-1])
+        else:
+            inline += len(body)          # stored before dedup existed
+    ids = [t["id"] for t in targets]
+    stats["runs"], stats["run_ids"], stats["details"] = len(targets), ids, targets
+    stats["bytes"] = inline + _doomed_blob_bytes(conn, hashes, ids)
+    return stats, targets
+
+
+def preview_git_diff_compact(conn, exp_ids: list) -> dict:
+    """What `compact_git_diffs` would reclaim — same selection, no write."""
+    return _git_diff_selection(conn, exp_ids)[0]
+
+
+def compact_git_diffs(conn, exp_ids: list) -> dict:
+    """Replace each run's `git_diff` with a `[compacted…]` marker.
+
+    Then sweep the bodies that orphans. Without the sweep, compacting a project
+    whose diffs are 90% of the database reclaimed *nothing* while reporting
+    success — the pointers went and the bodies stayed, and `clean`'s default
+    path never collects them.
+    """
+    stats, targets = _git_diff_selection(conn, exp_ids)
+    stats["blobs_swept"] = 0
+    if not targets:
+        return stats
+    for t in targets:
+        conn.execute("UPDATE experiments SET git_diff = ? WHERE id = ?",
+                     (t["summary"], t["id"]))
+    conn.commit()
+    if any(t["raw"].startswith(REF_PREFIX) for t in targets):
+        from .db import _sweep_blobs
+        # Strictly-unreferenced only, so a body a run outside this selection or
+        # a session node still holds is left alone.
+        stats["blobs_swept"] = _sweep_blobs(conn).get("git_diffs", 0)
+        conn.commit()
+    return stats
+
+
+def source_code_storage(conn) -> dict:
+    """Exact bytes held by captured source code, split by what reclaims it.
+
+    Two stores, two different actions: `code_snapshots` (content-addressed
+    full source — the durable record, freed only by deleting the last run
+    referencing a blob) and the derived code-change summary params (freed by
+    `exptrack compact --code-changes`, snapshot-gated). Both figures are exact
+    sums of stored text, not dbstat apportionment, so they can be shown
+    without an "estimated" label. Already-compacted markers are excluded from
+    the summary figure — a marker is bookkeeping, not reclaimable source.
+    """
+    try:
+        snap_count, snap_bytes = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0) "
+            "FROM code_snapshots").fetchone()
+        sum_rows, sum_bytes = conn.execute(
+            f"SELECT COUNT(*), COALESCE(SUM(LENGTH(value)), 0) FROM params "
+            f"WHERE {_CODE_CHANGE_KEYS_SQL} AND {_NOT_ALREADY_COMPACT_SQL}"
+        ).fetchone()
+    except Exception:
+        snap_count = snap_bytes = sum_rows = sum_bytes = 0
+    return {"snapshot_count": snap_count, "snapshot_bytes": snap_bytes,
+            "summary_rows": sum_rows, "summary_bytes": sum_bytes,
+            "bytes": snap_bytes + sum_bytes}
+
+
+def sole_source_holder(conn, exp_id: str) -> dict:
+    """Is this run the last thing holding its captured source?
+
+    Snapshots are content-addressed and reference-counted, so deleting a run
+    that shares its source with another loses nothing — but deleting the *last*
+    holder destroys the only copy of that code, and nothing in the delete
+    confirm said so. Porting the hash to a surviving run is not the answer:
+    that would claim the other run executed code it never ran and corrupt every
+    diff drawn from it. The honest move is to warn before the loss and point at
+    `exptrack source --out`.
+
+    Returns ``{sole: bool, hashes: [...], lines: int}``. ``sole`` is False when
+    the run has no snapshot at all — there is nothing exclusive to lose.
+    """
+    return sole_source_holders(conn, [exp_id])
+
+
+def sole_source_holders(conn, exp_ids: list) -> dict:
+    """Batch form of `sole_source_holder`: which snapshot blobs die if *all*
+    of `exp_ids` are permanently deleted together.
+
+    This is not a loop over the single-run check, and can't be: per-run
+    "does anyone else hold this hash?" sees the other runs *in the same
+    doomed batch* as holders, so bulk-deleting the only two runs sharing a
+    snapshot reports ``sole: False`` for both while the batch destroys the
+    last copies. A blob is doomed exactly when every run referencing it is
+    in the batch — the same all-holders-inside rule the documented
+    ``claimed_output_paths`` bulk-collision hazard is about.
+
+    Best-effort: this backs an *advisory* warning on the delete-confirm
+    dialogs, so an internal failure degrades to the not-sole shape (logged
+    via ``debug_log``) rather than breaking the dialog — one guard here
+    instead of a divergent try/except at every caller.
+    """
+    empty = {"sole": False, "hashes": [], "lines": 0}
+    try:
+        ids = set(exp_ids)
+        if not ids:
+            return empty
+        holders: dict = {}
+        for exp_id, hashes in _snapshot_refs(conn).items():
+            for h in hashes:
+                holders.setdefault(h, set()).add(exp_id)
+        doomed = [h for h, held_by in holders.items() if held_by <= ids]
+        if not doomed:
+            return empty
+
+        exclusive, lines = [], 0
+        marks = ",".join("?" * len(doomed))
+        for h, content in conn.execute(
+            f"SELECT hash, content FROM code_snapshots WHERE hash IN ({marks})",
+            doomed,
+        ):
+            # No stored body ⇒ nothing left to lose (already swept/compacted).
+            if content:
+                exclusive.append(h)
+                lines += len(content.splitlines())
+        if not exclusive:
+            return empty
+        return {"sole": True, "hashes": exclusive, "lines": lines}
+    except Exception as e:
+        from .utils import debug_log
+        debug_log(f"sole-source check failed: {e}")
+        return empty

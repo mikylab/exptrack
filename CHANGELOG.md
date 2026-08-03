@@ -4,15 +4,69 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-08-01
+
+### Added
+- **The three code views on a run now say what each compares against.** A run's Overview carries three code panels, and until now only two of them named their baseline. "Code Changes" is really *this script against the commit it ran on*; **Uncommitted Changes** is the same baseline over the whole repository; the **What changed** card is *this run against the previous one*. They routinely show different things — all correctly — so an unlabelled one read as a contradiction: with a clean tree and two differently-committed runs, "Code Changes" was empty while "What changed" showed the real edit. The panel is now titled **Script diff vs. last commit**, with a help note pointing at the other two.
+- **An empty code panel says which kind of empty it is.** It used to render nothing at all, and nothing reads as "no changes" — including for a script git has never seen, since `git diff HEAD -- untracked.py` exits 0 with no output, byte-identical to a clean tree. The panel now distinguishes three cases: *no uncommitted changes — this script matched commit `abc1234`*, *this script isn't tracked by git*, and *this project isn't a git repository*. The last two add that the full source was snapshotted anyway, so the run is still reproducible, and point at **What changed** for the run-to-run diff. A clean tree costs no extra storage — it is recorded by the absence of a summary, not by a row on every run.
+
+- **`exptrack source` — read back the code a run actually ran.** The source has always been captured (a script's full snapshot in `code_snapshots`, a notebook's cells in `cell_lineage`), but nothing outside the Compare view could reach it: there was no CLI or export surface, so "show me this run's code" had no answer. That is hardest to get any other way exactly when it matters most — the file has since been edited, or was never committed. `exptrack source <id>` prints it; `exptrack source <id> --out DIR` writes it to disk; `exptrack source --all --out DIR` exports every run's source, which is the way to get your code out of the database and somewhere you control. In the dashboard it folds into the **Timeline** tab — a collapsible **Source** section above the events, syntax-highlighted with per-file copy buttons. It lives there rather than in a tab of its own because the two answer one question together: the timeline says what ran and in what order, the fold says what the code was. It is fetched when opened, not with the tab (a snapshot can be hundreds of KB), and it renders even when a run recorded no timeline events at all — a plain script run is exactly the case where the source is the only thing the tab can show. Runs with no captured source are counted and reported rather than passed over silently, since those are precisely the ones whose code cannot be recovered. A run name is user-controlled and lands in a path here, so it is reduced to a single safe component — `../../pwned` becomes `.._.._pwned` and nothing escapes the target directory.
+- **`exptrack compact --code-changes` — reclaim code-change summaries after the fact** (also `POST /api/compact` with `mode: "code-changes"`). The `_code_changes` summary is *derived* text stored per run, while the run's full source lives content-addressed and deduped in `code_snapshots` — measured on a real pair of runs the summaries cost about twice the snapshots while holding strictly less information. Compacting them replaces the text with a `[compacted — N B stripped; full source in snapshot]` marker, so the panel says the summary was reclaimed rather than reading as "nothing changed". **A run whose source is not recoverable from a snapshot is never compacted** — for a notebook-only or pre-snapshot run the summary is the only record of what changed — and the number skipped is always reported. Deliberately not part of `--deep`: every other compaction mode strips something whose only other copy is git or the notebook, and folding this one in would hide that distinction. This makes a generous `code_change_max_chars` the right default — keep full fidelity while a run is current, reclaim it once the run is history.
+- **Code changes stopped hiding the edit you actually made** — the `_code_changes` summary was capped by a bare 1000-character slice (500 for notebook cells), applied to the *whole* `git diff HEAD` of the script. A working tree that had drifted from the last commit spent that entire budget on unrelated lines, so an edit further down the file — a `warmup = 100` → `200`, an `if i >= 1000` → `if i == -1` — was cut off with nothing marking the cut, and the Code Changes panel read exactly like "nothing changed". The cap is now 20000 characters (`code_change_max_chars`), the summary is cut on a line boundary rather than mid-line, and when it does truncate it says so: `… [truncated — N of M changed lines shown]`. Truncation is stated, never silent.
+- **`code_change_max_chars` config key** (default 20000) — caps the stored `_code_changes` / `_code_change/cell_N` summary. An unusable value (0, negative, non-integer) falls back to the default rather than being the reason a run records no code changes at all.
+- **The storage report says how much space captured source code takes** — a new "source code" line in `exptrack storage` and a **Source code** section in the dashboard's Settings storage panel, split by what reclaims each part: snapshots (the durable record, freed only when the last run referencing a blob is permanently deleted) and the derived change summaries (freed by `exptrack compact --code-changes`). Both figures are exact sums of stored text, not estimates, and already-compacted markers are excluded from the reclaimable figure.
+- **TensorBoard log directories are recorded, reported, and cleaned up with the run** — `SummaryWriter()` with no `log_dir` creates `runs/<timestamp>_<hostname>/` itself, named and created entirely by PyTorch. exptrack mirrored the metric *values* written to it but never recorded *where they went*, so those trees were invisible to every storage report and untouched by every delete: a project quietly accumulated one orphaned event-file directory per run, and `clean --orphans` never touched them because it only scans `outputs/`. The writer's log dir is now registered on the run as a `[dir] tensorboard` artifact (the same convention `exptrack link-dir --label tensorboard` already wrote by hand), shows as a **Linked dirs** line in `exptrack storage`, is named and sized in the delete confirm, and is moved to the OS Trash when a run is permanently deleted with files. Three guards gate removing a whole directory: another run linking the same dir keeps it (a shared `SummaryWriter("runs/sweep")` is normal), a dir outside the project is never touched (a shared `~/tb-logs` is the user's), and the project root itself is never removed (a stray `SummaryWriter(log_dir=".")` recorded it).
+- **A linked directory is finally cleaned up at all** — `exptrack link-dir` has always recorded a `[dir]` artifact, but the delete skipped every artifact row that wasn't a file, so a linked checkpoint or log tree was registered and then left behind forever.
+- **Group the sidebar by day or git branch, from a menu instead of a cycle.** The experiments rail could only group by study or script, so the two questions the run list is most often asked — "what did I run yesterday?" and "what did I run on this branch?" — had no answer there at all. Both are now grouping modes (day headers read Today / Yesterday / Wed, May 20, 2026), and the ☷ button opens a picker rather than cycling: with five modes, reaching the one you want meant clicking blind through the ones you didn't, re-rendering the list each time. Each mode remembers its own collapsed groups, so collapsing a date can't silently collapse a study that happens to share its name.
+- **Bulk permanent delete warns when the batch holds the only copy of source** — the single-run delete warned, the bulk path didn't, and a per-run check can't: two runs sharing a snapshot each see the other as a surviving holder, so deleting both together destroyed the last copies with no warning. The bulk preview now computes it batch-aware (`sole_source_holders` — a blob is doomed exactly when every run referencing it is in the batch) and the modal points at `exptrack source --all --out` before the loss.
+
+### Changed
+- **A notebook cell's edit is stored once, not twice.** Every edited cell wrote its diff both onto the Timeline event (the full structured diff, rendered with word-level highlighting) and into a `_code_change/cell_N` param (a flat summary of the same thing). That put one edit in two places — the Timeline *and* the run's code panel, which is about a script's diff against its commit and has no business carrying notebook cells — and cost a row per edited cell per run that nothing could ever reclaim, since `compact --code-changes` is snapshot-gated and a notebook run has no script snapshot. The param is no longer written; the Timeline is unchanged and remains the record. Runs captured earlier keep theirs and are simply not shown in the code panel.
+- **Exports include the script's diff against its commit.** `code_changes` in the JSON/markdown export collected only the per-cell notebook keys, so the `_code_changes` summary — the one every script run has — had never appeared in an export at all. It is now exported under `code_changes.script`.
+
+### Changed
+- **One code panel on a run's Overview, not two showing the same diff.** The detail view carried a script-scoped *Script diff vs. last commit* panel directly above a repository-wide *Uncommitted Changes* panel. Same baseline (`HEAD`), same file in any single-script project — so the identical edit rendered twice, the upper one a lossier summary of the lower. Naming the baselines made the duplication legible; it didn't make it less duplicated. They are now a single **Uncommitted changes** panel that renders the working-tree diff **grouped by file**, with the run's own script first and labelled *this run's script*. Grouping is new in itself: the old renderer dropped every `diff --git` header, so a multi-file diff was one wall of hunks that never said which file any of them came from. The script-scoped *answer* is kept — when the run's own script isn't in the diff, the panel leads with `train.py had no uncommitted changes — it matched commit abc1234`, or the untracked/no-repo note, and folds the unrelated files behind *Other files in the working tree (N)* — one wording for script and notebook runs alike, since "other" reads against this run's own code either way. That fold is collapsed only when the run's own script is itself in the diff; when it isn't, those files are the only changes there are (you ran `train.py` and tweaked `helper.py`) and they stay expanded, as they were before the merge. Without that, a run whose script was clean in a repo that's dirty elsewhere would show a wall of other files and never answer the question it was asked. *What changed* is untouched: it's a genuinely different baseline (this run vs. the previous one) and renders nothing until you ask.
+
+### Fixed
+- **`compact` now actually reclaims deduplicated diff bodies.** Diffs are content-addressed into `git_diffs` with each run holding a ~45-byte `[ref:sha256:…]` pointer, and compaction replaced only the pointer — so on a project whose diffs were 90% of the database, `compact` reported success and freed **nothing**, with the bodies left unreferenced and uncollected (`clean`'s default path never sweeps them). It now sweeps the bodies its own compaction orphaned, and only those: one still held by a run outside the selection, or by a session node, is left alone. Measured on a 30-run project, 1884 KB → 196 KB.
+- **`compact --dry-run` reported the pointer, not the body.** Its estimate summed the length of the `git_diff` *column*, which for a deduplicated diff is the pointer — promising ~1 KB where 1.6 MB would be reclaimed. It now simulates the sweep: bodies that would be left unreferenced, counted once each rather than once per run sharing them, so a shared body correctly reports ~0 B.
+- **The dashboard's compact over-reported freed space by however many runs shared a diff.** It added each run's whole diff body to the freed total, but a deduplicated body is stored once and shared — so 30 runs sharing one 34 KB body reported **1,030,170 bytes freed** when 34,339 actually left the database. The two fixes above and this one were the same bug seen from opposite sides, which is the real story: the CLI and the dashboard carried **two separate implementations of git-diff compaction, and they had drifted** — the CLI's never swept the bodies it orphaned, the dashboard's swept correctly but couldn't count. There is now one implementation in `core/storage.py` (`compact_git_diffs` / `preview_git_diff_compact`) with both entry points as thin wrappers, matching how `compact_timeline_diffs` was unified for the same reason. The preview and the write share one selection, so a dry-run provably describes the write that follows it, and every reported figure is now what leaves the database.
+- **`compact --dry-run` counted every run it considered, not the ones it would change.** `--code-changes` on a 5-run project announced "Would compact 5 experiment(s)" beside a modes line reading "1 row(s) in 1 run(s)". The shared selection now reports the run ids it writes, so the dry-run names that set — and says "Nothing to compact" when it is empty.
+- **A compacted code summary is no longer drawn as a diff.** `compact --code-changes` replaces the `_code_changes` summary with a `[compacted…]` marker, and the detail panel handed that marker to the diff-fragment renderer — so a status string rendered as diff content, split across two lines on its `; ` separator. The panel already leads with a compaction notice when the working-tree diff was compacted, so the redundant second marker is simply not shown.
+- **Compare no longer says "no code change" when a helper moved.** *Code changes* diffs each run's **own** source — its script snapshot or its notebook cells — so the commonest way one run differs from the last went unreported: you run `train.py` and tweak `helper.py`. That edit is captured (it's in each run's working-tree diff, and always was), but it isn't the run's own script, so the panel found nothing and stated flatly that nothing changed — the opposite of what happened, on the one screen built to answer it. It now compares the two runs' stored working-tree diffs, names the files that moved between the attempts, and renders the change itself. The data was already on the payload; nothing new is captured or requested. Reconstructed from each diff, so it covers the changed regions of the file rather than the whole of it.
+- **A notebook run's Reproduce box no longer shows a command that cannot be run.** Under IPython, `sys.argv` is the *kernel's* launch line, so every notebook run recorded something like `ipykernel_launcher.py -f /tmp/tmpi93cik2v.json` — a connection file deleted the moment the kernel stopped. Copying it did nothing, and with no `python`/`exptrack` prefix the box couldn't even offer its plain/tracked toggle. A notebook run now records the notebook's own path — not a launcher command, since exptrack has no idea whether you open it with lab, notebook, nbclassic or an editor, and naming one would be a guess printed as an instruction — and nothing at all when the notebook can't be identified — leaving the box's "double-click to add command" prompt, which is honest. `python -c` and bare-REPL runs are treated the same way.
+- **A notebook run no longer claims its script matched the commit.** The **Script diff vs. last commit** panel decided it had nothing to report from a captured git commit — but a commit is captured for *every* run inside a git repository, script or not. So a notebook run, which has no script at all, fell through to the clean-tree note and stated that a file it never had was unchanged since `abc1234` — including when the notebook itself wasn't tracked by git. That is the same "confident 'no changes' for something git never compared" failure the new empty states were added to remove, surfacing one case over. The panel now requires evidence that a script was actually captured before saying anything about one, and renders nothing at all for a notebook or pipeline run, which is what it was always meant to do.
+- **"Source was compacted to save space" on runs nothing had compacted** — a *script* run never creates a `cell_lineage` row (cell lineage is a notebook concept), so its timeline event carried a cell hash nothing backed and "view source" reported the source had been reclaimed. It hadn't: a script's source lives content-addressed in `code_snapshots`, which **no compaction mode touches** (`--deep`'s "snapshots" means `notebook_history/` JSON, not captured source). "View source" now falls back to that snapshot and shows the real code, and the message only appears when there genuinely is nothing stored.
+- **The detail header claimed "compacted" on runs that were never compacted** — timeline compaction NULLed `source_diff`, leaving no evidence it had ever run, and the status check read "no diffs stored" as "diffs were stripped". But no stored diff is the *normal* state for a script run against a clean tree, so any such run was labelled compacted. Compaction now leaves a per-row `[compacted — N B stripped]` marker (matching the convention git diffs already used, and skipping already-marked rows so re-running never re-counts the marker), and the status is only claimed when that evidence exists.
+- **The line-number gutter ran into the code in the timeline's source view** — the gutter CSS was scoped to the source viewer, so the same numbered block rendered elsewhere had no gutter column (`1WARMUP = 500`). Both now share one renderer and one unscoped rule.
+- **The Timeline's source fold rendered in a different font from the diff above it** — the source block's typography lived in a rule scoped to the Sessions tab, so everywhere else it fell through to the browser's default monospace: a visibly different face, size and line height from the code diff a few inches up the same page. Both now use the `--font-mono` token at one size, so the two read as the same code.
+- **Compacting from the dashboard reported that nothing had been compacted** — the CLI and the dashboard kept separate copies of the timeline-diff compaction, and only the CLI's learned to leave a `[compacted…]` marker. The dashboard's still NULLed the column, and since an empty `source_diff` is also the *normal* state for a clean-tree script run, the detail header read back "not compacted" immediately after you compacted it. Worse, a second dashboard pass counted a marker left by the CLI as reclaimable space and then erased the evidence it stands for. Both entry points now share one implementation, and the dry-run shares its selection so the preview provably describes the write.
+- **The `[compacted…]` marker stamped every row with the whole batch's byte total** — compacting 50 runs wrote the aggregate figure into each of the 50 markers, a persisted per-row falsehood in the panel that exists to be honest about what was removed. Each marker now states its own row's bytes.
+- **One giant changed line no longer yields a content-free summary** — a first fragment longer than the whole cap (a minified line, a long literal) kept nothing, so the summary read `… [truncated — 0 of 1 changed lines shown]`: the change dropped entirely, the exact failure the truncation fix exists to prevent. That fragment is now kept hard-sliced — a visibly cut line beats no line.
+- **`compact --code-changes` stopped reporting skips for runs with nothing to skip** — the "skipped N run(s) with no code snapshot (summary is their only copy)" count included runs holding no summary at all, a stated skip of something that doesn't exist.
+- **`exptrack source --out` sanitizes the script filename, not just the directory** — the run-name directory was already reduced to a safe component but the script's recorded basename was written verbatim, so a Windows-recorded or hand-edited `script` column carrying `\` or a drive prefix could escape the target directory (or an empty basename crashed the export mid-run).
+- **Editing a saved scan path no longer wipes it.** Double-clicking a path to fix a typo cleared the whole field, so the only way forward was retyping it from scratch. Two things did it, and both are fixed: opening the editor replaced the cell's text with an input, and the click that followed bubbled back to the cell's own open-handler, which re-read the (now empty) text and re-opened the editor seeded with nothing; and that same click, landing on the reflowed row rather than the input, blurred the field and snapped the editor shut. The value is now seeded from the stored path rather than from the cell's text, the handler comes off while the editor is up, re-entry is a no-op, and a press inside the row can't steal focus from the field.
+- **Adding a scan path on the Data Files and Images tabs is usable.** Pressing Enter in the path box did nothing — the only way to submit was a 77×25px "Add Path" button — and a saved path could only be edited by double-clicking its text, with nothing indicating that was possible and a fixed 200px editor narrower than most of the paths it had to edit. Enter now adds the path, every saved row carries a one-click ✎ next to its ×, the editor fills the row, and the inputs, buttons and suggestion chips are sized to be typed in and clicked at.
+- **Notes and Stage on a run's Overview open on a single click.** Both sat next to affordances that already read "click to set stage", but needed a double-click, with no way to tell them apart.
+- **Grouping the sidebar and the main table could name the same group differently.** The two views derived their group keys independently, so an unset git branch keyed as `no branch` in the table and `(no branch)` in the rail, and the table showed a bare `no script` header where the rail showed a styled placeholder. Both now read one shared table of grouping rules; only the rendering and the collapse state stay per-view.
+- **Clicking away closes an open cell editor, and the editor has room to work in.** Nothing dismissed a tags/studies/stage/notes editor except opening another one, so an editor you were done with sat over the row indefinitely. And it opened *inside its column* — which for Tags, Studies, Stage and Notes is routinely 60px, since those columns collapse when nothing on screen has a value, i.e. exactly when you go to add the first one. The input overflowed and the chips, their remove buttons and the ✓ were pushed out of reach, so a column with no studies yet was effectively impossible to add one in. The editor is now a small panel anchored to its cell at a usable width regardless of the column, a click anywhere outside commits and closes it, and a chip's ✕ is a real target rather than a 7px glyph.
+- **Only one inline editor is open at a time, and it stays inside its own column.** Nothing closed the editor you had already opened, so working across a row left the tags, studies, stage and notes editors all live at once — and since the table is fixed-layout with narrow columns, each one overflowed its column while the next cell painted over it. They stacked on top of each other: one editor's ✓ button landed inside the next one's input, and the row became unreadable and un-editable. Opening an editor now commits and closes whichever was open (exactly as clicking away already did), puts that cell back to its rendered form immediately, and every editor wraps inside its own column instead of running past it.
+- **The edit pencil is findable and big enough to hit.** It was an 11px glyph that appeared only once the pointer was already inside the right cell — you had to find the cell to reveal the thing that tells you the cell is editable, and then hit a target a few pixels wide. It now appears for the whole row on hover and carries a real button-sized target.
+- **The delete confirm says when a directory was too big to finish counting.** Sizing an output directory walks it file by file, and a bulk delete previews every run in the batch — a checkpoint-per-epoch tree meant tens of thousands of file lookups per dialog. The walk now stops at 20,000 files, and every figure it produced is marked `≥` with a line saying where it stopped: a confirm that quietly under-states what a delete is about to remove would be worse than the slow version. The delete itself is unchanged and still takes the whole directory.
+- **The delete confirm double-counted the output directory.** A run's recorded `output_dir` is normally the same path as the name-derived `outputs/<name>`, and both were sized, so the dialog reported twice the files and twice the bytes for an ordinary run while the delete correctly removed the directory once.
+- **Tags and studies could overflow their column and take the edit affordance with them** — a run with several tags grew the cell until the chips spilled past the fixed column width, and because a later cell paints over an earlier one's overflow, the trailing hover pencil (the one-click way into the editor) ended up covered and unclickable. That left a single click on the cell as the only remaining target, which by design opens the run — so a heavily tagged run became impossible to retag or untag. The cells now draw at most three chips and collapse the rest into a `+N` chip that opens the editor on one click, and an over-long single tag breaks instead of escaping the cell.
+- **The "Double-click to edit" tooltip covered the tag autocomplete** — opening the tags/studies/stage editor left the cell's native `title` in place, and the browser drew that tooltip on top of the suggestion list, hiding its first entry. The hint is now cleared while the editor is open and restored when the row re-renders.
+
 ## [1.0.0] - 2026-07-31
 
 First public release on PyPI: `pip install exptrack`.
 
-exptrack was developed in the open for a while before it was packaged, and the
-entries below this one — up to `1.58.2` — are that pre-release history, kept
-because they document why the code is the way it is. Nothing was ever published
-under those numbers, so this release restarts at 1.0.0. Everything they describe
-is in it.
+exptrack was developed in the open for a while before it was packaged. The
+entries below this one are that pre-release history, dated rather than
+numbered: none of those versions was ever published, so they were development
+milestones rather than releases anyone could install. They are kept because
+they document why the code is the way it is, and everything they describe is
+in this release.
 
 ### Added
 - **Log metrics after the notebook has finished** — `%exp_log test_acc=0.93 train_acc=0.98` (or `notebook.log_last(...)`) attaches metrics to this notebook's most recent run, working *after* that run is done. The notebook loop routinely produces the numbers only once the run is over — you run it, close it out, then evaluate — and every existing path needed either a live run or a run id you had to go find. It logs onto the active run when there is one, otherwise resumes the latest surviving run of the notebook, logs, and leaves it finished; the run it chose is always printed, because attaching a number to the wrong run silently is worse than not attaching it. Trashed runs are skipped for the same reason they can't be a baseline, and a malformed or non-finite value is reported rather than quietly dropped.
@@ -58,7 +112,7 @@ is in it.
 ### Documentation
 - A **Metric thinning** section in the configuration guide: what `metric_keep_every` counts, worked example, that it's destructive and `exptrack prune` isn't, and that `metric_max_points` is display-only and unrelated.
 
-## [1.58.2] - 2026-07-29
+## 2026-07-29 (i)
 
 ### Fixed
 - **Orphaned rows are reported instead of quietly carried** — a row whose experiment no longer exists shows up nowhere in the UI while still taking space, and the storage report only warned about them when the database held *zero* experiments. A project with 5 runs and 20,000 orphaned metric rows therefore reported perfect health. `exptrack storage` now counts them with their estimated size (`40,003 orphaned row(s) (~4.0 MB): 40,000 metrics, 2 artifacts, 1 git_diffs`), and the dashboard's Settings → Database panel gained an **Orphaned rows** section with a Clean button. This matters most in the dashboard: any CLI command sweeps orphans when it exits, but the dashboard deliberately never does (the check is an anti-join across metrics/params/timeline, far too expensive to run per request), so a UI-only user would carry a legacy database's orphans indefinitely.
@@ -68,7 +122,7 @@ is in it.
 ### Documentation
 - Two FAQ entries: whether deleting from the dashboard removes metrics (a permanent delete does — Move to Trash deliberately keeps everything), and what to do about orphaned rows from older versions.
 
-## [1.58.1] - 2026-07-29
+## 2026-07-29 (h)
 
 ### Fixed
 - **Deleting runs looked like it reclaimed nothing** — it did remove every metric, param, artifact and timeline row, but SQLite puts the freed pages on the database's internal free list rather than handing them back to the operating system, so the file on disk stayed exactly the same size and the storage report's per-table breakdown quietly stopped adding up to it (delete a run holding 120k metric points and the tables account for 8 MB of a 12 MB file, with nothing naming the other 4 MB). Every delete now reports what it freed and points at the one command that returns it to the filesystem: `exptrack rm` and `exptrack clean` print it, the dashboard says it after a permanent delete, and `exptrack storage` — plus the Settings → Database panel — shows an **of which free** line under the database size. Nothing about what gets deleted changed; the space was always reusable, it just never said so.
@@ -77,7 +131,7 @@ is in it.
 ### Documentation
 - A FAQ entry for the above ("I deleted runs but the database file is the same size"), including when it's worth vacuuming at all — if you're about to log more runs, the freed space is simply reused.
 
-## [1.58.0] - 2026-07-29
+## 2026-07-29 (g)
 
 ### Added
 - **The storage report says what the Trash is holding** — soft delete keeps every row and deliberately leaves output files in place, so the Trash was the one place storage built up with nothing anywhere saying how much. `exptrack storage` gained a **Trash** section, the dashboard's Settings → Database panel shows the same figures with a link into the Trash, and the Trash view itself opens with a one-line "Holding …" summary. Three separate numbers, because they are reclaimed by three different actions: database bytes held by trashed runs and session nodes, their output files still sitting on disk, and the `.exptrack/trash/` fallback directory. The output-file figure goes through the same ownership rule the permanent delete uses, so it can never advertise space the delete would leave alone because a surviving run also claims that directory.
@@ -87,7 +141,7 @@ is in it.
 - **Reading `exptrack storage`** — a section in the CLI reference explaining which figures are exact (per table, from SQLite's page accounting) and which are apportioned estimates, and what each part of the report is for.
 - Corrected two stale claims in the FAQ: the dashboard no longer loads Chart.js from a CDN (it is vendored, and exptrack makes no external requests at all), and the documented run-name pattern was the pre-1.x layout.
 
-## [1.57.0] - 2026-07-29
+## 2026-07-29 (f)
 
 **Upgrading an existing project:** nothing to migrate. `exptrack export` and the
 dashboard's JSON export now emit a summary by default — if you have a script
@@ -103,7 +157,7 @@ consuming `metrics_series` or the complete artifact list from a JSON export, add
 - **New dashboard screenshots** — the README's dashboard image was several releases out of date; it now shows the current list view, the "what changed" run detail, and the Charts tab, all served from `docs/images/` in the repo.
 - **Docs caught up with the last several releases** — the README feature lists, `docs/cli-reference.md` (now covering `prune`, `compact`, `backup`/`restore`, `watch`, `studies`, the full `clean` and `storage` flag sets, the Session Trees commands, and a new Export formats section), `docs/configuration.md` (every current config key, including `metric_commit_interval_ms`, `auto_trash_failed`, `snapshot_max_kb`, `git_diff_exclude`, `var_fingerprint_max_mb` and the TensorBoard capture toggle, plus where the dashboard token lives), `docs/how-it-works.md` (TensorBoard mirroring, dataset fingerprinting, failure tracebacks, the current 10-table schema) and `docs/python-api.md` (constructor arguments, `batched_writes`, metric batching, run adoption).
 
-## [1.56.7] - 2026-07-29
+## 2026-07-29 (e)
 
 ### Fixed
 - **A scan path can no longer list exptrack's own internals** — `/api/file/` has always refused to serve anything under `.exptrack/`, but the Images and Data Files scan walks only checked that a path was inside the project, so pointing one at `.exptrack` listed the config file and every notebook-history snapshot. Both now apply the same rule.
@@ -112,37 +166,37 @@ consuming `metrics_series` or the complete artifact list from a JSON export, add
 ### Changed
 - **One shared definition of which output directory belongs to which run** — the permanent-delete guard added in 1.56.3 and the orphaned-file finder computed "claimed" separately, so a directory the delete protected because another run owned it could still be reported as debris and trashed by the next Clean click. Internal, but it closes the gap between the two.
 
-## [1.56.6] - 2026-07-29
+## 2026-07-29 (d)
 
 ### Fixed
 - **Watching a live run no longer stacks up requests** — the detail view polls every 5 seconds while a run is running, with nothing stopping a new poll from starting while the previous one was still in flight. On a large run, a slow filesystem or a tunnelled connection a poll can take longer than the interval, so the requests piled up and each re-rendered the panel underneath the last. A tick now skips while the previous one is still working. A failed poll also used to throw inside its own error handler, which made one bad request look exactly like a healthy refresh; it is now handled, and the run is re-checked after the request returns so a poll that lands after you switch runs can't redraw the wrong one.
 - **The experiment list endpoint caps how many rows one request can ask for** — `limit` came straight from the query string with no ceiling, so a single request could have the server build and serialize the entire project's list. The dashboard already pages in chunks, and the Compare picker's "Load all runs" now walks pages instead of asking for everything at once, so a capped response can't be mistaken for the complete set.
 
-## [1.56.5] - 2026-07-29
+## 2026-07-29 (c)
 
 ### Fixed
 - **A scan path pointing at a huge directory no longer stalls the Images and Data Files tabs** — both walked every saved scan path in full on every request, with a `stat` per file and every result shipped as JSON. Point one at a checkpoint-per-epoch output tree and each tab open re-listed thousands of files, including on a live run's 5-second refresh and the two requests a Compare view issues at once; on a project mounted over SSH or NFS that held a request thread for seconds. The walk is now bounded, skips dependency and version-control trees, and the tab says when a listing was capped instead of presenting a partial set as the whole one.
 - **Scan paths can no longer reach outside the project** — the containment check compared path prefixes without a separator boundary or resolving symlinks, so a sibling directory whose name merely started with the project's (`myproject2` next to `myproject`) was accepted, as was a symlink inside the project pointing anywhere on disk. It now matches the check `/api/file/` has always used.
 
-## [1.56.4] - 2026-07-29
+## 2026-07-29 (b)
 
 ### Changed
 - **The dashboard reuses connections instead of reopening one per request** — it served HTTP/1.0, so every fetch paid a fresh TCP handshake. That is free on localhost and is not free through an SSH tunnel or VS Code port forwarding, where the ~8 requests the page fires on load and the detail view's 5-second poll each pay a round trip to set up a connection they use once.
 - **Opening a large log or CSV no longer loads the whole file** — the viewer renders at most the last 500 lines of a log or the first 200 rows of a table, but the server read the entire file into memory and the browser downloaded and scanned all of it to find that window. A multi-hundred-MB training log could freeze the tab and cost the server as much memory as the file. Text files past 4 MB are now served as a window — the end of a log, the start of a CSV or JSON — with the viewer stating that the file continues past what it shows. Images and other files stream in fixed-size chunks, so serving one never scales the server's memory with its size.
 
-## [1.56.3] - 2026-07-29
+## 2026-07-29 (a)
 
 ### Fixed
 - **Permanently deleting a run can no longer trash a different run's outputs** — the delete removed both the run's recorded output directory *and* `outputs/<its name>`, but names are not unique: renaming a run to a name another run already has leaves the folder where it was, owned by the original. Deleting the renamed run with "also move files" then sent the *other* run's checkpoints to the Trash, and the confirm dialog counted those files without saying whose they were. The name-derived directory is now only removed when no other experiment — including a trashed one, so Restore stays lossless — claims it, and the preview sizes exactly what the delete will take.
 - **Cleaning orphaned output files only touches what the confirm listed** — the dialog is built by one request and the deletion runs in a second, which re-discovered orphans from scratch. Anything written under `outputs/` in between — a run started while the dialog was open, a file dropped in by hand — was moved to the Trash having never been shown. The browser now posts back the exact paths it displayed and the server trashes only those that are still orphaned, reporting any it skipped.
 - **The dashboard no longer stalls while a training run is logging** — every request ran a `wal_checkpoint(TRUNCATE)` before dispatch and another when the request thread closed its connection. TRUNCATE waits on any open writer, so with a live run each request could block for up to 5 seconds; through an SSH tunnel or VS Code port forwarding, where every request is already a round trip, the UI appeared to hang. Reads no longer checkpoint at all (a GET writes nothing), and writes use the non-blocking PASSIVE mode. `exptrack clean` and process exit still truncate the WAL.
 
-## [1.56.2] - 2026-07-27
+## 2026-07-27 (f)
 
 ### Fixed
 - **Older runs holding a diverged metric now open again** — a single infinite metric value (a loss that blew up, or any point written by one of the metric-insert paths that predate the finite-value guard) was serialized by the API as the bare token `Infinity`. That is a Python-only extension to JSON: the browser's parser rejects it, and it rejects the entire response rather than the one value. So the run's detail request failed to parse and the panel reported **"Experiment not found"**, with a network error naming `/api/metrics/<id>` beside it — for a run that was sitting right there in the list. Non-finite values are now sent as `null`, which charts render as a gap and tables leave blank, and every other point on the run comes back intact. `exptrack export --format json` was writing the same unloadable token and is fixed with it.
 
-## [1.56.1] - 2026-07-27
+## 2026-07-27 (e)
 
 ### Changed
 - **The storage panel opens about 5x faster** — its metric breakdown aggregated with a window function that expanded one intermediate row per stored metric point before grouping, and it ranked runs with six correlated subqueries evaluated once per experiment plus three whole-table scans per experiment to size shared git diffs. On a 52 MB project the endpoint went from 733 ms to 140 ms, and the gap widens with database size. Same numbers, fewer passes.
@@ -152,7 +206,7 @@ consuming `metrics_series` or the complete artifact list from a JSON export, add
 ### Fixed
 - **Artifact type labels agree everywhere** — the dashboard counted artifact types by rendering a badge and parsing its CSS class back out, so it reported `img` where the CLI and exports said `image`, and would have silently counted everything as `file` if the badge markup were ever restyled.
 
-## [1.56.0] - 2026-07-27
+## 2026-07-27 (d)
 
 **Upgrading an existing project:** nothing to migrate — no schema change. The
 storage figures and the largest-runs list describe runs you have already
@@ -174,7 +228,7 @@ already had snapshots and are unaffected).
 - **Adding a data-file or image scan path suggests somewhere useful** — suggestions were the run's output directory and its immediate subdirectories, and they disappeared as soon as you had saved one path, which is exactly when you might want a second. They are now drawn from what the run actually touched — the directories its artifacts were written to, and the datasets exptrack fingerprinted from its parameters (so `--data_dir data/raw` is offered directly) — then from directories elsewhere in the project that actually contain matching files. Each suggestion says why it was offered, and clicking one adds it.
 - **The "view" button in the Data Files table no longer renders one letter per line.**
 
-## [1.55.0] - 2026-07-27
+## 2026-07-27 (c)
 
 **Upgrading an existing project:** the read fixes below apply to runs you have
 already recorded — they are better queries over the same rows, so an existing
@@ -199,23 +253,23 @@ touch points already stored.
 ### Added
 - **`exptrack clean --vacuum`** — reclaim free space in the database file without deleting anything. Space freed inside the file (a purged run, a dropped index) is reused as the database grows but is never returned to the filesystem until a VACUUM, and every other path that VACUUMs does so only after deleting something — `--reset` wipes the project. Reports how much it reclaimed; `--dry-run` shows the current size. Stop the dashboard first, since VACUUM needs exclusive access.
 
-## [1.54.2] - 2026-07-27
+## 2026-07-27 (b)
 
 ### Fixed
 - **The experiment table loads on a project with real training runs** — the query behind `/api/experiments` found each metric's latest point with a correlated subquery, which re-scans a metric's entire history *once per point in it*. The cost therefore grew with the square of points-per-metric: harmless on a handful of hand-logged numbers, but a project of ~70 runs logging a few thousand points per metric (well under a million rows) never finished the request at all. Because the stats cards come from a separate query that doesn't touch metrics, the page rendered its headline counts — "68 total runs, 61 done" — above a table that stayed permanently empty, with no error to explain it. Finding the latest point is now a single linear pass, and the same fix applies to the per-experiment detail view. On a 680k-row database the listing went from not completing to about three seconds.
 - **The last-logged value wins consistently when several points share a step** — the old query returned every point tied at the highest step and kept whichever one SQLite happened to emit last. Ties now break by timestamp, then insert order, matching the rest of the codebase.
 
-## [1.54.1] - 2026-07-27
+## 2026-07-27 (a)
 
 ### Fixed
 - **A burst of simultaneous first connections no longer fails with "database is locked"** — switching a database to WAL takes an exclusive lock that SQLite acquires *without* consulting the busy handler, so neither the connection timeout nor `busy_timeout` covered it. Opening a brand-new database from several threads at once — which is exactly what the dashboard does now that it serves a thread per request, and the page boots with about eight parallel fetches — could raise `sqlite3.OperationalError: database is locked` straight out of `PRAGMA journal_mode=WAL`, failing whichever request lost the race. The switch is now serialized within the process and retried with a short backoff when another opener holds the file, and a switch that still can't get through leaves the connection working in the default journal mode rather than raising into the request.
 
-## [1.54.0] - 2026-07-26
+## 2026-07-26 (n)
 
 ### Fixed
 - **The dashboard works through an SSH/VS Code/cloudflared tunnel** — the server was single-threaded, so it accepted one connection and then blocked waiting for that client to send a request line. A connection that was merely *open* stalled every other request for as long as it stayed quiet, and one that never sent stalled them forever. That never shows up on localhost, where the browser connects and writes in the same instant, but it is the normal case through a tunnel: port forwarders pool and pre-open sockets to the forwarded port and relay the bytes a round-trip later. One idle pooled socket was enough to deadlock the whole dashboard, and every fetch died in the browser as a bare `NetworkError when attempting to fetch resource` naming whichever request was still pending — usually `/api/experiments`, which is the slowest and so the last to drain. The dashboard now serves each connection on its own thread, reaps a socket that opens without sending, and accepts a listen backlog large enough for the page's boot burst (which fires about eight API calls at once, above the stdlib default of five).
 
-## [1.53.0] - 2026-07-26
+## 2026-07-26 (m)
 
 ### Fixed
 - **Re-running a notebook no longer duplicates a session's cells** — a Run-All re-executes the branch magic and then every cell under it, and each pass appended a second copy of the same code to the node. Three Run-Alls stored three copies of every cell, until the per-node byte cap started evicting the real content and replacing it with the "earlier cells elided" marker. A cell that repeats one already recorded — a back-to-back re-run, or a Run-All replaying the node in order — now refreshes it in place, keeping its latest output. Genuinely new work is still appended, so diverging mid-replay records normally.
@@ -232,7 +286,7 @@ touch points already stored.
 - **`exptrack storage` counts session nodes as diff referrers** — the deduped-diff line reported only how many experiments pointed at a shared body, so a blob referenced solely by a session tree read as "0 experiments ref" next to a non-zero size, i.e. as an orphan.
 - **Promoting a node stores cell previews, not a second copy of every cell** — replayed cells wrote their entire source into the timeline event as well as the content-addressed `cell_lineage` table, so each materialized sibling duplicated all of the shared upstream code. The event now carries a preview and the full body is served through its `cell_hash`, as it is for live runs.
 
-## [1.52.3] - 2026-07-26
+## 2026-07-26 (l)
 
 ### Fixed
 - **The detail panel stays where you scrolled it on a live run** — rewriting the panel on each metric poll briefly collapsed its content, so the browser clamped the scroll position back to the top. Reading anything below the fold on a running experiment meant being yanked upward every 5 seconds. The offset is now restored across an in-place refresh; opening a run still starts at the top.
@@ -241,13 +295,13 @@ touch points already stored.
 ### Changed
 - **A live chart now updates in place instead of being rebuilt every poll** — while a run trains, the Charts tab refreshes every 5 seconds, and each refresh discarded the tab's DOM and recreated the Chart.js instances. That took focus out of an axis-range input mid-typing, snapped the metric dropdown shut if it was open, and restarted the draw animation on every poll. Fresh points are now pushed into the charts already on screen; the tab is only rebuilt when it genuinely can't show the new data (different run, different view mode, or the run gained or lost a metric).
 
-## [1.52.2] - 2026-07-26
+## 2026-07-26 (k)
 
 ### Fixed
 - **A live run no longer throws you back to Overview every 5 seconds** — while an experiment is `running`, the detail panel auto-refreshes on each metric poll, and that refresh rebuilt the whole panel with Overview hardcoded active. Opening Charts (or any other tab) on a training run was effectively impossible: the numbers updated, but the view snapped back before you could read them. The refresh now restores whichever tab you were on, and the Charts tab reloads just its own container instead of rebuilding the entire panel.
 - **The Charts tab keeps your selection while a run is live** — with the tab now surviving auto-refresh, its own state has to as well: the metric picked in Single view and any typed Y/X axis bounds are carried across each reload instead of resetting to the first metric and "auto" every poll. A failed poll also leaves the last chart on screen rather than blanking the tab.
 
-## [1.52.1] - 2026-07-26
+## 2026-07-26 (j)
 
 ### Fixed
 - **The typed-body fix now covers every endpoint** — the 1.52.0 sweep replaced `body.get("k", "").strip()` but missed nine sites spelled `(body.get("k") or "").strip()`, which fails identically on a JSON number (`5 or ""` is `5`). Param add/edit/rename, the todo and command endpoints, and export filenames were still affected. A test now scans the route sources so the rule is checked rather than remembered.
@@ -258,7 +312,7 @@ touch points already stored.
 - **Dashboard route order is no longer load-bearing** — the prefixed route table is matched in two passes, specific routes before generic ones, so a new sub-action can be added anywhere in the table instead of having to sit above the generic route sharing its prefix. The guard test now reverses the table and asserts dispatch is unchanged.
 - **The 500 boundary covers every HTTP verb** — it moved from per-verb wrappers on `do_GET`/`do_POST` to `handle_one_request`, the single point every request passes through, so a verb added later cannot silently revert to dropping the connection.
 
-## [1.52.0] - 2026-07-26
+## 2026-07-26 (i)
 
 ### Fixed
 - **A JSON number in a request body no longer kills the connection** — every mutation endpoint read body fields with `body.get("value", "").strip()`, which assumes a string because the dashboard's own JS only ever sends strings. Any other client sending correct JSON types (`{"value": 0.8}` instead of `{"value": "0.8"}`) hit `.strip()` on a float and raised. All 46 such reads now go through a shared `body_str()` that behaves identically for strings and coerces anything else.
@@ -268,7 +322,7 @@ touch points already stored.
 - **`exptrack storage` is testable** — the command was one 212-line function with 48 branches and no test coverage, because none of the numbers it computed were reachable without capturing stdout. It is now `collect_storage_stats()` (a plain dict, one helper per area) plus four render functions; largest remaining function is 8 branches. Output is byte-identical. Along the way `_fmt_bytes` existed in three copies that had already diverged — only one handled GB, so a 3 GB outputs directory reported as "3072.0 MB" from one call site and "3.00 GB" from another. There is now one implementation.
 - **`write_routes.py` is a package** — 1940 lines and 79 public functions split into 10 submodules grouped the way the request dispatcher already groups them (experiments, params, metrics, studies, settings, compact, bulk, admin, toolbox, sessions). Purely structural: every function body is unchanged, the full surface is re-exported, and no import anywhere else needed to change. New tests fail if the dispatcher references an endpoint the package doesn't export.
 
-## [1.51.0] - 2026-07-26
+## 2026-07-26 (h)
 
 ### Fixed
 - **A hostile SVG artifact can no longer steal your dashboard token** — `.svg` counts as an image, so SVG artifacts appear in the Images tab with their thumbnails linking to the full file, and that link carries the auth token in the query string (`?token=…`). An SVG is a live document, not a picture: opening one served as `image/svg+xml` from the dashboard's own origin ran any script it contained, with the token sitting in `location.search`. Since artifacts are user-supplied files a project can pick up from a cloned repo or a shared dataset, that was a real path to token disclosure. Files served from `/api/file/` are now sandboxed (`Content-Security-Policy: … sandbox`), which disables scripting and puts the response in an opaque origin. Ordinary images, plot SVGs with inline `<style>`, and log/CSV viewing are unaffected.
@@ -282,14 +336,14 @@ touch points already stored.
 - **Python 3.8 is no longer claimed as supported** — the package advertised `>=3.8` and a 3.8 classifier while CI only ever tested 3.9+. 3.8 is end-of-life; `requires-python` is now `>=3.9`. Python 3.14 was already in the classifiers and is now actually tested.
 - **Dashboard GET routing is a table instead of a 47-branch if/elif chain** — routes with a fully known path live in a dict, where nothing can shadow anything; only genuinely prefix-matched routes stay in an ordered list. Previously a route like `/api/experiment/<id>/delete-preview` was reachable only because it happened to be written above the generic `/api/experiment/<id>` entry, and getting that order wrong fails silently — the specific route becomes dead code and the request resolves to the generic handler with the action name as the experiment id. Two tests now pin the invariant, including one that fails if a new suffixed route is appended below its bare-prefix sibling.
 
-## [1.50.2] - 2026-07-26
+## 2026-07-26 (g)
 
 ### Changed
 - **Cleanup is cheaper and its preview now matches what it does** — the reference-counted blob tables (`code_snapshots`, `git_diffs`) are no longer scanned on every `exptrack` command exit: they can only go stale after a delete, which reclaims them inline, so the per-exit sweep was paying two full table scans for a guaranteed-zero result. Bulk deletes reclaim once for the batch instead of once per run (a 200-run delete was 200 full scans), and `exptrack clean --orphans --dry-run` now lists the blobs it would remove — previously they were discovered *after* the dry-run and the confirm, so the preview described a different set than the run performed, and a project whose only orphans were blobs reported "No orphaned data found" and could never reclaim them.
 - **A lost diff is reported consistently everywhere** — the sentinel check now also gates the compaction *previews* (dashboard and `--dry-run`), which promised freed bytes the real compaction then skipped, and `exptrack compact --export-dir`, which wrote the literal marker inside a ```` ```diff ```` fence in the exported lab-notebook file. The three markers and their two classifiers (`is_diff_sentinel`, `diff_sentinel_kind`) now live together in `core/db.py` next to the function that produces them, and the dashboard branches on a `sentinel` field from the server instead of hardcoding marker strings in JS.
 - **`exptrack ui --token` guarantees the ignore rule it claims** — the token path and writer moved to `config.py` (which owns `.exptrack/` layout and the gitignore list), and writing a token now appends the ignore rules first. A project initialized before the token moved out of `config.json` had no rule for it, so the CLI printed "gitignored" for a file that wasn't. The duplicate "token is in config.json" warning is gone — it's reported once, at startup.
 
-## [1.50.1] - 2026-07-26
+## 2026-07-26 (f)
 
 ### Fixed
 - **A lost diff no longer reads as "no changes"** — git diffs are deduplicated into a shared table and referenced by hash, and when that reference dangled (the body having been compacted away or purged) `resolve_git_diff` handed back the raw `[ref:sha256:…]` pointer. Every consumer then rendered that literal string as though it *were* the diff, and the detail header counted it as one line of uncommitted changes. A dangling reference now resolves to `[diff-unavailable]`, which the CLI, the detail view, and the export path each report as unavailable — a distinct fact from a clean tree, a failed capture, or a deliberate compaction. Compacting skips it instead of stamping a `[compacted — 17 B stripped]` marker over a diff that was already gone.
@@ -297,7 +351,7 @@ touch points already stored.
 - **The Trash explains a node whose session is also trashed** — trashed session nodes are grouped by session in the unified Trash, including sessions that are themselves in the Trash (and listed in the section right above). Restoring such a node appeared to do nothing, since its session stays hidden either way. Those groups are now marked with a link to restore the session first.
 - **Files sent to the Linux Trash are always restorable** — the XDG trash record was written *after* moving the file, so a failed write left a file in `~/.local/share/Trash/files` with no matching `.trashinfo` — a blob no file manager will restore. The record is now created first, exclusively (which also makes the name reservation atomic against a concurrent trash), and is removed again if the move fails so a record never points at nothing.
 
-## [1.50.0] - 2026-07-26
+## 2026-07-26 (e)
 
 ### Fixed
 - **"Clean database" no longer deletes files you chose to keep** — the button removed orphaned *rows* as advertised, but also `rm -rf`'d every directory under `outputs/` that no run claimed, with no confirmation, no preview, and no Trash copy. The worst case was silent: permanently deleting a run leaves "Also move files to system Trash" **unchecked** by default, so the outputs you deliberately kept became unclaimed — and the next Clean click destroyed them. Anything you had put in `outputs/` by hand went the same way. Row cleanup still runs on click; files are now a separate step that lists each path with its file count and size, asks first, and moves them to the OS Trash (recoverable) instead of deleting them. `exptrack clean --orphans` and `--reset` route through the same recoverable path.
@@ -305,25 +359,25 @@ touch points already stored.
 - **Permanently deleting a run reclaims its stored source and diff** — a run's script snapshot (`code_snapshots`) and working-tree diff body (`git_diffs`) were never freed on delete, and no sweeper knew those tables existed: `exptrack clean --orphans` and the dashboard's Clean button both reported a clean database while the two largest blob tables grew forever. Since a working-tree diff routinely contains an accidentally-staged `.env` or unpublished code, "permanently delete" was leaving readable data behind. Both tables are now reference-counted: blobs survive a soft delete so Restore stays lossless, are kept while any other run still points at them (content-addressed dedup), and are reclaimed when the last referrer goes.
 - **The dashboard token is no longer written to a file you're told to commit** — `exptrack ui --token` saved the auth secret into `.exptrack/config.json`, which `exptrack init` describes as safe to commit and deliberately leaves out of `.gitignore`, putting a live token one `git add -A` from being published. It now goes to `.exptrack/dashboard_token` (gitignored, mode 600). An existing config token keeps working and is flagged on startup with the command to move it. `exptrack init` also now gitignores `.exptrack/trash/`, the local fallback holding deleted artifacts and checkpoints.
 
-## [1.49.3] - 2026-07-26
+## 2026-07-26 (d)
 
 ### Fixed
 - **A deleted or still-running run is no longer used as a comparison baseline** — "previous run" is now picked by one shared rule wherever it appears (the detail strip, the "What changed" card, and the finish-time summary). Trashed runs are skipped: they're gone from every list, so a delta against one named a baseline you couldn't open or verify, and deleting a run between two attempts silently changed the numbers with no visible cause — the comparison now walks back to the next surviving run, matching what the list shows. Unfinished runs are skipped too, since their metrics are still moving: a delta against one didn't reproduce a minute later, and a parallel sweep compared each run against a half-finished sibling.
 - **Comparing against a failed run says so** — a failed run is deliberately *kept* as a baseline, because "it broke, I fixed it, what changed?" is the loop this comparison exists for and skipping the failure would hide the comparison you wanted. But its metrics stop wherever it crashed, so an unqualified `acc 0.41 → 0.87` read as a measured result. The baseline is now marked **failed** on both the "What changed" header and the "vs previous run" chip, with a note that the metric values are the crash point rather than a finished result — parameter and code changes are exact either way. The one-line finish summary names it too: `vs prev (name, failed)`.
 
-## [1.49.2] - 2026-07-26
+## 2026-07-26 (c)
 
 ### Fixed
 - **"Previous run" can no longer resolve to a run that started later** — the baseline was picked by `created_at` alone, so two runs launched inside the same clock tick tied on the timestamp and the winner was whatever order SQLite happened to return. That could point "previous" at the run that started *after* the one you were viewing. The comparison now orders on `(created_at, rowid)` — rowid being insertion order, and therefore launch order — so a chain of same-second runs always resolves backwards in time.
 - **The baseline says how much earlier it ran** — timestamps in the dashboard resolve to the minute, so two runs launched seconds apart printed the same time and there was no way to tell which direction the comparison ran (the newest-first list puts the older run *below* the current row, which reads as "the next one"). The "vs previous run" chip and the "What changed" header now say `2 days earlier` / `1 min earlier` / `just before`, with the exact timestamp in the tooltip.
 
-## [1.49.1] - 2026-07-26
+## 2026-07-26 (b)
 
 ### Fixed
 - **A delta that reads as zero is no longer reported as a change** — `0.9 + 0.03` and `0.85 + 0.04 * 2` are both 0.93 but differ by 1.1e-16, and that float noise surfaced as a metric change rendering `▼ -0.0000 (-0.0%)`: a row that exists only because something supposedly moved, showing a value that reads as nothing. Metric comparisons now ignore differences at float-noise scale, and a change that *is* real but small no longer rounds away — the delta drops to exponential (`+1.0e-7`), percentages under 0.1% say so, and both the previous and current values are shown with enough precision to actually differ instead of printing `0.5000 → 0.5000`.
 - **"code changed" means this run's code, not any file in the repo** — the flag compared the whole working-tree diff, so editing an unrelated tracked file stamped a byte-identical rerun with an amber **code changed** chip while the Code-changes panel right below it correctly reported no change. The chip now fires on the run's own script snapshot or notebook cells — the same source the panel diffs — and the wider repository signal gets its own muted **repo changed elsewhere** chip, which says in its tooltip that this run's code is identical. The same distinction appears in the one-line finish summary.
 
-## [1.49.0] - 2026-07-26
+## 2026-07-26 (a)
 
 ### Added
 - **"What changed" can show the code, not just the params** — the card at the top of every run's Overview diffed params and metrics against the previous run of the same script, but the most common edit in the tweak-one-line loop is to the code itself, and seeing it meant opening the full Compare view. A **Show code changes** button now expands the actual diff inline — the script's source snapshot, or the notebook cells that differ — using the same word-level renderer as Compare, so a changed threshold or coefficient is spotlighted in place. It loads on click rather than with the page, since a snapshot can be hundreds of KB.
@@ -333,7 +387,7 @@ touch points already stored.
 - **`_code_snapshot` no longer hijacks "What changed"** — the internal-param filter was a list of known keys rather than the `_`-prefix rule exptrack actually writes by, so `_code_snapshot` (a JSON blob naming the snapshot hash and the script's absolute path) slipped through. Any run whose script had been edited showed that blob as the headline row of "What changed", burying the hyperparameter you actually changed. Internal params are now filtered by prefix everywhere — the card, the Overview's Params table, and the Compare pickers' option labels.
 - **The "vs previous run" strip says *when* the previous run was** — it named the baseline run but not its date. Since the run list is newest-first, the run being compared against sits *below* the current row, so "previous" read as "the next one" and left you unsure which direction the comparison ran. The chip now carries the baseline's start time, and the label spells out that it's the last run of this script started before the one you're viewing.
 
-## [1.48.0] - 2026-07-24
+## 2026-07-24 (b)
 
 ### Added
 - **Searchable Compare pickers** — the Compare dropdowns listed ~100 runs as `id | name | status | date`, truncating the name at 35 characters. With auto-generated names that cut off the *only* distinguishing part, leaving a hundred visually identical lines and no way to search a native `<select>`. A filter box above both Compare tabs now narrows every picker as you type — by name, id prefix, param value (`lr=0.1`), status or date — and the options themselves show the full name plus the run's first few params, so runs are actually distinguishable. A pick that a later filter excludes stays selected instead of silently resetting. The filter is debounced like the main search box, the run list is fetched once per visit rather than on every tab switch, and if some runs went unfetched the Compare view says so with its own **Load all runs** button — a filter box searching a partial set would otherwise show "no match" for a run that exists.
@@ -347,7 +401,7 @@ touch points already stored.
 ### Changed
 - **Secondary stats are collapsed by default** — eleven stat cards under two section headings pushed the experiment table itself toward the fold. The four run-status cards (Total / Done / Failed / Running) stay visible; the other seven moved behind a **More stats** toggle that remembers your preference, and the cards are a little tighter. The stats block went from ~205px tall to ~100px, so the table starts a full card-row higher up the page.
 
-## [1.47.0] - 2026-07-24
+## 2026-07-24 (a)
 
 ### Added
 - **Param columns in the experiment table** — any hyperparameter can now be a real, sortable column. The ⚙ Columns panel gained a **Params** section listing every param captured on the loaded runs, with the ones whose value *varies* across runs listed first and marked with a dot, plus a one-click **"Show the N varying params"** button. Previously the table's column set was a fixed list, so the thing that actually differs between two runs of the same script — `--lr`, `--threshold` — was invisible in the list and you had to open every run to see it. Param columns render right-aligned in tabular figures (so a column of numbers lines up), sort numerically where the values are numeric, and push runs missing the param to the bottom like metric-sort does.
@@ -364,13 +418,13 @@ touch points already stored.
 - **Empty columns stop hoarding table width** — with no tags/studies/stages set, three columns rendered as a wall of `--` at full width while Name and Metrics, the two you actually scan, were clipped. A column with no data anywhere in the current view now collapses to a narrow strip (and expands again the moment a value appears), the freed space goes to Name (250px) and Metrics (190px), and the table's header/cell gutters were tightened so a header like "STATUS" no longer needs ~86px just to render its own label — headers such as `STAT…` and `STARTE…` now fit.
 - **Run names truncate in the middle, not at the end** — an auto-generated name (`Jul28_ablate__lr0.01__2aac1081`) differs from its neighbours only in its tail, so head-truncation turned a rerun burst into a screen of identical `Jul28_abl…` rows. Names now keep both ends (`Jul28_ablat…_2aac1081`), sized to the actual column width, with the full name in the tooltip. Tag/study chips also break between words instead of mid-word.
 
-## [1.46.1] - 2026-07-23
+## 2026-07-23 (g)
 
 ### Fixed
 - **Failed runs now appear when the "Failed" status chip is selected** — clicking the sidebar's **Failed** status chip loaded only failed runs, but the default "hide failed runs" filter then stripped them all back out, so the sidebar (and main table) showed nothing. The hide-failed filter is now skipped when you've explicitly filtered to the Failed status, so the chip works as expected; the *Show failed* toggle still governs the default (unfiltered) view.
 - **Filmstrip navigation no longer force-opens the sidebar** — stepping between runs via the detail-view filmstrip (clicking a card, the `‹ ›` buttons, or ←/→) is a lateral move between already-open runs, but it was treated like a fresh entry into the detail view and re-expanded the collapsed sidebar every time. Filmstrip navigation now leaves the sidebar in whatever state you set it.
 
-## [1.46.0] - 2026-07-23
+## 2026-07-23 (f)
 
 ### Added
 - **Experiment filmstrip in the detail view** — a horizontal, scrollable strip of mini-cards (one per run in the current filtered + sorted list) is pinned at the top of every run's detail panel so you can flip between runs without going back to the table. The open run is highlighted and auto-centered; each card shows the run's name, a status dot, its primary-metric value, and a coloured delta badge vs. the older neighbour so "what changed" reads at a glance. Click a card, use the `‹ ›` buttons, or press ←/→ to step through runs (arrow keys ignored while typing). The primary metric follows the *Sort by metric* selection when set, else the run's first metric; deltas reuse the shared `metricDelta()` helper so arrows/colours match Compare and the "What changed" card. A `N / M` counter shows your position.
@@ -379,23 +433,23 @@ touch points already stored.
 - **Group-by bar no longer overflows** — the toolbar row (Group by · Show · toggles · Sort by metric) now wraps to a second line instead of running off the edge on narrower windows, and the seven *Group by* buttons are consolidated into a single compact dropdown to reclaim horizontal space.
 - **ID column hidden by default** — the main experiment table no longer shows the internal run-ID (hash) column by default; it stays available (unchecked) in the ⚙ Columns panel for anyone who needs it for CLI/reproduce. Existing users' saved column choices are preserved.
 
-## [1.45.1] - 2026-07-23
+## 2026-07-23 (e)
 
 ### Added
 - **Runnable TensorBoard auto-capture demo** — `examples/tensorboard_example.py` shows the zero-code metric path end to end: a plain training script that logs scalars to a normal `SummaryWriter` (no exptrack imports, no `log_metric`) run via `exptrack run` has its `loss`/`acc`/`schedule/lr` mirrored into exptrack's metrics table, while TensorBoard's own `runs/*.tfevents` files are still written (the patch is a tee, not a replacement). Needs `pip install tensorboardX` (or torch).
 
-## [1.45.0] - 2026-07-23
+## 2026-07-23 (d)
 
 ### Fixed
 - **No more leftover empty wrapper row from an explicit-args sweep under `exptrack run`** — the 1.44.0 adoption fix deliberately does *not* merge a script that constructs its own `Experiment(name=…, params=…)` per iteration (a param sweep) into the `exptrack run` wrapper, because adopting would silently drop each run's distinct name/params. That left the correct behavior for the sweep runs but a downside: the wrapper itself was left with the code snapshot and *no metrics of its own* — a phantom row that cluttered the experiment list and re-introduced the same `None→value` flood when the next run compared against it. Now, when the wrapper sees a script build its own run(s) and logs no metrics itself, it is **moved to Trash** at finish (soft-delete — fully recoverable, no files touched), so only the real sweep runs remain in the list. A hybrid wrapper that logged its own metrics is kept, and a resumed run (`--resume`) is never trashed. Plain `python`, cooperative `__exptrack__` scripts, single self-tracking scripts (which adopt the wrapper), and notebooks are all unaffected.
 
-## [1.44.0] - 2026-07-23
+## 2026-07-23 (c)
 
 ### Fixed
 - **`exptrack run` no longer creates a phantom metrics-less duplicate run** — running a script that creates its *own* `Experiment()` (one written for plain `python script.py`, e.g. `examples/manual_tracking.py`, with `with Experiment() as exp:`) under `exptrack run` used to produce **two** experiments for one script: the wrapper `exptrack run` starts (it gets the code snapshot + argparse params but *no* metrics, because the script logs onto its own object) and the script's own run (which gets the metrics). That metrics-less wrapper was the confusing "first run with no metrics — just a snapshot." The wrapper is now published so the script's first bare `Experiment()` **adopts** it instead of inserting a second row — one run, snapshot + params + metrics together. Adoption is deliberately narrow and safe: only a bare `Experiment()` (no arguments) adopts, and only the first one, so a script that passes its own `name`/`params` (a sweep) is never silently merged and keeps its own rows; plain `python script.py`, cooperative scripts that use the injected `__exptrack__` global, and notebooks are all unaffected. `python -m exptrack` also makes its post-run finish tolerant of a run the script already finished, so an adopted `with`-block (success or failure) never triggers a double-finish error.
 - **Run comparison no longer floods with bogus `None→value` changes** — the finish-time "vs previous" summary (`diff_runs`) and the dashboard "What changed" card reported every metric present in only *one* of the two runs as a change (`acc None→0.87`, with a null delta), because the comparison filled the missing side with `None`/`undefined` and treated `None != 0.87` as a real move. A metric the baseline run never logged isn't a value change — it was simply not measured — so it's now skipped. This kills the flood when comparing against a metrics-less run (the phantom above) *and* the legitimate case of comparing a new run against an older one made before you added metric logging. A genuine value move (both sides present) is still reported.
 
-## [1.43.1] - 2026-07-23
+## 2026-07-23 (b)
 
 ### Fixed
 - **`exptrack run` now records a real, runnable Reproduce command** — a run launched with `exptrack run ../examples/basic_script.py --lr 0.01` recorded only the bare script basename (`basic_script.py`) in its `command` column, so the dashboard Reproduce box showed something with no interpreter and no path — not runnable. The `--cmd` capture added in 1.43.0 only covered the shell-pipeline path (`run-start`/`run-finish`), never the `runpy` wrapper. Root cause: `cmd_run` rebuilt `sys.argv` so the script became `argv[0]`, then `_build_command()` basenamed it (that basename step was meant for the *interpreter* path, not the script). `__main__.main` now captures the real invocation as `python <absolute-script-path> <args>` *before* mutating argv and threads it into the experiment (new `command=` param on `Experiment`), so the Reproduce box shows a command you can actually paste and run.
@@ -403,7 +457,7 @@ touch points already stored.
 ### Added
 - **Reproduce-box form toggle (`python` ⇄ `exptrack run`)** — the dashboard Reproduce box now has a small toggle to flip the shown command between the plain `python <abs-path> <args>` form (default, runs the script directly) and the tracked `exptrack run <abs-path> <args>` form (re-runs with exptrack capture). The two differ only by the interpreter prefix, so the conversion is lossless; the preference is remembered in localStorage (`exptrack-reproduce-tracked`) and Copy / Save-to-Commands / inline-edit all follow the displayed form.
 
-## [1.43.0] - 2026-07-23
+## 2026-07-23 (a)
 
 Combines the dashboard-usability / hook-logging work (Group-by-Script, "What changed" card, TensorBoard auto-capture) with the run/try/compare loop (L1–L6): change code → break a run → fix → rerun → see what changed → repeat.
 
@@ -427,12 +481,12 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Cross-notebook cell lineage bleed** — `lookup_stored_parent` matched a cell purely by content hash, so identical source in two different notebooks shared one lineage row and a cell's parent resolved in notebook A leaked into notebook B. The lookup is now notebook-scoped, so each notebook resolves lineage against its own history.
 - **Git failure no longer masquerades as a clean tree** — `git diff` returning empty on an actual failure (contended `index.lock`, timeout, git error) was indistinguishable from a genuinely clean working tree, so a run with real uncommitted changes could be recorded as "all changes committed". `git_diff` now returns a `[capture-failed]` sentinel when the diff errors *inside a git repo* (empty stays empty outside one), rendered honestly wherever diffs are shown (CLI, dashboard detail + session views, export) and skipped by the compaction/stats paths instead of being treated as real diff text.
 
-## [1.38.1] - 2026-07-19
+## 2026-07-19
 
 ### Fixed
 - **Dashboard import crashed on Python 3.9** — `dashboard/handler.py` used the `str | None` union syntax in a method signature, which Python 3.9 evaluates at class-definition time and rejects (`TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`), breaking module import and collection of `tests/test_dashboard_security.py`. Added `from __future__ import annotations` to the module (matching every other module in the package) so annotations are lazily evaluated and the dashboard imports cleanly under 3.9.
 
-## [1.38.0] - 2026-07-12
+## 2026-07-12 (d)
 
 ### Changed
 - **Dashboard JS/CSS extracted to real static files** — the ~13k lines of dashboard JavaScript and CSS lived as big Python string constants in `static_parts/js/*.py` and `static_parts/css/*.py`, so they couldn't be edited with JS/CSS tooling (linters, formatters, editor language servers). The content now lives in `exptrack/dashboard/static/js/*.js` and `static/css/*.css`; each `static_parts` module is a thin loader shim that reads its file at import time, preserving every `JS_*`/`CSS_*` name and keeping the assembled bundles byte-for-byte identical. (Static files ship in the wheel + sdist via new `package-data`/`MANIFEST.in` entries.)
@@ -441,7 +495,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 ### Added
 - **ESLint for the dashboard JS (dev-only)** — a flat `eslint.config.js` + `package.json` (`npm run lint`) lint the extracted JS for single-file correctness (duplicate keys/args/cases, unreachable code, accidental assignments, `const` reassignment, `typeof` typos, …). Node is a dev-only tool; the Python package remains stdlib-only and needs no Node to run.
 
-## [1.37.0] - 2026-07-12
+## 2026-07-12 (c)
 
 ### Changed
 - **Schema checks no longer run on every connection** — `_ensure_schema` used to probe every table (`PRAGMA table_info` × 7) and `PRAGMA quick_check` scanned the whole database file on every fresh connection (every CLI invocation, every notebook kernel). The database now carries a schema stamp (`PRAGMA user_version`); when it matches, both the integrity scan and all migration probes are skipped. A new or pre-upgrade database still gets the full check + migration on first open, and `exptrack upgrade` always forces a complete re-verify.
@@ -454,17 +508,17 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 ### Fixed
 - **Cell-lineage parent matching is no longer O(N²) per cell** — every executed notebook cell fuzzy-matched its source against *every* stored cell for that notebook with a full `SequenceMatcher.ratio()` (quadratic in cell length), even when re-running an unchanged cell. Re-runs now short-circuit on a single indexed lookup (`lookup_stored_parent` — a content-addressed cell's parent is already frozen), and the fuzzy search prunes candidates by a length band and `SequenceMatcher`'s cheap `real_quick_ratio`/`quick_ratio` upper bounds before computing the real ratio (behaviorally identical — verified against 20k random cases). A new `idx_cell_lineage_notebook` index speeds the candidate fetch.
 
-## [1.36.2] - 2026-07-12
+## 2026-07-12 (b)
 
 ### Fixed
 - **`exptrack ui --host 0.0.0.0` works again for network clients** — the 1.36.0 Host-header validation compared the client's `Host` against the literal bind address, but clients reaching a wildcard bind (`0.0.0.0`/`::`) send the machine's real name or IP, never `0.0.0.0` — so every non-loopback request got `403` and an all-interfaces bind effectively served loopback only. A wildcard bind now accepts any `Host` (binding all interfaces is an explicit opt-in to network exposure); the default localhost bind and specific-address binds keep the full DNS-rebinding defense.
 
-## [1.36.1] - 2026-07-12
+## 2026-07-12 (a)
 
 ### Fixed
 - **Back-to-back runs in one process no longer leak params onto the first run** — the argparse monkey-patch installed its `parse_args`/`parse_known_args` hooks once, closing over the *first* `Experiment`, so a second run created in the same process (a long-lived notebook kernel, programmatic reuse, or successive runs) kept logging every captured param onto experiment #1. The hooks now read a module-level active-experiment reference that each `patch_argparse(exp)` call retargets, so params always land on the current run.
 
-## [1.36.0] - 2026-07-11
+## 2026-07-11 (b)
 
 ### Security
 - **Stored-XSS hardening for inline dashboard handlers** — user-controlled values (experiment/session names, tags, studies, param & metric keys, artifact labels & paths, node labels) interpolated into inline `on*="…"` event handlers were HTML-escaped with `esc()` only. Inside a handler attribute the browser HTML-decodes the value *before* the JS engine parses it, so `esc()`'s `&#39;` decoded back to `'` and broke the button — or, with a crafted value from an arbitrary tracked script or a shared `.exptrack` DB, executed script. A new `escJs()` JS-string-context escaper (applied *before* `esc()`, via the composed `escJsAttr()` helper) now wraps every such site across the dashboard JS, and the ad-hoc quote-escapers were removed. A static `test_dashboard_js_integrity.py` guards the pattern (and that every inline handler references a defined function).
@@ -487,7 +541,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 ### Removed
 - **Dead code swept** — removed an `if False:` dispatch placeholder, a duplicate `api_delete_preview` route, unused CLI color imports, a doubled `gamma` in the hyperparameter regex, a legacy `cleanDatabase()` JS alias, an unreachable old-style `tag`/`untag` calling convention, and ~13 verified-dead dashboard CSS classes. The `static_parts/scripts.py` compat shim now re-exports all JS modules (was missing 7).
 
-## [1.35.1] - 2026-07-11
+## 2026-07-11 (a)
 
 ### Fixed
 - **`Experiment.resume()` no longer crashes** — every resume path (`Experiment.resume(id)`, `exptrack run --resume` auto-detect, and `run-start --resume`) raised `AttributeError` because the instance was built via `object.__new__` and never got `_defer_commit`, which the first `log_event` reads. Resume now works: you can reopen a finished run and keep logging metrics/params onto the same experiment.
@@ -500,7 +554,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Rapid experiment switching no longer clobbers the detail panel** — `refreshDetail()` awaited several fetches then wrote the panel without re-checking which experiment is selected, so a slow response for run A could overwrite run B's panel. It now bails before any DOM write if the user navigated away mid-fetch.
 - **Legacy `_result:*` params can no longer be stranded on migration** — the `metrics.source` migration backfill did all-or-nothing: one un-parseable `_result:*` value aborted the whole block, but the column already existed, so it never re-ran and those params were never migrated or cleaned up. The backfill is now per-row tolerant — good rows migrate into `metrics` and are deleted from `params`; a bad row is warned about and left in place.
 
-## [1.35.0] - 2026-06-22
+## 2026-06-22
 
 ### Fixed
 - **Failed runs now capture the traceback (file + line), not just the error message** — when a script wrapped by `exptrack run` / `python -m exptrack` crashed, only the one-line exception message was stored (as an `error` param) and the full traceback was lost: it was printed to stderr *after* `stderr.log` had already been closed, so the log was blank and the dashboard showed nothing useful. The crash handler now prints the traceback *before* restoring streams (so it tees into `stderr.log`) and passes the full formatted traceback to `Experiment.fail(error, traceback=…)`, which stores it as the `_error_traceback` param. The experiment detail view shows it in a prominent **Run failed** panel (with a Copy button) on failed runs.
@@ -508,17 +562,17 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **`with Experiment(...)` blocks capture the traceback too** — the context-manager failure path (`__exit__`) now records the full traceback (file + line), matching the `exptrack run` wrapper, so programmatic runs get the same **Run failed** panel instead of just the bare message.
 - **`I/O operation on closed file` tee warning** — the `_TeeWriter` that mirrors stdout/stderr into the log files now no-ops on writes/flushes after the log is closed (interpreter shutdown, or a library holding a stale stream reference) instead of printing `[exptrack] warning: could not tee flush log: I/O operation on closed file.`.
 
-## [1.34.0] - 2026-06-15
+## 2026-06-15 (c)
 
 ### Added
 - **Materialized runs carry their own metrics** — a notebook session logs every `metric()` into one auto-started run, so a graduated branch used to have the code but not its accuracy/loss. Materializing a node now also copies the live run's metrics that were logged **while that node's cells ran** (attributed by timestamp window: `[node.created_at, next node's created_at)`), so each finalized branch experiment is self-contained for comparison — the 0.7 branch gets the 0.7 accuracy, the 0.5 branch gets the 0.5 accuracy. Best-effort and source-preserving.
 
-## [1.33.1] - 2026-06-15
+## 2026-06-15 (b)
 
 ### Fixed
 - **Materialized / finalized runs now carry their setup code** — promoting a session node to an experiment (the Finalize action, the dashboard `＋ Promote to experiment`, or `materialize_experiment`) now replays the node's **whole ancestor chain** of cells (session root → upstream checkpoints → the node), not just the node's own fragment. A branch like `run_pipeline(data, threshold)` is meaningless without the upstream cell that defined `run_pipeline`/`data`; folding the ancestor setup code in makes each graduated experiment self-contained and re-runnable instead of "output but no code." The Finalize modal explains this, and a code-less checkpoint is labelled a *marker* (its branches carry the code) rather than implying it can be saved on its own.
 
-## [1.33.0] - 2026-06-15
+## 2026-06-15 (a)
 
 ### Added
 - **Finalize a session** — a new `✓ Finalize` button on the session view (and `exptrack session finalize <id>`) graduates a session into self-contained, grouped experiments: it materializes the un-promoted nodes you select into standalone runs (full code, `%%setup`, plots), groups every run from the session under a study named after the session, then moves the session to the Trash. The dashboard modal shows which nodes are already promoted vs. un-promoted and lets you pick which to materialize; the CLI prints the same plan and prompts unless `-y`. So once you've finished exploring, you know exactly what to re-run and can safely delete the session.
@@ -528,12 +582,12 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 ### Changed
 - **`delete_session` is now soft by default** — `delete_session(session_id)` sets `deleted_at` (recoverable) and leaves nodes + linked experiments untouched; pass `permanent=True` (or use the Trash's Delete forever) to hard-delete. Live listings (`list_sessions`, `find_session`, the dashboard sessions list) filter out trashed sessions.
 
-## [1.32.1] - 2026-06-14
+## 2026-06-14 (d)
 
 ### Fixed
 - **Settings UI** - fixed settings box, where vacuum and delete db were cut off. Settings now scrollable.
 
-## [1.32.0] - 2026-06-14
+## 2026-06-14 (c)
 
 ### Added
 
@@ -550,7 +604,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **`refreshDetail` slimmed** — the dashboard's ~400-line detail builder now delegates its Code Changes / Variables / Datasets blocks (and loading/error states) to small named helpers, and a pre-existing dead `summaryHtml` block was removed.
 - **Tests** — added `tests/test_hashing.py`, `tests/test_git.py`, `tests/test_gpu.py`, and `tests/test_dataset.py` covering previously-untested modules (file hashing incl. partial, git capture incl. outside-a-repo and exclude patterns, GPU info / `nvidia-smi` absence, and the new dataset manifest), plus query-layer tests for the batched list helpers and the `datasets` detail key.
 
-## [1.31.1] - 2026-06-14
+## 2026-06-14 (b)
 
 ### Changed
 
@@ -562,7 +616,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Duplicated orphan-sweep logic** — `_sweep_orphans` (internal) and `sweep_orphans` (public) were near-identical; both now delegate to one `_sweep_orphans_counts` helper driven by an `_ORPHAN_SPECS` table, so future schema changes touch one place.
 
-## [1.31.0] - 2026-06-14
+## 2026-06-14 (a)
 
 ### Added
 
@@ -579,7 +633,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Giant capture/CLI functions split into focused, unit-tested helpers** — `cmd_run_start` is now an orchestrator over `_parse_freeform_params` / `_collect_env_context` / `_resolve_run_start_experiment` / `_apply_study_stage` / `_emit_run_env`, and the notebook `_post_run_cell` hook over `_handle_scratch_or_setup` / `_record_cell_on_session` / `_process_tracked_cell`. Behavior is unchanged; the pieces are now small enough to read and have direct unit tests (param parsing, SLURM context, study/stage inheritance, env emission, finish-row gathering, scratch-cell gating).
 - **Generalized column migrations via `_add_columns(conn, table, {col: ddl})`** — every `_migrate_*` helper now declares its columns as a `{name: ddl}` map and calls the shared `_add_columns` primitive (built on `_table_columns`), which adds only the absent ones and returns the set it actually added. One-time backfills (e.g. `name_is_auto`, `params.source`) and index creation are gated on that return set, so the repetitive per-column `PRAGMA`/`if not in cols`/`ALTER` boilerplate is gone and an already-migrated DB is a provable no-op (now unit-tested).
 
-## [1.30.0] - 2026-06-13
+## 2026-06-13 (f)
 
 ### Changed
 
@@ -594,14 +648,14 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Closing the Trash returns you to the Sessions tab if that's where you opened it from** — opening Trash from a session's `🗑 Trash` button and then closing it used to dump you on the main/welcome page; Trash now remembers it was opened from the Sessions tab and restores it on close (other origins still fall back to the welcome screen as before).
 - **Clicking an experiment's name in the sidebar now opens it (and double-click-to-rename no longer mis-fires)** — the sidebar card name span used to swallow the click entirely (`stopPropagation` with no action), so the name was a dead zone for opening a run; it now uses the same debounced single-vs-double-click pattern as the main table (`onRowClick` on single click, `cancelRowClick()` before `startInlineRename` on double click), so a single click opens the run and a double click renames without also opening it.
 
-## [1.29.0] - 2026-06-13
+## 2026-06-13 (e)
 
 ### Fixed
 
 - **Promoting a session node now carries its code over so you can retrace and rerun** — when a session node is promoted to a standalone experiment (the dashboard's **＋ Promote to experiment** / `materialize_experiment`), each replayed cell now writes its **full source** to the content-addressed `cell_lineage` table and sets the timeline event's `cell_hash`. Before, only a one-line preview survived the promotion and the Timeline's "view source" button never appeared (it's gated on `cell_hash`), so the session's code looked like it didn't transition at all — now the whole cell is viewable and copyable on the promoted run, which stays linked to its session node.
 - **Clicking a just-promoted experiment in the sidebar no longer needs two clicks** — `showDetail()` only toggles back to the welcome screen when the experiment's detail is the view actually on screen. While the Sessions (or Trash) tab overlays the canvas, `currentDetailId` could already equal the clicked run from an earlier visit, so the first click was read as "close" and silently did nothing; it now opens on the first click. Promoting also refreshes the experiment list immediately so the new run is clickable without waiting for an auto-refresh.
 
-## [1.28.1] - 2026-06-13
+## 2026-06-13 (d)
 
 ### Changed
 
@@ -613,7 +667,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Legend dots no longer doubled** — the legend was rendering both a styled swatch *and* a literal `●`/`○`/`◌` glyph next to each label; removed the redundant glyph so each key shows one mark.
 - **Divergence halo is neutral, not violet** — a forking checkpoint's ring halo used the compare-pick purple (`--compare-bg`), which clashed with "purple = a compare pick"; it's now a neutral grey so purple stays reserved for picks.
 
-## [1.28.0] - 2026-06-13
+## 2026-06-13 (c)
 
 ### Changed
 
@@ -630,13 +684,13 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Session "→ exp" links now actually open the experiment** — clicking a node's `→ exp` badge (or the node-detail Linked-experiment link) previously appeared to do nothing: the Sessions tab overlay hides the detail view with `display:none !important`, and the navigation never dropped that overlay. `showDetailView()` now closes the Sessions tab first, so the experiment detail opens and its sidebar card highlights as expected.
 
-## [1.27.1] - 2026-06-13
+## 2026-06-13 (b)
 
 ### Fixed
 
 - **Dashboard failed to load (blank experiment list)** — a mis-escaped apostrophe in the new experiment→session "From session" back-link (`title="Open this run\'s session node"` inside a raw JS string) closed the JS string early, a syntax error that broke the *entire* dashboard script so nothing past the static header rendered. Replaced the apostrophe with the `&#39;` HTML entity.
 
-## [1.27.0] - 2026-06-13
+## 2026-06-13 (a)
 
 ### Added
 
@@ -647,7 +701,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Copy a single line from a session cell without it snapping shut** — releasing a drag-selection on a cell block's header no longer collapses the `<details>`, so you can select and copy one line (line numbers excluded) with a normal select + copy.
 
-## [1.26.0] - 2026-06-11
+## 2026-06-11
 
 ### Added
 
@@ -657,7 +711,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **`%%setup` in the Session Trees guide** — `docs/session-trees.md` previously documented only `%%scratch` and `%%pin`; it now covers the `%%setup` demoted-prep tier throughout (a three-tiers table, the timing guide, the runnable example, the per-node "what gets attached" section, and the schema), including the positional-scoping gotcha (a `%%setup` cell lands on whichever node is active, and promote/materialize replays only a node's *own* setup, not an ancestor checkpoint's). Added a new **portability** section documenting the guard cell, the `auto_capture.notebook: false` opt-out, and how to strip the magics.
 
-## [1.25.0] - 2026-06-10
+## 2026-06-10 (b)
 
 ### Added
 
@@ -668,7 +722,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Promote-to-experiment now carries plots and prep cells** — materializing a session node into an experiment (the `＋ Promote to experiment` button) previously dropped the node's saved plots and its `%%setup` prep cells, so the resulting run was hard to understand. It now registers the node's by-reference plots as artifacts (they appear in the Images tab) and replays `%%setup` cells as muted `setup` Timeline events, and prepends a lineage breadcrumb (`From session 'X' (branch): checkpoint → branch`) to the run's notes.
 
-## [1.24.0] - 2026-06-10
+## 2026-06-10 (a)
 
 ### Added
 
@@ -681,7 +735,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Sticky branch-compare bar** — the Compare / Clear bar in the Sessions tab now sticks to the top of the view while you scroll, and gained a **Done** button to exit Compare-branches mode. Combined with the existing per-node `⇄` pin (start) you can now start and stop a comparison anywhere in a long tree without scrolling back to the header toggle.
 - **Expanded session cells survive a re-render** — expanding a cell block in the node detail no longer collapses when the panel re-renders (e.g. saving a note or toggling the diff Split/Unified mode); open cells are remembered and restored.
 
-## [1.23.0] - 2026-06-09
+## 2026-06-09 (b)
 
 ### Added
 
@@ -706,7 +760,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **`%%scratch` / `%%setup` now display a trailing expression** — these cell magics ran their body with `exec()`, which swallows a bare final expression, so a DataFrame on the last line produced no output unless you added a `print`. Both now split off and route the trailing expression through IPython's display hook, so a final `df` renders normally.
 
-## [1.21.1] - 2026-06-09
+## 2026-06-09 (a)
 
 ### Changed
 
@@ -717,7 +771,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Stable DataFrame / object-array fingerprints** — `var_fingerprint` hashed a DataFrame via `df.values.tobytes()`, which for object/string columns serializes Python *pointer addresses* (not content). The hash therefore changed every cell even when the data was untouched, falsely flagging the variable as "changed". DataFrames/Series are now content-hashed with `pandas.util.hash_pandas_object` (object-column safe and stable), object-dtype arrays avoid `tobytes()`, and every fallback uses a stable shape/dtype signature instead of `id()`.
 - **No more spurious `_var/` "param overwritten" warning** — the false "changed" detection above re-logged the `_var/<name>` param each cell, and the stored value flipped between the assignment-form display and the bare summary, printing a noisy `[exptrack] warning: param '_var/df_model' overwritten` line. The warning is now suppressed for internal bookkeeping keys (`_var/`, `_code_change/`, `_cells_ran`), and the `_var/` param value is normalized to the bare summary so re-logging an unchanged variable is idempotent.
 
-## [1.21.0] - 2026-06-08
+## 2026-06-08 (b)
 
 ### Added
 
@@ -731,13 +785,13 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Per-cell capture no longer hashes every DataFrame twice** — `_capture_variables` walked the whole notebook namespace and content-hashed each variable in *two* passes (change-detection + snapshot) on every cell. It now computes each fingerprint exactly once per cell, roughly halving the dominant per-cell overhead in DataFrame-heavy notebooks.
 
-## [1.20.1] - 2026-06-08
+## 2026-06-08 (a)
 
 ### Fixed
 
 - **`%exptrack checkpoint` / `branch` no longer hang on git** — the git subprocess helper now redirects stdin from `/dev/null` and disables interactive prompts (`GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS`) so a misconfigured credential helper or terminal prompt can't freeze a notebook cell on the kernel's inherited stdin, and sets `GIT_OPTIONAL_LOCKS=0` so read-only `rev-parse`/`diff` calls skip waiting on a contended `index.lock`. Session-tree magics (and any other git capture) now fail fast instead of blocking.
 
-## [1.20.0] - 2026-05-29
+## 2026-05-29 (b)
 
 ### Added
 
@@ -754,7 +808,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Timeline "Output saved" no longer appears above the code that saved it** — an artifact logged mid-cell (e.g. `plt.savefig`) used to get a lower timeline `seq` than the `cell_exec` "Code run" event (which is emitted after the cell finishes), so the saved output sorted *above* the code. The `pre_run_cell` hook now reserves the cell_exec's seq before the cell body runs (`Experiment.reserve_timeline_seq()` + `log_event(seq=…)`), so code sorts before the outputs it produced.
 - **No more duplicate "cell 1" / "cell_1" on a Timeline row** — a notebook code-run row was showing both the human-readable `cell N` position chip *and* the raw stored `cell_<N>` key (e.g. "cell 1" immediately followed by a bold "cell_1"), which was redundant and read like two different things. The Timeline now shows a single cell label per row: the `cell N` chip when the notebook cell position is known, falling back to the stored key reformatted (`cell_1` → `cell 1`) for scripts or runs captured before cell positions were tracked. The internal `cell_<exec_num>` key is never surfaced alongside the chip.
 
-## [1.19.0] - 2026-05-29
+## 2026-05-29 (a)
 
 ### Changed
 
@@ -767,13 +821,13 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Word-level diff in the full cell source, not just the preview** — expanding **view source** on an edited Timeline cell now renders the whole source as a diff (current vs. previous) with the same word-level spotlight as the short timeline preview, instead of two separate plain blocks you had to eyeball-compare. Unchanged lines stay as context so the full source is still visible, and it honors the word-diff toggle (off ⇒ plain line-level). Expanding the source now also collapses the row's short inline preview so the two no longer duplicate each other (it returns when you hide the source). Very large sources fall back to the previous side-by-side dimmed view.
 - **Line numbers in diffs + clearer Timeline numbers** — code diffs (the **view source** cell diff and the **Uncommitted Changes** git diff) now show an old/new line-number gutter, seeded from the `@@` hunk headers for git diffs, so you can place a change in the file. And the small number on each Timeline row — previously a bare figure that read like it might be a line or cell number — is now prefixed with `#` and explained on hover as execution order. Notebook code-run rows also show a small grey `cell N` chip (the notebook cell position) so you can tell *which cell* ran, separately from when it ran.
 
-## [1.18.1] - 2026-05-28
+## 2026-05-28 (f)
 
 ### Fixed
 
 - **Timeline no longer word-diffs exptrack magic cells against unrelated cells** — a cell containing only `%exptrack` magics (`checkpoint "…"`, `branch "…"`, `%load_ext exptrack`) is a command, not editable code, but cell lineage was treating it like any other cell: the fuzzy `SequenceMatcher` parent finder (30% similarity) easily matched two short magics that merely share `%exptrack ` and quotes, so a `checkpoint` cell showed up as `edited` with a `← <hash>` lineage badge and a nonsensical red/green word-diff against, say, an earlier `session start` cell. `cell_lineage.is_magic_only()` now excludes magic-only cells from lineage both as the diff subject and as parent candidates (so they can't pollute matching for real code cells either), and `_process_cell_lineage` emits no new/edited badge or diff for them — they render as the command they are. A render-time guard in the Timeline view (`_isMagicOnlyCell`) suppresses the stale badges/diff for runs captured before this fix, so existing experiments read cleanly without a re-run. Note: this only affects magic-*only* cells; a cell that begins with `%exptrack branch` but then runs real code is still tracked and diffed normally.
 
-## [1.18.0] - 2026-05-28
+## 2026-05-28 (e)
 
 ### Added
 
@@ -783,14 +837,14 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Auto-generated run names no longer break on notebook bookkeeping params** — in a notebook session, internal params exptrack logs for its own tracking (`_var/…` assignment captures, `_code_change/…` diff fragments, `_cells_ran`) were being fed into `make_run_name`; since it takes the *first* N params, they crowded out the real hyperparameter, and their values (which contain slashes and spaces — e.g. `_var/data` → `data = make_data()`) turned the run name into a nested path like `May28_Untitled___var/datdata = make…`, making the on-disk output-folder rename fail with `No such file or directory`. `make_run_name` now skips any param key beginning with `_` before picking the top N, and path-sanitizes every name component, so names stay short, readable (`May28_Untitled__threshold0.7__a3f2…`), and always a single valid folder name.
 
-## [1.17.0] - 2026-05-28
+## 2026-05-28 (d)
 
 ### Added
 
 - **Plots attach to branches, by reference** — when `plt.savefig(...)` runs while a session node is active, exptrack now records the file path on that node (no copy, consistent with its no-copy artifact rule). The dashboard renders the plots as a thumbnail grid in the node detail (**Plots (N)**), side-by-side in the branch **Compare** view, and shows a `🖼 N` indicator on the tree node — so you can fire off `threshold = 0.7` / `threshold = 0.5` branches that each `savefig` a train/test curve and eyeball them next to each other. Thumbnails link to the full image and degrade to a "⚠ image missing on disk" note if the file was moved or overwritten. Backed by a new nullable `session_nodes.images` column (JSON list of `{path, label, ts}`, deduped by path, capped at 30 most-recent) populated by `SessionManager.record_image()`. **Note:** because plots are tracked by reference, saving every branch to the *same* filename (`roc.png`) overwrites the earlier branch's plot on disk — give each branch a distinct filename (`roc_0.7.png`) to compare them.
 - **Attached plot files are removed when a node is permanently deleted** — purging a trashed node (`purge-node`) or emptying a session's trash now moves that node's by-reference plot files to your **OS Trash** (recoverable; never `rm -rf` — the same mechanism experiment-delete uses), and reports how many were moved. Soft-deleting a node (`rm-node` / the tree `×`) leaves the files in place so Restore still works; the soft-delete confirm warns that the N attached plots will be trashed if you later purge. Whole-session `delete` (`session rm`) leaves plot files untouched, the same way it preserves linked experiments.
 
-## [1.16.0] - 2026-05-28
+## 2026-05-28 (c)
 
 ### Added
 
@@ -802,13 +856,13 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Compare-picked nodes use a distinct violet accent** — picking a node for branch comparison previously drew the same blue bar as the hover/selected state, so a node you'd merely clicked looked already-picked. Picks now use a dedicated violet accent (`--compare-accent`, with a dark-mode variant) for the 6px bar, tint, order badge, the Compare toolbar, and the comparison columns' top border — clearly separate from the blue selection accent.
 
-## [1.15.1] - 2026-05-28
+## 2026-05-28 (b)
 
 ### Fixed
 
 - **Branch compare: picked nodes are no longer confusable with the one you were viewing** — entering `⇄ Compare branches` left the previously-selected node wearing its thin blue accent bar, which looked identical to the "picked for compare" bar, so it read as already-selected when it wasn't. The single-select highlight is now suppressed while comparing, picked nodes get a thicker 6px bar plus a tint, and each carries a numbered badge (1, 2, 3…) showing its order in the comparison. Removing a middle pick renumbers the rest.
 
-## [1.15.0] - 2026-05-28
+## 2026-05-28 (a)
 
 ### Added
 
@@ -816,7 +870,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Compare branches side-by-side** — a new `⇄ Compare branches` toggle in the session view header turns the tree into a multi-select; click any checkpoints/branches to add them to a comparison, then **Compare N** renders them as side-by-side columns showing each node's type, cell count, `+N −M` diff summary, promoted-experiment link, and captured **Result**. Makes "which threshold won" obvious at a glance. Picked nodes get a thick blue accent bar and a numbered order badge; the selection survives tree re-renders.
 - **Empty the session trash / delete trashed nodes for good** — previously a trashed session node could only be *restored*; the sole way to truly remove it was deleting the entire session. New `purge_node(node_id)` and `empty_trash(session_id)` in `exptrack/sessions/manager.py` permanently drop trashed rows (refusing anything not already trashed, so removal stays a deliberate trash → purge two-step). Surfaced as **Delete forever** per row and an **Empty trash (N)** button in the dashboard Trash panel (both with no-undo confirms), plus `POST /api/session/<sid>/purge-node` and `POST /api/session/<sid>/empty-trash`. CLI gains `exptrack session purge-node <node_id>` and `exptrack session empty-trash <id_or_name>` (both prompt unless `-y`/`--yes`). Linked experiments are preserved throughout.
 
-## [1.14.0] - 2026-05-27
+## 2026-05-27 (d)
 
 ### Changed
 
@@ -828,7 +882,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **`session_nodes.deleted_at` column** — nullable `REAL` (unix timestamp). Added via idempotent `ALTER TABLE` in `_ensure_schema()` so `exptrack upgrade` migrates existing projects in place. Indexed on `(session_id, deleted_at)` so the Trash list query stays cheap on large sessions.
 - **`list_trashed_nodes(session_id)` and `restore_node(node_id)`** in `exptrack/sessions/manager.py` — the same module that already owns `delete_node` / `delete_session`. `restore_node` walks the trashed subtree and any trashed ancestors in a single transaction; both functions are tested for the obvious paths (round-trip restore, refusing to restore a live node, orphan-guard on parent revival).
 
-## [1.13.0] - 2026-05-27
+## 2026-05-27 (c)
 
 ### Added
 
@@ -837,14 +891,14 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
   - **Dashboard**: a tiny `×` button appears on hover (and when selected) on every non-root tree node. Clicking it POSTs to `/api/session/<sid>/delete-node-preview` first to fetch counts, then shows a native confirm with the node label, the descendant count, and the number of linked experiments that will be preserved. Confirming POSTs to `/api/session/<sid>/delete-node`.
   - New companion helper `preview_node_delete(node_id)` returns `{label, node_type, is_root, nodes, descendants, experiments}` so callers can show counts without doing a trial delete.
 
-## [1.12.0] - 2026-05-27
+## 2026-05-27 (b)
 
 ### Added
 
 - **`git_diff_exclude` config — keep notebooks out of the captured diff** — a new top-level config key (default `["*.ipynb"]`) takes a list of git pathspec patterns that are excluded from every diff capture (experiment creation, session checkpoint, session branch, and the per-cell branch refresh). The old behavior dumped the full output of `git diff HEAD` into `experiments.git_diff` and `session_nodes.git_diff`, which on projects with a committed `.ipynb` meant the notebook's JSON churn (output cells, execution counts) ate the `max_git_diff_kb` byte budget before any real `.py` changes made it in. Notebook work is already captured by the cell snapshot + cell-lineage system, so excluding `.ipynb` from `git diff` by default keeps the captured diff focused on actual source edits. Override by setting `git_diff_exclude: []` in `.exptrack/config.json` to restore the old behavior, or extend with additional pathspecs (e.g. `["*.ipynb", "*.csv", "data/**"]`). Implemented as a new `git_diff(*range_args)` helper in `core/git.py` that appends `-- :(exclude,glob)<pattern>` args; threaded through `git_info()` and every `_git("diff", …)` call in `sessions/manager.py`.
 - **"awaiting first cell…" placeholder on empty session nodes** — a branch or checkpoint created via `%exptrack branch "foo"` / `%exptrack checkpoint "bar"` in a magic-only cell has no `cell_source` until the user runs another cell (the magic cell itself is intentionally skipped by `_is_session_cell`). Previously this rendered as a silent blank node and users assumed branching was broken. The tree now renders an italic monospaced `awaiting first cell…` line under any branch/checkpoint node that has no recorded cells and no children, so the empty-state is explicit and the user understands the node will populate on the next cell run.
 
-## [1.11.5] - 2026-05-27
+## 2026-05-27 (a)
 
 ### Changed
 
@@ -853,28 +907,28 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Sticky diff toolbar in the session detail** — the Split / Unified toggle and `+N −M` summary now sit in a sticky header bar at the top of the diff section, so they stay reachable while scrolling a long diff instead of disappearing off-screen.
 - **Collapsed cells in the node detail are visible** — when a node records more than three cells, the older ones still default to collapsed, but a clickable `▸ N earlier cells collapsed — expand all` hint now sits at the top of the cell list so the user can see what's hidden and open everything in one click.
 
-## [1.11.4] - 2026-05-26
+## 2026-05-26 (d)
 
 ### Fixed
 
 - **Inline rename in the main table no longer hides what you're typing** — the name column is narrow with `overflow: hidden; white-space: nowrap`, and the `auto` badge eats ~30px at the front, so the `width: 100%` rename input ended up extending past the cell's right edge into the clipped zone. As you typed, the input scrolled its content to keep the cursor on the right — which was exactly where the column clipped — so old characters scrolled into view on the left and your current typing lived behind the clip, making the box look empty. The truncate-cell now lifts its `overflow: hidden` (and bumps `z-index`) while a `.name-edit-input` is mounted inside, so the input renders fully and the cursor stays visible. Added an explicit `color: var(--fg)` to `.name-edit-input` defensively so inputs always pick up the theme text color (some browsers don't inherit color into `<input>`/`<textarea>` by default).
 - **Renaming a run with "Needs naming" checked no longer makes it vanish** — committing an inline rename clears `name_is_auto`, which used to drop the row out of the filtered view instantly with no visible confirmation that the rename worked (and made multi-step edits like fixing a typo feel impossible). Just-renamed rows now stay visible in the "Needs naming" view for the rest of the session — the missing `auto` badge is the visual confirmation, and the `(N)` count still reflects the real backlog. Toggling the filter off (or reloading) clears the held-over rows.
 
-## [1.11.3] - 2026-05-26
+## 2026-05-26 (c)
 
 ### Fixed
 
 - **Inline rename in the main table no longer disappears mid-edit (real fix)** — the v1.11.2 attempt only addressed the sidebar; the table bug had a different cause. Any of several normal events (a tag added in detail view, a metric POST, a backend `loadExperiments()` cycle from mutations) calls `renderExperiments()` while the user is still typing in the rename input, blowing away `#exp-body` innerHTML and triggering the input's blur — which then committed the partial text. `startInlineRename` now stores the in-progress input on a module-level `activeRename`, and `renderExperiments`, `renderExpList`, and the detail-panel rewrite each call `_preserveActiveRename()` to detach the input *before* the innerHTML reset and re-mount it in the freshly-rendered name slot (with value, focus, and selection preserved) afterwards. The blur handler now no-ops when the input has been detached, so a re-render no longer counts as the user finishing.
 - **Cursor jump in `{{template}}` variable inputs (real fix)** — the v1.11.2 surgical-span update wasn't enough; the underlying cause was `draggable="true"` on the parent `.cmd-item`. In several browsers (notably Firefox/Safari) a draggable ancestor disrupts cursor and selection behavior in child inputs as soon as you click into them, sending the caret back to position 0 between keystrokes. `draggable="true"` now lives on the `.cmd-drag-handle` glyph only; the card itself only listens for `dragover`/`drop`. Reorder still works the same — you just grab the handle, not the card body.
 
-## [1.11.2] - 2026-05-26
+## 2026-05-26 (b)
 
 ### Fixed
 
 - **Inline rename in the sidebar no longer disappears mid-edit** — double-clicking a run name in the sidebar used to bubble the first click up to the card, which fired `showDetail` → `renderExpList`, redrawing the sidebar while the user was still typing and losing the input. The name span now stops single-click propagation (matching how the main table already handles it), so the rename input survives until you press Enter or click away.
 - **Cursor no longer jumps to the front when editing a `{{template}}` variable** — the previous keystroke handler rebuilt the entire command code block via `innerHTML` on every keypress, which on some browsers stole focus from the variable input and reset its cursor to position 0. Each `.cmd-fill` span now carries a `data-var` attribute, and the handler updates only the matching spans' `textContent` / class in place, so focus and caret position stay put.
 
-## [1.11.1] - 2026-05-26
+## 2026-05-26 (a)
 
 ### Added
 
@@ -892,7 +946,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Inline rename now refreshes the "Needs naming" count** — renaming an experiment from the dashboard immediately clears its in-memory `name_is_auto` flag and updates the count next to the filter toggle, so you don't have to reload to see the badge disappear.
 
-## [1.11.0] - 2026-05-22
+## 2026-05-22
 
 ### Added
 
@@ -906,13 +960,13 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Readable date in auto-generated run names** — `make_run_name` now front-loads a friendly month/day so un-renamed runs read chronologically: `May22_train__lr0.01_bs32__a3f2…` instead of the old `train__lr0.01_bs32__0312_a3f2…`. Set `naming.date_style` to `"numeric"` in `.exptrack/config.json` to keep the legacy `MMDD` layout.
 - **Clearer search placeholders** — the sidebar and main search boxes now read "Search name, params, tags…" / "Search name, params, tags, notes…" to surface that search already matches parameter keys/values, tags, studies, branch, and notes — not just the name.
 
-## [1.10.1] - 2026-05-17
+## 2026-05-17 (b)
 
 ### Changed
 
 - **Permanent-delete now moves files to the OS Trash, not `rm -rf`** — when the "Also move files to system Trash" checkbox is ticked on a permanent delete, artifact files and the experiment's output directory are sent to the user's system Trash (Finder Trash via `osascript` on macOS, XDG `~/.local/share/Trash` on Linux) instead of being unlinked. If the OS-trash call fails (or platform isn't supported), files fall back to `<project>/.exptrack/trash/<timestamp>__<name>/`. Files are never destructively deleted — if both OS-trash and local-fallback fail, the file is left alone with a stderr warning. `delete_experiment` now returns a `{os_trash, local_trash, missing, failed}` count dict; `POST /api/experiment/<id>/delete-permanent` and `/api/bulk-delete-permanent` include this as `file_stats` in the response. Modal copy updated: "Also delete files on disk" → "Also move files to system Trash" with a hint about Finder/Files recovery and the `.exptrack/trash/` fallback. Bumped patch version since the API response shape is additive
 
-## [1.10.0] - 2026-05-17
+## 2026-05-17 (a)
 
 ### Added
 
@@ -925,7 +979,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **`POST /api/experiment/<id>/delete` and `POST /api/bulk-delete` are now soft-deletes** — they set `deleted_at` and leave files alone. The destructive path is now only reachable through the new `/delete-permanent` endpoints. Code that relied on the old hard-delete semantics from these endpoints should switch to `/delete-permanent` with an explicit `{delete_files: true}` body
 - **Default queries now filter out trashed experiments** — `list_experiments`, `get_stats` (every count), `get_all_tags`, `get_all_studies`, `get_studies`, and unique-branches stats all add `deleted_at IS NULL`. Single-experiment lookups (`find_experiment`, `get_experiment_detail`) are deliberately unfiltered so the Trash view can still load detail by id
 
-## [1.9.2] - 2026-05-07
+## 2026-05-07 (d)
 
 ### Added
 
@@ -937,7 +991,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Diff coloring is theme-aware and subtler** — added/removed lines now use semi-transparent tints driven by new `--diff-add-bg`, `--diff-add-bar`, `--diff-del-bg`, `--diff-del-bar`, `--diff-empty-bg`, `--diff-hunk-bg` CSS variables (with separate values for `body.dark`), plus a 3px inset bar instead of the old saturated `rgba(...)` block. Easier on the eyes than the previous wall-of-green/wall-of-red
 - **Sessions tab buttons and inputs match the rest of the dashboard** — the per-node "Save note" button and note `<textarea>` previously used hard-coded colors and an undefined `--input-bg` / `--text` variable (so dark mode showed white-on-white); they now follow the same `var(--code-bg)` / `var(--card-bg)` / `var(--border)` pattern as `.bulk-bar button` and other action buttons. Same fix applied to all `var(--accent)` / `var(--hover-bg)` references in the sessions stylesheet, which were also undefined
 
-## [1.9.1] - 2026-05-07
+## 2026-05-07 (c)
 
 ### Changed
 
@@ -947,7 +1001,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **`CHANGELOG.md` version-bracket links** — reference-style URL definitions only existed for `[1.0.0]`–`[1.1.0]`, so every version header from `[1.2.0]` onward (including `[1.9.0]`) rendered as plain text instead of a GitHub compare link. Added the missing definitions through `[1.9.1]`
 
-## [1.9.0] - 2026-05-07
+## 2026-05-07 (b)
 
 ### Added
 
@@ -960,13 +1014,13 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **`exptrack storage` reports Session Trees** — adds a Sessions row to the database breakdown and per-column hotspot rows for `session_nodes.cell_source` and `session_nodes.git_diff`
 - **Session Trees** — an opt-in layer for exploratory notebook work that records the *shape* of your thinking (checkpoints, branches, scratch cells) as a navigable tree, not a flat log. Drive it from the notebook with new IPython magics: `%exptrack session start "name"` to begin, `%exptrack checkpoint "label"` to mark a stable point (snapshots a per-checkpoint git diff), `%exptrack branch "label"` to declare intent before diverging, `%%scratch` to opt a cell out of all tracking, `%exptrack promote "label"` to link the active experiment to the current node, and `%exptrack session end` to close. Sessions live in two new tables (`sessions`, `session_nodes`) and add a nullable `session_node_id` to `experiments`; standard `%load_ext exptrack` tracking is unchanged when no session is active. New CLI: `exptrack sessions`, `exptrack session show <id|name>` (ASCII tree), `exptrack session nodes <id>`, `exptrack session rm <id>` (preserves linked experiments), `exptrack session note <node_id> "..."`. New dashboard tab toggled from the header (`☰ Sessions`) renders the tree as a vertical node graph with checkpoint/branch/abandoned styles, click-to-inspect (cell source, diff, note), and links to promoted experiments. Stdlib only, no new deps
 
-## [1.8.0] - 2026-05-07
+## 2026-05-07 (a)
 
 ### Added
 
 - **Collapsible study groups in the sidebar AND the main table** — both the left experiments sidebar (via a new "Group by study" toggle next to the search box) and the main experiments table (via a new "Study" button in the Group by row) can now group experiments under their first study, so a study with four runs collapses to a single row instead of dominating the panel. Defaults differ: the **sidebar** starts each study **collapsed** (the busy-rail case is the main reason), while the **main table** starts each study **expanded** like the other groupings (Git Commit / Branch / Status). State persists in localStorage (`exptrack-sidebar-group-study`, `exptrack-expanded-studies`); experiments without a study fall under "(no study)"
 
-## [1.7.4] - 2026-05-06
+## 2026-05-06 (j)
 
 ### Fixed
 
@@ -974,13 +1028,13 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Tab bar wraps to a second row when squeezed** — `.tabs` now `flex-wrap: wrap`, so Timeline / Charts / Images / Data Files / Compare Within / Confusion Matrix flow onto a new row instead of one being shoved past the edge when both sidebars are open
 - **Confusion matrix and per-class table scroll inside their own area** — re-added `max-width: 100%; overflow-x: auto` on `#conf-matrix-area` and `#conf-results` only (not on the whole canvas), so a wide NxN grid gets its own scrollbar without anything else on the page being affected
 
-## [1.7.3] - 2026-05-06
+## 2026-05-06 (i)
 
 ### Fixed
 
 - **Wide content (confusion matrix etc.) is reachable instead of clipped** — `#main-content` switched from `overflow-x: hidden` to `overflow-x: auto`. Previously a wide unbreakable element (NxN confusion matrix grid) was being clipped against the canvas edge with no way to see the rest. Now the canvas itself scrolls horizontally when content can't shrink, so nothing is hidden. Removed the inner `overflow-x: auto` wrap on the matrix areas — it was causing the matrix to vanish behind a narrow inner scroll region instead of letting the canvas scroll naturally
 
-## [1.7.2] - 2026-05-06
+## 2026-05-06 (h)
 
 ### Fixed
 
@@ -988,7 +1042,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Confusion matrix Compare view stacks based on canvas width** — switched the `.conf-compare-grid` two-column → one-column breakpoint from a viewport `@media` rule to the same `@container main` query used by the rest of the detail layout
 - **Detail two-column layout keeps both columns longer** — bumped the `.detail-grid` stack threshold from 760px to 980px (and `.info-grid` from 520px to 600px) so two columns only collapse when the canvas is genuinely too narrow, not while there's still comfortable room
 
-## [1.7.1] - 2026-05-06
+## 2026-05-06 (g)
 
 ### Changed
 
@@ -997,7 +1051,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **`saveOrDownload` surfaces server errors** — when the server returns `{error: "..."}`, the dashboard toast now includes the message before falling back to a browser download
 - **`setExportToFolder` storage style** — writes `'true'`/`'false'` via `_storageSet` for both states, matching the rest of the dashboard's preference handling instead of using `removeItem` for false
 
-## [1.7.0] - 2026-05-06
+## 2026-05-06 (f)
 
 ### Added
 
@@ -1010,7 +1064,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Single source of truth for toolbox boot** — pin classes apply synchronously at module load (no FOUC), data loading happens once via `_bootDashboard` after auth clears, removing the previous double-fetch path
 - **Shared `downloadBlob` helper** — promoted to `js/core.py`; new toolbox exports and the experiment Compare/Export flow now share it. The new `saveOrDownload` wraps it with the project-folder option
 
-## [1.6.3] - 2026-05-06
+## 2026-05-06 (e)
 
 ### Fixed
 
@@ -1019,13 +1073,13 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **Detail layout stacks based on canvas width, not viewport width** — `#main-content` is now a CSS containment context (`container-type: inline-size`), and the two-up `.detail-grid` plus the `.info-grid` label/value pairs collapse to a single column once the canvas itself drops below 760px / 520px. Previously the stacking only triggered on a narrow viewport, so a pinned right panel could squeeze the canvas without ever flipping to single-column
 - **Reverted forced equal-width columns on params/metrics tables** — `table-layout: fixed` was distributing the 6 metric columns equally, leaving badge / source cells too narrow. Returned to natural column sizing while keeping `word-break: break-word` so long values still wrap
 
-## [1.6.2] - 2026-05-06
+## 2026-05-06 (d)
 
 ### Fixed
 
 - **Detail overview no longer overflows the main canvas** — `#main-content` now clips horizontal overflow so wide content (long values in info-grid, params, metrics) wraps instead of pushing past the viewport edge when the Todos / Commands panel is pinned. Params and metrics tables use `table-layout: fixed` with `word-break: break-word` so long values wrap in-cell, and info-grid value columns use `minmax(0, 1fr)` so long paths and commit hashes wrap rather than expanding the grid
 
-## [1.6.1] - 2026-05-06
+## 2026-05-06 (c)
 
 ### Added
 
@@ -1035,21 +1089,21 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Pinned panel no longer pushes content off-screen** — the layout shift now uses a CSS variable (`--toolbox-w`) tied to the drawer width, and `body.toolbox-pinned` clips horizontal overflow so resizing the panel correctly reflows the header and main canvas instead of producing a horizontal scrollbar
 
-## [1.6.0] - 2026-05-06
+## 2026-05-06 (b)
 
 ### Added
 
 - **Persistent Todos / Commands side panel** — the toolbox drawer (Todos & Commands) can now be pinned as a persistent right-side panel, mirroring the experiment sidebar on the left. Pin via the new pushpin button in the drawer header or via the new "Pin Todos / Commands panel" checkbox under Settings → Display. When pinned, the drawer stays open across navigation, the page content is shifted to make room, and clicking the Todo / Cmds header buttons just switches tabs instead of toggling. Pin state and last-active tab persist in localStorage (`exptrack-toolbox-pinned`, `exptrack-toolbox-tab`)
 - **Export Todos and Commands** — each toolbox panel now has download buttons. Todos export as `.md` (grouped Active / Done with checkboxes), `.txt`, or `.json`. Commands export as `.sh` (runnable script with label / tags / study comments), `.md` (fenced code blocks), or `.json`
 
-## [1.5.1] - 2026-05-06
+## 2026-05-06 (a)
 
 ### Fixed
 
 - **Dark-mode contrast across the dashboard** — added `color-scheme: light` / `color-scheme: dark` to `:root` and `body.dark` so browser-rendered form controls (text inputs, selects, number spinners, scrollbars) flip to dark UA defaults instead of leaving black-on-white text scattered through the UI when dark mode is on
 - **Confusion matrix readability in dark mode** — heatmap cells now brighten the palette and use a higher base alpha so low-intensity fills are visible against the dark card background, and any filled cell uses white text in dark mode (instead of switching at 0.55 intensity, which left mid-range cells with low-contrast gray text)
 
-## [1.5.0] - 2026-05-01
+## 2026-05-01
 
 ### Added
 
@@ -1062,46 +1116,46 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Sidebar no longer pops back open on every detail refresh** — adding a metric, param, tag, note, or any other in-place mutation kept re-expanding the experiment sidebar even after you collapsed it. The dashboard now only auto-expands the sidebar when transitioning into the detail view (or switching to a different experiment); subsequent refreshes leave the user's collapsed/open choice alone
 
-## [1.4.5] - 2026-04-28
+## 2026-04-28 (g)
 
 ### Changed
 
 - **Confusion matrix class names render in caps** — both the column header inputs and the mirrored row labels apply `text-transform: uppercase` so typing "class 1" displays as "CLASS 1" on both axes (the underlying value is preserved as-typed in storage and exports)
 - **Color picker + dark-mode-friendly heatmap** — new "Color" dropdown in the matrix toolbar lets you switch between Blue, Green, Purple, Orange, Teal, and Grey palettes (choice persists in localStorage). The on-screen heatmap now uses an alpha-based fill so empty cells stay transparent against the card background, which fixes the washed-out look in dark mode while keeping the same gradient feel in light mode. The PNG export lerps from white to the chosen accent so it stays clean on a white background
 
-## [1.4.4] - 2026-04-28
+## 2026-04-28 (f)
 
 ### Changed
 
 - **Confusion matrix uses natural casing throughout** — dropped `text-transform: uppercase` from the axis labels ("Predicted" / "Actual"), the row/column "Total" labels, the metric stat labels, and the per-class table header. The PNG export now renders these in the same Title-case form. Domain abbreviations (TP/FP/FN/TN/F1) are kept since that's their conventional spelling
 
-## [1.4.3] - 2026-04-28
+## 2026-04-28 (e)
 
 ### Changed
 
 - **Confusion matrix row labels match column labels** — row class names share the same font, size, padding, and centering as the column-header inputs, so the two axes look like one set of labels rather than two visually distinct fields
 - **Confusion matrix PNG export** — new "Export PNG" button rasterizes the matrix (with axis labels, totals, and the Blues heatmap) at 2× scale via SVG → canvas, ready to drop straight into a slide deck or paper
 
-## [1.4.2] - 2026-04-28
+## 2026-04-28 (d)
 
 ### Changed
 
 - **Confusion matrix totals, exports, and palette** — the matrix now grows a "Total" column on the right and a "Total" row at the bottom showing per-row, per-column, and grand-total counts. Cells are shaded with a single sklearn-style Blues gradient (no more red/green) so colorblind viewers and dark-mode users can read it without the traffic-light palette. New buttons export the matrix as **CSV** (download), **Markdown** (clipboard), or **JSON** (clipboard) — labels, row/column totals, and grand total included
 
-## [1.4.1] - 2026-04-28
+## 2026-04-28 (c)
 
 ### Changed
 
 - **Confusion matrix UX polish** — class names are now edited in one place (the column headers) and mirror onto the row headers, so labels stay in sync. Cells auto-fit large counts and drop the +/- spinner (counts can be pasted in directly). The "Actual" axis is rendered as a vertical sidebar that no longer overlaps row labels. A diagonal-green / off-diagonal-red heatmap shades each cell by relative magnitude so big confusions stand out at a glance. Per-class numbers in the results table are formatted with thousands separators
 
-## [1.4.0] - 2026-04-28
+## 2026-04-28 (b)
 
 ### Added
 
 - **Confusion matrix calculator in the dashboard** — every experiment detail view gains a "Confusion Matrix" tab where you punch in raw counts (binary or NxN multi-class) and immediately see accuracy, per-class precision/recall/F1, plus macro and weighted aggregates. Class labels are editable, the matrix size is adjustable up to 20 classes, and "Save as metrics" pushes accuracy and macro/weighted precision/recall/F1 onto the experiment as manual metrics. Matrix state is persisted per-experiment in localStorage so it survives reloads
 - **Multi-line notes** — pressing Enter inside the inline notes editor now produces a real visual line break in the rendered notes; the detail view honors `\n` via `white-space: pre-wrap` so paragraphs read the way you typed them
 
-## [1.3.0] - 2026-04-28
+## 2026-04-28 (a)
 
 ### Added
 
@@ -1112,7 +1166,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **`params` table now has a `source` column** — automatic ALTER TABLE migration on first run. Backfill marks params on manually-created experiments (those with NULL `hostname`/`python_ver`) as `manual`; everything else stays `auto`. Existing reads via `get_experiment_detail` are unchanged in shape; a new sibling `param_sources` map exposes per-key origin to the dashboard
 
-## [1.2.0] - 2026-04-21
+## 2026-04-21
 
 ### Added
 
@@ -1122,7 +1176,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **`exptrack ui-stop --port N`** — kill a dashboard process still holding a port (useful after a parent shell died without propagating SIGHUP, or you lost the auto-generated token in a different terminal). Uses `fuser` (Linux) with an `lsof` fallback (macOS/BSD)
 - **EADDRINUSE hint** — `exptrack ui` now prints a helpful message pointing at `ui-stop` and `lsof -i :PORT` when the port is already taken
 
-## [1.1.0] - 2026-04-20
+## 2026-04-20
 
 ### Added
 
@@ -1138,7 +1192,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 
 - **Duplicate `batch-size` / `batch_size` params** — scripts using argparse with dashed long flags (e.g. `--batch-size`) previously produced two keys in their params: the dashed form from the raw `sys.argv` fallback and the underscored form from argparse's Namespace. The fallback now normalizes dashes to underscores on capture, matching argparse's convention, so only one key lands in the params store
 
-## [1.0.1] - 2026-03-27
+## 2026-03-27
 
 ### Added
 
@@ -1159,7 +1213,7 @@ Combines the dashboard-usability / hook-logging work (Group-by-Script, "What cha
 - **`protect_on_rerun` config option** — artifact protection removed. The deduplication set in auto-detect already prevents double-logging without needing to copy files
 - **`artifact_protection.py` module** — no longer needed
 
-## [pre-1.0.0] - 2026-03-26
+## 2026-03-26
 
 First development milestone. Never published to PyPI — see the [1.0.0] entry at
 the top of this file for the first release that was.
