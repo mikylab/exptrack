@@ -6,6 +6,8 @@ let currentDetailExpId = '';
 
 // Tab ids in the order the buttons are rendered in refreshDetail's template —
 // the class toggle below is index-coupled to that order, so the two must match.
+// Order is load-bearing: switchDetailTab pairs DETAIL_TABS[i] with the i-th
+// #detail-tabs button, so this array and the button row must stay in step.
 const DETAIL_TABS = ['overview','timeline','charts','images','logs','compare-within','confusion'];
 
 function switchDetailTab(tab, expId) {
@@ -54,6 +56,65 @@ function _isMagicOnlyCell(src) {
   return hasMagic;
 }
 
+// ── Run source (folded into the Timeline) ────────────────────────────────────
+// The code a run actually ran, read back from its snapshot (scripts) or cell
+// records (notebooks). This is independent of the file on disk, so it still
+// answers after the script has been edited or was never committed — which is
+// exactly when it is hardest to get any other way.
+let _sourceLoadedFor = '';
+
+// Fetched on open, not with the timeline: a script snapshot can be hundreds of
+// KB and most visits to this tab are about the events, not the source.
+function _runSourceFoldHtml(expId) {
+  _sourceLoadedFor = '';   // markup rebuilt ⇒ the body below is a fresh stub
+  return '<details class="tl-source-fold">' +
+    '<summary onclick="loadRunSource(\'' + escJsAttr(expId) + '\')">Source' +
+    '<span class="tl-source-hint">the code this run actually ran, as captured' +
+    ' — independent of the file on disk</span></summary>' +
+    '<div id="tl-source-body"><p style="color:var(--muted)">Loading source…</p>' +
+    '</div></details>';
+}
+
+async function loadRunSource(expId) {
+  const box = document.getElementById('tl-source-body');
+  if (!box || _sourceLoadedFor === expId) return;
+  _sourceLoadedFor = expId;
+  const data = await api('/api/run-source/' + encodeURIComponent(expId));
+  // api() returns null on failure (it has already raised the error bar); a bare
+  // `.error` read would throw and leave the fold stuck on "Loading…".
+  if (!data || data.error) {
+    _sourceLoadedFor = '';                       // let a retry re-fetch
+    box.innerHTML = _apiFailedHtml('source');
+    return;
+  }
+
+  if (!data.kind || !data.files.length) {
+    box.innerHTML =
+      '<p style="color:var(--muted)">No source captured for this run.</p>' +
+      '<p style="color:var(--muted);font-size:var(--text-xs)">Scripts capture a ' +
+      'full snapshot automatically; notebook runs capture executed cells. A run ' +
+      'recorded before source capture, or a label-only pipeline run, has neither.</p>';
+    return;
+  }
+
+  const kindNote = data.kind === 'script'
+    ? 'Full script source, captured when the run started.'
+    : data.files.length + ' executed cell(s), in execution order.';
+  let html = '<div class="source-tab-note">' + esc(kindNote) + '</div>';
+
+  for (const f of data.files) {
+    const lines = (f.content || '').split('\n');
+    const code = _numberedSourceHtml(f.content);
+    html += '<details class="source-file" open>' +
+      '<summary><span class="sf-label">' + esc(f.label) + '</span>' +
+      '<span class="sf-lines">' + lines.length + ' lines</span>' +
+      '<span class="copy-btn" data-raw="' + esc(f.content || '') +
+      '" onclick="event.preventDefault();event.stopPropagation();copySessionText(this)">⧉ Copy</span>' +
+      '</summary><pre class="cell-code">' + code + '</pre></details>';
+  }
+  box.innerHTML = html;
+}
+
 async function loadTimeline(expId, filter) {
   if (filter !== undefined) timelineFilter = filter;
   // 'lineage' is a client-side filter — fetch all cell_exec events then filter
@@ -94,6 +155,13 @@ async function loadTimeline(expId, filter) {
     html += '<button class="' + (timelineFilter===t?'active':'') + '" onclick="loadTimeline(\'' + expId + '\',\'' + t + '\')">' + labels[i] + '</button>';
   });
   html += '</div>';
+
+  // The run's captured source, folded in above the events: the timeline says
+  // what ran and in what order, the fold says what the code was. It renders
+  // before the empty-events return on purpose — a plain script run records no
+  // timeline events at all, and that is precisely a run whose source is the
+  // only thing the tab can show.
+  html += _runSourceFoldHtml(expId);
 
   if (!events.length) {
     html += '<p style="color:var(--muted)">No timeline events recorded.</p>';
@@ -183,15 +251,16 @@ async function loadTimeline(expId, filter) {
       html += ' <span style="color:var(--muted);margin-left:8px">' + ts + '</span>';
       if (preview) html += '<div class="tl-code-preview">' + _highlightPy(preview) + '</div>';
 
-      if (ev.source_diff && ev.source_diff.length && !magicOnly) {
+      const sdiff = _normalizeSourceDiff(ev.source_diff);
+      if (sdiff.length && !magicOnly) {
         let summaryHtml = '', rows = [];
-        for (const d of ev.source_diff.slice(0, 8)) {
+        for (const d of sdiff.slice(0, 8)) {
           if (d.op === 'summary') summaryHtml += '<div class="tl-diff-summary">' + esc(d.line) + '</div>';
           else if (d.op === '+') rows.push({kind:'add', text: String(d.line).slice(0,200)});
           else if (d.op === '-') rows.push({kind:'del', text: String(d.line).slice(0,200)});
         }
         html += '<div class="tl-diff">' + summaryHtml + _renderDiffRows(rows);
-        if (ev.source_diff.length > 8) html += '<div style="color:var(--muted)">... ' + (ev.source_diff.length - 8) + ' more lines</div>';
+        if (sdiff.length > 8) html += '<div style="color:var(--muted)">... ' + (sdiff.length - 8) + ' more lines</div>';
         html += '</div>';
       }
 
@@ -303,11 +372,29 @@ async function viewCellSource(cellHash, btnEl) {
   const data = await api('/api/cell-source/' + cellHash);
   btnEl.textContent = 'hide source';
   if (!data || data.error || !data.source) {
+    // No cell_lineage row. For a *script* run there never was one — cell
+    // lineage is a notebook concept, so a script's `cell_exec` event carries a
+    // hash that nothing backs, and the old message announced "compacted" for a
+    // run nothing had ever compacted. The script's real source lives
+    // content-addressed in code_snapshots, which no compaction mode touches,
+    // so ask for that before apologising.
+    const snap = currentDetailId
+      ? await api('/api/run-source/' + encodeURIComponent(currentDetailId))
+      : null;
+    const file = snap && !snap.error && (snap.files || [])[0];
     const div = document.createElement('div');
-    div.className = 'source-view';
-    div.innerHTML = '<span style="color:var(--yellow)">Source was compacted to save space.</span>'
-      + '<br><span style="color:var(--muted);font-size:12px">Cell hash: ' + cellHash + '</span>'
-      + '<br><span style="color:var(--muted);font-size:12px">The cell lineage and variable changes are still tracked in the timeline.</span>';
+    if (file) {
+      div.className = 'source-view';
+      div.innerHTML =
+        '<div style="margin-bottom:8px;color:var(--blue);font-size:11px;' +
+          'text-transform:uppercase">Source from snapshot: ' + esc(file.label) +
+        '</div>' + _numberedSourceHtml(file.content);
+    } else {
+      div.className = 'source-view';
+      div.innerHTML = '<span style="color:var(--yellow)">No source stored for this cell.</span>'
+        + '<br><span style="color:var(--muted);font-size:12px">Cell hash: ' + esc(cellHash) + '</span>'
+        + '<br><span style="color:var(--muted);font-size:12px">Variable changes and lineage are still tracked in the timeline.</span>';
+    }
     btnEl.parentElement.appendChild(div);
     return;
   }
@@ -315,7 +402,7 @@ async function viewCellSource(cellHash, btnEl) {
   // diff so the changed words are spotlighted (the same word-level highlighting as
   // the timeline preview, honoring the Settings toggle) — unchanged lines stay as
   // context so the full source is still visible. No parent ⇒ plain highlighted source.
-  const diffRows = data.parent_source ? _lineDiffRows(data.parent_source, data.source) : null;
+  let diffRows = data.parent_source ? _lineDiffRows(data.parent_source, data.source) : null;
   let html;
   if (diffRows) {
     html = '<div class="source-view diff-view">'
@@ -422,7 +509,8 @@ async function loadImages(expId) {
     for (let i = 0; i < paths.length; i++) {
       const p = paths[i];
       html += '<div class="img-path-row">';
-      html += '<span class="img-path-val" ondblclick="startEditImagePath(\'' + expId + '\',' + i + ',this)">' + esc(p) + '</span>';
+      html += '<span class="img-path-val" data-path="' + esc(p) + '" onclick="startEditImagePath(\'' + expId + '\',' + i + ',this)" title="Click to edit">' + esc(p) + '</span>';
+      html += '<button class="img-path-edit" onclick="startEditImagePath(\'' + expId + '\',' + i + ',this.parentNode.querySelector(&quot;.img-path-val&quot;))" title="Edit path">&#9998;</button>';
       html += '<button class="img-path-del" onclick="deleteImagePath(\'' + expId + '\',' + i + ')" title="Remove path">&times;</button>';
       html += '</div>';
     }
@@ -430,7 +518,7 @@ async function loadImages(expId) {
 
   // Add path form
   html += '<div class="img-path-add">';
-  html += '<input type="text" id="img-path-input" placeholder="e.g. outputs/samples" style="flex:1">';
+  html += '<input type="text" id="img-path-input" placeholder="e.g. outputs/samples" style="flex:1" onkeydown="if(event.key===&quot;Enter&quot;)addImagePath(&quot;' + expId + '&quot;)">';
   html += '<button onclick="addImagePath(\'' + expId + '\')">Add Path</button>';
   html += '</div>';
 
@@ -559,26 +647,79 @@ async function deleteImagePath(expId, index) {
   loadImages(expId);
 }
 
-function startEditImagePath(expId, index, el) {
-  const currentVal = el.textContent.trim();
+// Editing a saved scan path (Images + Data Files). One implementation for both
+// tabs — they were byte-identical apart from the endpoint and the reload.
+//
+// Three things this has to get right, all of which it got wrong before:
+//
+// (1) The seed value comes from `data-path`, not from the cell's text. Clicking
+//     into the editor bubbles back to the cell's own open-handler, which then
+//     re-read `textContent` — by then the input had replaced the text, so it
+//     re-opened the editor seeded with an empty string and the path you were
+//     fixing a typo in vanished. That is also why the handler is detached
+//     below and why re-entry short-circuits: three independent guards, because
+//     silently wiping a path the user is mid-edit is not recoverable by undo.
+// (2) The row's open-handler comes off for the duration; the reload restores it.
+// (3) Clicks inside the editor never reach an ancestor handler.
+function _startEditScanPath(expId, index, el, kind) {
+  const api = kind === 'image' ? '/image-path' : '/log-path';
+  const reload = () => (kind === 'image' ? loadImages(expId) : loadLogs(expId));
+
+  const existing = el.querySelector('input');
+  if (existing) { existing.focus(); return; }   // already editing this row
+
+  const currentVal = (el.dataset.path || el.textContent).trim();
+  el.onclick = null;
+  el.removeAttribute('onclick');
+
   const input = document.createElement('input');
-  input.type = 'text'; input.className = 'name-edit-input';
-  input.value = currentVal; input.style.cssText = 'width:200px;font-size:12px;padding:2px 4px';
-  el.innerHTML = ''; el.appendChild(input); input.focus(); input.select();
+  input.type = 'text';
+  input.className = 'name-edit-input';
+  // Fills the row: a fixed 200px was narrower than most of the paths it had to
+  // edit, so the text you were correcting scrolled out of view as you typed.
+  input.value = currentVal;
+  input.style.cssText = 'width:100%;box-sizing:border-box;font-size:13px;padding:5px 8px';
+  input.onclick = (ev) => ev.stopPropagation();
+  input.ondblclick = (ev) => ev.stopPropagation();
+  // A second click inside the cell must not close the editor. Opening it
+  // replaces the cell's text with an input, which reflows the row — so the
+  // second press of a double-click lands on the cell rather than the input,
+  // blurs it, and the blur-save snapped the editor shut a moment after it
+  // opened. preventDefault on mousedown suppresses the focus change (and only
+  // that: the ✎ and × buttons still receive their click).
+  el.onmousedown = (ev) => { if (ev.target !== input) ev.preventDefault(); };
+  el.innerHTML = '';
+  el.appendChild(input);
+  input.focus();
+  input.select();
+
   let saved = false;
   async function doSave() {
-    if (saved) return; saved = true;
+    if (saved) return;
+    // Focus can leave the input without leaving the edit — see the mousedown
+    // guard above. Only a blur that actually lands outside finishes it.
+    if (document.activeElement === input) return;
+    saved = true;
     const newVal = input.value.trim();
     if (newVal && newVal !== currentVal) {
-      await postApi('/api/experiment/' + expId + '/image-path', {action: 'edit', index, path: newVal});
+      await postApi('/api/experiment/' + expId + api,
+                    {action: 'edit', index, path: newVal});
     }
-    loadImages(expId);
+    reload();
   }
   input.addEventListener('blur', doSave);
   input.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
-    if (ev.key === 'Escape') { saved = true; loadImages(expId); }
+    if (ev.key === 'Escape') { saved = true; reload(); }
   });
+}
+
+function startEditImagePath(expId, index, el) {
+  _startEditScanPath(expId, index, el, 'image');
+}
+
+function startEditLogPath(expId, index, el) {
+  _startEditScanPath(expId, index, el, 'log');
 }
 
 function openImageModal(src, name) {
@@ -628,7 +769,8 @@ async function loadLogs(expId) {
     for (let i = 0; i < paths.length; i++) {
       const p = paths[i];
       html += '<div class="img-path-row">';
-      html += '<span class="img-path-val" ondblclick="startEditLogPath(\'' + expId + '\',' + i + ',this)">' + esc(p) + '</span>';
+      html += '<span class="img-path-val" data-path="' + esc(p) + '" onclick="startEditLogPath(\'' + expId + '\',' + i + ',this)" title="Click to edit">' + esc(p) + '</span>';
+      html += '<button class="img-path-edit" onclick="startEditLogPath(\'' + expId + '\',' + i + ',this.parentNode.querySelector(&quot;.img-path-val&quot;))" title="Edit path">&#9998;</button>';
       html += '<button class="img-path-del" onclick="deleteLogPath(\'' + expId + '\',' + i + ')" title="Remove path">&times;</button>';
       html += '</div>';
     }
@@ -636,7 +778,7 @@ async function loadLogs(expId) {
 
   // Add path form
   html += '<div class="img-path-add">';
-  html += '<input type="text" id="log-path-input" placeholder="e.g. outputs/logs or logs/tensorboard" style="flex:1">';
+  html += '<input type="text" id="log-path-input" placeholder="e.g. outputs/logs or logs/tensorboard" style="flex:1" onkeydown="if(event.key===&quot;Enter&quot;)addLogPath(&quot;' + expId + '&quot;)">';
   html += '<button onclick="addLogPath(\'' + expId + '\')">Add Path</button>';
   html += '</div>';
 
@@ -726,28 +868,6 @@ async function addLogPath(expId) {
 async function deleteLogPath(expId, index) {
   await postApi('/api/experiment/' + expId + '/log-path', {action: 'delete', index});
   loadLogs(expId);
-}
-
-function startEditLogPath(expId, index, el) {
-  const currentVal = el.textContent.trim();
-  const input = document.createElement('input');
-  input.type = 'text'; input.className = 'name-edit-input';
-  input.value = currentVal; input.style.cssText = 'width:200px;font-size:12px;padding:2px 4px';
-  el.innerHTML = ''; el.appendChild(input); input.focus(); input.select();
-  let saved = false;
-  async function doSave() {
-    if (saved) return; saved = true;
-    const newVal = input.value.trim();
-    if (newVal && newVal !== currentVal) {
-      await postApi('/api/experiment/' + expId + '/log-path', {action: 'edit', index, path: newVal});
-    }
-    loadLogs(expId);
-  }
-  input.addEventListener('blur', doSave);
-  input.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
-    if (ev.key === 'Escape') { saved = true; loadLogs(expId); }
-  });
 }
 
 // ── Result types management ──────────────────────────────────────────────────

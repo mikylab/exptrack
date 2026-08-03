@@ -182,6 +182,19 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
     # param. Keep it out of the params table.
     error_traceback = all_params.pop("_error_traceback", "") or ""
 
+    # Did this run capture a script at all? The dashboard's code panel needs the
+    # answer to decide whether it may say anything about "this run's script",
+    # and it is a server-side fact: `_script_hash` is written by
+    # `capture_script_snapshot` and nothing else, while `script` itself cannot
+    # answer it (a notebook carries its `.ipynb` there and a pipeline run
+    # carries a label). State it rather than leaving the client to infer it from
+    # which internal param keys happen to be present.
+    has_script_capture = bool(
+        all_params.get("_script_hash")
+        or all_params.get("_code_changes")
+        or all_params.get("_code_status")
+    )
+
     _resolved_diff = resolve_git_diff(conn, exp["git_diff"])
 
     return {
@@ -194,6 +207,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "duration_s": exp["duration_s"],
         "script": exp["script"],
         "command": exp["command"],
+        "has_script_capture": has_script_capture,
         "git_branch": exp["git_branch"],
         "git_commit": exp["git_commit"],
         "git_diff": _resolved_diff,
@@ -438,14 +452,17 @@ def _get_compact_status(conn, exp_id: str, raw_git_diff) -> dict:
     # Check if timeline diffs are compacted
     try:
         tl_row = conn.execute("""
-            SELECT COUNT(*) as total,
-                   SUM(CASE WHEN source_diff IS NOT NULL THEN 1 ELSE 0 END) as has_diff
+            SELECT SUM(CASE WHEN source_diff IS NOT NULL
+                             AND source_diff NOT LIKE '[compacted%'
+                            THEN 1 ELSE 0 END) as has_diff,
+                   SUM(CASE WHEN source_diff LIKE '[compacted%'
+                            THEN 1 ELSE 0 END) as marked
             FROM timeline WHERE exp_id=? AND event_type IN ('cell_exec', 'observational')
         """, (exp_id,)).fetchone()
-        tl_total = (tl_row["total"] or 0) if tl_row else 0
         tl_has_diff = (tl_row["has_diff"] or 0) if tl_row else 0
+        tl_marked = (tl_row["marked"] or 0) if tl_row else 0
     except Exception:
-        tl_total, tl_has_diff = 0, 0
+        tl_has_diff, tl_marked = 0, 0
 
     # Determine cell status
     if cells_total == 0:
@@ -464,7 +481,12 @@ def _get_compact_status(conn, exp_id: str, raw_git_diff) -> dict:
     return {
         "diff": "compacted" if diff_compacted else ("clean" if not raw_git_diff else "stored"),
         "cells": cell_status,
-        "timeline": "compacted" if (tl_total > 0 and tl_has_diff == 0) else ("none" if tl_total == 0 else "stored"),
+        # Only a marker proves a diff was stripped. A NULL source_diff is the
+        # normal state for a script run against a clean tree — reading that as
+        # "compacted" told users their source had been reclaimed when nothing
+        # had touched it. No marker and no diff simply means nothing stored.
+        "timeline": ("compacted" if tl_marked
+                     else "stored" if tl_has_diff else "none"),
     }
 
 
@@ -1624,7 +1646,13 @@ def get_export_data(conn, exp_id: str, full: bool = False,
     all_params = {p["key"]: json.loads(p["value"]) for p in params}
     user_params = {k: v for k, v in all_params.items() if not k.startswith("_")}
     variables = {k[5:]: v for k, v in all_params.items() if k.startswith("_var/")}
+    # Legacy per-cell keys (notebook runs no longer write them — the Timeline
+    # carries that edit) plus the script's own diff-vs-commit, which had never
+    # been exported at all: it is filtered out of `user_params` by the `_`
+    # prefix and matched none of the `_code_change/` keys collected here.
     code_changes = {k[13:]: v for k, v in all_params.items() if k.startswith("_code_change/")}
+    if all_params.get("_code_changes"):
+        code_changes["script"] = all_params["_code_changes"]
     datasets = all_params.get("_dataset_manifest") or {}
 
     data = {
@@ -2147,3 +2175,39 @@ def update_experiment_stage(conn, exp_id: str, stage: int, stage_name: str | Non
             "UPDATE experiments SET stage=?, updated_at=? WHERE id=?",
             (stage, now, exp_id)
         )
+
+
+def get_run_source(conn, exp_id: str) -> dict:
+    """Everything exptrack captured of a run's own code, for review or rescue.
+
+    The source has always been stored — a script's full snapshot in
+    ``code_snapshots``, a notebook's cells in ``cell_lineage`` — but nothing
+    outside ``compare_run_code`` could reach it, so "show me the code this run
+    actually ran" had no answer at the CLI or in an export. That matters most
+    exactly when it is hardest to get any other way: the file has since been
+    edited, or was never committed.
+
+    Returns ``{kind, id, name, files}`` where ``kind`` is ``'script'``,
+    ``'cells'`` or ``None`` and ``files`` is a list of ``{label, content}``.
+    """
+    row = find_experiment(conn, exp_id, "id, name, script")
+    if not row:
+        return {"kind": None, "id": None, "name": None, "files": []}
+    out = {"kind": None, "id": row["id"], "name": row["name"], "files": []}
+
+    src = _script_snapshot_source(conn, row["id"])
+    if src is not None:
+        label = (row["script"] or "script").split("/")[-1]
+        out["kind"], out["files"] = "script", [{"label": label, "content": src}]
+        return out
+
+    cells = _run_cells(conn, row["id"])
+    files = [
+        {"label": f"cell {c['cell_pos']}" if c["cell_pos"] is not None
+                  else f"cell #{i + 1}",
+         "content": c["source"] or ""}
+        for i, c in enumerate(cells) if c["source"]
+    ]
+    if files:
+        out["kind"], out["files"] = "cells", files
+    return out

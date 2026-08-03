@@ -117,15 +117,83 @@ function selectAllMultiCompare() {
   for (const opt of sel.options) opt.selected = true;
 }
 
+// Files whose working-tree diff differs between two runs — i.e. code that moved
+// between the attempts but isn't either run's own script. Both runs' stored
+// `git_diff` bodies are already on the /api/compare payload, so this needs no
+// request; a sentinel ('[compacted…]', '[capture-failed]') is a status, not diff
+// text, so a pair carrying one is skipped rather than reported as a difference.
+function _cmpWorkingTreeFiles(a, b) {
+  const da = (a && a.git_diff) || '', db = (b && b.git_diff) || '';
+  if (!da && !db) return [];
+  // Every diff sentinel is a bracketed marker ('[compacted…]', '[capture-failed]',
+  // '[diff-unavailable]') — a status, never diff text. Two runs carrying
+  // different markers are not two runs whose code differed.
+  if (da.startsWith('[') || db.startsWith('[')) return [];
+  if (da === db || typeof _parseDiff !== 'function') return [];
+  // Per file, keep two things: a key for "did this differ between the runs?",
+  // and the file's post-image *as this run saw it* — the hunks' context and
+  // added lines, i.e. what the file actually contained when the run started.
+  // Diffing the two post-images is what turns "helper.py differed" into the
+  // line that moved.
+  const byFile = d => {
+    const m = {};
+    for (const f of _parseDiff(String(d)).files) {
+      if (!f.hunks.length) continue;
+      const key = f.hunks.map(
+        h => h.header + '\n' + h.rows.map(r => r.kind + r.text).join('\n')).join('\n');
+      const post = f.hunks.map(
+        h => h.rows.filter(r => r.kind !== 'del').map(r => r.text).join('\n')).join('\n');
+      m[_shortFileLabel(f.header)] = { key, post };
+    }
+    return m;
+  };
+  const ma = byFile(da), mb = byFile(db);
+  return [...new Set([...Object.keys(ma), ...Object.keys(mb)])]
+    .filter(k => (ma[k] || {}).key !== (mb[k] || {}).key)
+    .sort()
+    .map(k => ({ file: k, a: (ma[k] || {}).post || '', b: (mb[k] || {}).post || '' }));
+}
+
+// One code-diff block, used by both branches of the Code changes panel.
+// `lineNumbers` is false for a working-tree reconstruction, whose line numbers
+// would be those of the hunks rather than of the file.
+function _cmpCodeBlockHtml(label, a, b, lineNumbers) {
+  const rows = (typeof _lineDiffRows === 'function') ? _lineDiffRows(a || '', b || '') : null;
+  return '<div class="cmp-code-block"><div class="cmp-code-label">' + esc(label) + '</div>'
+    + (rows ? _renderDiffRows(rows, lineNumbers)
+            : '<pre class="cell-code">' + esc(b || a || '') + '</pre>')
+    + '</div>';
+}
+
 // Render the "Code changes" panel for the Compare view: the cell edit (or
 // script-source edit) between the two attempts, using the shared line/word-diff
 // renderer. `cd` is the /api/compare `code_diff` payload
 // ({mode, cells:[{pos,label,a,b}]}). Older attempt → newer attempt.
-function _renderCompareCodeDiff(cd) {
+function _renderCompareCodeDiff(cd, expA, expB) {
   if (!cd || !cd.mode || cd.mode === 'none') return '';
   const cells = cd.cells || [];
   const kind = cd.mode === 'script' ? 'Script source' : 'Cell edits';
   if (!cells.length) {
+    // "No code change" is only true of the code this compares — the run's own
+    // script or cells. A run routinely differs from the last one by an edit to
+    // a file it *imports*: run train.py, tweak helper.py. That edit is captured
+    // (it's in each run's working-tree diff) but it is not the run's own source,
+    // so this panel found nothing and said, flatly, that nothing changed — the
+    // exact opposite of what happened, on the one screen built to answer it.
+    const moved = _cmpWorkingTreeFiles(expA, expB);
+    if (moved.length) {
+      let h = '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">'
+        + 'Code changes <span class="cmp-code-count">'
+        + moved.length + ' other file' + (moved.length === 1 ? '' : 's')
+        + ' differed</span></summary>'
+        + '<p style="color:var(--muted);font-size:12px;margin:4px 0 8px">These runs executed identical '
+        + (cd.mode === 'script' ? 'script source' : 'cells')
+        + ', but a file around them changed between the attempts. Reconstructed from '
+        + 'each run\'s working-tree diff, so it covers the changed regions of the '
+        + 'file rather than the whole of it.</p>';
+      for (const m of moved) h += _cmpCodeBlockHtml(m.file, m.a, m.b, false);
+      return h + '</details>';
+    }
     return '<details><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">' +
       'Code changes <span class="cmp-code-none">no code change between these runs</span></summary>' +
       '<p style="color:var(--muted);font-size:12px;margin:4px 0 12px">' +
@@ -135,18 +203,7 @@ function _renderCompareCodeDiff(cd) {
   let h = '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">' +
     'Code changes <span class="cmp-code-count">' + cells.length + ' ' +
     (cd.mode === 'script' ? 'file' : (cells.length === 1 ? 'cell' : 'cells')) + ' changed</span></summary>';
-  for (const c of cells) {
-    const rows = (typeof _lineDiffRows === 'function') ? _lineDiffRows(c.a || '', c.b || '') : null;
-    h += '<div class="cmp-code-block">';
-    h += '<div class="cmp-code-label">' + esc(c.label || kind) + '</div>';
-    if (rows) {
-      h += _renderDiffRows(rows, true);
-    } else {
-      // Too large to diff — show both sides plainly.
-      h += '<pre class="cell-code">' + esc(c.b || c.a || '') + '</pre>';
-    }
-    h += '</div>';
-  }
+  for (const c of cells) h += _cmpCodeBlockHtml(c.label || kind, c.a, c.b, true);
   h += '</details>';
   return h;
 }
@@ -202,7 +259,7 @@ async function doCompare() {
   }
 
   // ── Code changes between the two runs (the run/run/compare loop payoff) ──
-  html += _renderCompareCodeDiff(data.code_diff);
+  html += _renderCompareCodeDiff(data.code_diff, data.exp1, data.exp2);
 
   if (allVarKeysFromTimeline.length) {
     html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Variables <span class="help-icon" title="Final variable state from the execution timeline of each experiment.">?</span></summary><table class="params-table"><tr><th>Variable</th><th>' + esc(n1) + '</th><th>' + esc(n2) + '</th></tr>';

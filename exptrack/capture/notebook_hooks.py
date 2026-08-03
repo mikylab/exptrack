@@ -614,13 +614,18 @@ def _log_hp_params(exp, ns, new_vars, changed_vars, source_diff,
     if all_new_var or all_changed_var:
         exp.log_params({**all_new_var, **all_changed_var})
 
-    if source_diff and (code_is_new or code_changed):
-        diff_summary = "; ".join(
-            f"{'+'if e['op']=='+'else '-'} {e['line'].strip()}"
-            for e in source_diff if e["op"] != "="
-        )[:500]
-        if diff_summary:
-            exp.log_param(f"_code_change/cell_{exec_num}", diff_summary)
+    # A cell's edit is *not* logged as a `_code_change/cell_N` param any more.
+    # `_emit_timeline_events` already stores the same edit on the cell_exec
+    # event's `source_diff` — as the structured op/line list, which the Timeline
+    # renders with the word-level diff renderer — so the param was a second,
+    # lossier copy of it in the same database. Two costs, both real: one cell
+    # edit rendered in two places (Timeline *and* the run's code panel, which is
+    # about the script's diff against the last commit and has no business
+    # carrying notebook cells), and a row per edited cell per run that nothing
+    # could reclaim — `compact --code-changes` is snapshot-gated and a notebook
+    # run has no script snapshot, so these accumulated for the life of the
+    # project. Runs captured before this keep theirs; nothing reads them except
+    # the legacy paths that still know the key.
 
     if already_seen and not code_changed and not new_vars and not changed_vars:
         _nb_state["cells_ran"].append(exec_num)

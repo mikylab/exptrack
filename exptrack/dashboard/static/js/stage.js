@@ -2,30 +2,38 @@
 // ── Stage inline editing ─────────────────────────────────────────────────────
 
 function startInlineStage(id, td) {
+  closeOpenCellEditor();
   const exp = allExperiments.find(e => e.id === id);
   if (!exp) return;
   const curStage = exp.stage != null ? exp.stage : '';
   const curName = exp.stage_name || '';
-  td.style.overflow = 'visible';
-  td.innerHTML = '<div style="display:flex;gap:4px;align-items:center;white-space:nowrap" onclick="event.stopPropagation()">'
-    + '<input type="number" class="inline-edit-input" style="width:50px;font-size:13px;padding:4px 6px" placeholder="#" value="' + esc(String(curStage)) + '" id="stage-num-' + id + '">'
-    + '<input type="text" class="inline-edit-input" style="width:70px;font-size:13px;padding:4px 6px" placeholder="label" value="' + esc(curName) + '" id="stage-name-' + id + '">'
-    + '<button style="font-size:12px;padding:3px 8px;cursor:pointer;border:1px solid var(--border);border-radius:3px;background:var(--code-bg)" onclick="saveInlineStage(\'' + id + '\')">&#10003;</button>'
+  td.removeAttribute('title');   // the "Double-click to edit" hint is stale once open
+  // `.cell-edit-pop` floats the editor clear of the Stage column, which is
+  // narrower than these two inputs plus the ✓ ever fit — the old in-flow editor
+  // overflowed onto whatever cell came next.
+  td.innerHTML = '<div class="cell-edit-pop" onclick="event.stopPropagation()">'
+    + '<input type="number" class="inline-edit-input" style="width:46px;box-sizing:border-box;font-size:13px;padding:4px 6px" placeholder="#" value="' + esc(String(curStage)) + '" id="stage-num-' + id + '">'
+    + '<input type="text" class="inline-edit-input" style="flex:1 1 60px;min-width:0;box-sizing:border-box;font-size:13px;padding:4px 6px" placeholder="label" value="' + esc(curName) + '" id="stage-name-' + id + '">'
+    + '<button style="font-size:12px;padding:3px 8px;cursor:pointer;border:1px solid var(--border);border-radius:3px;background:var(--code-bg)" onclick="closeOpenCellEditor()">&#10003;</button>'
     + '</div>';
   const numInput = document.getElementById('stage-num-' + id);
   if (numInput) { numInput.focus(); numInput.select(); }
-  numInput.addEventListener('keydown', function(ev) {
-    if (ev.key === 'Enter') saveInlineStage(id);
-    if (ev.key === 'Escape') { renderExperiments(); }
-  });
+  // ✓ and Enter both go through closeOpenCellEditor, so saving and being
+  // closed by another editor take one path — the token that identifies this
+  // editor stays in this closure and can't be mixed up with a later editor on
+  // the same cell.
+  let editToken = 0;
+  const onKey = function(ev) {
+    if (ev.key === 'Enter') closeOpenCellEditor();
+    if (ev.key === 'Escape') _afterInlineEdit(editToken);
+  };
+  numInput.addEventListener('keydown', onKey);
   const nameInput = document.getElementById('stage-name-' + id);
-  nameInput.addEventListener('keydown', function(ev) {
-    if (ev.key === 'Enter') saveInlineStage(id);
-    if (ev.key === 'Escape') { renderExperiments(); }
-  });
+  nameInput.addEventListener('keydown', onKey);
+  editToken = _registerCellEdit(td, () => saveInlineStage(id, editToken));
 }
 
-async function saveInlineStage(id) {
+async function saveInlineStage(id, editToken) {
   const numInput = document.getElementById('stage-num-' + id);
   const nameInput = document.getElementById('stage-name-' + id);
   const stageVal = numInput ? numInput.value.trim() : '';
@@ -38,7 +46,7 @@ async function saveInlineStage(id) {
   if (res.ok) {
     const exp = allExperiments.find(e => e.id === id);
     if (exp) { exp.stage = body.stage; exp.stage_name = nameVal; }
-    renderExperiments();
+    _afterInlineEdit(editToken);
     if (currentDetailId === id) refreshDetail(id);
   }
 }
@@ -46,6 +54,11 @@ async function saveInlineStage(id) {
 function startDetailStageEdit(id, el) {
   const exp = allExperiments.find(e => e.id === id);
   if (!exp) return;
+  // Opens on a single click, so drop the handler while the editor is up — a
+  // click on its own inputs bubbles back here and would rebuild it under the
+  // cursor. refreshDetail restores the span, handler and all.
+  el.onclick = null;
+  el.removeAttribute('onclick');
   const curStage = exp.stage != null ? exp.stage : '';
   const curName = exp.stage_name || '';
   el.innerHTML = '<div style="display:inline-flex;gap:4px;align-items:center">'

@@ -208,6 +208,19 @@ def api_cell_source(conn, cell_hash: str) -> dict:
     return result
 
 
+def api_run_source(conn, exp_id: str) -> dict:
+    """The code a run actually ran — script snapshot or notebook cells.
+
+    Backs the Timeline tab's source fold. Independent of the file on disk, so it
+    still answers after the script has been edited or deleted.
+    """
+    from ...core.queries import get_run_source
+    result = get_run_source(conn, exp_id)
+    if not result["id"]:
+        return {"error": "experiment not found", "id": exp_id}
+    return result
+
+
 def api_export(conn, exp_id: str, qs: dict) -> dict:
     from ...core.queries import PARAMS_EXPORT_FORMATS, format_export_markdown, format_export_params
     full = str(qs.get("full", "")).lower() in ("1", "true", "yes")

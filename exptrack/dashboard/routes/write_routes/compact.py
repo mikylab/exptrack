@@ -29,6 +29,8 @@ def api_compact(conn, body: dict) -> dict:
     do_diff = mode == "diff" or do_deep
     do_cells = mode == "cells" or do_deep
     do_timeline = mode == "timeline" or do_deep
+    # Not part of "deep" — see the note in cli/admin_cmds.cmd_compact.
+    do_code_changes = mode == "code-changes"
 
     # Resolve experiment IDs
     resolved_ids = []
@@ -40,6 +42,23 @@ def api_compact(conn, body: dict) -> dict:
         return {"ok": True, "compacted": 0, "freed": 0, "detail": "No matching experiments",
                 "will_remove": []}
 
+    if do_code_changes:
+        from exptrack.core.storage import (
+            compact_code_changes,
+            preview_code_change_compact,
+        )
+        fn = preview_code_change_compact if dry_run else compact_code_changes
+        st = fn(conn, resolved_ids)
+        skipped = len(st["skipped_no_snapshot"])
+        detail = (f"{st['rows']} summary row(s) across {st['runs']} run(s)"
+                  if st["rows"] else "nothing to compact")
+        if skipped:
+            detail += f"; skipped {skipped} run(s) with no code snapshot"
+        return {"ok": True, "dry_run": dry_run, "compacted": st["runs"],
+                "freed": st["bytes"], "freed_fmt": fmt_bytes(st["bytes"]),
+                "skipped_no_snapshot": skipped, "detail": detail,
+                "will_remove": [detail] if dry_run else []}
+
     if dry_run:
         return _compact_preview(conn, resolved_ids, do_diff, do_cells, do_timeline)
 
@@ -48,10 +67,11 @@ def api_compact(conn, body: dict) -> dict:
 
     # ── 1. Git diff compaction ────────────────────────────────────────────
     if do_diff:
-        diff_freed, diff_count = _compact_git_diffs(conn, resolved_ids)
-        freed += diff_freed
-        if diff_count:
-            detail_parts.append(f"diffs: {diff_count}")
+        from exptrack.core.storage import compact_git_diffs
+        st = compact_git_diffs(conn, resolved_ids)
+        freed += st["bytes"]
+        if st["runs"]:
+            detail_parts.append(f"diffs: {st['runs']}")
 
     # ── 2. Cell lineage source compaction ─────────────────────────────────
     if do_cells:
@@ -75,28 +95,23 @@ def api_compact(conn, body: dict) -> dict:
 def _compact_preview(conn, exp_ids: list, do_diff: bool, do_cells: bool,
                      do_timeline: bool) -> dict:
     """Preview what compact would remove, without modifying anything."""
-    from exptrack.core.db import diff_b_path, is_diff_sentinel, resolve_git_diff
     will_remove = []
     total_bytes = 0
 
     if do_diff:
-        for eid in exp_ids:
-            row = conn.execute(
-                "SELECT git_diff, git_commit FROM experiments WHERE id=?", (eid,)
-            ).fetchone()
-            if not row or not row["git_diff"] or is_diff_sentinel(row["git_diff"]):
-                continue
-            full_diff = resolve_git_diff(conn, row["git_diff"])
-            if is_diff_sentinel(full_diff):
-                continue  # e.g. a dangling ref — the real compact skips it too,
-                          # so counting it here promised bytes that never free
-            diff_len = len(full_diff)
-            files = [diff_b_path(line.split()[-1])
-                     for line in full_diff.splitlines()
-                     if line.startswith("diff --git ") and len(line.split()) >= 4]
-            total_bytes += diff_len
-            will_remove.append(f"Git diff ({fmt_bytes(diff_len)}, {len(files)} file(s): {', '.join(files[:3])}"
-                               + (f" +{len(files)-3} more" if len(files) > 3 else "") + ")")
+        # Same selection the write uses, so the dry-run provably describes it.
+        # Its `bytes` is what would leave the database, which for deduplicated
+        # diffs is not the sum of the per-run sizes listed below — N runs
+        # sharing one body reclaim one body.
+        from exptrack.core.storage import preview_git_diff_compact
+        st = preview_git_diff_compact(conn, exp_ids)
+        total_bytes += st["bytes"]
+        for d in st["details"]:
+            files = d["files"]
+            will_remove.append(
+                f"Git diff ({fmt_bytes(d['bytes'])}, {len(files)} file(s): "
+                + ", ".join(files[:3])
+                + (f" +{len(files) - 3} more" if len(files) > 3 else "") + ")")
 
     if do_cells:
         placeholders = ",".join("?" * len(exp_ids))
@@ -127,16 +142,12 @@ def _compact_preview(conn, exp_ids: list, do_diff: bool, do_cells: bool,
                   file=sys.stderr)
 
     if do_timeline:
-        placeholders = ",".join("?" * len(exp_ids))
+        # Same selection the write uses, so the dry-run provably describes it —
+        # counting already-marked rows promised bytes the compact won't free.
+        from exptrack.core.storage import preview_timeline_diff_compact
         try:
-            row = conn.execute(f"""
-                SELECT COALESCE(SUM(LENGTH(source_diff)), 0) as sz,
-                       COUNT(*) as cnt
-                FROM timeline
-                WHERE exp_id IN ({placeholders}) AND source_diff IS NOT NULL
-            """, exp_ids).fetchone()
-            sz = row["sz"] if row else 0
-            cnt = row["cnt"] if row else 0
+            tl = preview_timeline_diff_compact(conn, exp_ids)
+            sz, cnt = tl["bytes"], tl["events"]
             if sz:
                 total_bytes += sz
                 will_remove.append(f"Timeline inline diffs ({fmt_bytes(sz)}, {cnt} event(s))")
@@ -146,55 +157,6 @@ def _compact_preview(conn, exp_ids: list, do_diff: bool, do_cells: bool,
 
     return {"ok": True, "dry_run": True, "will_remove": will_remove,
             "total_bytes": total_bytes, "total_fmt": fmt_bytes(total_bytes)}
-
-
-def _compact_git_diffs(conn, exp_ids: list) -> tuple:
-    """Strip git_diff from experiments, returns (freed_bytes, count)."""
-    from exptrack.core.db import diff_b_path, is_diff_sentinel, resolve_git_diff
-    freed = 0
-    count = 0
-    for eid in exp_ids:
-        row = conn.execute(
-            "SELECT id, git_diff, git_commit FROM experiments WHERE id=?", (eid,)
-        ).fetchone()
-        if not row:
-            continue
-        raw_diff = row["git_diff"]
-        if not raw_diff or is_diff_sentinel(raw_diff):
-            continue
-        full_diff = resolve_git_diff(conn, raw_diff)
-        if is_diff_sentinel(full_diff):
-            continue  # nothing to strip — a dangling ref has no body to compact
-        diff_len = len(full_diff)
-        commit = row["git_commit"] or "unknown"
-        files = [diff_b_path(line.split()[-1])
-                 for line in full_diff.splitlines()
-                 if line.startswith("diff --git ") and len(line.split()) >= 4]
-        file_info = f"{len(files)} file(s): {', '.join(files[:5])}" if files else "no files"
-        if len(files) > 5:
-            file_info += f" +{len(files) - 5} more"
-        summary = f"[compacted — {fmt_bytes(diff_len)} stripped — {file_info} — see git commit {commit}]"
-        conn.execute("UPDATE experiments SET git_diff = ? WHERE id = ?", (summary, row["id"]))
-        # Delete the blob from git_diffs only if nothing else still points at it.
-        # Session nodes reference these blobs too (a node's diff is stored
-        # content-addressed, and materializing a node hands its ref to the new
-        # experiment), so checking `experiments` alone would strip the body out
-        # from under the session tree that shares it.
-        if raw_diff.startswith("[ref:sha256:"):
-            diff_hash = raw_diff[12:-1]
-            other = conn.execute(
-                "SELECT 1 FROM experiments WHERE git_diff=? AND id!=? "
-                "UNION ALL "
-                "SELECT 1 FROM session_nodes WHERE git_diff=? LIMIT 1",
-                (raw_diff, eid, raw_diff),
-            ).fetchone()
-            if not other:
-                conn.execute("DELETE FROM git_diffs WHERE diff_hash=?", (diff_hash,))
-        freed += diff_len
-        count += 1
-    if count:
-        conn.commit()
-    return freed, count
 
 
 def _compact_cell_sources(conn, exp_ids: list) -> int:
@@ -251,24 +213,19 @@ def _compact_cell_sources(conn, exp_ids: list) -> int:
 
 
 def _compact_timeline_sources(conn, exp_ids: list) -> int:
-    """NULL out timeline.source_diff for given experiments."""
-    if not exp_ids:
-        return 0
-    placeholders = ",".join("?" * len(exp_ids))
+    """Freed bytes from `storage.compact_timeline_diffs` (the one implementation).
+
+    This used to keep its own copy that NULLed the column. The CLI's copy was
+    fixed to write a `[compacted…]` marker — because a NULL `source_diff` is
+    also the *normal* state for a script run against a clean tree, so the status
+    check read every such run as compacted — but this sibling was left behind,
+    so compacting from the dashboard still reported "not compacted" afterwards,
+    and a second pass over a CLI-marked run counted the marker as reclaimable
+    and then erased the evidence it stands for.
+    """
+    from exptrack.core.storage import compact_timeline_diffs
     try:
-        size_row = conn.execute(f"""
-            SELECT COALESCE(SUM(LENGTH(source_diff)), 0) as sz
-            FROM timeline
-            WHERE exp_id IN ({placeholders}) AND source_diff IS NOT NULL
-        """, exp_ids).fetchone()
-        freed = size_row["sz"] if size_row else 0
-        if freed:
-            conn.execute(f"""
-                UPDATE timeline SET source_diff = NULL
-                WHERE exp_id IN ({placeholders}) AND source_diff IS NOT NULL
-            """, exp_ids)
-            conn.commit()
-        return freed
+        return compact_timeline_diffs(conn, exp_ids)["bytes"]
     except Exception:
         return 0
 

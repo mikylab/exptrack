@@ -54,13 +54,30 @@ function _renderExpCard(e) {
   '</div>';
 }
 
-// Which expanded-groups Set/localStorage-key/placeholder applies for a given
-// sidebar grouping mode. Shared by renderExpList and toggleStudyGroup so the
-// two can't drift out of sync as modes are added.
-function _sidebarGroupState(mode) {
-  return mode === 'script'
-    ? { set: expandedScriptGroups, storageKey: 'exptrack-expanded-scripts', noKey: '__no_script__' }
-    : { set: expandedStudyGroups, storageKey: 'exptrack-expanded-studies', noKey: '__no_study__' };
+// One descriptor per sidebar grouping mode, in menu order — the *view-specific*
+// half only: the button's icon and tooltip, the menu label, and this mode's own
+// collapse state. How a run is keyed and labelled comes from the shared
+// GROUP_MODES table in core.js, so the rail and the main table can never key or
+// name the same group differently.
+//
+// `set` is a function, not the Set itself: these are module-level `let`s in
+// core.js, and capturing the value at load time would freeze this table against
+// whatever the sets are replaced with later. Each mode gets its own set so
+// collapsing a date cannot silently collapse a study of the same name.
+const SIDEBAR_GROUP_MODES = [
+  { id: '', icon: '☷', title: 'Group runs', menuLabel: 'None' },
+  { id: 'study', icon: '☷', title: 'Grouped by study', menuLabel: 'Study',
+    storageKey: 'exptrack-expanded-studies', set: () => expandedStudyGroups },
+  { id: 'script', icon: '\u{1F4C4}', title: 'Grouped by script', menuLabel: 'Script',
+    storageKey: 'exptrack-expanded-scripts', set: () => expandedScriptGroups },
+  { id: 'day', icon: '\u{1F4C5}', title: 'Grouped by day', menuLabel: 'Day',
+    storageKey: 'exptrack-expanded-days', set: () => expandedDayGroups },
+  { id: 'git_branch', icon: '⑂', title: 'Grouped by git branch', menuLabel: 'Git branch',
+    storageKey: 'exptrack-expanded-branches', set: () => expandedBranchGroups },
+];
+
+function _sidebarGroupMode(mode) {
+  return SIDEBAR_GROUP_MODES.find(m => m.id === mode) || SIDEBAR_GROUP_MODES[0];
 }
 
 function renderExpList() {
@@ -70,12 +87,12 @@ function renderExpList() {
   if (!list) { restoreRename(); return; }
   const filtered = getFilteredExperiments();
 
+  const mode = _sidebarGroupMode(sidebarGroupBy);
   const btn = document.getElementById('sidebar-group-btn');
   if (btn) {
     btn.classList.toggle('active', !!sidebarGroupBy);
-    const titles = { '': 'Group by study', study: 'Grouped by study — click for Script', script: 'Grouped by script — click to ungroup' };
-    btn.title = titles[sidebarGroupBy] || 'Group';
-    btn.textContent = sidebarGroupBy === 'script' ? '\u{1F4C4}' : '☷';
+    btn.title = mode.title;
+    btn.textContent = mode.icon;
   }
 
   const moreBtn = expHasMore
@@ -85,13 +102,10 @@ function renderExpList() {
   if (!sidebarGroupBy) {
     list.innerHTML = filtered.map(_renderExpCard).join('') + moreBtn;
   } else {
-    const isScript = sidebarGroupBy === 'script';
-    const { set: expandedSet, noKey: NO_KEY } = _sidebarGroupState(sidebarGroupBy);
+    const expandedSet = mode.set();
     const groups = new Map();
     for (const e of filtered) {
-      let key;
-      if (isScript) key = e.script ? e.script.split('/').pop() : NO_KEY;
-      else key = (e.studies && e.studies.length) ? e.studies[0] : NO_KEY;
+      const key = GROUP_MODES[mode.id].keyOf(e);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(e);
     }
@@ -99,9 +113,7 @@ function renderExpList() {
     for (const [key, items] of groups) {
       const isCollapsed = !expandedSet.has(key);
       const arrow = isCollapsed ? '▶' : '▼';
-      const label = key === NO_KEY
-        ? '<span style="color:var(--muted);font-style:italic">' + (isScript ? '(no script)' : '(no study)') + '</span>'
-        : esc(key);
+      const label = groupLabelHtml(mode.id, key, items);
       html += '<div class="sidebar-study-header' + (isCollapsed ? ' collapsed' : '') + '" onclick="toggleStudyGroup(\'' + escJsAttr(key) + '\')">' +
         '<span class="sidebar-study-toggle">' + arrow + '</span>' +
         '<span class="sidebar-study-name">' + label + '</span>' +
@@ -123,17 +135,41 @@ function renderExpList() {
   restoreRename();
 }
 
-function cycleSidebarGroupBy() {
-  sidebarGroupBy = sidebarGroupBy === '' ? 'study' : sidebarGroupBy === 'study' ? 'script' : '';
+// The button opens a menu rather than cycling. With two modes a cycle was
+// fine; with five, reaching "Git branch" from "Study" meant clicking blind
+// through three groupings you did not want, each one re-rendering the list.
+function toggleSidebarGroupMenu() {
+  const menu = document.getElementById('sidebar-group-menu');
+  if (!menu) return;
+  if (menu.style.display !== 'none') { closeSidebarGroupMenu(); return; }
+  menu.innerHTML = SIDEBAR_GROUP_MODES.map(m =>
+    '<div class="sgm-item' + (m.id === sidebarGroupBy ? ' active' : '') + '"' +
+    ' onclick="setSidebarGroupBy(\'' + escJsAttr(m.id) + '\')">' +
+    '<span class="sgm-icon">' + m.icon + '</span>' +
+    '<span>' + esc(m.menuLabel || 'None') + '</span></div>').join('');
+  menu.style.display = 'block';
+  _dismissOnOutsideClick(menu, '#sidebar-group-btn', closeSidebarGroupMenu);
+}
+
+function closeSidebarGroupMenu() {
+  const menu = document.getElementById('sidebar-group-menu');
+  if (menu) menu.style.display = 'none';
+}
+
+function setSidebarGroupBy(mode) {
+  sidebarGroupBy = mode;
   localStorage.setItem('exptrack-sidebar-group-by', sidebarGroupBy);
+  closeSidebarGroupMenu();
   renderExpList();
 }
 
 function toggleStudyGroup(key) {
-  const { set: expandedSet, storageKey } = _sidebarGroupState(sidebarGroupBy);
+  const mode = _sidebarGroupMode(sidebarGroupBy);
+  if (!mode.set) return;   // ungrouped: there are no headers to click
+  const expandedSet = mode.set();
   if (expandedSet.has(key)) expandedSet.delete(key);
   else expandedSet.add(key);
-  localStorage.setItem(storageKey, JSON.stringify([...expandedSet]));
+  localStorage.setItem(mode.storageKey, JSON.stringify([...expandedSet]));
   renderExpList();
 }
 

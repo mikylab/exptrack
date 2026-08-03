@@ -163,9 +163,15 @@ function startDetailNoteEdit(id, el) {
   const textarea = document.createElement('textarea');
   textarea.className = 'notes-edit-area';
   textarea.value = isPlaceholder ? '' : currentText;
-  textarea.style.cssText = 'width:100%;min-height:60px;font-size:13px;font-family:inherit;border:1px solid var(--blue);border-radius:3px;padding:4px 6px';
+  textarea.style.cssText = 'width:100%;box-sizing:border-box;min-height:70px;font-size:13px;font-family:inherit;border:1px solid var(--blue);border-radius:4px;padding:7px 9px';
   el.innerHTML = '';
   el.appendChild(textarea);
+  // The field opens on a single click, so the handler has to come off while
+  // the editor is up — a click into the textarea bubbles back to this element
+  // and would rebuild the editor under the cursor. refreshDetail re-renders
+  // the span (handler and all) when the edit finishes.
+  el.onclick = null;
+  el.removeAttribute('onclick');
   textarea.focus();
 
   let saved = false;

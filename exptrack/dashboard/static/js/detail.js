@@ -362,14 +362,170 @@ function _detailErrorHtml(id, msg) {
 
 // ── Detail section builders (kept out of the big refreshDetail template) ──────
 
-function _buildCodeSection(codeChanges) {
-  if (!Object.keys(codeChanges).length) return '';
-  let html = '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">Code Changes</h2><div class="section-body"><div class="code-changes">';
-  for (const [k, v] of Object.entries(codeChanges)) {
-    const label = k === '_code_changes' ? 'Script diff vs. last commit' : k.replace('_code_change/', 'Cell ');
-    html += '<div class="change-item"><div class="change-label">' + esc(label) + '</div>' + _renderCodeChangeParts(v) + '</div>';
+// "What was uncommitted when this run started?" — ONE panel, because there is
+// only one question here and it was being answered up to three times.
+//
+// This page used to carry a script-scoped `Script diff vs. last commit` panel
+// directly above a repository-wide `Uncommitted Changes` panel. Same baseline
+// (HEAD), same file in any single-script project — so the two rendered the
+// *identical* edit twice, one of them (the summary) a lossier copy of the
+// other. Naming the baselines made the duplication legible; it did not make it
+// less duplicated. They are now one panel that renders the full working-tree
+// diff grouped by file, with the run's own script first and labelled — which is
+// what the script-scoped panel was really for, and it costs no second copy.
+//
+// The remaining code view on this page, `What changed`, stays: it is a genuinely
+// different baseline (this run vs. the previous one, snapshot-based, no git),
+// and it is lazy — nothing renders until asked.
+//
+// Notebook cells are not here at all. Their per-cell edits are the Timeline's
+// job, which renders the full structured diff; legacy `_code_change/cell_N`
+// params from before that split are ignored rather than doubling the Timeline.
+//
+// The empty cases are not interchangeable and none of them means "no changes",
+// so each one says which it is. Rendering nothing — what this did originally —
+// read as "clean" for a script git cannot even see.
+function _buildCodeSection(codeChanges, exp, diffData) {
+  const params = exp.params || {};
+  const summary = codeChanges['_code_changes'];
+  const status = params['_code_status'];
+  const d = diffData || {};
+  // Did this run capture a script at all? The server states it
+  // (`has_script_capture`) rather than leaving the client to infer it from
+  // which internal param keys happen to be present. Consulting it before the
+  // "matched the commit" branch is load-bearing: `git_commit` is captured for
+  // every run in a repo, script or not, so that branch would otherwise fire for
+  // a notebook and state, confidently and falsely, that a script it never
+  // looked at was clean.
+  const captured = exp.has_script_capture === undefined
+    ? !!(summary || status || params['_script_hash'])   // pre-field payload
+    : !!exp.has_script_capture;
+  const recover = ' The full source was snapshotted, so the run is still'
+    + ' reproducible — use <em>What changed</em> above to diff it against the'
+    + ' previous run.';
+
+  let body, title = 'Uncommitted changes', actions = '';
+  const sentinel = _diffSentinelBody(d, summary);
+  if (sentinel) {
+    body = sentinel;
+  } else if (d.diff) {
+    title += exp.diff_lines ? ' (' + exp.diff_lines + ' lines)' : '';
+    actions = _diffActionsHtml(exp);
+    // Merging the two panels must not lose the script-scoped answer. A run
+    // whose own script was clean, or untracked, sits in a repo that is usually
+    // dirty *somewhere* — so without this the panel would show a wall of other
+    // people's files and never say the one thing this run was asked about.
+    const parts = _splitDiffByScript(d.diff, exp.script);
+    body = (captured && !parts.scriptFiles
+              ? _scriptStatusNote(exp, status, recover, true) : '')
+      + parts.scriptHtml
+      + _otherFilesHtml(parts);
+  } else if (captured) {
+    body = _scriptStatusNote(exp, status, recover, false);
+    if (!body) return '';
+  } else {
+    return '';   // notebook or label run with a clean tree: nothing to say
   }
-  return html + '</div></div>';
+  return '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'
+    + title + ' <span class="help-icon" title="The working tree as it stood when'
+    + ' this run started, against the commit it ran on. This run\'s own script is'
+    + ' listed first. For the diff against the previous run, see What changed.">?</span>'
+    + actions + '</h2>'
+    + '<div class="section-body">' + body + '</div>';
+}
+
+// Empty-state line for the code panel. Muted, not the amber `_diffNotice` used
+// for capture failures — "matched the commit" is a normal outcome, not a fault.
+function _codeDiffNote(html) {
+  return '<div class="code-empty-note">' + html + '</div>';
+}
+
+// A diff marker is a status, never diff text ('compacted', 'capture_failed',
+// 'unavailable'). Returns the panel body for one, or '' when the diff is real.
+function _diffSentinelBody(d, summary) {
+  if (!d.diff) return '';
+  if (d.sentinel === 'compacted') {
+    // The full diff is gone but the script summary may have outlived it — the
+    // two are reclaimed by different commands (`compact` vs
+    // `compact --code-changes`). Show the summary only when it is still real
+    // text: once it has been compacted too it is a `[compacted…]` marker, and
+    // feeding a status string to the diff renderer drew it as diff content,
+    // split across lines on its `; ` separator. The notice above already says
+    // the diff was compacted, so a second marker adds nothing.
+    const haveSummary = summary && !String(summary).startsWith('[compacted');
+    return _diffNotice(esc(d.diff), d.commit
+      ? 'To recover: git diff ' + esc(d.commit) + '~1 ' + esc(d.commit) : '')
+      + (haveSummary ? '<div class="code-changes"><div class="change-item">'
+        + _renderCodeChangeParts(summary) + '</div></div>' : '');
+  }
+  if (d.sentinel === 'capture_failed') {
+    return _diffNotice('Uncommitted changes could not be captured for this run',
+      'git diff failed at capture time — not the same as a clean tree');
+  }
+  if (d.sentinel === 'unavailable') {
+    return _diffNotice('The stored diff for this run is no longer available',
+      'its deduplicated body was removed — not the same as a clean tree');
+  }
+  return '';
+}
+
+function _diffActionsHtml(exp) {
+  return '<span style="float:right;font-size:12px;font-weight:normal">'
+    + '<button class="action-btn" style="padding:1px 8px" onclick="event.stopPropagation();exportDiff(\''
+    + exp.id + '\')">Export</button>'
+    + '<button class="action-btn" style="padding:1px 8px;margin-left:4px" onclick="event.stopPropagation();compactDiff(\''
+    + exp.id + '\')">Compact</button></span>';
+}
+
+// What this panel says about the run's *own* script when the script isn't among
+// the changed files. The repo being dirty elsewhere is not an answer to "did the
+// code I ran differ from the commit?", and that question is why the run detail
+// shows a diff at all. One implementation for both callers — a tree with other
+// changes (`dirty`, which adds where to look) and a wholly clean one — since
+// the three statuses and their wording drift the moment they are written twice.
+function _scriptStatusNote(exp, status, recover, dirty) {
+  const name = esc(String(exp.script || '').split('/').pop()) || 'This script';
+  if (status === 'untracked') {
+    return _codeDiffNote('<code>' + name + '</code> isn\'t tracked by git, so'
+      + ' there\'s no committed version to diff against.' + recover);
+  }
+  if (status === 'no_git') {
+    return _codeDiffNote('This project isn\'t a git repository, so there\'s no'
+      + ' commit to diff against.' + recover);
+  }
+  if (exp.git_commit) {
+    return _codeDiffNote('<code>' + name + '</code> had no uncommitted changes'
+      + ' — it matched commit <code>' + esc(exp.git_commit.slice(0, 7))
+      + '</code> when it ran.'
+      + (dirty ? ' The changes below are elsewhere in the tree.' : ''));
+  }
+  return '';
+}
+
+// Everything in the working tree that isn't the run's script. Folded away by
+// default when the script itself is what the reader came for, so the panel
+// leads with this run's code instead of whatever else was dirty at the time.
+function _otherFilesHtml(parts) {
+  if (parts.headerless) return '<div class="diff-view">' + parts.otherHtml + '</div>';
+  if (!parts.otherFiles) return '';
+  const n = parts.otherFiles;
+  // One wording for both run types. "Other" reads against this run's own code,
+  // which for a script is the group above and for a notebook is the Timeline's
+  // cells — either way these are the files that aren't it.
+  const label = 'Other file' + (n === 1 ? '' : 's')
+    + ' in the working tree (' + n + ')';
+  // Folded only when the run's own script is itself in the diff — there the
+  // script group above is the answer and these are background.
+  //
+  // Whenever the script contributed nothing, these files ARE the changes: you
+  // ran train.py and tweaked helper.py, and the tweak is the whole reason the
+  // run differs from the last one. The panel this replaced rendered every file
+  // expanded, so folding them here made the one edit that mattered *less*
+  // visible than before the merge. Notebook runs are the same case — no script
+  // group, so the tree is all there is.
+  const open = parts.scriptFiles ? '' : ' open';
+  return '<details class="dfile-others"' + open + '><summary>' + label
+    + '</summary>' + parts.otherHtml + '</details>';
 }
 
 function _buildVarSection(varChanges) {
@@ -687,29 +843,14 @@ async function refreshDetail(id, opts) {
   </div>`;
 
   // Section blocks (built by dedicated helpers to keep this function readable)
-  const codeHtml = _buildCodeSection(codeChanges);
+  const codeHtml = _buildCodeSection(codeChanges, exp, diffData);
   const varHtml = _buildVarSection(varChanges);
   const datasetsHtml = _buildDatasetsSection(exp.datasets);
 
-  // Diff. `diffData.sentinel` is the server's classification ('compacted',
-  // 'capture_failed', 'unavailable') — a marker is a status, never diff text.
-  let diffHtml = '';
+  // The working-tree diff is rendered by _buildCodeSection above — one panel,
+  // not a second copy of the same lines against the same commit. `diffCompacted`
+  // is still needed for the one-line Uncommitted stat in the info grid.
   const diffCompacted = diffData.sentinel === 'compacted';
-  if (diffData.diff) {
-    if (diffCompacted) {
-      diffHtml = _diffNotice(esc(diffData.diff), diffData.commit
-        ? 'To recover: git diff ' + esc(diffData.commit) + '~1 ' + esc(diffData.commit)
-        : '');
-    } else if (diffData.sentinel === 'capture_failed') {
-      diffHtml = _diffNotice('Uncommitted changes could not be captured for this run',
-        'git diff failed at capture time — not the same as a clean tree');
-    } else if (diffData.sentinel === 'unavailable') {
-      diffHtml = _diffNotice('The stored diff for this run is no longer available',
-        'its deduplicated body was removed — not the same as a clean tree');
-    } else {
-      diffHtml = _renderUnifiedDiff(diffData.diff);
-    }
-  }
 
   // Reproduce box — show the command in the user's preferred form (plain
   // `python …` vs tracked `exptrack run …`) with a toggle when both apply.
@@ -885,7 +1026,7 @@ async function refreshDetail(id, opts) {
 
       <div class="tabs" id="detail-tabs">
         <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
-        <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')">Timeline</button>
+        <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')" title="What ran, in order — with the run's captured source folded in">Timeline</button>
         <button class="tab" onclick="switchDetailTab('charts','${exp.id}')">Charts</button>
         <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
         <button class="tab" onclick="switchDetailTab('logs','${exp.id}')">Data Files</button>
@@ -906,8 +1047,8 @@ async function refreshDetail(id, opts) {
               <span class="label">Python</span><span>${esc(exp.python_ver||'--')}</span>
               <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
               <span class="label">Studies</span><span class="tag-list" id="detail-studies">${studiesDetailHtml}</span>
-              <span class="label">Stage</span><span id="detail-stage" class="editable-hint" ondblclick="startDetailStageEdit('${exp.id}',this)" title="Double-click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
-              <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" ondblclick="startDetailNoteEdit('${exp.id}',this)" title="Double-click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">double-click to add notes</span>'}</span>
+              <span class="label">Stage</span><span id="detail-stage" class="editable-hint" onclick="startDetailStageEdit('${exp.id}',this)" title="Click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
+              <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" onclick="startDetailNoteEdit('${exp.id}',this)" title="Click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">click to add notes</span>'}</span>
               <span class="label">Uncommitted</span><span>${diffData.diff ? (diffCompacted ? '<span style="color:var(--yellow)">' + esc(diffData.diff.split(' — ')[1] || 'compacted') + '</span>' : '<span style="color:var(--green)">' + exp.diff_lines + ' lines</span> <button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:6px" onclick="exportDiff(\'' + exp.id + '\')">Export</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="compactDiff(\'' + exp.id + '\')">Compact</button>') : '<span style="color:var(--muted)">none (all changes were committed)</span>'}</span>
             </div>
             ${reproHtml}
@@ -937,7 +1078,6 @@ async function refreshDetail(id, opts) {
         <!-- Full-width sections below the grid -->
         <div style="margin-top:20px">
           ${codeHtml}
-          ${diffHtml ? '<h2 class="section-toggle" onclick="this.classList.toggle(\'collapsed\')">'+(diffCompacted ? 'Uncommitted Changes (compacted)' : 'Uncommitted Changes ('+exp.diff_lines+' lines)' + ' <span style="float:right;font-size:12px;font-weight:normal">' + '<button class="action-btn" style="padding:1px 8px" onclick="event.stopPropagation();exportDiff(\'' + exp.id + '\')">Export</button>' + '<button class="action-btn" style="padding:1px 8px;margin-left:4px" onclick="event.stopPropagation();compactDiff(\'' + exp.id + '\')">Compact</button>' + '</span>')+'</h2><div class="section-body"><div class="diff-view">'+diffHtml+'</div></div>' : ''}
         </div>
       </div>
 
@@ -1153,7 +1293,7 @@ async function loadWhatChangedCode(prevId, curId, btn) {
   }
   // '' means neither run captured code to compare (no script snapshot, no
   // notebook cells) — say so rather than collapsing to an empty box.
-  box.innerHTML = _renderCompareCodeDiff(data.code_diff)
+  box.innerHTML = _renderCompareCodeDiff(data.code_diff, data.exp1, data.exp2)
     || '<p style="color:var(--muted);font-size:13px">No code captured for one of '
      + 'these runs, so there is nothing to diff. Scripts are snapshotted at run '
      + 'time; notebook runs compare their executed cells.</p>';

@@ -971,3 +971,65 @@ def _verify_dry_run(rows):
           dim(f"{counts['has-hash']} with hash") + "  " +
           dim(f"{counts['no-hash']} without hash"))
     print()
+
+
+def cmd_source(args):
+    """Show, or write out, the source code a run actually executed."""
+    from ..core.naming import safe_filename
+    from ..core.queries import get_run_source
+
+    conn = get_db()
+    out_dir = getattr(args, "out", None)
+    all_mode = getattr(args, "all", False)
+
+    if all_mode:
+        # Ids only — list_experiments would batch-load latest metrics,
+        # sparklines and params for every run, all of it discarded here.
+        targets = [r[0] for r in conn.execute(
+            "SELECT id FROM experiments WHERE deleted_at IS NULL "
+            "ORDER BY created_at DESC")]
+    else:
+        if not getattr(args, "id", None):
+            die("Provide an experiment ID, or --all")
+        targets = [args.id]
+
+    written = missing = 0
+    for eid in targets:
+        src = get_run_source(conn, eid)
+        if not src["id"]:
+            die(f"No experiment matching '{eid}'")
+        if not src["kind"]:
+            missing += 1
+            if not all_mode:
+                die(f"No source captured for {eid} "
+                    f"(notebook-only runs before cell capture, or a label run)")
+            continue
+
+        if not out_dir:
+            print(col(f"{src['id'][:8]}  {src['name']}", C), file=sys.stderr)
+            for f in src["files"]:
+                print(dim(f"--- {f['label']} ---"), file=sys.stderr)
+                print(f["content"])
+            continue
+
+        # Both the directory and the filenames are built from user-controlled
+        # stored text (a run name, a recorded script path), so every component
+        # goes through the one safe-filename rule — without it a name like
+        # `../../x`, or a Windows-recorded script column carrying `\`, escapes
+        # the target directory.
+        d = Path(out_dir) / f"{src['id'][:8]}__{safe_filename(src['name'] or src['id'])}"
+        d.mkdir(parents=True, exist_ok=True)
+        for i, f in enumerate(src["files"]):
+            fname = safe_filename(f["label"], default="script.py")
+            if src["kind"] != "script":
+                fname = f"{i + 1:03d}_{fname}.py"
+            (d / fname).write_text(f["content"])
+        written += 1
+
+    if out_dir:
+        print(col(f"Wrote source for {written} run(s) to {out_dir}/", G),
+              file=sys.stderr)
+        if missing:
+            # Stated, never silent: a run with no captured source is exactly the
+            # one whose code cannot be recovered from anywhere else.
+            print(dim(f"{missing} run(s) had no captured source"), file=sys.stderr)

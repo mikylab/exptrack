@@ -211,7 +211,7 @@ function setGroup(field) {
   if (field === 'day') {
     const keys = [];
     for (const e of getFilteredExperiments()) {
-      const k = dayKeyOf(e.created_at) || 'unknown';
+      const k = GROUP_MODES.day.keyOf(e);   // same key renderExperiments groups on
       if (!keys.includes(k)) keys.push(k);
     }
     keys.slice(1).forEach(k => collapsedGroups.add(k));

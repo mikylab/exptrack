@@ -160,3 +160,59 @@ def fmt_bytes(b) -> str:
     if b < 1024**2: return f"{b/1024:.1f} KB"
     if b < 1024**3: return f"{b/1024**2:.1f} MB"
     return f"{b/1024**3:.2f} GB"
+
+
+# Default cap on the `_code_changes` / `_code_change/cell_N` summary string.
+#
+# This was 1000 chars for scripts and 500 for notebook cells, applied as a bare
+# `[:N]` slice. Both are far too small for a working tree that has drifted from
+# HEAD: `git diff HEAD -- script.py` returns *every* changed line, so 60 lines
+# of unrelated drift consumed the whole budget and an edit below them — the
+# `warmup = 100` → `200` the run was actually testing — was cut off entirely.
+# The panel then read as "no such change", which is the one thing a code-change
+# summary must never do.
+CODE_CHANGE_MAX_CHARS = 20000
+
+
+def summarize_changed_lines(fragments, max_chars: int | None = None) -> str:
+    """Join `+ line` / `- line` fragments into a `_code_changes` summary.
+
+    Truncation is **stated, never silent**. A bare slice stopped mid-fragment
+    with nothing marking the cut, so a summary that had dropped the user's
+    actual edit was indistinguishable from one that had captured everything.
+    The marker names how many changed lines were kept out of how many there
+    were, so the omission is visible and countable.
+    """
+    if max_chars is None:
+        try:
+            from .. import config as _cfg
+            max_chars = int(_cfg.load().get("code_change_max_chars",
+                                            CODE_CHANGE_MAX_CHARS))
+        except Exception:
+            max_chars = CODE_CHANGE_MAX_CHARS
+    # A nonsensical cap (0, negative, hand-edited garbage) must not be the
+    # reason a run records no code changes at all.
+    if not isinstance(max_chars, int) or max_chars <= 0:
+        max_chars = CODE_CHANGE_MAX_CHARS
+
+    fragments = list(fragments)
+    joined = "; ".join(fragments)
+    if len(joined) <= max_chars:
+        return joined
+
+    # Cut on a fragment boundary so the summary never ends mid-line.
+    kept, size = [], 0
+    for f in fragments:
+        add = len(f) + (2 if kept else 0)
+        if size + add > max_chars:
+            break
+        kept.append(f)
+        size += add
+    # A first fragment longer than the whole cap (a minified line, a giant
+    # literal) would keep nothing — a summary that drops the change entirely,
+    # the exact failure this function exists to prevent. Keep that one
+    # fragment hard-sliced instead: a visibly cut line beats no line.
+    if not kept and fragments:
+        kept = [fragments[0][:max_chars] + "…"]
+    return "; ".join(kept) + \
+        f"; … [truncated — {len(kept)} of {len(fragments)} changed lines shown]"

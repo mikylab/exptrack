@@ -27,6 +27,25 @@ def _path_safe(s: str) -> str:
     return _PATH_UNSAFE_RE.sub("", s)
 
 
+# Substituting rather than stripping (so distinct names stay distinct) and
+# length-capped, for values that become a *filename* on export rather than a
+# run name. `_path_safe`'s strip-and-keep-compact rule is right for names;
+# this one is right for paths built from user-controlled text.
+_FILENAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def safe_filename(s: str, max_len: int = 80, default: str = "unnamed") -> str:
+    """Reduce a user-controlled string to one safe filename component.
+
+    The single rule for export paths — `exptrack source --out` builds both a
+    directory and a filename from stored, user-controlled text (a run name, a
+    recorded script path), and three inline copies of the character class is
+    three places to miss when it changes. An empty result falls back to
+    `default` rather than producing a path component of `""`.
+    """
+    return _FILENAME_UNSAFE_RE.sub("_", str(s or ""))[:max_len] or default
+
+
 def make_run_name(script: str = "", params: dict | None = None) -> str:
     """
     Produces (readable, default):   May22_train__lr0.01_bs32__a3f25b1c

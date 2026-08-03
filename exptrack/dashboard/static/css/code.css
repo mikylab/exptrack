@@ -35,7 +35,7 @@
      Lines carry a background tint + left bar (not just colored text) so syntax
      highlighting and add/del status can coexist. */
   .code-diff {
-    font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12.5px;
+    font-family: var(--font-mono); font-size: 12.5px;
     line-height: 1.55; border: 1px solid var(--border); border-radius: 4px;
     overflow: auto; max-height: 500px; background: var(--code-bg);
   }
@@ -94,6 +94,12 @@
   .code-changes .change-item { margin-bottom: 10px; }
   .code-changes .change-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
   .code-changes .change-diff { white-space: pre-wrap; }
+  /* Empty state: "matched the commit" / "git can't see this file". Muted, not
+     amber — none of these is a fault, they just aren't a diff. */
+  /* Prose, not code — the panel's mono default makes a sentence hard to read. */
+  .code-changes .code-empty-note { color: var(--text-2); font-family: var(--font-ui); font-size: 13px; line-height: 1.55; }
+  .code-changes .code-empty-note code { background: var(--surface-2); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  .code-changes .code-empty-note em { color: var(--text-1); font-style: normal; font-weight: 600; }
   .var-changes { background: var(--code-bg); border: 1px solid var(--border); padding: 16px; margin-bottom: 20px; font-size: 13px; border-radius: 4px; }
   .var-changes table { width: 100%; table-layout: fixed; }
   .var-changes td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: top; word-break: break-word; }
@@ -101,3 +107,89 @@
   .var-changes .var-name { color: var(--blue); font-weight: 500; }
   .var-changes .var-type { color: var(--muted); font-size: 12px; }
   .var-section-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
+
+  /* ── Run source (folded into the Timeline tab) ─────────────────────────── */
+  .tl-source-fold { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 14px; }
+  .tl-source-fold > summary {
+    display: flex; align-items: baseline; gap: 10px; cursor: pointer;
+    padding: 8px 12px; background: var(--surface-2); user-select: none;
+    font-size: var(--text-sm); color: var(--text-1);
+  }
+  .tl-source-fold > summary .tl-source-hint { color: var(--text-3); font-size: var(--text-xs); }
+  .tl-source-fold > #tl-source-body { padding: 12px; }
+  .source-tab-note { color: var(--text-2); font-size: var(--text-xs); margin-bottom: 10px; }
+  .source-file { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 10px; }
+  .source-file > summary {
+    display: flex; align-items: center; gap: 10px; cursor: pointer;
+    padding: 7px 10px; background: var(--surface-2); font-size: var(--text-xs);
+    user-select: none;
+  }
+  .source-file > summary .sf-label { font-family: var(--font-mono); color: var(--text-1); }
+  .source-file > summary .sf-lines { color: var(--text-3); }
+  .source-file > summary .copy-btn { margin-left: auto; }
+  /* Match .code-diff exactly. The only other `pre.cell-code` rules live in
+     sessions.css scoped to `#session-detail .cell-block`, so outside the
+     Sessions tab this block had no font at all and fell back to the browser's
+     default monospace — a visibly different face and size from the diff
+     rendered a few inches above it in the same tab. */
+  .source-file pre.cell-code {
+    margin: 0; border: 0; border-radius: 0; padding: 8px 0;
+    background: var(--code-bg);
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word;
+    overflow: auto; resize: vertical;
+  }
+  /* The line-number gutter needs its own column — without it the number runs
+     straight into the code ("1import argparse") and the source is unreadable. */
+  /* Unscoped: the same numbered block is rendered by the timeline's source
+     fold and by its snapshot fallback (_numberedSourceHtml). Scoping it to
+     .source-file left the timeline copy with no gutter column at all. */
+  .cl:has(> .cl-no) { display: flex; align-items: flex-start; }
+  .cl > .cl-no {
+    flex: 0 0 auto; min-width: 3.2em; padding-right: 14px; text-align: right;
+    color: var(--text-3); user-select: none; font-variant-numeric: tabular-nums;
+  }
+  .cl > .cl-src { flex: 1 1 auto; white-space: pre-wrap; }
+  /* Collapsed unchanged context in a full-source diff. */
+  .code-diff .dl-fold {
+    background: var(--surface-2); color: var(--text-3);
+    font-size: var(--text-xs); font-style: italic;
+  }
+
+  /* Per-file groups in the run's working-tree diff (`_renderDiffFiles`).
+     The panel replaced a script-scoped panel that used to sit above it, so the
+     run's own script has to be findable at a glance in a multi-file diff. */
+  .dfile { margin-bottom: var(--space-4); }
+  .dfile:last-child { margin-bottom: 0; }
+  .dfile-head {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-bottom: none; border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  }
+  .dfile-name {
+    font-family: var(--font-mono); font-size: var(--text-xs);
+    color: var(--text-1); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; min-width: 0;
+  }
+  .dfile-tag {
+    font-size: var(--text-xs); color: var(--accent);
+    border: 1px solid var(--accent); border-radius: var(--radius-sm);
+    padding: 0 6px; white-space: nowrap; flex: none;
+  }
+  .dfile-stats { margin-left: auto; display: flex; gap: var(--space-2); flex: none; }
+  .dfile-stat { font-family: var(--font-mono); font-size: var(--text-xs); }
+  .dfile-plus { color: var(--diff-add-bar); }
+  .dfile-minus { color: var(--diff-del-bar); }
+  /* The primary file leads, so it carries the accent edge. */
+  .dfile-primary .dfile-head { border-left: 3px solid var(--accent); }
+
+  /* "Other files in the working tree" fold — secondary to this run's script. */
+  .dfile-others { margin-top: var(--space-3); }
+  .dfile-others > summary {
+    cursor: pointer; user-select: none;
+    font-size: var(--text-xs); color: var(--text-2);
+    padding: var(--space-2) 0;
+  }
+  .dfile-others > summary:hover { color: var(--text-1); }
+  .dfile-others[open] > summary { margin-bottom: var(--space-2); }

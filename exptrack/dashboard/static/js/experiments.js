@@ -203,6 +203,30 @@ function renderExpRow(e) {
     + ' onclick="event.stopPropagation();cancelRowClick();'
     + fn + '(' + editArgs + "this.closest('.editable-cell'))\">&#9998;</span>";
 
+  // Tags/studies draw at most CHIP_CELL_MAX chips. An uncapped list kept growing
+  // the cell until the chips spilled past the fixed column width — and since a
+  // later <td> paints over an earlier one's overflow, the trailing hover pencil
+  // (the *only* one-click way into the editor) ended up covered and unclickable.
+  // That left a single click on the cell as the sole remaining target, which by
+  // design opens the run — so an over-tagged row became impossible to edit.
+  // The `+N` chip is itself a one-click way in, so the affordance survives
+  // however many tags a run carries.
+  const chipCell = (items, fn, prefix, style) => {
+    const list = items || [];
+    if (!list.length) return '<span style="color:var(--muted)">--</span>';
+    const st = style ? ' style="' + style + '"' : '';
+    let html = list.slice(0, CHIP_CELL_MAX)
+      .map(t => '<span class="tag"' + st + '>' + esc(prefix + t) + '</span>').join('');
+    const rest = list.length - CHIP_CELL_MAX;
+    if (rest > 0) {
+      html += '<span class="tag tag-more" title="'
+        + esc(list.slice(CHIP_CELL_MAX).map(t => prefix + t).join(', ')) + ' — click to edit"'
+        + ' onclick="event.stopPropagation();cancelRowClick();'
+        + fn + '(' + editArgs + "this.closest('.editable-cell'))\">+" + rest + '</span>';
+    }
+    return html;
+  };
+
   // Pre-compute cell content for all possible columns
   const cells = {
     pin: '<td' + hlBorder + ' onclick="event.stopPropagation()"><button class="pin-btn' + (isPinned?' pinned':'') + '" onclick="togglePin(\'' + e.id + '\')" title="' + (isPinned?'Unpin':'Pin') + '">' + (isPinned?'\u2605':'\u2606') + '</button></td>',
@@ -213,8 +237,8 @@ function renderExpRow(e) {
     // in a rerun burst read identically.
     name: '<td class="truncate-cell">' + (e.name_is_auto ? '<span class="auto-name-badge" title="Auto-generated name — double-click to rename">auto</span>' : '') + '<span class="editable-cell" data-rename-slot="' + e.id + '" title="' + esc(e.name) + '"' + editOn('startInlineRename', false) + '>' + esc(midEllipsis(e.name, nameCellMaxChars(e.name_is_auto))) + editIcon('startInlineRename') + '</span></td>',
     status: '<td class="truncate-cell status-' + e.status + '">' + e.status + '</td>',
-    tags: '<td class="tags-cell wrap-cell editable-cell"' + editOn('startInlineTag') + '>' + ((e.tags||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon('startInlineTag') + '</td>',
-    studies: '<td class="tags-cell wrap-cell editable-cell"' + editOn('startInlineStudy') + '>' + ((e.studies||[]).map(g=>'<span class="tag" style="background:rgba(44,90,160,0.1);color:var(--blue)">'+esc(g)+'</span>').join('') || '<span style="color:var(--muted)">--</span>') + editIcon('startInlineStudy') + '</td>',
+    tags: '<td class="tags-cell wrap-cell editable-cell"' + editOn('startInlineTag') + '>' + chipCell(e.tags, 'startInlineTag', '#', '') + editIcon('startInlineTag') + '</td>',
+    studies: '<td class="tags-cell wrap-cell editable-cell"' + editOn('startInlineStudy') + '>' + chipCell(e.studies, 'startInlineStudy', '', 'background:rgba(44,90,160,0.1);color:var(--blue)') + editIcon('startInlineStudy') + '</td>',
     stage: '<td class="wrap-cell stage-cell editable-cell"' + editOn('startInlineStage') + '>' + (e.stage != null ? '<span style="font-weight:600">' + esc(String(e.stage)) + '</span>' + (e.stage_name ? ' <span style="color:var(--muted)">\u00b7</span> <span style="color:var(--muted)">' + esc(e.stage_name) + '</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon('startInlineStage') + '</td>',
     notes: '<td class="truncate-cell notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '"' + editOn('startInlineNote', false) + '>' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon('startInlineNote') + '</td>',
     metrics: (function() {
@@ -247,7 +271,10 @@ function renderExpRow(e) {
     // list instead of only inside each run's detail view.
     if (isParamCol(colId)) tds += _paramCellHtml(e, paramColKey(colId));
   }
-  return '<tr class="' + rowCls + '"' + rowStyle + ' onclick="onRowClick(\'' + e.id + '\')">' + tds + '</tr>';
+  // data-id so anything that has a row in hand can recover the run without
+  // regex-parsing the rendered onclick attribute (see _restoreEditedCell).
+  return '<tr class="' + rowCls + '"' + rowStyle + ' data-id="' + escJsAttr(e.id) +
+    '" onclick="onRowClick(\'' + e.id + '\')">' + tds + '</tr>';
 }
 
 // A param value as a table cell. Objects/arrays are JSON-stringified; the full
@@ -344,17 +371,12 @@ function renderExperiments() {
     return;
   }
 
-  // Group experiments
-  const NO_STUDY = '__no_study__';
+  // Group experiments. Keys and labels come from the shared GROUP_MODES table
+  // (js/core.js) so the rail cannot key or name the same group differently.
+  const groupMode = GROUP_MODES[groupBy];
   const groups = new Map();
   for (const e of exps) {
-    let key = '';
-    if (groupBy === 'git_commit') key = e.git_commit ? e.git_commit.slice(0, 7) : 'no commit';
-    else if (groupBy === 'git_branch') key = e.git_branch || 'no branch';
-    else if (groupBy === 'script') key = e.script ? e.script.split('/').pop() : 'no script';
-    else if (groupBy === 'status') key = e.status || 'unknown';
-    else if (groupBy === 'day') key = dayKeyOf(e.created_at) || 'unknown';
-    else if (groupBy === 'study') key = (e.studies && e.studies.length) ? e.studies[0] : NO_STUDY;
+    const key = groupMode ? groupMode.keyOf(e) : '';
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(e);
   }
@@ -362,15 +384,10 @@ function renderExperiments() {
   let html = '';
   for (const [key, items] of groups) {
     const isCollapsed = collapsedGroups.has(key);
-    let groupLabel = key;
-    if (groupBy === 'git_commit' && items[0].git_branch) {
-      groupLabel = key + ' <span class="group-meta">' + esc(items[0].git_branch) + '</span>';
-    } else if (groupBy === 'day') {
-      groupLabel = esc(dayLabelOf(items[0].created_at));
-    } else if (groupBy === 'study' && key === NO_STUDY) {
-      groupLabel = '<span style="color:var(--muted);font-style:italic">(no study)</span>';
-    } else {
-      groupLabel = esc(key);
+    let groupLabel = groupLabelHtml(groupBy, key, items);
+    // A commit hash means little on its own, so the branch rides along with it.
+    if (groupBy === 'git_commit' && key !== NO_GROUP && items[0].git_branch) {
+      groupLabel += ' <span class="group-meta">' + esc(items[0].git_branch) + '</span>';
     }
     html += '<tr class="group-header" onclick="toggleGroup(\'' + escJsAttr(key) + '\')"><td colspan="' + visibleCols.length + '">';
     html += '<span class="group-toggle">' + (isCollapsed ? '\u25B6' : '\u25BC') + '</span> ';

@@ -1,5 +1,127 @@
 
 
+// ── One inline editor at a time ──────────────────────────────────────────────
+// Every editable cell replaces its own contents with an editor, and nothing
+// used to close the one already open — so working down a row left the tags,
+// studies, stage and notes editors all live at once. The table is
+// `table-layout: fixed` with narrow columns, so each editor overflows its own
+// column and a later <td> paints over an earlier one's overflow: they stack on
+// top of each other, and one editor's ✓ button lands inside the next one's
+// input. Opening an editor now closes whichever was open, committing it
+// exactly as a blur would.
+let _openCellEditor = null;
+
+let _editorSeq = 0;
+
+// Clicking anywhere outside the open editor closes it (committing, exactly as
+// blurring does). Without this the only ways out were opening another editor
+// or tabbing away, so an editor opened by mistake — or one you were simply
+// done with — stayed on screen over the row indefinitely. Capture-phase
+// mousedown so it runs before the click can move focus somewhere that would
+// re-render underneath us; a click *inside* the cell (a chip's ×, a
+// suggestion, the ✓) is left alone.
+document.addEventListener('mousedown', (ev) => {
+  const cur = _openCellEditor;
+  if (!cur || !cur.el || cur.el.contains(ev.target)) return;
+  closeOpenCellEditor();
+}, true);
+
+// Call once the editor is built; returns the token that identifies it. `close`
+// must commit — closing is a save, not a discard, matching what blurring the
+// editor already does. `restore` puts the cell back to its rendered form; see
+// closeOpenCellEditor.
+function _registerCellEdit(el, close, restore) {
+  const token = ++_editorSeq;
+  _openCellEditor = { token, el, close, restore: restore || (() => _restoreEditedCell(el)) };
+  if (el && el.classList) el.classList.add('cell-editing');
+  return token;
+}
+
+// Put a closed editor's cell back to its rendered form. Closing has to do this
+// *now*: the commit is async and the re-render it schedules is deliberately
+// skipped while another editor is open, so without it the closed cell kept its
+// dead editor on screen — four cells edited in a row left four of them stacked
+// across the table, which is the pile-up this whole mechanism exists to end.
+//
+// It replaces exactly one <td>, never the row. The editor being opened is
+// usually a sibling cell in the same row, and re-rendering the row would
+// detach the very node that editor is about to be built in — it would then
+// render into a dead node and simply never appear.
+function _restoreEditedCell(el) {
+  if (!el || !el.isConnected) return;
+  const td = el.closest ? el.closest('td') : null;
+  const tr = td ? td.parentElement : null;
+  const exp = (tr && tr.dataset.id)
+    ? (typeof allExperiments !== 'undefined' ? allExperiments : [])
+        .find(e => e.id === tr.dataset.id)
+    : null;
+  if (!exp || typeof renderExpRow !== 'function') return;
+  // Rebuilt from live data, so the cell shows what was just saved rather than
+  // what it held before the edit. A <tr> will not parse inside a <div>, hence
+  // the throwaway <tbody>; the cell index is right by construction because it
+  // is the same renderer that drew the row.
+  const tmp = document.createElement('tbody');
+  tmp.innerHTML = renderExpRow(exp);
+  const fresh = tmp.querySelector('tr');
+  if (fresh && fresh.children[td.cellIndex]) td.replaceWith(fresh.children[td.cellIndex]);
+}
+
+// Forget whatever editor is registered for `el`, without committing it. Only
+// for the case where a re-render dropped the editor's node on the floor
+// (_preserveActiveRename's no-slot path) — everything else goes through
+// _afterInlineEdit.
+function _dropCellEditor(el) {
+  if (el && el.classList) el.classList.remove('cell-editing');
+  if (_openCellEditor && _openCellEditor.el === el) _openCellEditor = null;
+}
+
+function closeOpenCellEditor() {
+  const cur = _openCellEditor;
+  _openCellEditor = null;
+  if (!cur) return;
+  if (cur.el && cur.el.classList) cur.el.classList.remove('cell-editing');
+  // A re-render can detach the editor before anything closes it (see
+  // _preserveActiveRename); committing a dead input would save whatever it
+  // held when it left the document.
+  if (cur.el && cur.el.isConnected === false) return;
+  try { cur.close(); } catch (err) { console.error(err); }
+  // Immediately, not when the server answers — the dead editor must not
+  // outlive the click that closed it.
+  try { cur.restore(); } catch (err) { console.error(err); }
+}
+
+// Finishes the edit identified by `token` and refreshes the lists. One call,
+// not two: every site that finished an edit had to remember to clear the
+// registration *before* asking for the re-render, and forgetting it left a
+// stale `_openCellEditor` that silently suppressed the render — a failure with
+// no error and no visible cause.
+//
+// The **token**, not the cell, identifies the editor. A cell can host a second
+// editor while the first one's save is still in flight (re-open the same cell
+// during the round trip), and matching on the element let that stale save
+// close the editor which had replaced it — the cell went blank on its own.
+//
+// The render is deferred because the commit may be running as a side effect of
+// opening a *different* editor, and rebuilding the table synchronously would
+// detach the cell that editor is about to be built in — it would render into a
+// dead node and never appear. It is skipped entirely while an editor is open;
+// that editor's own close refreshes the list.
+function _afterInlineEdit(token) {
+  if (_openCellEditor && _openCellEditor.token === token) {
+    if (_openCellEditor.el && _openCellEditor.el.classList) {
+      _openCellEditor.el.classList.remove('cell-editing');
+    }
+    _openCellEditor = null;
+  }
+  setTimeout(() => {
+    if (_openCellEditor) return;   // another editor opened in the meantime
+    // The shared post-mutation refresh: inline edits change names, tags and
+    // studies, which feed the "Needs naming" count, the metric-sort options
+    // and the truncation notice as much as the two list renders do.
+    _renderExpViews();
+  }, 0);
+}
+
 // ── Inline rename ────────────────────────────────────────────────────────────
 // `activeRename` tracks the in-progress rename so that re-renders triggered by
 // other UI events (e.g. mutations.py reload, refreshDetail) don't yank the
@@ -8,6 +130,7 @@
 let activeRename = null;
 
 function startInlineRename(id, el) {
+  closeOpenCellEditor();
   // Seed from the run's real name, never from the rendered cell text: the main
   // table middle-ellipsizes long names (midEllipsis), so `el.textContent` is
   // `Jul28_ablate__…__2aac1081` — committing that wrote the literal `…` and
@@ -31,6 +154,7 @@ function startInlineRename(id, el) {
   input.select();
 
   let committed = false;
+  let editToken = 0;
   async function commit(save) {
     if (committed) return;
     committed = true;
@@ -50,12 +174,17 @@ function startInlineRename(id, el) {
         }
       }
     }
-    renderExperiments();
-    renderExpList();
-    updateAutoNamedCount();
+    _afterInlineEdit(editToken);
   }
 
   activeRename = { id, input, commit, where };
+  // The input replaced the cell's span, so restoring means putting that exact
+  // node back — outside the main table (sidebar, detail header) there is no
+  // row to re-render.
+  editToken = _registerCellEdit(input, () => commit(true), () => {
+    if (where === 'table') { _restoreEditedCell(input); return; }
+    if (input.isConnected) input.replaceWith(el);
+  });
 
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter')  { e.preventDefault(); commit(true);  }
@@ -121,9 +250,12 @@ function _preserveActiveRename(scopeId) {
     }
     if (!slot) {
       // Nowhere to put it back: drop the edit rather than committing text the
-      // user never confirmed.
+      // user never confirmed. Clear the cell-editor registration too — it
+      // still points at this now-detached input, and the two records of
+      // "which editor is open" must not be able to disagree.
       rename.remounting = false;
       activeRename = null;
+      _dropCellEditor(input);
       return;
     }
     slot.replaceWith(input);
@@ -243,11 +375,21 @@ function startInlineItems(id, el, opts) {
   // opts.deleteBodyKey: e.g. 'tag' or 'study'
   // opts.createInput: createTagInput or createStudyInput
   // opts.loadAll: loadAllTags or loadAllStudies
+  closeOpenCellEditor();
   const exp = allExperiments.find(e => e.id === id);
   if (!exp) return;
+  let editToken = 0;
   const items = [...(exp[opts.expKey] || [])];
+  // The cell carries title="Double-click to edit". Once the editor is open that
+  // hint is both wrong and in the way: the browser renders the native tooltip
+  // above the autocomplete list, covering its first suggestion. The row is
+  // rebuilt on save/escape, which restores the attribute.
+  el.removeAttribute('title');
+  // `.cell-edit-pop` floats the editor out of its column — see components.css.
+  // These columns are routinely 60px wide (the empty-column collapse), which
+  // is exactly the width they have when you go to add the first tag or study.
   const container = document.createElement('div');
-  container.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;align-items:center;min-width:120px';
+  container.className = 'cell-edit-pop';
   container.onclick = (ev) => ev.stopPropagation();
 
   function render() {
@@ -259,7 +401,10 @@ function startInlineItems(id, el, opts) {
       chip.textContent = opts.prefix + t;
       const x = document.createElement('span');
       x.textContent = '\u00d7';
-      x.style.cssText = 'cursor:pointer;margin-left:2px;color:var(--red);font-weight:bold';
+      // A class, not inline styles: removing a tag was a 7px glyph with 2px of
+      // margin, which is the other half of "hard to add/remove".
+      x.className = 'chip-x';
+      x.title = 'Remove';
       x.onclick = async (ev) => {
         ev.stopPropagation();
         const body = {}; body[opts.deleteBodyKey] = t;
@@ -276,9 +421,8 @@ function startInlineItems(id, el, opts) {
     const { wrapper, input } = opts.createInput(id, items, exp, () => {
       render();
       renderExpList();
-      renderExperiments();
     }, {
-      onEscape: () => { renderExperiments(); renderExpList(); }
+      onEscape: () => _afterInlineEdit(editToken)
     });
     container.appendChild(wrapper);
     setTimeout(() => input.focus(), 0);
@@ -286,6 +430,9 @@ function startInlineItems(id, el, opts) {
   el.innerHTML = '';
   el.appendChild(container);
   render();
+  // Each chip is saved the moment it is added or removed, so closing has
+  // nothing to commit — it just puts the cell back to its rendered form.
+  editToken = _registerCellEdit(el, () => _afterInlineEdit(editToken));
 }
 
 function startInlineTag(id, el) {
@@ -306,15 +453,23 @@ function startInlineStudy(id, el) {
 
 // ── Inline note editing on double-click ─────────────────────────────────────
 function startInlineNote(id, el) {
+  closeOpenCellEditor();
   const exp = allExperiments.find(e => e.id === id);
   if (!exp) return;
+  let editToken = 0;
   const textarea = document.createElement('textarea');
   textarea.value = exp.notes || '';
   textarea.className = 'name-edit-input';
-  textarea.style.cssText = 'width:100%;min-height:50px;font-size:12px;font-family:inherit;resize:vertical;padding:4px 6px';
+  // box-sizing so the padding stays inside the column; without it a
+  // width:100% textarea is wider than the cell it lives in.
+  textarea.style.cssText = 'width:100%;box-sizing:border-box;min-height:50px;font-size:12px;font-family:inherit;resize:vertical;padding:4px 6px';
   textarea.onclick = (ev) => ev.stopPropagation();
+  const pop = document.createElement('div');
+  pop.className = 'cell-edit-pop';
+  pop.onclick = (ev) => ev.stopPropagation();
+  pop.appendChild(textarea);
   el.innerHTML = '';
-  el.appendChild(textarea);
+  el.appendChild(pop);
   textarea.focus();
 
   let saved = false;
@@ -324,8 +479,7 @@ function startInlineNote(id, el) {
     const newNotes = textarea.value.trim();
     await postApi('/api/experiment/' + id + '/edit-notes', {notes: newNotes});
     if (exp) exp.notes = newNotes;
-    renderExperiments();
-    renderExpList();
+    _afterInlineEdit(editToken);
     if (currentDetailId === id) {
       const notesEl = document.getElementById('detail-notes');
       if (notesEl) notesEl.innerHTML = newNotes ? '<div class="notes-display">'+esc(newNotes)+'<button class="notes-edit-btn" onclick="startDetailNoteEdit(\''+id+'\', document.getElementById(\'detail-notes\'))">edit</button></div>' : '<span style="color:var(--muted)">none</span>';
@@ -334,6 +488,7 @@ function startInlineNote(id, el) {
   textarea.addEventListener('blur', doSave);
   textarea.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter' && ev.ctrlKey) { ev.preventDefault(); textarea.blur(); }
-    if (ev.key === 'Escape') { saved = true; renderExperiments(); renderExpList(); }
+    if (ev.key === 'Escape') { saved = true; _afterInlineEdit(editToken); }
   });
+  editToken = _registerCellEdit(el, doSave);
 }

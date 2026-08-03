@@ -78,7 +78,9 @@ def api_bulk_delete_preview(conn, body: dict) -> dict:
     ids = body.get("ids", [])
     if not ids:
         return {"error": "no ids provided"}
-    from exptrack.core.db import get_delete_preview
+    # Function-local so it reads the module attribute at call time — the same
+    # reason dir_file_stats resolves the cap per call.
+    from exptrack.core.db import DIR_STAT_MAX_FILES, get_delete_preview
     items: list[dict] = []
     totals = {
         "experiments": 0,
@@ -91,12 +93,24 @@ def api_bulk_delete_preview(conn, body: dict) -> dict:
         "output_dir_files": 0,
         "output_dir_bytes": 0,
         "notebook_history": 0,
+        "linked_dirs": 0,
+        "linked_dir_files": 0,
+        "linked_dir_bytes": 0,
+        # Any run whose directory walk hit the cap makes the aggregate a
+        # lower bound too, so the batch confirm has to say "at least" as
+        # well — a total summed from partial figures is still partial.
+        "dir_sizes_truncated": False,
+        # The cap itself, echoed once from the constant rather than taken from
+        # whichever run happened to be last in the loop — an empty or
+        # all-skipped batch would otherwise ship 0 and the dialog would fall
+        # back to saying "the walk limit" instead of naming the number.
+        "dir_stat_max_files": DIR_STAT_MAX_FILES,
     }
     for eid in ids:
         exp = find_experiment(conn, eid)
         if not exp:
             continue
-        p = get_delete_preview(conn, exp["id"])
+        p = get_delete_preview(conn, exp["id"], source_check=False)
         if "error" in p:
             continue
         items.append({
@@ -116,7 +130,19 @@ def api_bulk_delete_preview(conn, body: dict) -> dict:
         totals["output_dir_files"] += p["output_dir_files"]
         totals["output_dir_bytes"] += p["output_dir_bytes"]
         totals["notebook_history"] += p["notebook_history_count"]
-    return {"items": items, "totals": totals}
+        totals["linked_dirs"] += len(p.get("linked_dirs") or [])
+        totals["linked_dir_files"] += p.get("linked_dir_files", 0)
+        totals["linked_dir_bytes"] += p.get("linked_dir_bytes", 0)
+        if p.get("output_dir_truncated") or p.get("linked_dir_truncated"):
+            totals["dir_sizes_truncated"] = True
+    # Batch-aware on purpose: the per-run sole-source check sees the other
+    # runs in this same doomed batch as surviving holders, so deleting the
+    # only two runs sharing a snapshot would warn on neither. Best-effort
+    # inside sole_source_holders itself — an internal failure degrades to
+    # the not-sole shape rather than breaking the preview.
+    from exptrack.core.storage import sole_source_holders
+    source_only = sole_source_holders(conn, [it["id"] for it in items])
+    return {"items": items, "totals": totals, "source_only_copy": source_only}
 
 
 def api_bulk_export(conn, body: dict) -> dict | list:

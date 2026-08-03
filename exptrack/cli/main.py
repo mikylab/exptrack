@@ -43,6 +43,7 @@ from .inspect_cmds import (
     cmd_history,
     cmd_ls,
     cmd_show,
+    cmd_source,
     cmd_timeline,
     cmd_verify,
     cmd_watch,
@@ -426,6 +427,18 @@ def _build_parser():
                            help="All of the above: git_diff + cells + timeline + snapshots")
     p_compact.add_argument("--dedup", action="store_true",
                            help="Deduplicate existing raw git diffs into shared storage")
+    p_compact.add_argument("--code-changes", action="store_true", dest="code_changes",
+                           help="Strip the _code_changes summary from runs whose full "
+                                "source is still recoverable from a code snapshot "
+                                "(runs without one are skipped)")
+
+    p_source = sub.add_parser("source",
+                              help="Show or export the source code a run actually ran")
+    p_source.add_argument("id", nargs="?", help="Experiment ID (prefix match)")
+    p_source.add_argument("--all", action="store_true",
+                          help="Every run (requires --out)")
+    p_source.add_argument("--out", metavar="DIR",
+                          help="Write source to DIR/<id>__<name>/ instead of printing")
 
     p_watch = sub.add_parser("watch", help="Watch a running experiment for live metric updates")
     p_watch.add_argument("id", help="Experiment ID (prefix match)")
@@ -554,6 +567,7 @@ _DISPATCH = {
     "backup":       cmd_backup,
     "restore":      cmd_restore,
     "compact":      cmd_compact,
+    "source":       cmd_source,
     "finish":       cmd_finish,
     "ls":           cmd_ls,
     "show":         cmd_show,

@@ -134,7 +134,17 @@ function _wordDiffPair(oldLine, newLine) {
 // del/add runs that _diffRowsToHtml then word-diffs — so "view source" on an
 // edited cell spotlights the changed token, not just the short timeline preview.
 // Returns null past a sane size so a huge paste can't lock the UI on the O(n*m) DP.
-function _lineDiffRows(oldText, newText) {
+//
+// Long runs of unchanged lines are collapsed here rather than at each call
+// site: rendering every line of a 500-line file to spotlight two is a property
+// of *this* output, so every consumer should get the collapse without
+// remembering to ask (pass `fullContext` to opt out).
+function _lineDiffRows(oldText, newText, fullContext) {
+  const rows = _lineDiffRowsRaw(oldText, newText);
+  return (rows && !fullContext) ? _collapseDiffContext(rows) : rows;
+}
+
+function _lineDiffRowsRaw(oldText, newText) {
   const a = String(oldText).split('\n');
   const b = String(newText).split('\n');
   const n = a.length, m = b.length;
@@ -153,6 +163,40 @@ function _lineDiffRows(oldText, newText) {
   while (i < n) rows.push({kind:'del', text: a[i++]});
   while (j < m) rows.push({kind:'add', text: b[j++]});
   return rows;
+}
+
+// Lines of unchanged context kept either side of a change, matching git's
+// default. Without this the full-source diff renders every line of the file to
+// spotlight two — fine for a 20-line script, unreadable for a 500-line one,
+// where the change you opened the panel to see is lost in a wall of context.
+const DIFF_CONTEXT_LINES = 3;
+
+// Replace long runs of unchanged lines with a single collapsed marker row.
+// Returns a new row list; rows keep their original shape so every downstream
+// renderer (word-diff pairing, line-number gutter) is unaffected. A run only
+// collapses when it is strictly longer than the context it would leave behind
+// plus the marker itself — otherwise collapsing would *add* a row.
+function _collapseDiffContext(rows, ctxLines) {
+  if (!Array.isArray(rows)) return rows;
+  const ctx = ctxLines == null ? DIFF_CONTEXT_LINES : ctxLines;
+  const changed = rows.map(r => r.kind === 'add' || r.kind === 'del');
+  if (!changed.some(Boolean)) return rows;      // nothing changed: show as-is
+  const keep = rows.map((r, i) => {
+    if (r.kind !== 'ctx') return true;
+    for (let d = 1; d <= ctx; d++)
+      if (changed[i - d] || changed[i + d]) return true;
+    return false;
+  });
+  const out = [];
+  let run = 0;
+  for (let i = 0; i < rows.length; i++) {
+    if (keep[i]) {
+      if (run) { out.push({kind: 'fold', count: run}); run = 0; }
+      out.push(rows[i]);
+    } else { run++; }
+  }
+  if (run) out.push({kind: 'fold', count: run});
+  return out;
 }
 
 // ── Unified diff renderer ────────────────────────────────────────────────────
@@ -191,6 +235,15 @@ function _diffRowsToHtml(rows, lineNumbers) {
       const mm = /@@\s*-(\d+)(?:,\d+)?\s*\+(\d+)(?:,\d+)?\s*@@/.exec(r.text);
       if (mm) { oldNo = +mm[1]; newNo = +mm[2]; }
       out += `<div class="dl dl-hunk">${lineNumbers ? '<span class="dl-no"></span>' : ''}${escapeHtml(r.text)}</div>`;
+      continue;
+    }
+    if (r.kind === 'fold') {
+      // Collapsed unchanged context. The counters must still advance by the
+      // number of hidden lines or every line number below the fold is wrong.
+      const n = r.count || 0;
+      oldNo += n; newNo += n;
+      out += `<div class="dl dl-fold">${lineNumbers ? '<span class="dl-no"></span>' : ''}` +
+             `<span class="dl-sign"></span><span class="dl-text">\u22ef ${n} unchanged line${n === 1 ? '' : 's'}</span></div>`;
       continue;
     }
     if (r.kind === 'ctx')  { out += _dl('ctx', ' ', _highlightPy(r.text), gut(oldNo++, newNo++)); continue; }
@@ -236,17 +289,177 @@ function _renderUnifiedDiff(diffText) {
   return _renderDiffRows(rows, true);
 }
 
-// Render the per-cell "Code Changes" summary value. Capture stores it as
-// "+added; -removed; ..." fragments joined by "; "; classify by the leading
-// +/- and reuse the same word-diff renderer.
-function _renderCodeChangeParts(value) {
+// ── Splitting a raw git diff into its files ──────────────────────────────────
+// Lifted here from sessions.js so the experiment view and the Sessions view
+// share one parser: the run detail now renders the working-tree diff per file
+// (see `_splitDiffByScript`), which is exactly what the session split-diff view
+// had already needed.
+
+function _parseDiff(diff) {
+  const files = [];
+  let curFile = null;
+  let curHunk = null;
+  let totalAdd = 0, totalDel = 0;
+  const newFile = (header) => {
+    curFile = { header: header || '', hunks: [], plus: 0, minus: 0 };
+    files.push(curFile);
+    curHunk = null;
+  };
+  for (const ln of diff.split('\n')) {
+    if (ln.startsWith('diff --git')) { newFile(ln); continue; }
+    if (ln.startsWith('--- ') || ln.startsWith('+++ ')
+        || ln.startsWith('index ') || ln.startsWith('new file')
+        || ln.startsWith('deleted file') || ln.startsWith('similarity')
+        || ln.startsWith('rename ')) {
+      if (!curFile) newFile('');
+      curFile.header += (curFile.header ? '\n' : '') + ln;
+      continue;
+    }
+    if (ln.startsWith('@@')) {
+      if (!curFile) newFile('');
+      curHunk = { header: ln, rows: [] };
+      curFile.hunks.push(curHunk);
+      continue;
+    }
+    if (!curHunk) continue;
+    let kind = 'ctx';
+    if (ln.startsWith('+')) { kind = 'add'; curFile.plus++; totalAdd++; }
+    else if (ln.startsWith('-')) { kind = 'del'; curFile.minus++; totalDel++; }
+    curHunk.rows.push({ kind, text: ln.length ? ln.slice(1) : '' });
+  }
+  return { files, plus: totalAdd, minus: totalDel };
+}
+
+function _shortFileLabel(header) {
+  if (!header) return '(file)';
+  const m = header.match(/^diff --git a\/(.+?) b\/(.+)$/m);
+  if (m) return m[1] === m[2] ? m[1] : m[1] + ' → ' + m[2];
+  const mm = header.match(/^\+\+\+ b\/(.+)$/m);
+  if (mm) return mm[1];
+  return header.split('\n')[0].slice(0, 80);
+}
+
+// Does this diff's file path name the run's own script? Diff paths are
+// repo-relative and `script` is absolute, so compare from the right — with a
+// separator boundary, or `train.py` would match `retrain.py`.
+function _diffFileIsScript(label, script) {
+  if (!label || !script) return false;
+  const f = String(label).split(' → ').pop().trim();
+  const s = String(script).replace(/\\/g, '/');
+  return s === f || s.endsWith('/' + f);
+}
+
+// Split a raw git diff into the run's own script and everything else, each
+// rendered as labelled per-file groups.
+//
+// Two things drive this. `_renderUnifiedDiff` drops every `diff --git` header,
+// so a multi-file working tree rendered as one undifferentiated wall of hunks
+// that never said which file any of them came from. And the run detail used to
+// carry a *second*, script-scoped panel above this one against the same commit
+// — the same edit rendered twice in any single-script project. Returning the
+// two halves separately lets one panel answer both questions without repeating
+// a line: what changed in the script this run executed, and what else in the
+// tree was uncommitted at the time.
+//
+// Returns {scriptHtml, otherHtml, scriptFiles, otherFiles, headerless}.
+//
+// Memoized on (diffText, script) against a single previous call, because the
+// detail panel is rebuilt on a 5-second poll for the whole length of a live run
+// while the working-tree diff is almost never what changed between ticks —
+// metrics are. One entry is the right size: the panel renders one run's diff at
+// a time, and the body is already bounded by `max_git_diff_kb`.
+let _sdbsKey = null, _sdbsVal = null;
+function _splitDiffByScript(diffText, script) {
+  const key = String(script) + ' ' + String(diffText);
+  if (key === _sdbsKey) return _sdbsVal;
+  const out = _splitDiffByScriptUncached(diffText, script);
+  _sdbsKey = key; _sdbsVal = out;
+  return out;
+}
+
+function _splitDiffByScriptUncached(diffText, script) {
+  const parsed = _parseDiff(String(diffText));
+  const files = parsed.files.filter(f => f.hunks.length);
+  if (!files.length) {
+    // A fragment with no `diff --git` headers — render it whole rather than
+    // silently dropping it.
+    return { scriptHtml: '', otherHtml: _renderUnifiedDiff(diffText),
+             scriptFiles: 0, otherFiles: 0, headerless: true };
+  }
+  const groups = { script: [], other: [] };
+  for (const f of files) {
+    const label = _shortFileLabel(f.header);
+    const isScript = _diffFileIsScript(label, script);
+    groups[isScript ? 'script' : 'other'].push(_diffFileHtml(f, label, isScript));
+  }
+  return {
+    scriptHtml: groups.script.join(''), otherHtml: groups.other.join(''),
+    scriptFiles: groups.script.length, otherFiles: groups.other.length,
+    headerless: false,
+  };
+}
+
+function _diffFileHtml(f, label, isScript) {
   const rows = [];
-  for (const part of String(value).split('; ')) {
+  for (const h of f.hunks) {
+    rows.push({ kind: 'hunk', text: h.header });
+    for (const r of h.rows) rows.push(r);
+  }
+  const stats = '<span class="dfile-stat dfile-plus">+' + f.plus + '</span>'
+    + '<span class="dfile-stat dfile-minus">−' + f.minus + '</span>';
+  const tag = isScript
+    ? '<span class="dfile-tag" title="The script this run executed">this run\'s script</span>'
+    : '';
+  return '<div class="dfile' + (isScript ? ' dfile-primary' : '') + '">'
+    + '<div class="dfile-head"><code class="dfile-name">' + esc(label) + '</code>'
+    + tag + '<span class="dfile-stats">' + stats + '</span></div>'
+    + _renderDiffRows(rows, true) + '</div>';
+}
+
+// Normalize a timeline event's `source_diff` to a list of {op, line}.
+//
+// The two capture paths store different shapes and always have: a notebook cell
+// stores a JSON list of {op, line} (from simple_diff), while a script stores the
+// flat "; "-joined "+ line"/"- line" summary. The timeline renderer only ever
+// handled the list, so for every script run it iterated the *string one
+// character at a time* — `d.op` was undefined for each, so no diff rows were
+// emitted and the row rendered blank, followed by a "... N more lines" note
+// where N was `string.length - 8` (a character count presented as a line count:
+// a 57-char summary claimed 49 more lines). Normalizing here fixes every run
+// already recorded, which fixing the writer alone would not.
+// Numbered, syntax-highlighted source block. One implementation, used by the
+// timeline's source fold and by its snapshot fallback — two renderers for
+// "show captured Python with line numbers" is how the gutter markup drifts.
+function _numberedSourceHtml(src) {
+  return (src || '').split('\n').map((ln, i) =>
+    '<div class="cl"><span class="cl-no">' + (i + 1) + '</span>' +
+    '<span class="cl-src">' + _highlightPy(ln) + '</span></div>').join('');
+}
+
+function _normalizeSourceDiff(sd) {
+  if (!sd) return [];
+  if (Array.isArray(sd)) return sd;
+  if (typeof sd !== 'string') return [];
+  const out = [];
+  for (const part of sd.split('; ')) {
     const t = part.trim();
     if (!t) continue;
-    if (t.startsWith('+')) rows.push({kind:'add', text: t.slice(1).trim()});
-    else if (t.startsWith('-')) rows.push({kind:'del', text: t.slice(1).trim()});
-    else rows.push({kind:'ctx', text: t});
+    if (t.startsWith('+')) out.push({op: '+', line: t.slice(1).trim()});
+    else if (t.startsWith('-')) out.push({op: '-', line: t.slice(1).trim()});
+    else out.push({op: 'summary', line: t});
   }
+  return out;
+}
+
+// Render the per-cell "Code Changes" summary value — the same "; "-joined
+// format `_normalizeSourceDiff` reads, so it parses through that one reader
+// and only maps op → row kind. Two parsers of one storage format drift, and
+// the format is still moving (summarize_changed_lines now appends its own
+// "… [truncated — N of M …]" fragment).
+const _OP_KIND = {'+': 'add', '-': 'del'};
+
+function _renderCodeChangeParts(value) {
+  const rows = _normalizeSourceDiff(String(value)).map(
+    p => ({kind: _OP_KIND[p.op] || 'ctx', text: p.line}));
   return _renderDiffRows(rows);
 }
