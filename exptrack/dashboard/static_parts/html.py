@@ -175,7 +175,7 @@ exptrack run-finish $EXP_ID --metrics results.json</div>
       </div>
       <div class="help-howto-item">
         <strong>Compare experiments</strong>
-        <p>Click the <strong>&#x2194; Compare</strong> button in the toolbar. <em>Pair Compare</em> shows side-by-side parameters and overlay charts between two runs. <em>Multi Compare</em> shows bar charts across three or more runs.</p>
+        <p>Click the <strong>&#x2194; Compare</strong> button in the toolbar, then <strong>Choose runs&hellip;</strong>. Any number of runs can be compared: you get what differs, a metric table, training curves and bar charts. Pick exactly two and it adds the panels that only make sense for a pair &mdash; the code diff between the attempts, a delta column, the notebook variable table, and an image overlay.</p>
       </div>
       <div class="help-howto-item">
         <strong>Bulk actions</strong>
@@ -191,7 +191,7 @@ exptrack run-finish $EXP_ID --metrics results.json</div>
     <table class="help-ref-table">
       <tr><td class="help-ref-key">Overview</td><td>Parameters, metrics with chart preview, artifacts, code changes, and the reproduce command.</td></tr>
       <tr><td class="help-ref-key">Charts</td><td>Full-size metric charts. Use the toolbar to switch between linear and log scale, or adjust downsampling.</td></tr>
-      <tr><td class="help-ref-key">Images</td><td>Image artifacts in a gallery grid. Click to enlarge. In Pair Compare, you can overlay or swipe between images.</td></tr>
+      <tr><td class="help-ref-key">Images</td><td>Image artifacts in a gallery grid. Click to enlarge. Comparing exactly two runs lets you overlay or swipe between their images.</td></tr>
       <tr><td class="help-ref-key">Data Files</td><td>CSV, TSV, JSON, and JSONL artifacts rendered as interactive tables with sortable columns.</td></tr>
       <tr><td class="help-ref-key">Timeline</td><td>Chronological log of cell executions, variable changes, and artifact saves. Notebook experiments only.</td></tr>
     </table>
@@ -358,7 +358,11 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
         </span>
         <span class="gb-group gb-sep">
           <span class="gb-label">Sort by metric:</span>
-          <select id="metric-sort-select" onchange="setMetricSort(this.value)" title="Sort the table by a metric value"><option value="">—</option></select>
+          <select id="metric-sort-select" class="select-sm" onchange="setMetricSort(this.value)" title="Sort the table by a metric value"><option value="">—</option></select>
+        </span>
+        <span class="gb-group gb-sep">
+          <button class="btn-sm" id="analyze-btn" onclick="openParamMatrix()"
+                  title="Read the runs currently listed as a parameter search: what varied, what was tried, what won">&#x25A6; Analyze</button>
         </span>
         <span class="highlight-legend" id="highlight-legend"></span>
       </div>
@@ -372,6 +376,9 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
     <div id="detail-view" style="display:none">
       <div id="detail-panel"></div>
     </div>
+
+    <!-- Parameter matrix (analysis over the filtered run set) -->
+    <div id="matrix-view" style="display:none"></div>
 
     <!-- Trash view (soft-deleted experiments) -->
     <div id="trash-view" style="display:none"></div>
@@ -404,47 +411,38 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
     <!-- Compare state -->
     <div id="compare-view" style="display:none">
       <div class="compare-header">
-        <button class="back-link" onclick="showWelcome()">&larr; Back to experiments</button>
+        <button class="back-link" id="compare-back" onclick="closeCompareView()">&larr; Back to experiments</button>
         <h3 style="margin:8px 0 4px">Compare Experiments</h3>
       </div>
-      <div class="tabs" style="margin-bottom:12px">
-        <button class="tab active" id="compare-pair-tab" onclick="switchCompareTab('pair')">Pair Compare</button>
-        <button class="tab" id="compare-multi-tab" onclick="switchCompareTab('multi')">Multi Compare</button>
-      </div>
-      <!-- Auto-named runs are near-identical in a dropdown; narrow by name, id,
-           param value, status or date before picking. Shared by both tabs. -->
-      <div class="cmp-filter-row">
-        <input type="search" id="cmp-filter" class="cmp-filter" oninput="onCompareFilter()"
-               placeholder="Filter runs — name, id, param (lr=0.01), status, date">
-        <div id="cmp-trunc" class="trunc-notice cmp-trunc" style="display:none"></div>
-      </div>
-      <div id="compare-pair-content">
-        <div class="compare-input">
-          <div class="compare-selector">
-            <label class="compare-label">base</label>
-            <select id="cmp-id1"><option value="">-- Select base experiment --</option></select>
-          </div>
-          <span class="vs-label">&larr;&rarr;</span>
-          <div class="compare-selector">
-            <label class="compare-label">compare</label>
-            <select id="cmp-id2"><option value="">-- Select compare experiment --</option></select>
-          </div>
-          <button class="primary" onclick="doCompare()">Compare</button>
-        </div>
-        <div id="compare-result"></div>
-      </div>
-      <div id="compare-multi-content" style="display:none">
-        <div class="compare-input" style="flex-wrap:wrap;gap:8px">
-          <div class="compare-selector" style="flex:1;min-width:300px">
-            <label class="compare-label">experiments</label>
-            <select id="cmp-multi-select" multiple size="6" style="width:100%;font-size:12px"></select>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:6px;justify-content:flex-end">
-            <button class="primary" onclick="doMultiCompareFromSelector()">Compare Selected</button>
-            <button onclick="selectAllMultiCompare()" style="font-size:12px">Select All</button>
+      <div id="compare-multi-content">
+        <!-- The runs being compared are staged as chips and chosen in the shared
+             run picker, which searches parameters, status, script and date — a
+             `<select multiple>` could only be searched by name, and needed
+             Ctrl/Cmd-click to hold more than one. -->
+        <div class="cmp-multi-pick">
+          <label class="compare-label">experiments</label>
+          <div class="cmp-picked" id="cmp-multi-picked"></div>
+          <div class="cmp-pick-actions">
+            <button class="btn-sm" onclick="openMultiRunPicker()"
+                    title="Search every run by name, id, parameter, status, script or date">Choose runs&hellip;</button>
+            <button class="btn-sm" onclick="multiPickFromTable()"
+                    title="Stage whatever is ticked in the experiments table">Use table selection</button>
+            <button class="btn-sm" onclick="selectAllMultiCompare()">Select all</button>
+            <button class="btn-sm btn-ghost" onclick="clearMultiPicked()">Clear</button>
+            <button class="primary" id="cmp-multi-go" onclick="doMultiCompareFromSelector()">Compare</button>
           </div>
         </div>
-        <p style="color:var(--muted);font-size:12px;margin:4px 0 12px">Hold Ctrl/Cmd to select multiple experiments. Need at least 2.</p>
+        <div class="compare-input" style="gap:12px;align-items:center">
+          <label class="compare-label" for="cmp-multi-basis">rank by</label>
+          <select id="cmp-multi-basis" onchange="doMultiCompareFromSelector()">
+            <option value="final">final value</option>
+            <option value="best">best value</option>
+          </select>
+          <button onclick="exportComparison()"
+                  title="Download this comparison as CSV">Export CSV</button>
+          <button onclick="copyComparisonLink()"
+                  title="Copy a link that reopens this comparison">Copy link</button>
+        </div>
         <div id="multi-compare-result"></div>
       </div>
     </div>

@@ -44,8 +44,11 @@ _OBSERVATIONAL_RE = re.compile(
 
 # Assignment operators — plain (`=`) and augmented (`+= -= *= /= //= %= **=
 # &= |= ^= >>= <<= @=`) — used to tell a state-changing line from an
-# observational one. Excludes the comparisons ==, !=, <=, >=.
-_ASSIGN_RE = re.compile(r"(?:\*\*|//|>>|<<|[+\-*/%&|^@])=(?!=)|(?<![=!<>])=(?!=)")
+# observational one. Excludes the comparisons ==, !=, <=, >=, and the
+# self-documenting f-string forms `{x=}`, `{x=:.2f}`, `{x=!r}` — the `=` there
+# sits immediately before `}`, `:` or `!`, none of which can follow `=` in a
+# real assignment, so `print(f"{x=}")` is correctly seen as observational.
+_ASSIGN_RE = re.compile(r"(?:\*\*|//|>>|<<|[+\-*/%&|^@])=(?!=)|(?<![=!<>])=(?![=}:!])")
 
 
 def is_observational(source: str) -> bool:

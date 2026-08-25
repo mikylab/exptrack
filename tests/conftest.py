@@ -15,6 +15,27 @@ import pytest
 _ORIGINAL_CWD = os.getcwd()
 
 
+def capture(func, *args) -> tuple[str, str]:
+    """Run *func* with stdout/stderr captured. Returns ``(stdout, stderr)``.
+
+    The one helper for the CLI-command tests, which call functions that print
+    rather than return. Six files had defined their own under the same name in
+    two different shapes — some returning the pair, some only stdout — so
+    ``out = _capture(...)`` meant different things depending on which file you
+    were reading.
+    """
+    import io
+    import sys
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = out = io.StringIO()
+    sys.stderr = err = io.StringIO()
+    try:
+        func(*args)
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+    return out.getvalue(), err.getvalue()
+
+
 def exp_id_from_stdout(stdout: str, key: str = "EXP_ID") -> str | None:
     """Extract an env var value from run-start stdout (``export KEY="VALUE"``)."""
     for line in stdout.strip().split("\n"):

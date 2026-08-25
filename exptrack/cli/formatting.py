@@ -33,6 +33,46 @@ def dim(t): return f"{DIM}{t}{RST}" if DIM else str(t)
 def bold(t): return f"{B}{t}{RST}" if B else str(t)
 
 
+def confirm(prompt: str, assume_yes: bool = False) -> bool:
+    """Ask a yes/no question. True only on an explicit yes.
+
+    The one confirmation prompt for every destructive command. A bare
+    ``input()`` raises ``EOFError`` when stdin is not a terminal — a cron job,
+    a CI step, a piped command — and the user saw a raw traceback from a delete
+    they never got to answer. Some commands guarded that and some didn't, so
+    the same pipeline broke differently depending on which one it reached.
+
+    EOF and Ctrl-C both mean "no": on a destructive action, an unanswered
+    question is a refusal. *assume_yes* (the commands' ``--yes`` flag) is the
+    supported way to run these non-interactively.
+    """
+    if assume_yes:
+        return True
+    try:
+        return input(prompt).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled (no terminal to confirm on — pass --yes to proceed).",
+              file=sys.stderr)
+        return False
+
+
+def parse_age_delta(age_str: str):
+    """``"30d"`` → ``timedelta(days=30)``. Dies on anything else.
+
+    One validator for every ``--older-than``. `clean` validated strictly and
+    `compact` accepted bare ``30`` and ``30dd`` while printing an error and
+    exiting 0 for a genuinely bad value — so the same typo was a hard failure
+    on one command and a silent no-op on the other. The grammar itself lives in
+    ``core.utils.parse_age``, shared with ``ls --since``; this wrapper only adds
+    the CLI's die-on-invalid contract.
+    """
+    from ..core.utils import parse_age
+    delta = parse_age(age_str)
+    if delta is None:
+        die(f"Invalid age format: '{age_str}'. Use format like '30d', '24h' or '90m'.")
+    return delta
+
+
 def die(msg: str, code: int = 1):
     """Print an error to stderr (red) and exit with a non-zero code.
 

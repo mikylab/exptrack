@@ -1,0 +1,369 @@
+/* ── Parameter matrix ─────────────────────────────────────────────────────── */
+/* The analysis view: one row per run, one column per varying parameter.
+   Uses the shared semantic tokens only — no new palette. */
+
+body.matrix-active #welcome-state,
+body.matrix-active #detail-view,
+body.matrix-active #compare-view { display: none !important; }
+
+/* Bottom room for the floating selection bar, which is fixed over the page —
+   without it the last rows sit underneath it with no way to scroll clear. */
+#matrix-view { padding: var(--space-4) var(--space-4) 72px; }
+
+/* Header: `.compare-header` carries the shared shell (back-link above a
+   sentence-case h3); this only adds the subtitle. The view used to declare its
+   own flex header with an `<h2>`, which the table stylesheet renders uppercase,
+   letter-spaced and muted — a treatment reserved for section headings inside a
+   view, so the whole screen announced itself in a style nothing else used. */
+.mx-header h3 { margin: 8px 0 2px; font-size: 18px; }
+.mx-subtitle { margin: 0 0 4px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.mx-controls {
+  display: flex; align-items: center; gap: var(--space-4);
+  flex-wrap: wrap; padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+}
+.mx-ctl-group { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
+.mx-ctl-group label { color: var(--text-2); }
+.mx-ctl-spacer { flex: 1 1 auto; }
+.mx-count { color: var(--text-3); font-family: var(--font-mono); font-size: var(--text-xs); }
+/* Which set is being analysed. "What varies" is a property of the set, so the
+   set is never left implied. */
+.mx-set-note { color: var(--text-3); font-size: var(--text-xs); }
+.mx-set-chosen { color: var(--accent); font-weight: 600; }
+
+.mx-note {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2); border-radius: var(--radius-sm);
+  color: var(--text-2); font-size: var(--text-sm);
+  margin-bottom: var(--space-2);
+}
+.mx-note-warn { border-left: 3px solid var(--status-warning); }
+.mx-note-dup { border-left: 3px solid var(--status-warning); }
+.mx-note-flat { border-left: 3px solid var(--accent); }
+
+.mx-empty { padding: var(--space-6); text-align: center; color: var(--text-2); }
+.mx-empty-hint { color: var(--text-3); font-size: var(--text-sm); }
+
+/* The table scrolls in its own container: a wide sweep has many parameter
+   columns, and the page body must never scroll horizontally. */
+.mx-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.mx-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.mx-table th, .mx-table td {
+  padding: 7px 10px; text-align: left; white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+.mx-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--surface-2); color: var(--text-2);
+  font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.3px;
+  cursor: pointer; user-select: none;
+}
+.mx-table thead th.sorted { color: var(--accent); }
+.mx-th-cb, .mx-td-cb { width: 30px; padding-right: 0; cursor: default; }
+.mx-th-param { font-family: var(--font-mono); text-transform: none; letter-spacing: 0; }
+.mx-th-n {
+  display: inline-block; margin-left: 5px; padding: 0 4px;
+  background: var(--surface); border-radius: 8px;
+  font-size: 10px; color: var(--text-3);
+}
+
+.mx-row:hover { background: var(--surface-2); }
+.mx-td-name a { color: var(--text-1); text-decoration: none; font-weight: 500; }
+.mx-td-name a:hover { color: var(--accent); text-decoration: underline; }
+.mx-td-param, .mx-td-metric { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.mx-td-time { color: var(--text-3); font-size: var(--text-xs); }
+.mx-missing { color: var(--text-3); }
+.mx-metric-missing { font-style: italic; font-size: var(--text-xs); }
+.mx-metric-val { font-weight: 600; }
+.mx-metric-step { color: var(--text-3); font-size: var(--text-xs); margin-left: 3px; }
+.mx-guess {
+  display: inline-block; margin-left: 4px; width: 13px; height: 13px;
+  line-height: 13px; text-align: center; border-radius: 50%;
+  background: var(--surface-2); color: var(--text-3);
+  font-size: 10px; cursor: help;
+}
+
+/* Best row: a left bar and a tint, plus the explicit `best` badge — colour is
+   never the only carrier. */
+.mx-row.mx-best { background: var(--status-success-soft); }
+.mx-row.mx-best td:first-child { box-shadow: inset 3px 0 0 var(--status-success); }
+.mx-row.mx-failed .mx-td-name a { text-decoration: line-through; }
+.mx-row.mx-selected { background: var(--accent-soft); }
+
+.mx-badge {
+  display: inline-block; margin-left: 6px; padding: 1px 5px;
+  border-radius: 8px; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+.mx-badge-best { background: var(--status-success); color: #fff; }
+.mx-badge-dup { background: var(--status-warning-soft); color: var(--text-1); }
+/* "Same params, different script" is two models being compared, not a wasted
+   rerun — it must not wear the warning colour the other duplicate kinds do. */
+.mx-badge-script_differs { background: var(--bg-3); color: var(--text-2); }
+
+.mx-status { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-xs); }
+.mx-status-glyph { font-size: 11px; }
+.mx-status-done { color: var(--status-success); }
+.mx-status-failed { color: var(--status-danger); }
+.mx-status-running { color: var(--status-warning); }
+
+.mx-constants { margin-top: var(--space-4); font-size: var(--text-sm); }
+.mx-constants summary { cursor: pointer; color: var(--text-2); padding: var(--space-2) 0; }
+.mx-const-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-2); padding: var(--space-2) 0;
+}
+.mx-const-item {
+  display: flex; justify-content: space-between; gap: var(--space-2);
+  padding: 4px 8px; background: var(--surface-2); border-radius: var(--radius-sm);
+  font-family: var(--font-mono); font-size: var(--text-xs);
+}
+.mx-const-key { color: var(--text-2); }
+.mx-const-val { color: var(--text-1); overflow: hidden; text-overflow: ellipsis; }
+
+/* Sticky selection bar — the compare handoff. */
+#matrix-bar {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: var(--space-4);
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+  z-index: 60; font-size: var(--text-sm);
+}
+.mx-bar-count { color: var(--text-2); }
+
+@media (max-width: 700px) {
+  .mx-controls { gap: var(--space-2); }
+  #matrix-bar { left: var(--space-3); right: var(--space-3); transform: none; }
+}
+
+/* Duplicate findings are three different things; the badge colour separates
+   "you already ran this" (warning) from "you re-tested it deliberately"
+   (neutral — the change-one-line loop working, not waste). */
+.mx-badge-identical { background: var(--status-warning); color: #fff; }
+.mx-badge-code_differs { background: var(--surface-2); color: var(--text-2); }
+.mx-badge-dataset_differs { background: var(--status-danger-soft); color: var(--text-1); }
+.mx-badge-params_only { background: var(--status-warning-soft); color: var(--text-1); }
+
+
+/* The sentence the view opens with. Body-text sized, because it is the answer,
+   not a caption on the table below it. */
+.mx-summary {
+  margin: 0 0 4px; font-size: var(--text-base); line-height: 1.5; color: var(--text-1);
+}
+.mx-summary code {
+  font-family: var(--font-mono); font-size: var(--text-sm);
+  background: var(--surface-2); padding: 1px 5px; border-radius: var(--radius-sm);
+}
+.mx-summary a { color: var(--accent); }
+.mx-summary-hint {
+  margin: 0 0 var(--space-3); font-size: var(--text-sm); color: var(--text-2);
+  line-height: 1.5; max-width: 78ch;
+}
+
+/* A section's description sits on its closed toggle: four sections you can only
+   open by guessing is four tables to read rather than four questions to pick
+   from. */
+
+
+
+/* ── Width ────────────────────────────────────────────────────────────────
+   The run table wants every pixel — a wide sweep has a column per parameter —
+   but the analyses below it do not: a 280px-tall scatter of six points and a
+   four-row summary table stretched to 1900px is mostly whitespace, and a line
+   of prose that wide is unreadable regardless of what it says. The table keeps
+   the full canvas; everything below it is capped and the per-parameter panels
+   sit side by side. */
+.mx-fx-section > div { max-width: 1180px; }
+.mx-fx-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+  gap: var(--space-4); align-items: start;
+}
+.mx-prog-chart, .mx-prog-list, .mx-prog-stat { max-width: 900px; }
+
+/* The point identified by a click, answered under the chart rather than by
+   navigating away from the analysis it was asked from. */
+.mx-fx-hint {
+  flex: 1 1 100%; color: var(--text-2); font-size: var(--text-sm);
+  margin-top: 4px;
+}
+
+.mx-fx-groupnote {
+  margin: var(--space-2) 0 0; font-size: var(--text-sm); color: var(--text-2);
+  line-height: 1.5;
+}
+.mx-fx-groupnote code {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  background: var(--surface); padding: 1px 5px; border-radius: var(--radius-sm);
+}
+/* "This did nothing, and here is why" is a finding, not a warning. */
+.mx-fx-groupnote-flat { border-left: 3px solid var(--accent); padding-left: var(--space-2); }
+
+.mx-fx-pick:empty { display: none; }
+.mx-fx-pick-card {
+  border: 1px solid var(--accent); border-left-width: 3px;
+  border-radius: var(--radius-sm); background: var(--accent-soft);
+  padding: var(--space-2) var(--space-3); margin-bottom: var(--space-3);
+}
+.mx-fx-pick-head { display: flex; align-items: baseline; gap: var(--space-2); }
+.mx-fx-pick-name { font-weight: 600; font-size: var(--text-sm); word-break: break-all; }
+.mx-fx-pick-id { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-3); }
+.mx-fx-pick-params { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.mx-fx-pick-chip {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--text-2); background: var(--surface); padding: 1px 6px;
+  border-radius: var(--radius-sm);
+}
+.mx-fx-pick-metric {
+  margin-top: 4px; font-family: var(--font-mono); font-size: var(--text-sm);
+}
+.mx-fx-pick-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* ── Inline comparison ────────────────────────────────────────────────────── */
+/* Sits directly under the rows it was assembled from, framed so it reads as an
+   answer *about* the selection rather than as more of the table. */
+.mx-cmp-panel {
+  margin-top: var(--space-4); padding: var(--space-3);
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  background: var(--surface);
+}
+.mx-cmp-head {
+  display: flex; align-items: center; gap: var(--space-3);
+  flex-wrap: wrap; margin-bottom: var(--space-3);
+}
+.mx-cmp-title { font-size: var(--text-md); font-weight: 600; }
+.mx-cmp-basis { color: var(--text-3); font-size: var(--text-xs); }
+.mx-cmp-panel .params-table, .mx-cmp-panel .metrics-table { margin-bottom: var(--space-3); }
+
+/* ── Parameter effects ────────────────────────────────────────────────────── */
+/* Each section is a heading, not a 12px muted line. Four analyses introduced in
+   the same weight as a table caption read as fine print to scroll past — which
+   is what they were, including the one that answers the question the sweep was
+   run for. */
+.mx-fx-section { margin-top: var(--space-5); }
+.mx-fx-toggle {
+  display: block; width: 100%; text-align: left;
+  background: none; border: none; cursor: pointer;
+  padding: var(--space-3) 0 var(--space-2);
+  border-top: 1px solid var(--border);
+  font-family: inherit; color: var(--text-1);
+}
+.mx-fx-caret { color: var(--text-3); font-size: var(--text-sm); margin-right: var(--space-2); }
+.mx-fx-name { font-size: var(--text-md); font-weight: 600; }
+.mx-fx-toggle:hover .mx-fx-name { color: var(--accent); }
+.mx-fx-desc {
+  display: block; color: var(--text-2); font-size: var(--text-sm);
+  margin: 2px 0 0 22px; line-height: 1.5;
+}
+
+.mx-fx-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--space-4); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3); margin-bottom: var(--space-3);
+  background: var(--surface-2); border-radius: var(--radius-sm);
+}
+/* The caption is the honesty layer, so it is body text rather than fine print. */
+.mx-fx-caption { flex: 1 1 420px; color: var(--text-2); font-size: var(--text-sm); line-height: 1.5; }
+
+.mx-fx-panel {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: var(--space-4); margin-bottom: var(--space-4);
+  background: var(--surface);
+}
+.mx-fx-title { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-2); }
+.mx-fx-key { font-family: var(--font-mono); font-weight: 600; font-size: var(--text-lg); }
+.mx-fx-kind { color: var(--text-3); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.3px; }
+.mx-fx-flag {
+  padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 600;
+  background: var(--surface-2); color: var(--text-2); cursor: help;
+}
+.mx-fx-flag-alias { background: var(--status-warning-soft); color: var(--text-1); }
+
+.mx-fx-blocked {
+  padding: var(--space-3); background: var(--status-warning-soft);
+  border-radius: var(--radius-sm); color: var(--text-1);
+  font-size: var(--text-sm); line-height: 1.5; margin-bottom: var(--space-2);
+}
+/* Taller than it was: a strip plot of six points in 220px put every value's
+   runs on top of each other. */
+.mx-fx-chart { height: 280px; margin-bottom: var(--space-3); }
+
+/* The panel's answer in words, above the chart that contains it. */
+.mx-fx-read {
+  margin: 0 0 var(--space-3); font-size: var(--text-base); line-height: 1.5;
+  color: var(--text-1);
+}
+.mx-fx-read code {
+  font-family: var(--font-mono); font-size: var(--text-sm);
+  background: var(--surface-2); padding: 1px 5px; border-radius: var(--radius-sm);
+}
+.mx-fx-caveat { color: var(--text-2); font-size: var(--text-sm); }
+/* The winning row, marked where the numbers are actually read. */
+.mx-fx-table tr.mx-fx-win { background: var(--status-success-soft); }
+.mx-fx-table tr.mx-fx-win td { font-weight: 600; }
+
+.mx-fx-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.mx-fx-table th {
+  text-align: left; padding: 4px 8px; color: var(--text-3);
+  font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.3px;
+  border-bottom: 1px solid var(--border);
+}
+.mx-fx-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.mx-fx-val { font-family: var(--font-mono); }
+.mx-fx-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.mx-fx-n { color: var(--text-2); }
+.mx-fx-unscored { color: var(--text-3); font-size: var(--text-xs); }
+/* A "median" of one run is a number, not a summary — shown, but not asserted. */
+.mx-fx-weak { color: var(--text-3); border-bottom: 1px dotted var(--text-3); cursor: help; }
+
+/* ── Top runs ─────────────────────────────────────────────────────────────── */
+.mx-top-table .mx-td-rank {
+  width: 34px; text-align: right; padding-right: var(--space-2);
+  color: var(--text-3); font-variant-numeric: tabular-nums;
+}
+.mx-td-delta { text-align: right; font-variant-numeric: tabular-nums; }
+.mx-top-delta { color: var(--text-2); font-size: var(--text-xs); }
+.mx-badge-failed { background: var(--status-danger-soft); color: var(--text-1); }
+
+/* ── Progress over the search ─────────────────────────────────────────────── */
+.mx-prog-stat {
+  margin: var(--space-3) 0; padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--border-strong); background: var(--surface-2);
+  border-radius: var(--radius-sm); color: var(--text-2);
+  font-size: var(--text-sm);
+}
+/* Amber only once the search has genuinely stalled — a warning on every view
+   is not a signal. */
+.mx-prog-stalled {
+  border-left-color: var(--status-warning); color: var(--text-1);
+}
+.mx-prog-chart { height: 260px; margin: var(--space-3) 0; }
+.mx-prog-list { margin-top: var(--space-4); }
+.mx-prog-list-title {
+  font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--text-3); margin-bottom: var(--space-2);
+}
+.mx-prog-item {
+  display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap;
+  padding: var(--space-2) 0; border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+.mx-prog-item:last-child { border-bottom: none; }
+.mx-prog-idx {
+  color: var(--text-3); font-family: var(--font-mono);
+  font-size: var(--text-xs); min-width: 34px;
+}
+.mx-prog-val {
+  font-family: var(--font-mono); font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.mx-prog-changed { display: inline-flex; gap: var(--space-2); flex-wrap: wrap; }
+.mx-prog-chg {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--text-2); background: var(--surface-2);
+  padding: 1px var(--space-2); border-radius: var(--radius-sm);
+}
+.mx-prog-nochange { color: var(--text-3); font-size: var(--text-xs); font-style: italic; }

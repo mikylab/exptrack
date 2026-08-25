@@ -10,7 +10,11 @@ import json
 import sys
 from typing import Any
 
+from . import primary_metric, reference
 from .db import diff_sentinel_kind, is_diff_sentinel, resolve_git_diff
+from .metric_alias import alias_map, canonical_groups, merge_metric_map
+from .param_study import params_differ
+from .utils import chunked, is_user_param_key, like_prefix, placeholders
 
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.tiff', '.webp')
 
@@ -92,6 +96,26 @@ def _rel_path(path: str) -> str:
         return path
 
 
+def _params_dict(params):
+    """Build ``{key: parsed_value}`` from param rows, salvaging a malformed value
+    to its raw string instead of crashing the reader.
+
+    exptrack's own writers always ``json.dumps``, but a hand-edited, legacy, or
+    third-party-written value need not be valid JSON — and a bare ``json.loads``
+    in a dict comprehension propagates the ``JSONDecodeError`` straight out of
+    the query. That 500'd ``get_experiment_detail`` (``/api/experiment/<id>``,
+    polled every 5s on a live run) and ``get_export_data`` while the list view
+    survived, because its reader (``get_params_batch``) already guards. Same
+    salvage rule as that reader, shared here so all three agree."""
+    out = {}
+    for p in params:
+        try:
+            out[p["key"]] = json.loads(p["value"])
+        except (ValueError, TypeError):
+            out[p["key"]] = p["value"]
+    return out
+
+
 def _safe_json(s):
     """Parse a JSON string, returning the raw string if parsing fails."""
     if not s:
@@ -135,21 +159,99 @@ def _json_list(s, context: str = "") -> list:
 
 # ── Experiment lookup ─────────────────────────────────────────────────────────
 
+class AmbiguousPrefixError(Exception):
+    """An id prefix matched more than one experiment, and none exactly.
+
+    A full id is never ambiguous (it matches itself even when it's a prefix of a
+    longer id); a short prefix that matches several runs must be *refused* rather
+    than silently resolving to whichever row sorts first — a script doing
+    ``exptrack tag $short_id important`` would otherwise mutate the wrong run with
+    no signal. The CLI catches this at its boundary and lists the candidates;
+    only ``rm`` used to guard it.
+    """
+    def __init__(self, prefix: str, matches: list):
+        self.prefix = prefix
+        self.matches = matches  # list of (id, name)
+        super().__init__(
+            f"Ambiguous ID prefix '{prefix}' matches {len(matches)} experiments"
+        )
+
+
+def resolve_experiment_id(conn, prefix: str) -> str | None:
+    """Resolve an id prefix to a single experiment id, or None if no match.
+
+    Prefers an exact id match; raises :class:`AmbiguousPrefixError` when the
+    prefix matches several runs and none is exact. Trashed runs are included —
+    single-run lookups deliberately don't filter ``deleted_at`` (storage.md).
+    """
+    rows = conn.execute(
+        "SELECT id, name FROM experiments WHERE id LIKE ? ESCAPE '\\'",
+        (like_prefix(prefix) + "%",)
+    ).fetchall()
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return rows[0]["id"]
+    for r in rows:
+        if r["id"] == prefix:
+            return r["id"]
+    raise AmbiguousPrefixError(prefix, [(r["id"], r["name"]) for r in rows])
+
+
+def resolve_experiment_rows(conn, exp_ids: list[str],
+                            columns: str = "id") -> list[dict]:
+    """Rows for a set of ids or id prefixes, in the order asked for.
+
+    Full ids — what every dashboard caller posts — resolve in one query for the
+    whole set; only the entries that were genuinely prefixes fall back to a
+    per-id lookup. Unknown and ambiguous ids are skipped, matching
+    ``find_experiment``'s contract for the single-id case. Set-valued surfaces
+    used to call ``find_experiment`` in a loop, which is one query per run on an
+    endpoint built for thousands.
+    """
+    wanted = list(exp_ids)
+    found: dict[str, dict] = {}
+    for chunk in chunked(wanted):
+        for r in conn.execute(
+            f"SELECT {columns} FROM experiments WHERE id IN ({placeholders(chunk)})",
+            chunk,
+        ).fetchall():
+            found[r["id"]] = dict(r)
+
+    out, seen = [], set()
+    for eid in wanted:
+        row = found.get(eid)
+        if row is None:
+            try:
+                row = find_experiment(conn, eid, columns)
+            except AmbiguousPrefixError:
+                continue
+        if row and row["id"] not in seen:
+            seen.add(row["id"])
+            out.append(row)
+    return out
+
+
 def find_experiment(conn, exp_id_prefix: str, columns: str = "id") -> dict | None:
-    """Look up experiment by prefix match. Returns dict or None."""
+    """Look up experiment by prefix match. Returns dict or None.
+
+    Raises AmbiguousPrefixError if the prefix matches several runs (no exact).
+    """
+    resolved = resolve_experiment_id(conn, exp_id_prefix)
+    if resolved is None:
+        return None
     row = conn.execute(
-        f"SELECT {columns} FROM experiments WHERE id LIKE ?",
-        (exp_id_prefix + "%",)
+        f"SELECT {columns} FROM experiments WHERE id = ?", (resolved,)
     ).fetchone()
     return dict(row) if row else None
 
 
 def get_experiment_detail(conn, exp_id: str) -> dict | None:
     """Full experiment detail with params, metrics summary, and artifacts."""
+    resolved = resolve_experiment_id(conn, exp_id)
     exp = conn.execute(
-        "SELECT * FROM experiments WHERE id LIKE ?",
-        (exp_id + "%",)
-    ).fetchone()
+        "SELECT * FROM experiments WHERE id = ?", (resolved,)
+    ).fetchone() if resolved else None
     if not exp:
         return None
 
@@ -165,7 +267,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
                MIN(step) as step_min, MAX(step) as step_max,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
                 AND m2.key=metrics.key AND COALESCE(m2.source, 'auto')=COALESCE(metrics.source, 'auto')
-                ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v
+                ORDER BY COALESCE(step,-1) DESC, ts DESC, rowid DESC LIMIT 1) as last_v
         FROM metrics WHERE exp_id=? GROUP BY key, COALESCE(source, 'auto') ORDER BY key, src
     """, (full_id,)).fetchall()
     artifacts = conn.execute(
@@ -173,7 +275,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         (full_id,)
     ).fetchall()
 
-    all_params = {p["key"]: json.loads(p["value"]) for p in params}
+    all_params = _params_dict(params)
     # Surface the dataset manifest as its own key (and keep it out of the params
     # table — it's an internal `_`-prefixed bookkeeping param).
     datasets = all_params.pop("_dataset_manifest", {}) or {}
@@ -241,6 +343,21 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         # The run this one was declared a variant of, if any — the detail view
         # renders it as the baseline the deltas are computed against.
         "variant_of": get_variant_of(conn, full_id),
+        # The project's (or this run's study's) reference run, if one is set —
+        # a *target*, kept apart from the lineage baseline above. Carried here
+        # so the detail header can say which run this one is measured against
+        # and where that choice was made, rather than showing a number whose
+        # origin the reader has to guess.
+        "reference": reference.resolve(
+            conn, studies=_json_list(exp["studies"], "experiment_detail.studies")),
+        # The metric this run is judged by, plus where that choice came from.
+        # One resolution for the header, the list column and the charts default
+        # (see core/primary_metric.py) — every surface used to pick its own.
+        "primary_metric": primary_metric.primary_metric_for_run(
+            conn, full_id,
+            studies=_json_list(exp["studies"], "experiment_detail.studies"),
+            metric_keys=[m["key"] for m in metrics],
+        ),
     }
 
 
@@ -492,14 +609,48 @@ def _get_compact_status(conn, exp_id: str, raw_git_diff) -> dict:
 
 # ── Experiment listing ────────────────────────────────────────────────────────
 
+def _filter_rows_by_params(conn, rows, param_filters):
+    """Keep the rows whose params match every ``(key, value)`` pair.
+
+    Values compare through ``param_study._norm`` (via ``params_differ``), so a
+    filter written as a string finds a run whose value was captured as a float
+    — the same equality "what varies" and duplicate detection use, rather than
+    a third one that would disagree with both.
+    """
+    from .param_study import load_params
+    ids = [r["id"] for r in rows]
+    if not ids:
+        return rows
+    loaded = load_params(conn, ids)
+    keep = []
+    for r in rows:
+        have = loaded.get(r["id"], {})
+        if all(k in have and not params_differ(have[k], v) for k, v in param_filters):
+            keep.append(r)
+    return keep
+
+
 def list_experiments(conn, limit: int = 50, status: str = "",
-                     tag: str = "", study: str = "",
+                     tag: str = "", study: str = "", script: str = "",
+                     since: str = "", param_filters: list | None = None,
                      include_trashed: bool = False, offset: int = 0) -> list[dict]:
     """List experiments with last metrics and params.
 
     Trashed experiments (``deleted_at IS NOT NULL``) are excluded unless
     *include_trashed* is True. *offset* pages past the first N rows (used by
     the dashboard's "Load more" — the list is ``ORDER BY created_at DESC``).
+
+    *script* narrows to one model: a substring match on the ``script`` column,
+    so ``model_a`` finds ``/long/path/model_a.py``. Comparing runs of different
+    models had no entry point here at all — only tags, which have to be applied
+    by hand to every run.
+
+    *since* is an ISO timestamp lower bound, and *param_filters* is a list of
+    ``(key, value)`` pairs a run must match — the two other ways a set is
+    actually described ("this week's runs", "the ones with dropout=0.3").
+    Parameter values are matched **normalized**, the same equality the analysis
+    layer groups by, so ``--param lr=0.01`` finds a run whose ``lr`` was
+    captured as the string ``"0.01"``.
     """
     clauses: list[str] = []
     params: list = []
@@ -514,8 +665,23 @@ def list_experiments(conn, limit: int = 50, status: str = "",
     if study:
         clauses.append('studies LIKE ?')
         params.append(f'%"{study}"%')
+    if script:
+        # Wildcards in the user's string are escaped so `--script %` can't match
+        # every run, the way an unescaped prefix once let `rm %` do.
+        esc = like_prefix(script)
+        clauses.append("script LIKE ? ESCAPE '\\'")
+        params.append(f"%{esc}%")
+    if since:
+        clauses.append("created_at >= ?")
+        params.append(since)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    params.append(limit)
+    # A param filter needs the run's decoded params, so it is applied after the
+    # rows come back rather than as SQL against the JSON text — matching
+    # `"0.01"` against `0.01` in SQL would be string equality, which is exactly
+    # the comparison the analysis layer exists to avoid. Over-fetch so the
+    # requested limit is still met after filtering.
+    fetch = limit * 20 if param_filters else limit
+    params.append(fetch)
     params.append(max(0, offset))
     query = f"""
         SELECT id, project, name, status, created_at, duration_s,
@@ -525,6 +691,8 @@ def list_experiments(conn, limit: int = 50, status: str = "",
         ORDER BY created_at DESC LIMIT ? OFFSET ?
     """
     rows = conn.execute(query, params).fetchall()
+    if param_filters:
+        rows = _filter_rows_by_params(conn, rows, param_filters)[:limit]
     # Batch-load metrics, sparklines, and params for every listed experiment in
     # three queries total instead of three queries *per* experiment (the old
     # N+1 pattern that made this — the dashboard's hottest path — scale poorly).
@@ -554,6 +722,15 @@ def list_experiments(conn, limit: int = 50, status: str = "",
             "sparklines": sparklines_by_exp.get(r["id"], {}),
             "params": params_by_exp.get(r["id"], {}),
         })
+    # Resolved last, from the rows just built. Every input is already in hand —
+    # `studies`, `metrics`, and (via params_by_exp) each run's `_primary_metric`
+    # override — so this adds one metric-value query for the whole page and no
+    # per-run work at all. Without params_by_exp it would re-read the override
+    # per run: a query per listed run, on the dashboard's polled path.
+    pm = primary_metric.primary_metric_batch(conn, result,
+                                             params_by_exp=params_by_exp)
+    for row in result:
+        row["primary_metric"] = pm.get(row["id"], {})
     return result
 
 
@@ -573,7 +750,9 @@ def last_metrics(conn, exp_id: str) -> dict:
         "SELECT key, value FROM metrics WHERE exp_id=? "
         "ORDER BY COALESCE(step, -1), ts, rowid", (exp_id,)
     ).fetchall()
-    return {r["key"]: r["value"] for r in rows}
+    # Canonical names, so "what changed" between two models that spell the same
+    # measurement differently is a delta rather than two one-sided rows.
+    return merge_metric_map({r["key"]: r["value"] for r in rows})
 
 
 # Which runs may serve as a "previous run" baseline. Both baseline lookups
@@ -795,19 +974,19 @@ def diff_runs(conn, base_id: str, new_id: str) -> dict:
     empty sections instead.
     """
     def _params(eid):
-        return {
-            r["key"]: r["value"]
-            for r in conn.execute(
-                "SELECT key, value FROM params WHERE exp_id=?", (eid,)
-            ).fetchall()
-            if not r["key"].startswith("_")
-        }
+        rows = conn.execute(
+            "SELECT key, value FROM params WHERE exp_id=?", (eid,)
+        ).fetchall()
+        # Decoded, not raw JSON: the display showed `'0.01'` → `'"0.01"'` for
+        # what is one configuration, and the comparison below must be the same
+        # equality param_study uses.
+        return {k: v for k, v in _params_dict(rows).items() if is_user_param_key(k)}
 
     pa, pb = _params(base_id), _params(new_id)
     param_changes = []
     for k in sorted(set(pa) | set(pb)):
         va, vb = pa.get(k), pb.get(k)
-        if va != vb:
+        if params_differ(va, vb):
             param_changes.append({"key": k, "from": va, "to": vb})
 
     ma, mb = last_metrics(conn, base_id), last_metrics(conn, new_id)
@@ -1064,8 +1243,32 @@ def _latest_metric_rows(conn, exp_ids: list[str]):
 
 
 def get_latest_metrics(conn, exp_id: str) -> dict[str, float]:
-    """Get the last value of each metric key for an experiment."""
-    return {r["key"]: r["value"] for r in _latest_metric_rows(conn, [exp_id])}
+    """Get the last value of each metric key for an experiment.
+
+    Keys come back under their configured canonical name (see
+    core/metric_alias.py), so a model logging ``accuracy`` and one logging
+    ``val_acc`` compare on the same row instead of on none.
+    """
+    return merge_metric_map(
+        {r["key"]: r["value"] for r in _latest_metric_rows(conn, [exp_id])})
+
+
+def get_latest_metrics_batch(conn, exp_ids: list[str]) -> dict[str, dict[str, float]]:
+    """Batched ``get_latest_metrics``: ``{exp_id: {canonical key: value}}``.
+
+    For the surfaces that read a whole *set* of runs — the leaderboard, the
+    reference strip, ``exptrack vs-reference`` — which called the single-run
+    form in a loop, i.e. one window-function query per run.
+    """
+    if not exp_ids:
+        return {}
+    amap = alias_map()
+    raw: dict[str, dict] = {e: {} for e in exp_ids}
+    for chunk in chunked(list(exp_ids)):
+        for r in _latest_metric_rows(conn, chunk):
+            if r["exp_id"] in raw:
+                raw[r["exp_id"]][r["key"]] = r["value"]
+    return {e: merge_metric_map(m, amap) for e, m in raw.items()}
 
 
 def get_latest_metrics_with_source(conn, exp_id: str) -> dict[str, dict]:
@@ -1076,8 +1279,38 @@ def get_latest_metrics_with_source(conn, exp_id: str) -> dict[str, dict]:
     } for r in _latest_metric_rows(conn, [exp_id])}
 
 
+def canonicalize_run_keys(by_key: dict, amap: dict) -> dict:
+    """Re-key **one run's** ``{metric_key: anything}`` map onto canonical names.
+
+    Unlike ``merge_metric_map``, which keeps the later value when two spellings
+    collide, this **skips the rename entirely for a colliding pair**. It is used
+    where the value is not a single number the user can shrug at — a whole
+    series, or a value carried alongside its source — and silently dropping one
+    of them would lose data rather than pick between two readings of it.
+    """
+    if not amap:
+        return by_key
+    out = {}
+    for canon, sources in canonical_groups(list(by_key), amap).items():
+        if len(sources) > 1:
+            for s in sources:            # collision inside one run — keep both
+                out[s] = by_key[s]
+        else:
+            out[canon] = by_key[sources[0]]
+    return out
+
+
 def get_latest_metrics_with_source_batch(conn, exp_ids: list[str]) -> dict[str, dict[str, dict]]:
-    """Batched ``get_latest_metrics_with_source`` for many experiments at once."""
+    """Batched ``get_latest_metrics_with_source`` for many experiments at once.
+
+    Aliased like every other metric read. This one feeds `list_experiments`,
+    and through it the experiment table, the primary-metric heuristic, the
+    leaderboard and the effect summaries — so while it returned raw keys, a
+    project using `metric_aliases` still had its two models resolve *different*
+    primary metrics (`loss` for one, `accuracy` for the other), and the effect
+    summaries then reported one model's runs as off-metric and scored none of
+    them. The merge was reaching the compare surfaces and not the ranking ones.
+    """
     if not exp_ids:
         return {}
     out: dict[str, dict] = {e: {} for e in exp_ids}
@@ -1086,7 +1319,8 @@ def get_latest_metrics_with_source_batch(conn, exp_ids: list[str]) -> dict[str, 
             "value": r["value"],
             "source": "mixed" if r["source_count"] > 1 else r["source"],
         }
-    return out
+    amap = alias_map()
+    return {e: canonicalize_run_keys(m, amap) for e, m in out.items()}
 
 
 def get_metrics_sparkline_batch(conn, exp_ids: list[str],
@@ -1246,6 +1480,15 @@ def get_metrics_series(conn, exp_id: str, max_points: int = 500) -> dict[str, li
     Now only the points that survive downsampling ever reach Python. A key
     already at or under *max_points* is returned whole and exactly as stored;
     only larger ones are bucketed.
+
+    Keys come back under their configured canonical name, like every other
+    metric reader — this one did not, so on a project using `metric_aliases`
+    the Compare table merged `accuracy` into `val_acc` while the training-curve
+    overlay *directly beneath it* kept charting the raw key and silently
+    dropped that model's curve. **A rename that would collide inside one run is
+    not performed**: two spellings of one measurement on the same run are two
+    real series, and folding them would either lose points or interleave two
+    curves into a zigzag. That run keeps both original keys.
     """
     # Below 4 there are no interior buckets left. The endpoint clamps to 10,
     # but this is called directly too.
@@ -1269,7 +1512,8 @@ def get_metrics_series(conn, exp_id: str, max_points: int = 500) -> dict[str, li
         else:
             out[k["key"]] = _bucketed_points(
                 conn, exp_id, k["key"], k["lo"], k["hi"], num_buckets)
-    return out
+
+    return canonicalize_run_keys(out, alias_map())
 
 
 def get_metrics_summary(conn, exp_id: str) -> list[dict]:
@@ -1279,7 +1523,7 @@ def get_metrics_summary(conn, exp_id: str) -> list[dict]:
                MIN(value) as min_v, MAX(value) as max_v, COUNT(*) as n,
                (SELECT value FROM metrics m2 WHERE m2.exp_id=metrics.exp_id
                 AND m2.key=metrics.key AND COALESCE(m2.source, 'auto')=COALESCE(metrics.source, 'auto')
-                ORDER BY COALESCE(step,0) DESC LIMIT 1) as last_v
+                ORDER BY COALESCE(step,-1) DESC, ts DESC, rowid DESC LIMIT 1) as last_v
         FROM metrics WHERE exp_id=? GROUP BY key, COALESCE(source, 'auto') ORDER BY key, src
     """, (exp_id,)).fetchall()
     results = []
@@ -1292,45 +1536,128 @@ def get_metrics_summary(conn, exp_id: str) -> list[dict]:
     return results
 
 
-def get_all_latest_metrics(conn, limit: int = 50) -> dict[str, dict[str, float]]:
-    """Get last metrics for recent experiments (used by ls command)."""
-    rows = conn.execute("""
-        SELECT exp_id, key, value FROM metrics m
-        WHERE step=(SELECT MAX(step) FROM metrics m2
-                    WHERE m2.exp_id=m.exp_id AND m2.key=m.key)
-        GROUP BY exp_id, key
-    """).fetchall()
-    by_exp: dict[str, dict] = {}
-    for r in rows:
-        by_exp.setdefault(r["exp_id"], {})[r["key"]] = r["value"]
-    return by_exp
+def _best_metrics_batch(conn, exp_ids: list[str], amap=None,
+                        goals: dict | None = None) -> dict[str, dict]:
+    """``{exp_id: {key: best value}}`` under each metric's own goal.
 
+    "Best" is direction-aware — the minimum for a loss, the maximum for an
+    accuracy — because a single MIN() or MAX() would report the worst value for
+    half the metrics in any real project.
 
-def get_multi_compare(conn, exp_ids: list[str]) -> list[dict]:
-    """Get experiment names, latest metrics, and image artifacts for multiple experiments."""
-    results = []
-    for eid in exp_ids:
-        exp = find_experiment(conn, eid, "id, name, status")
-        if not exp:
-            continue
-        full_id = exp["id"]
-        metrics = get_latest_metrics(conn, full_id)
-        art_rows = conn.execute(
-            "SELECT label, path FROM artifacts WHERE exp_id=?", (full_id,)
+    *goals* is the reader's stated direction per key, which overrides the name
+    heuristic. The dashboard's polarity toggle is a per-browser reading
+    preference, so it has to be *sent*: without it this picked the best point
+    by the heuristic while the client tinted the winner by the override, and
+    the two halves of one row disagreed about who won.
+    """
+    goals = goals or {}
+    raw: dict[str, dict] = {e: {} for e in exp_ids}
+    for chunk in chunked(list(exp_ids)):
+        rows = conn.execute(
+            f"SELECT exp_id, key, MIN(value) AS lo, MAX(value) AS hi FROM metrics "
+            f"WHERE exp_id IN ({placeholders(chunk)}) AND value IS NOT NULL "
+            f"GROUP BY exp_id, key",
+            chunk,
         ).fetchall()
-        images = [
-            {"label": r["label"], "path": _rel_path(r["path"])}
-            for r in art_rows
-            if r["path"] and any(r["path"].lower().endswith(ext) for ext in IMAGE_EXTS)
-        ]
+        for r in rows:
+            goal = goals.get(r["key"]) or primary_metric.goal_for_key(r["key"])
+            if r["exp_id"] in raw:
+                raw[r["exp_id"]][r["key"]] = (
+                    r["lo"] if goal == primary_metric.GOAL_MIN else r["hi"])
+    return {e: merge_metric_map(m, amap) for e, m in raw.items()}
+
+
+def get_multi_compare(conn, exp_ids: list[str], rank_by: str = "final",
+                      goals: dict | None = None) -> list[dict]:
+    """Names, params, latest metrics and image artifacts for several runs.
+
+    ``rank_by`` picks which number each metric reports: ``final`` (the value as
+    the run ended) or ``best`` (its best point under the metric's own goal).
+    They answer different questions — "what would I get if I ran this" versus
+    "what is this capable of" — and a run that overfits late scores very
+    differently under each. The matrix has had the switch since 1.2; Compare
+    silently always showed the final value and never said so.
+
+    Everything below is batched over the whole set. It used to run five queries
+    per run — including ``_latest_metric_rows`` (the single hot metrics query)
+    twice on the same run, the second time only to list its keys — and this
+    endpoint is posted up to ~5000 ids at a time.
+    """
+    from .param_study import load_params
+    rows = resolve_experiment_rows(conn, exp_ids, "id, name, status, script")
+    if not rows:
+        return []
+    full_ids = [r["id"] for r in rows]
+
+    amap = alias_map()
+    latest_rows: dict[str, list] = {e: [] for e in full_ids}
+    for chunk in chunked(full_ids):
+        for r in _latest_metric_rows(conn, chunk):
+            if r["exp_id"] in latest_rows:
+                latest_rows[r["exp_id"]].append(r)
+    best = (_best_metrics_batch(conn, full_ids, amap, goals) if rank_by == "best"
+            else {})
+    params_by_exp = load_params(conn, full_ids)
+
+    images: dict[str, list] = {e: [] for e in full_ids}
+    for chunk in chunked(full_ids):
+        for r in conn.execute(
+            f"SELECT exp_id, label, path FROM artifacts "
+            f"WHERE exp_id IN ({placeholders(chunk)})", chunk
+        ).fetchall():
+            p = r["path"] or ""
+            if p and any(p.lower().endswith(ext) for ext in IMAGE_EXTS):
+                images[r["exp_id"]].append(
+                    {"label": r["label"], "path": _rel_path(p)})
+
+    results = []
+    for exp in rows:
+        full_id = exp["id"]
+        mrows = latest_rows[full_id]
+        metrics = (best.get(full_id, {}) if rank_by == "best"
+                   else merge_metric_map({r["key"]: r["value"] for r in mrows}, amap))
+        aliased = canonical_groups([r["key"] for r in mrows], amap)
+        merged = {c: ks for c, ks in aliased.items() if len(ks) > 1 or ks[0] != c}
         results.append({
             "id": full_id,
             "name": exp["name"],
             "status": exp["status"],
+            "script": exp["script"] or "",
+            # Params and script travel with the metrics: Multi Compare showed
+            # the numbers with no way to see what configuration produced them
+            # (that lived only in the matrix, which Compare doesn't link to),
+            # so a cross-model comparison could not say which model each column
+            # was.
+            "params": params_by_exp.get(full_id, {}),
             "metrics": metrics,
-            "images": images,
+            # Which spellings were folded together, so a merge the user
+            # configured is visible rather than looking like a dropped metric.
+            "merged_metric_keys": merged,
+            "images": images[full_id],
         })
     return results
+
+
+def varying_param_keys(runs: list[dict]) -> list[str]:
+    """Param keys whose value is not the same across every run in *runs*.
+
+    "What differs across these runs" decided by the one param-equality rule,
+    server-side. The Compare table computed it in the browser with
+    ``JSON.stringify``, so ``0.01`` and ``"0.01"`` — the same setting captured
+    by argparse and by the pipeline CLI — showed as a differing row there while
+    the matrix, the CLI and duplicate detection all called it constant.
+
+    A key absent from a run is a *variation*, not a blank, the same reading
+    ``param_study`` takes.
+    """
+    from .param_study import MISSING
+    keys = {k for r in runs for k in (r.get("params") or {})}
+    out = []
+    for k in sorted(keys):
+        values = [(r.get("params") or {}).get(k, MISSING) for r in runs]
+        if any(params_differ(values[0], v) for v in values[1:]):
+            out.append(k)
+    return out
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -1547,10 +1874,11 @@ def get_cell_source(conn, cell_hash: str) -> dict | None:
 
 def get_experiment_diff(conn, exp_id: str) -> dict | None:
     """Get git diff for an experiment."""
+    resolved = resolve_experiment_id(conn, exp_id)
     exp = conn.execute(
-        "SELECT git_diff, git_branch, git_commit FROM experiments WHERE id LIKE ?",
-        (exp_id + "%",)
-    ).fetchone()
+        "SELECT git_diff, git_branch, git_commit FROM experiments WHERE id = ?",
+        (resolved,)
+    ).fetchone() if resolved else None
     if not exp:
         return None
     diff = resolve_git_diff(conn, exp["git_diff"])
@@ -1618,10 +1946,10 @@ def get_export_data(conn, exp_id: str, full: bool = False,
     the complete ``metrics_series`` and lists every artifact, for round-tripping.
     ``artifact_limit=0`` also means "list them all".
     """
+    resolved = resolve_experiment_id(conn, exp_id)
     exp = conn.execute(
-        "SELECT * FROM experiments WHERE id LIKE ?",
-        (exp_id + "%",)
-    ).fetchone()
+        "SELECT * FROM experiments WHERE id = ?", (resolved,)
+    ).fetchone() if resolved else None
     if not exp:
         return None
     full_id = exp["id"]
@@ -1643,8 +1971,8 @@ def get_export_data(conn, exp_id: str, full: bool = False,
         ORDER BY seq
     """, (full_id,)).fetchall()
 
-    all_params = {p["key"]: json.loads(p["value"]) for p in params}
-    user_params = {k: v for k, v in all_params.items() if not k.startswith("_")}
+    all_params = _params_dict(params)
+    user_params = {k: v for k, v in all_params.items() if is_user_param_key(k)}
     variables = {k[5:]: v for k, v in all_params.items() if k.startswith("_var/")}
     # Legacy per-cell keys (notebook runs no longer write them — the Timeline
     # carries that edit) plus the script's own diff-vs-commit, which had never
@@ -1710,18 +2038,21 @@ def finish_experiment(conn, exp_id_prefix: str) -> dict:
     Used by both CLI cmd_finish and dashboard api_finish.
     """
     from datetime import datetime, timezone
+    resolved = resolve_experiment_id(conn, exp_id_prefix)
     exp = conn.execute(
-        "SELECT id, name, status, created_at FROM experiments WHERE id LIKE ?",
-        (exp_id_prefix + "%",)
-    ).fetchone()
+        "SELECT id, name, status, created_at FROM experiments WHERE id = ?",
+        (resolved,)
+    ).fetchone() if resolved else None
     if not exp:
         return {"error": "not found"}
     if exp["status"] == "done":
         return {"ok": True, "id": exp["id"], "name": exp["name"],
                 "status": "done", "message": "already done", "duration_s": None}
     now = datetime.now(timezone.utc).isoformat()
-    duration = (datetime.fromisoformat(now) -
-                datetime.fromisoformat(exp["created_at"])).total_seconds()
+    # The shared rule, so a run finished from the dashboard records the same
+    # duration it would have recorded finishing itself.
+    from .db import accumulated_duration
+    duration = accumulated_duration(conn, exp["id"], now)
     prev_status = exp["status"]
     conn.execute("""
         UPDATE experiments SET status='done', updated_at=?, duration_s=? WHERE id=?
@@ -1986,7 +2317,7 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
     all_var_keys: set[str] = set()
     metric_summaries = [export_metric_summaries(d) for d in experiments]
     for data, ms in zip(experiments, metric_summaries):
-        all_param_keys.update(k for k in data.get("params", {}) if not k.startswith("_"))
+        all_param_keys.update(k for k in data.get("params", {}) if is_user_param_key(k))
         all_metric_keys.update(ms.keys())
         all_var_keys.update(data.get("variables", {}).keys())
 

@@ -9,39 +9,63 @@ function _diffNotice(msg, note) {
     + '</div>';
 }
 
-async function _openPairCompare(id1, id2) {
+
+// Where Compare was opened from, so its Back goes there. Compare is a
+// full-canvas view that puts down whatever raised it, and its Back was hardwired
+// to the experiments list — so comparing runs picked in the parameter matrix
+// cost you the table you had assembled them in, with no way back to it but
+// re-opening Analyze and re-ticking every row.
+let _compareOrigin = '';
+
+function _setCompareOrigin(origin) {
+  _compareOrigin = origin || '';
+  const btn = document.getElementById('compare-back');
+  if (!btn) return;
+  btn.textContent = _compareOrigin === 'matrix'
+    ? '← Back to parameter matrix' : '← Back to experiments';
+}
+
+// Compare's Back. The matrix keeps its own picks (`_matrixSelected` survives
+// closing the view), so returning re-renders the table with the selection still
+// ticked and the floating bar still counting it.
+function closeCompareView() {
+  if (_compareOrigin === 'matrix') {
+    _setCompareOrigin('');
+    openParamMatrix({replaceHash: true});
+    return;
+  }
+  showWelcome();
+}
+
+// Open the comparison for an explicit set of runs: two go to the pair view,
+// three or more to the aggregate multi view.
+//
+// The ids are a parameter, not a read of the global `selectedIds`, because
+// this has more than one caller and only one of them *is* the table selection.
+// The parameter matrix carries its own set of picks, and passing them by
+// assigning the global set (which is what it used to do) silently rewrote the
+// user's table selection as a side effect of comparing.
+async function compareRuns(ids, origin) {
+  if (!ids || ids.length < 2) return;
   owlSpeak('compare');
   showCompareView();
-  document.getElementById('compare-pair-tab').classList.add('active');
-  document.getElementById('compare-multi-tab').classList.remove('active');
-  document.getElementById('compare-pair-content').style.display = '';
-  document.getElementById('compare-multi-content').style.display = 'none';
-  await populateCompareDropdowns();
-  document.getElementById('cmp-id1').value = id1;
-  document.getElementById('cmp-id2').value = id2;
-  doCompare();
+  // *After* raising the view: showCompareView resets the origin to the
+  // experiments list, since that is where the toolbar button comes from.
+  _setCompareOrigin(origin);
+  // Pre-tick the runs being compared in the multi picker — `selectedIds` is
+  // the right set only when the table is what we were called from. The picker
+  // is deliberately not awaited: it pages the whole run list on a cold Compare
+  // view, and the comparison the user is waiting for needs none of that.
+  switchCompareTab('multi', new Set(ids));
+  doMultiCompare(ids);
 }
 
 async function compareSelected() {
-  if (selectedIds.size < 2) return;
-  const ids = [...selectedIds];
-  if (ids.length === 2) {
-    await _openPairCompare(ids[0], ids[1]);
-  } else {
-    // Multi compare
-    owlSpeak('compare');
-    showCompareView();
-    document.getElementById('compare-pair-tab').classList.remove('active');
-    document.getElementById('compare-multi-tab').classList.add('active');
-    document.getElementById('compare-pair-content').style.display = 'none';
-    document.getElementById('compare-multi-content').style.display = '';
-    await populateMultiCompareSelector();
-    doMultiCompare(ids);
-  }
+  await compareRuns([...selectedIds]);
 }
 
 async function compareWithPrevious(prevId, curId) {
-  await _openPairCompare(prevId, curId);
+  await compareRuns([prevId, curId]);
 }
 
 function filterExps(status) {
@@ -51,10 +75,16 @@ function filterExps(status) {
   loadExperiments();
 }
 
-// Runs available to the Compare pickers. Cached so the filter box can re-narrow
-// the options without a round-trip, and so switching Compare tabs doesn't refetch
-// the whole list. Each entry carries its pre-built option label (`lbl`) and a
-// lowercased copy for matching, so filtering and rendering don't rebuild it.
+// Runs available to the Compare pickers *and* to the shared run picker
+// (js/run_picker.js). Cached so the filter box can re-narrow the options
+// without a round-trip, and so switching Compare tabs doesn't refetch the whole
+// list. Each entry carries its pre-built option label (`lbl`), a lowercased
+// haystack for matching (`hay`) and the run itself (`e`), so filtering and
+// rendering never rebuild either.
+//
+// One cache for both surfaces on purpose: two would mean the picker and the
+// filter box beside it could be searching different sets of runs, and "no
+// match" would mean different things in each.
 let _cmpExps = [];
 let _cmpTotal = 0;
 let _cmpHasMore = false;
@@ -74,26 +104,33 @@ function _cmpOptionLabel(e) {
   return bits.join('  |  ');
 }
 
+// What a search over the run list is matched against. Deliberately wider than
+// the option label: the label shows three params because a dropdown line has
+// room for three, but a run is just as legitimately remembered by its fourth
+// one, by its script, or by a tag. Matching only what happened to be *printed*
+// made those runs unfindable — with the picker reporting "no match" for a run
+// sitting in the list it just searched.
+// A run's display name from the shared cache, for surfaces that hold ids and
+// have to show something a human recognizes. Falls back to the id prefix rather
+// than rendering nothing for a run the cache has not paged in yet.
+function _cmpLabelFor(id) {
+  const hit = _cmpExps.find(x => x.id === id);
+  return (hit && hit.e && hit.e.name) || String(id).slice(0, 8);
+}
+
+function _cmpHaystack(e, lbl) {
+  const params = Object.entries(e.params || {})
+    .filter(([k]) => isUserParamKey(k))
+    .map(([k, v]) => paramColLabel(k) + '=' + v);
+  return [lbl, e.script || '', (e.tags || []).join(' '), (e.studies || []).join(' '),
+          params.join(' ')].join(' ').toLowerCase();
+}
+
 function _cmpEntries(exps) {
   return exps.map(e => {
     const lbl = _cmpOptionLabel(e);
-    return {id: e.id, lbl: lbl, hay: lbl.toLowerCase()};
+    return {id: e.id, lbl: lbl, hay: _cmpHaystack(e, lbl), e: e};
   });
-}
-
-// The one place an <option> is emitted. `keepId` is force-included even when the
-// query excludes it, so narrowing the filter never silently drops the current
-// pick; `selectedSet` marks the multi-list's selections.
-function _cmpOptsHtml(q, placeholder, selectedSet, keepId) {
-  const rows = _cmpExps.filter(e => (!q || e.hay.includes(q)) || e.id === keepId);
-  const opts = rows.map(e => '<option value="' + esc(e.id) + '"'
-    + (selectedSet && selectedSet.has(e.id) ? ' selected' : '') + '>'
-    + esc(e.lbl) + '</option>').join('');
-  if (!placeholder) return opts;
-  const head = rows.length === _cmpExps.length
-    ? placeholder
-    : placeholder + ' (' + rows.length + ' of ' + _cmpExps.length + ' shown)';
-  return '<option value="">' + esc(head) + '</option>' + opts;
 }
 
 // Same honesty rule as the main table's truncation notice: a filter box that
@@ -139,49 +176,9 @@ async function _loadCmpExps(force, all) {
 async function loadAllCompareRuns() {
   const btn = document.querySelector('#cmp-trunc button');
   if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
-  if (await _loadCmpExps(true, true)) filterCompareOptions();
+  await _loadCmpExps(true, true);
 }
 
-// Re-narrow both pair selects and the multi list from the cached runs,
-// preserving whatever is already picked.
-function filterCompareOptions() {
-  const box = document.getElementById('cmp-filter');
-  const q = box ? box.value.trim().toLowerCase() : '';
-  for (const id of ['cmp-id1', 'cmp-id2']) {
-    const sel = document.getElementById(id);
-    if (!sel) continue;
-    const keep = sel.value;
-    sel.innerHTML = _cmpOptsHtml(q, '-- Select experiment --', null, keep);
-    sel.value = keep;
-  }
-  const multi = document.getElementById('cmp-multi-select');
-  if (multi) {
-    const picked = new Set([...multi.selectedOptions].map(o => o.value));
-    multi.innerHTML = _cmpOptsHtml(q, '', picked.size ? picked : selectedIds);
-  }
-}
-
-// Rebuilding up to three option lists per keystroke over a thousand runs is the
-// same cost the main search box debounces (js/core.py), so share the treatment.
-const onCompareFilter = debounce(filterCompareOptions, 150);
-
-async function populateCompareDropdowns() {
-  if (!await _loadCmpExps()) return;
-  const sel1 = document.getElementById('cmp-id1');
-  const sel2 = document.getElementById('cmp-id2');
-  const prev1 = sel1.value, prev2 = sel2.value;
-  const box = document.getElementById('cmp-filter');
-  const q = box ? box.value.trim().toLowerCase() : '';
-  sel1.innerHTML = _cmpOptsHtml(q, '-- Select base experiment --', null, prev1);
-  sel2.innerHTML = _cmpOptsHtml(q, '-- Select compare experiment --', null, prev2);
-  if (prev1) sel1.value = prev1;
-  if (prev2) sel2.value = prev2;
-  if (!prev1 && !prev2 && selectedIds.size === 2) {
-    const ids = [...selectedIds];
-    sel1.value = ids[0];
-    sel2.value = ids[1];
-  }
-}
 
 // Coarse artifact type. Mirrors core/queries.py:artifact_kind — same vocabulary,
 // so the terminal, the export and the dashboard name the same file the same
@@ -973,6 +970,7 @@ async function refreshDetail(id, opts) {
       <!-- Summary bar -->
       <div class="detail-summary">
         <span class="sum-item"><strong class="status-${esc(exp.status||'')}">${esc(exp.status||'--')}</strong>${exp.status === 'running' ? ' <span class="live-badge" id="live-badge"><span class="live-dot"></span>live</span>' : ''}</span>
+        ${_primaryMetricSummary(exp)}
         <span class="sum-sep">|</span>
         <span class="sum-item">Branch: <strong>${esc(exp.git_branch||'--')}</strong></span>
         <span class="sum-item">Commit: <strong>${esc((exp.git_commit||'--').slice(0,7))}</strong></span>
@@ -987,6 +985,10 @@ async function refreshDetail(id, opts) {
 
       <!-- "What changed vs the previous run of this script" strip (L2) -->
       <div id="vs-prev-strip" class="vs-prev-strip" style="display:none"></div>
+      <!-- vs the pinned reference run. A second strip rather than a toggle:
+           lineage and target answer different questions and routinely disagree,
+           and each names its own baseline. -->
+      <div id="vs-ref-strip" class="vs-prev-strip vs-ref-strip" style="display:none"></div>
 
       <!-- Header with name + actions -->
       <div class="detail-header">
@@ -1013,6 +1015,7 @@ async function refreshDetail(id, opts) {
               <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','plain')">Plain Text</button>
             </div>
           </span>
+          ${_referenceBtnHtml(exp)}
           ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button>` : ''}
           ${_compactBtnHtml(exp)}
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${escJsAttr(exp.name)}')">Delete</button>
@@ -1095,8 +1098,14 @@ async function refreshDetail(id, opts) {
   // Filmstrip of the current run list, active card centered.
   renderFilmstrip(exp.id);
 
-  // Populate the "vs previous run" strip (async; guarded against navigation).
+  // Populate the two baseline strips (async; guarded against navigation).
   loadVsPrevious(exp.id);
+  // Gated on the detail payload, which already resolved whether a reference
+  // exists: with none configured — the default — this would otherwise be a
+  // request and a query every 5 seconds on a live run's poll, to be told no.
+  if (exp.reference) loadVsReference(exp.id);
+  else { const strip = document.getElementById('vs-ref-strip');
+         if (strip) strip.style.display = 'none'; }
 
   // Wire up inline tag input in detail view
   const tagInputArea = document.getElementById('detail-tag-input-area');
@@ -1149,11 +1158,19 @@ async function refreshDetail(id, opts) {
 
 // Primary metric key: the active "Sort by metric" key when set, else the first
 // metric key present on any run in the list.
+// Which metric the filmstrip shows. An explicit metric sort wins — the user
+// just said what they are looking at — then the set's consensus primary metric
+// (the shared rule, so the strip and the Result column can never label the same
+// list differently), and only then the old fallback of "the first key any run
+// happened to log", which is arbitrary and was picking a different metric from
+// every other surface.
 function _filmstripMetricKey(exps) {
   if (typeof sortCol === 'string' && sortCol.startsWith('metric:')) return sortCol.slice(7);
+  const consensus = consensusMetricKey(exps);
+  if (consensus) return consensus;
   for (const e of exps) {
-    const keys = e.metrics ? Object.keys(e.metrics) : [];
-    if (keys.length) return keys[0];
+    const mk = e.metrics ? Object.keys(e.metrics) : [];
+    if (mk.length) return mk[0];
   }
   return null;
 }
@@ -1327,25 +1344,15 @@ function _vsCodeChip(d) {
 const _VS_PREV_LABEL = '<span class="vs-prev-label" title="Compared against the'
   + ' last run of this script started before this one">vs previous run</span>';
 
-async function loadVsPrevious(id) {
-  let d;
-  try {
-    d = await api('/api/run-delta/' + id);
-  } catch (e) { return; }
-  // Bail if the user navigated away while we were fetching.
-  if (currentDetailId !== id) return;
-  const strip = document.getElementById('vs-prev-strip');
-  if (!strip) return;
-  if (!d || d.error || !d.previous) { strip.style.display = 'none'; return; }
+// The chips for a delta payload — shared by the "vs previous" and "vs
+// reference" strips, which differ only in which baseline they name. Two copies
+// would be two places for the polarity colouring and the precision widening to
+// drift, on the one surface whose whole job is stating a comparison accurately.
+// Returns '' when nothing moved, so the caller can render its own empty note.
+function _vsChipsHtml(d) {
   const pcs = d.param_changes || [];
   const mcs = d.metric_changes || [];
-  if (pcs.length === 0 && mcs.length === 0 && !d.code_changed) {
-    strip.innerHTML = _VS_PREV_LABEL
-      + '<span class="vs-prev-none">no params, code, or metrics changed</span>'
-      + _vsPrevLink(d.previous, d.current_created_at);
-    strip.style.display = '';
-    return;
-  }
+  if (pcs.length === 0 && mcs.length === 0 && !d.code_changed) return '';
   let chips = '';
   for (const c of pcs.slice(0, 6)) {
     chips += '<span class="vs-chip vs-chip-param">' + esc(c.key) + ' '
@@ -1369,9 +1376,150 @@ async function loadVsPrevious(id) {
     chips += '<span class="' + cls + '"' + title + '>' + esc(c.key) + ' '
       + esc(sf) + '→' + esc(st) + arrow + '</span>';
   }
+  return chips;
+}
+
+async function loadVsPrevious(id) {
+  let d;
+  try {
+    d = await api('/api/run-delta/' + id);
+  } catch (e) { return; }
+  // Bail if the user navigated away while we were fetching.
+  if (currentDetailId !== id) return;
+  const strip = document.getElementById('vs-prev-strip');
+  if (!strip) return;
+  if (!d || d.error || !d.previous) { strip.style.display = 'none'; return; }
+  const chips = _vsChipsHtml(d)
+    || '<span class="vs-prev-none">no params, code, or metrics changed</span>';
   strip.innerHTML = _VS_PREV_LABEL + chips
     + _vsPrevLink(d.previous, d.current_created_at);
   strip.style.display = '';
+}
+
+// ── vs the reference run ─────────────────────────────────────────────────────
+// A second, deliberately separate comparison. "vs previous" is lineage — what
+// changed since last time; this is a fixed target — is it better than the thing
+// I am trying to beat. They are shown as two strips rather than one switchable
+// one precisely because they answer different questions and routinely disagree.
+//
+// Every state names its own baseline and where that choice was made. A number
+// whose origin the reader has to guess is the failure this whole feature exists
+// to avoid, so there is no state here that renders a bare delta.
+
+// The number this run is judged by, in the header line — with where that choice
+// came from, since a heuristic pick is exptrack's guess and should read as one.
+// A configured-but-unlogged metric says so rather than borrowing another key.
+function _primaryMetricSummary(exp) {
+  const p = exp.primary_metric || {};
+  if (!p.key) return '';
+  if (p.missing) {
+    return '<span class="sum-sep">|</span><span class="sum-item sum-primary"'
+      + ' title="' + esc(p.key) + ' is this project\'s metric, but this run never'
+      + ' logged it">' + esc(p.key) + ': <strong class="primary-missing">not logged</strong></span>';
+  }
+  const guess = p.source === 'heuristic';
+  const note = guess
+    ? 'Picked from this run\'s own metrics. Make it explicit with `exptrack primary-metric '
+      + p.key + '`.'
+    : 'The metric set for this ' + p.source + '.';
+  return '<span class="sum-sep">|</span><span class="sum-item sum-primary" title="'
+    + esc(note) + '">' + esc(p.key) + ': <strong>' + esc(fmtMetricVal(p.final)) + '</strong>'
+    + (guess ? '<span class="primary-guess-tag">guessed</span>' : '') + '</span>';
+}
+
+// The pin lives in the run header, because deciding a reference happens while
+// looking at a run — either "this is the one to beat" or "this is no longer it".
+// A run that is the reference by way of a *study* setting is not offered an
+// unpin here: the button would clear the project level and appear to do
+// nothing, since the study setting still shadows it.
+function _referenceBtnHtml(exp) {
+  const ref = exp.reference;
+  const isRef = ref && !ref.stale && ref.id === exp.id;
+  if (isRef && ref.source === 'study') {
+    return '<button class="action-btn" disabled title="This run is the reference'
+      + ' for study “' + esc(ref.study) + '”. Change it with'
+      + ' `exptrack reference --study ' + esc(ref.study) + '`.">reference ✓</button>';
+  }
+  if (isRef) {
+    return '<button class="action-btn" onclick="setAsReference(\'' + escJsAttr(exp.id)
+      + '\', true)" title="Stop measuring runs against this one">Unpin reference</button>';
+  }
+  return '<button class="action-btn" onclick="setAsReference(\'' + escJsAttr(exp.id)
+    + '\', false)" title="Measure every run against this one — a fixed target,'
+    + ' separate from each run\'s own previous-run comparison">Set as reference</button>';
+}
+
+// Plain text, escaped at each insertion point — the codebase rule. Returning
+// pre-escaped markup meant the tooltip had to strip tags back out of it, which
+// double-escaped the study name and made a no-op regex look like sanitizing.
+function _refSourceNote(ref) {
+  return ref.source === 'study'
+    ? 'set for study “' + ref.study + '”'
+    : 'set for this project';
+}
+
+async function loadVsReference(id) {
+  let d;
+  try {
+    d = await api('/api/reference-delta/' + id);
+  } catch (e) { return; }
+  if (currentDetailId !== id) return;
+  const strip = document.getElementById('vs-ref-strip');
+  if (!strip) return;
+  // No reference configured: the strip is absent rather than empty. Nothing is
+  // substituted for an unset reference — that is the point of the feature.
+  if (!d || d.error || !d.reference) { strip.style.display = 'none'; return; }
+  const ref = d.reference;
+
+  // A stale reference is stated, not hidden. Rendering nothing here would read
+  // as "no reference set" and quietly conceal that the comparison the user has
+  // been reading stopped happening.
+  if (ref.stale) {
+    strip.innerHTML = _VS_REF_LABEL + '<span class="vs-ref-stale">' +
+      (ref.stale === 'trashed'
+        ? 'the reference run is in the Trash — restore it, or pick another'
+        : 'the reference run no longer exists — pick another') +
+      ' <span class="vs-ref-where">(' + esc(_refSourceNote(ref)) + ')</span></span>';
+    strip.style.display = '';
+    return;
+  }
+
+  if (d.is_reference) {
+    strip.innerHTML = _VS_REF_LABEL +
+      '<span class="vs-ref-self">this run <em>is</em> the reference ' +
+      '<span class="vs-ref-where">(' + esc(_refSourceNote(ref)) + ')</span></span>';
+    strip.style.display = '';
+    return;
+  }
+
+  const chips = _vsChipsHtml(d)
+    || '<span class="vs-prev-none">identical to the reference</span>';
+  strip.innerHTML = _VS_REF_LABEL + chips + _vsRefLink(ref, d.current_created_at);
+  strip.style.display = '';
+}
+
+const _VS_REF_LABEL = '<span class="vs-prev-label vs-ref-label" title="Compared'
+  + ' against the run pinned as this project\'s reference — a fixed target, not'
+  + ' the previous run">vs reference</span>';
+
+function _vsRefLink(ref, curCreatedAt) {
+  const label = ref.name || ref.id.slice(0, 6);
+  const when = relEarlier(ref.created_at, curCreatedAt);
+  return '<a class="vs-prev-open" href="#" onclick="showDetail(\'' + escJsAttr(ref.id)
+    + '\');return false" title="Open the reference run — ' + esc(_refSourceNote(ref))
+    + '">' + esc(label)
+    + (when ? ' <span class="vs-prev-when">' + esc(when) + '</span>' : '')
+    + _baselineFailedTag(ref.status)
+    + '</a><span class="vs-ref-where">' + esc(_refSourceNote(ref)) + '</span>';
+}
+
+// Pin / unpin from the run's own header — the two places you decide a reference
+// are while looking at a strong run and while looking at the current one.
+async function setAsReference(id, clear) {
+  const r = await postApi('/api/experiment/' + id + '/set-reference',
+                          {study: '', clear: !!clear});
+  if (!r || r.error) { alert((r && r.error) || 'Could not set the reference.'); return; }
+  refreshDetail(id, {keepSidebar: true});
 }
 
 // A failed baseline is still the right baseline — "it broke, I fixed it, what

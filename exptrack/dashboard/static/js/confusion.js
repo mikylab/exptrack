@@ -753,10 +753,6 @@ function confExport(expId, fmt) {
 
   if (fmt === 'png') { _confExportPng(expId, m, labels, M, rowSum, colSum, total); return; }
   if (fmt === 'csv') {
-    const csvCell = (s) => {
-      s = String(s);
-      return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
-    };
     let out = ['actual\\predicted', ...labels, 'total'].map(csvCell).join(',') + '\n';
     for (let i = 0; i < n; i++) {
       const row = [labels[i], ...M[i].slice(0, n).map(v => +v||0), rowSum[i]];

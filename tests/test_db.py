@@ -42,7 +42,7 @@ def test_schema_version_stamped(db_conn):
 # after a schema change means existing DBs silently never migrate. This test
 # fails whenever the schema DDL changes, forcing a deliberate update here —
 # and the message reminds you to bump `_SCHEMA_VERSION` at the same time.
-_EXPECTED_SCHEMA_FINGERPRINT = "2c7f1e3d8a9fd98c"
+_EXPECTED_SCHEMA_FINGERPRINT = "b4f53e4e4b9e77ca"
 
 
 def _schema_fingerprint(conn) -> str:

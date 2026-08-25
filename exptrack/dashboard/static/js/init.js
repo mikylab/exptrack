@@ -43,6 +43,10 @@ function _bootDashboard() {
   loadStats();
   loadExperiments().then(() => {
     if (highlightMode) { buildHighlightColors(); renderHighlightLegend(); }
+    // A shared comparison link opens the comparison it names. Runs after the
+    // list so the pickers have their cache; the compare view injects any id
+    // the cache doesn't hold, so an old run in a shared link still opens.
+    if (typeof restoreCompareFromUrl === 'function') restoreCompareFromUrl();
   });
   if (_toolboxPinned) _syncToolboxUI();
 }

@@ -241,12 +241,26 @@ def _session_study_name(conn, session_id: str) -> str | None:
     """The study a session's runs are grouped under — its name (or a short id
     fallback). Single source so autolink / materialize / finalize agree."""
     row = conn.execute(
-        "SELECT name FROM sessions WHERE id=?", (session_id,),
+        "SELECT name, notebook FROM sessions WHERE id=?", (session_id,),
     ).fetchone()
     if not row:
         return None
     name = (row["name"] or "").strip()
-    return name or f"session {session_id[:8]}"
+    if not name:
+        return f"session {session_id[:8]}"
+    # Qualified by notebook when there is one: the study was keyed on the
+    # session *name* alone, so two notebooks each running a session called
+    # "explore" — the obvious name, and the one the docs use — merged their
+    # runs into a single study, which then reported parameters varying across
+    # two unrelated pieces of work.
+    notebook = (row["notebook"] or "").strip()
+    if notebook:
+        stem = notebook.rsplit("/", 1)[-1]
+        if stem.endswith(".ipynb"):
+            stem = stem[:-len(".ipynb")]
+        if stem and stem != name:
+            return f"{name} ({stem})"
+    return name
 
 
 def _group_run_into_session_study(conn, exp_id: str, session_id: str) -> None:

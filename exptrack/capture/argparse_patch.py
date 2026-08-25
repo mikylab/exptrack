@@ -7,6 +7,8 @@ import sys
 import threading
 from typing import TYPE_CHECKING
 
+from ..core.utils import coerce_scalar, debug_log, is_value_token, normalize_flag_key, safe_call
+
 if TYPE_CHECKING:
     from ..core import Experiment
 
@@ -69,40 +71,62 @@ def patch_argparse(exp: Experiment):
 
 
 def _capture_namespace(exp: Experiment, ns):
-    from ..core import make_run_name
-    d = {k: v for k, v in vars(ns).items()
-         if not k.startswith("_") and v is not None}
-    if d:
-        exp.log_params(d)
-        # Don't rename resumed experiments — their name and output dir
-        # are already established and the script may depend on them.
-        if not getattr(exp, '_resumed', False):
-            exp._rename(make_run_name(exp.script, exp._params))
+    # This runs *inside* the user's parse_args(). A capture failure here — a
+    # param value that isn't JSON-serializable (e.g. argparse type=Path/enum),
+    # or a locked DB during a parallel sweep — must never abort the user's run.
+    # The body is multi-statement (log + rename), hence an inline try/except
+    # rather than the safe_call() the single-call capture paths use below.
+    try:
+        d = {k: v for k, v in vars(ns).items()
+             if not k.startswith("_") and v is not None}
+        if d:
+            exp.log_params(d)
+            _drop_shadowed_argv_params(exp, d)
+            _refresh_auto_name(exp)
+    except Exception as e:
+        debug_log(f"_capture_namespace failed: {type(e).__name__}: {e}")
 
 
-def _normalize_long_flag(key: str) -> str:
-    """Match argparse's Namespace convention: `--batch-size` stored as `batch_size`."""
-    return key.replace("-", "_")
+def _refresh_auto_name(exp: Experiment, quiet: bool = False):
+    """Re-generate the run name now that params are known.
 
-
-def _is_value_token(tok: str) -> bool:
-    """Is ``tok`` the *value* of the preceding flag, or the next flag?
-
-    Mirrors the rule the pipeline parser uses (``_parse_freeform_params``): a
-    ``--``-prefixed token is always a flag, and a single-dash token is a value
-    only when it parses as a number — so ``--lr -0.5`` / ``--offset -3`` /
-    ``--eps -1e-4`` keep their (negative) values instead of being recorded as
-    boolean flags with the value discarded, while ``--a --b`` and ``-a -b``
-    still read as two booleans.
+    Thin wrapper: the guards live on ``Experiment`` so the notebook path
+    applies the same ones. Kept as a name because the capture modules and
+    tests call it.
     """
-    if tok.startswith("--"):
-        return False
-    if tok.startswith("-"):
-        try:
-            float(tok)
-        except (ValueError, TypeError):
-            return False
-    return True
+    exp.refresh_auto_name(quiet=quiet)
+
+
+def _drop_shadowed_argv_params(exp: Experiment, captured: dict):
+    """Retract raw-argv keys that argparse has just re-captured under its dest.
+
+    Both capture paths run under ``exptrack run``: argv first (so a
+    non-argparse script is still covered), then the namespace. When a flag's
+    ``dest`` differs from its spelling — ``--learning-rate`` with
+    ``dest="lr"`` — one hyperparameter landed under two keys, and "what varies"
+    then reported two axes for one knob. The argv spelling is the one that
+    goes: argparse's dest is what the script itself calls the value.
+    """
+    argv_keys = getattr(exp, "_argv_param_keys", None)
+    if not argv_keys:
+        return
+    # Matched through the one param-equality rule, not a value probe of its
+    # own: raw argv captures `--lr 0.01` as the *string* while argparse hands
+    # back the float, so a probe comparing them literally saw two different
+    # values and kept the duplicate key in exactly the case this function
+    # exists for.
+    from ..core.param_study import params_differ
+    values = list(captured.values())
+    shadowed = []
+    for k in argv_keys:
+        if k in captured:
+            continue                       # same key — argparse just updated it
+        v = exp._params.get(k)
+        if any(not params_differ(v, cv) for cv in values):
+            shadowed.append(k)
+    if shadowed:
+        exp.forget_params(shadowed)
+        exp._argv_param_keys = [k for k in argv_keys if k not in shadowed]
 
 
 def _capture_remaining(exp: Experiment, args: list[str]):
@@ -115,22 +139,23 @@ def _capture_remaining(exp: Experiment, args: list[str]):
             key = a[2:]
             if "=" in key:
                 k, v = key.split("=", 1)
-                params[_normalize_long_flag(k)] = _coerce(v)
-            elif i + 1 < len(args) and _is_value_token(args[i + 1]):
-                params[_normalize_long_flag(key)] = _coerce(args[i + 1])
+                params[normalize_flag_key(k)] = coerce_scalar(v)
+            elif i + 1 < len(args) and is_value_token(args[i + 1]):
+                params[normalize_flag_key(key)] = coerce_scalar(args[i + 1])
                 i += 1
             else:
-                params[_normalize_long_flag(key)] = True
+                params[normalize_flag_key(key)] = True
         elif a.startswith("-") and len(a) == 2:
             key = a[1:]
-            if i + 1 < len(args) and _is_value_token(args[i + 1]):
-                params[key] = _coerce(args[i + 1])
+            if i + 1 < len(args) and is_value_token(args[i + 1]):
+                params[key] = coerce_scalar(args[i + 1])
                 i += 1
             else:
                 params[key] = True
         i += 1
     if params:
-        exp.log_params(params)
+        # A capture failure must not escape into the user's parse_known_args().
+        safe_call(exp.log_params, params, context="_capture_remaining")
 
 
 # ── Raw argv fallback ─────────────────────────────────────────────────────────
@@ -149,29 +174,33 @@ def capture_argv(exp: Experiment):
             key = a[2:]
             if "=" in key:
                 k, v = key.split("=", 1)
-                params[_normalize_long_flag(k)] = _coerce(v)
-            elif i + 1 < len(args) and _is_value_token(args[i + 1]):
-                params[_normalize_long_flag(key)] = _coerce(args[i + 1])
+                params[normalize_flag_key(k)] = coerce_scalar(v)
+            elif i + 1 < len(args) and is_value_token(args[i + 1]):
+                params[normalize_flag_key(key)] = coerce_scalar(args[i + 1])
                 i += 1
             else:
-                params[_normalize_long_flag(key)] = True
+                params[normalize_flag_key(key)] = True
         elif a.startswith("-") and len(a) == 2:
             key = a[1:]
-            if i + 1 < len(args) and _is_value_token(args[i + 1]):
-                params[key] = _coerce(args[i + 1])
+            if i + 1 < len(args) and is_value_token(args[i + 1]):
+                params[key] = coerce_scalar(args[i + 1])
                 i += 1
             else:
                 params[key] = True
         i += 1
     if params:
-        exp.log_params(params)
-
-
-def _coerce(v: str):
-    if v.lower() == "true":  return True
-    if v.lower() == "false": return False
-    try:    return int(v)
-    except (ValueError, TypeError): pass  # not an int, try float
-    try:    return float(v)
-    except (ValueError, TypeError): pass  # not a float, return as string
-    return v
+        # capture_argv runs at launch, before the user's script starts; an
+        # unguarded failure here would abort the launch outright.
+        safe_call(exp.log_params, params, context="capture_argv")
+        # Remember what argv contributed, so a later argparse capture can
+        # retract a key it has just re-captured under a different dest.
+        exp._argv_param_keys = list(params)
+        # A non-argparse script (click, manual sys.argv, a bare
+        # `if len(sys.argv)`) never reaches _capture_namespace, so without this
+        # its run name never picked up the params that were captured — two runs
+        # of different models were indistinguishable by name.
+        # Quiet: under `exptrack run` (and now under a bare `python train.py`)
+        # argparse capture usually follows a moment later and announces the
+        # final name, so a second "-> name" line just reports an intermediate
+        # state the user never had.
+        safe_call(_refresh_auto_name, exp, True, context="capture_argv rename")

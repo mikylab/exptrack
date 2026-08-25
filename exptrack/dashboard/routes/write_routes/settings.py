@@ -6,7 +6,7 @@ and result types.
 """
 from __future__ import annotations
 
-from ._shared import body_str
+from ._shared import body_int, body_str
 
 
 def api_set_timezone(body: dict) -> dict:
@@ -92,7 +92,7 @@ def api_manage_result_types(body: dict) -> dict:
             if name not in prefixes:
                 prefixes.append(name)
         elif action == "remove":
-            index = body.get("index", -1)
+            index = body_int(body, "index")
             if 0 <= index < len(prefixes):
                 prefixes.pop(index)
         else:
@@ -106,7 +106,7 @@ def api_manage_result_types(body: dict) -> dict:
             if name not in types:
                 types.append(name)
         elif action == "remove":
-            index = body.get("index", -1)
+            index = body_int(body, "index")
             if 0 <= index < len(types):
                 types.pop(index)
         else:

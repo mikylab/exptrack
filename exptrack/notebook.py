@@ -102,9 +102,9 @@ def tag(*tags: str) -> None:
             exp.add_tag(t)
 
 
-def note(text: str) -> None:
+def note(text: str, dedupe: bool = False) -> None:
     # add_note appends (newline-joined, stripped) and writes the notes column.
-    _require().add_note(text)
+    _require().add_note(text, dedupe=dedupe)
 
 
 def artifact(path: str | Path, label: str = "") -> None:
@@ -142,8 +142,12 @@ def log_last(_nb_file: str = "", **kwargs: float) -> Experiment | None:
 
     from .core import get_db
     from .core.queries import find_latest_by_script
-
-    script = _nb_file or _detect_nb_name() or "notebook"
+    from .core.utils import resolve_script_identity
+    # Normalized exactly as Experiment.__init__ stores it. Searching for the
+    # raw detected name found nothing whenever notebook detection returned a
+    # relative path — the common JupyterLab case, and the primary use of this
+    # feature.
+    script = resolve_script_identity(_nb_file or _detect_nb_name() or "notebook")
     row = find_latest_by_script(get_db(), script)
     if row is None:
         print(f"[exptrack] no previous run found for '{script}' — start one with "
@@ -462,8 +466,13 @@ def load_ipython_extension(ip: Any) -> None:
         tag(*line.strip().split())
 
     def exp_note(line):
-        """Add a note: %exp_note "tried higher dropout" """
-        note(line.strip().strip('"\''))
+        """Add a note: %exp_note "tried higher dropout"
+
+        Idempotent under a Run-All, like %exp_tag and promote: the note used to
+        double on every pass, so a notebook re-run three times carried three
+        copies of every line.
+        """
+        note(line.strip().strip('"\''), dedupe=True)
 
     # Register magics via the ip instance (works without get_ipython() context)
     ip.register_magic_function(exp_start, magic_kind='line')

@@ -48,6 +48,18 @@ _active_exp: Experiment | None = None
 _hook_installed = False
 _patch_lock = threading.Lock()
 
+# Scalars written before an experiment exists. A notebook (or a script that
+# builds its writer at import time) can create a SummaryWriter and log to it
+# before `%exp_start` / `Experiment()` runs, and those points were simply
+# dropped — while the savefig patch buffers pre-experiment figures and flushes
+# them on creation. The asymmetry meant the same "log first, start tracking a
+# moment later" shape lost metrics but kept plots. Bounded, because this can
+# also legitimately never flush (a script that uses TensorBoard and never
+# creates a run must not accumulate its whole training history in memory).
+_PENDING_METRICS_MAX = 2000
+_pending_metrics: list[tuple] = []
+_pending_dropped = 0
+
 
 def patch_tensorboard(exp: Experiment | None = None) -> None:
     """Install SummaryWriter mirroring and point capture at ``exp``.
@@ -61,6 +73,7 @@ def patch_tensorboard(exp: Experiment | None = None) -> None:
     global _active_exp, _hook_installed
     if exp is not None:
         _active_exp = exp
+        flush_pending_metrics(exp)
 
     with _patch_lock:
         # Patch any writer module the user already imported.
@@ -241,29 +254,61 @@ def _record_log_dir(writer) -> None:
 
 # ── Mirroring (writer call → exptrack metric) ─────────────────────────────────
 
-def _mirror_scalar(tag, value, step) -> None:
-    exp = _current_exp()
-    if exp is None:
+def _buffer_metric(key: str, value: float, step) -> None:
+    """Hold a scalar logged before any experiment existed (see _pending_metrics)."""
+    global _pending_dropped
+    if len(_pending_metrics) >= _PENDING_METRICS_MAX:
+        _pending_dropped += 1
         return
+    _pending_metrics.append((key, value, step))
+
+
+def flush_pending_metrics(exp: Experiment) -> int:
+    """Write buffered pre-experiment scalars onto *exp*. Returns how many.
+
+    Called from `patch_tensorboard(exp)`, i.e. the moment a run is retargeted —
+    the same point at which the savefig patch flushes its buffered figures.
+    """
+    global _pending_dropped
+    if not _pending_metrics:
+        return 0
+    pending, _pending_metrics[:] = list(_pending_metrics), []
+    for key, value, step in pending:
+        safe_call(exp.log_metric, key, value, step=step,
+                  context="tensorboard.flush_pending")
+    if _pending_dropped:
+        # Truncation is stated, never silent.
+        print(f"[exptrack] note: {_pending_dropped} TensorBoard scalar(s) logged "
+              f"before the run started were dropped (buffer limit)", file=sys.stderr)
+        _pending_dropped = 0
+    return len(pending)
+
+
+def _mirror_scalar(tag, value, step, context: str = "tensorboard.add_scalar") -> None:
+    """Mirror one scalar into the metrics table, or buffer it if no run is live.
+
+    The single write path for both `add_scalar` and `add_scalars`: the
+    before-the-run buffering rule existed in two copies, so it had to be
+    written twice and could be fixed in one.
+    """
     fval = _to_float(value)
     if fval is None:
         return
+    exp = _current_exp()
+    if exp is None:
+        _buffer_metric(str(tag), fval, _to_step(step))
+        return
     safe_call(exp.log_metric, str(tag), fval, step=_to_step(step),
-              context="tensorboard.add_scalar")
+              context=context)
 
 
 def _mirror_scalars(main_tag, tag_scalar_dict, step) -> None:
-    exp = _current_exp()
-    if exp is None or not hasattr(tag_scalar_dict, "items"):
+    if not hasattr(tag_scalar_dict, "items"):
         return
     step = _to_step(step)
     for sub_tag, value in tag_scalar_dict.items():
-        fval = _to_float(value)
-        if fval is None:
-            continue
         key = f"{main_tag}/{sub_tag}" if main_tag else str(sub_tag)
-        safe_call(exp.log_metric, key, fval, step=step,
-                  context="tensorboard.add_scalars")
+        _mirror_scalar(key, value, step, context="tensorboard.add_scalars")
 
 
 def _mirror_histogram(tag, values, step) -> None:

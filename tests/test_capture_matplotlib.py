@@ -51,3 +51,58 @@ def test_pending_artifacts_flushed(tmp_project):
 
     # Just verify the pending list structure exists
     assert isinstance(_pending_artifacts, list)
+
+
+def test_savefig_to_buffer_no_phantom_artifact(tmp_project):
+    """savefig() to an in-memory buffer registers no artifact and does not warn.
+
+    Regression: a file-like target (io.BytesIO — a standard idiom for embedding
+    or serving a plot) was run through _P(str(fname)).resolve(), fabricating a
+    bogus path from the object's repr. That produced a "No such file" warning on
+    stderr and a phantom artifacts row (NULL hash/size) on every in-memory save.
+    """
+    import io
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        import pytest
+        pytest.skip("matplotlib not installed")
+
+    import exptrack.capture.matplotlib_patch as mp_mod
+    from exptrack.capture.matplotlib_patch import patch_savefig
+    from exptrack.core import Experiment, get_db
+
+    mp_mod._patched = False
+    mp_mod._pending_artifacts = []
+
+    exp = Experiment(script="train.py")
+    patch_savefig(exp)
+
+    conn = get_db()
+
+    def artifact_paths():
+        return [r["path"] for r in conn.execute(
+            "SELECT path FROM artifacts WHERE exp_id=?", (exp.id,)).fetchall()]
+
+    before = artifact_paths()
+
+    fig, ax = plt.subplots()
+    ax.plot([1, 2, 3], [1, 4, 9])
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")   # must not raise, warn, or register
+    plt.close(fig)
+
+    # The save itself worked — the buffer has PNG bytes.
+    assert buf.getvalue()[:4] == b"\x89PNG"
+
+    # The buffer save added no artifact row, and certainly none naming the
+    # buffer's repr (the old phantom-path bug).
+    after = artifact_paths()
+    assert after == before, f"buffer save added artifacts: {set(after) - set(before)}"
+    assert not any("BytesIO" in p for p in after)
+
+    exp.finish()
+    mp_mod._patched = False

@@ -32,6 +32,13 @@ def _git_env() -> dict:
 # reports "all changes committed" when the truth is "we couldn't tell".
 CAPTURE_FAILED = "[capture-failed]"
 
+# Sentinel for a repository with no commits yet (an unborn HEAD). `git diff`
+# fails there because there is nothing to diff *against* — not because the
+# capture broke — and this is the normal state of a project in the minutes
+# after `git init` + `exptrack init`. Recording CAPTURE_FAILED made every early
+# run claim its code capture had failed.
+NO_COMMITS = "[no-commits-yet]"
+
 
 def _git_status(*cmd) -> tuple[bool, str]:
     """Run `git <cmd>`; return ``(ok, stripped_stdout)``.
@@ -80,6 +87,16 @@ def _diff_excludes() -> list[str]:
     return args
 
 
+def _has_unborn_head() -> bool:
+    """True when the repo exists but has no commits yet.
+
+    ``git rev-parse --verify HEAD`` is the cheap, non-interactive check; it
+    fails on exactly the unborn-HEAD case.
+    """
+    ok, _ = _git_status("rev-parse", "--verify", "--quiet", "HEAD")
+    return not ok
+
+
 def git_diff(*range_args) -> str:
     """`git diff <range_args>` with config-driven pathspec excludes appended.
 
@@ -92,7 +109,9 @@ def git_diff(*range_args) -> str:
     ok, out = _git_status("diff", *range_args, *_diff_excludes())
     if ok:
         return out
-    return CAPTURE_FAILED if _is_git_repo() else ""
+    if not _is_git_repo():
+        return ""
+    return NO_COMMITS if _has_unborn_head() else CAPTURE_FAILED
 
 
 def git_info() -> dict[str, str]:

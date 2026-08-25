@@ -34,6 +34,32 @@ DEFAULTS: dict = {
     "param_redact_patterns": [
         "api.key", "password", "token", "secret", "credential",
     ],
+    # One-line stderr notice at finish when a run repeats a configuration
+    # already run. Advisory only — never a prompt, never a refusal.
+    "warn_duplicate_runs":   True,
+    # The metric runs are judged by, project-wide. Unset by default: with
+    # nothing configured the heuristic in core/primary_metric.py guesses from
+    # what each run logged, and says it guessed. Either a bare key
+    # ("val_acc") or {"key": "val_acc", "goal": "max"|"min"}; an omitted goal
+    # is inferred from the metric's name.
+    "primary_metric":        "",
+    # Per-study overrides, {"<study name>": <same shape as above>}. Studies
+    # have no row of their own — they are names inside each run's `studies`
+    # JSON list — so the override lives here rather than on a record.
+    "primary_metric_by_study": {},
+    # One name for one measurement, across models that name it differently:
+    # {"val_acc": ["accuracy", "val/acc"]}. The key is the canonical name every
+    # surface will show; the list is the spellings that mean it. Without this,
+    # two models logging the same measurement under different names shared no
+    # metric at all — compare showed two rows of `--` and ranking excluded one
+    # of them. See core/metric_alias.py.
+    "metric_aliases":        {},
+    # The run everything else is measured against — the current production
+    # model, the published number. Deliberately separate from a run's own
+    # `_variant_of` lineage, and it never falls through to "the best run so
+    # far": a baseline that moves on its own is one you cannot reason about.
+    "reference_run":         "",
+    "reference_run_by_study": {},
     "result_types": [
         "accuracy", "loss", "auroc", "f1", "precision", "recall",
         "mse", "mae", "r2", "perplexity", "bleu",
@@ -41,6 +67,14 @@ DEFAULTS: dict = {
     "var_fingerprint_max_mb": 100,   # cap content-hashing of vars for change detection; lower if per-cell capture is slow with big DataFrames
     "metric_keep_every":     1,      # store 1 of every N points your code logs, per metric key (1=all). Counts points, not step values, so it works at any logging cadence
     "metric_commit_interval_ms": 250,  # coalesce metric commits (one fsync each) into at most one per this window; 0 = commit every call
+    # These three are documented settings that were only ever read with an
+    # inline fallback (`conf.get(k, <default>)`), so they never reached
+    # `_coerce_numeric` — a hand-edited `"metric_max_points": "lots"` raised
+    # instead of degrading to the default, which is the one thing config.json is
+    # promised never to do. Listing them here is what applies that rule.
+    "metric_max_points":     500,    # max points a chart request returns (server-side downsampling)
+    "resume_flags":          ["--resume"],  # argv flags that trigger auto-resume
+    "timezone":              "",     # dashboard display timezone; "" = UTC
     "max_cell_source_kb":    50,     # hard cap on cell source in cell_lineage
     "max_source_diff_kb":    20,     # hard cap on source_diff in timeline events
     "max_vars_per_cell":     50,     # max var_set events per cell execution
@@ -91,7 +125,9 @@ def load() -> dict:
     if p.exists():
         try:
             user = json.loads(p.read_text())
-            _cache = _deep_merge(DEFAULTS, user)
+            merged = _deep_merge(DEFAULTS, user)
+            _coerce_numeric(DEFAULTS, merged)
+            _cache = merged
             return _cache
         except Exception as e:
             print(f"[exptrack] Config error: {e} — using defaults", file=sys.stderr)
@@ -99,9 +135,40 @@ def load() -> dict:
     return _cache
 
 
+def _overrides_only(cfg: dict, defaults: dict) -> dict:
+    """*cfg* with every key that still equals its default dropped, recursively.
+
+    An empty nested dict is dropped too, so a section the user never touched
+    leaves no trace.
+    """
+    out = {}
+    for key, value in cfg.items():
+        if key not in defaults:
+            out[key] = value
+            continue
+        default = defaults[key]
+        if isinstance(default, dict) and isinstance(value, dict):
+            nested = _overrides_only(value, default)
+            if nested:
+                out[key] = nested
+            continue
+        if value != default:
+            out[key] = value
+    return out
+
+
 def save(cfg: dict) -> None:
+    """Persist *cfg*, writing only what differs from the defaults.
+
+    Callers pass the dict `load()` gave them, which is the defaults merged with
+    the file — so writing it verbatim froze every current default into
+    config.json. That file is documented as safe to commit, so a later change
+    to a default silently never applied to any project whose config had ever
+    been written. `load()` merges the defaults back, so nothing is lost by
+    leaving them out.
+    """
     p = config_path()
-    p.write_text(json.dumps(cfg, indent=2))
+    p.write_text(json.dumps(_overrides_only(cfg, DEFAULTS), indent=2))
     global _cache
     _cache = cfg
 
@@ -260,6 +327,67 @@ def _find_git_root(start: Path) -> Path | None:
         if (parent / ".git").exists():
             return parent
     return None
+
+
+def _coerce_numeric(defaults: dict, cfg: dict) -> None:
+    """Coerce hand-editable settings to their default's type, in place.
+
+    config.json is documented as safe to hand-edit, and several caps
+    (``var_fingerprint_max_mb``, ``max_cell_source_kb``, ``max_vars_per_cell`` …)
+    are read with a bare ``int(...)`` deep in the capture path. A non-numeric
+    value there — ``"var_fingerprint_max_mb": "lots"`` — raised inside capture
+    and, caught only at the top-level boundary, aborted capture on *every*
+    notebook cell: the run recorded nothing while spamming a traceback. The
+    documented invariant is the opposite ("an unusable value must always degrade
+    to the documented default — a hand-edited config must never be the reason a
+    run records nothing"), so enforce it once here rather than at each call site.
+
+    For every key whose default is an ``int`` (bools excluded — ``bool`` is an
+    ``int`` subclass, and the booleans are read as booleans, not coerced),
+    coerce the user's value; if it can't be coerced, keep the default and say so
+    once on stderr. Recurses into nested dicts (e.g. ``naming.*``).
+    """
+    # Validate-and-fall-back, one row per default type. Booleans are read as
+    # booleans and `bool` is an `int` subclass, so coercing would turn a stray
+    # "yes" into True rather than rejecting it — every type here is *checked*,
+    # and only `int` below is genuinely coerced. A dict is accepted for a
+    # text-defaulted key because a few take a structured override too
+    # (`primary_metric` is either "val_acc" or {"key": …, "goal": …}) and their
+    # own parser validates it; what must not pass is a number where a path or a
+    # name is expected — `"db": 123` reached get_db() as an int and raised a
+    # TypeError on *every* command.
+    checks = (
+        (bool, (bool,), "true/false", lambda d: d),
+        (str, (str, dict), "text", lambda d: d),
+        (list, (list,), "a list", list),
+        (dict, (dict,), "an object", dict),
+    )
+    for key, default in defaults.items():
+        matched = False
+        for kind, allowed, label, copy in checks:
+            if not isinstance(default, kind):
+                continue
+            matched = True
+            if key in cfg and not isinstance(cfg[key], allowed):
+                print(f"[exptrack] Config: {key}={cfg[key]!r} is not {label} — "
+                      f"using default {default!r}", file=sys.stderr)
+                cfg[key] = copy(default)
+            break
+        # A dict default still recurses into a well-typed override below.
+        if matched and not isinstance(default, dict):
+            continue
+        if isinstance(default, int):
+            val = cfg.get(key, default)
+            if isinstance(val, int) and not isinstance(val, bool):
+                continue  # already a clean int — nothing to do
+            try:
+                cfg[key] = int(val)
+            except (TypeError, ValueError):
+                print(f"[exptrack] Config: {key}={val!r} is not a number — "
+                      f"using default {default}", file=sys.stderr)
+                cfg[key] = default
+        elif isinstance(default, dict) and isinstance(cfg.get(key), dict):
+            _coerce_numeric(default, cfg[key])
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

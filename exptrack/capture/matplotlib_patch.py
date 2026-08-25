@@ -51,62 +51,19 @@ def patch_savefig(exp: Experiment | None = None):
 
     def _namespace_and_save(fname, save_fn, *args, **kwargs):
         """Save the file, copy to experiment output dir, and register as artifact."""
-        from pathlib import Path as _P
         if _savefig_in_progress[0]:
             return save_fn(fname, *args, **kwargs)
         _savefig_in_progress[0] = True
         try:
             result = save_fn(fname, *args, **kwargs)
-            cur_exp = _nb_state.get("exp")
-
-            orig_path = _P(str(fname)).resolve()
-
-            if not orig_path.exists():
-                fmt = kwargs.get("format")
-                if not fmt:
-                    try:
-                        import matplotlib as _mpl
-                        fmt = _mpl.rcParams.get("savefig.format", "png")
-                    except Exception as e:
-                        debug_log(f"could not detect savefig format: {e}")
-                        fmt = "png"
-                candidate = orig_path.with_suffix("." + fmt)
-                if candidate.exists():
-                    orig_path = candidate
-                else:
-                    for ext in ('.png', '.pdf', '.svg', '.jpg', '.eps'):
-                        candidate = orig_path.with_suffix(ext)
-                        if candidate.exists():
-                            orig_path = candidate
-                            break
-
-            fig_title = _nb_state.pop("_last_fig_title", "")
-
-            # Session Trees: if a session node is active, record the figure path
-            # on it (by reference, no copy) so branches can show/compare plots.
-            # Independent of whether an experiment exists. Never let it break
-            # the user's savefig.
-            if orig_path.exists():
-                try:
-                    from ..sessions import get_current_session
-                    sm = get_current_session()
-                    if sm is not None:
-                        sm.record_image(str(orig_path), label=fig_title)
-                except Exception as _se:
-                    print(f"[exptrack] session image capture warning: {_se}",
-                          file=sys.stderr)
-
-            # No experiment yet — buffer the artifact for later
-            if cur_exp is None:
-                if orig_path.exists():
-                    _pending_artifacts.append({
-                        "orig_path": str(orig_path),
-                        "fig_title": fig_title,
-                        "cell_hash": _nb_state.get("last_cell_hash"),
-                    })
-                return result
-
-            _register_and_protect(cur_exp, orig_path, fig_title)
+            # The capture is guarded on its own: everything below
+            # touches the filesystem, the session subsystem and the DB,
+            # and none of it may reach the user's savefig(). Only the
+            # save itself is allowed to raise.
+            try:
+                _capture_saved_figure(fname, kwargs)
+            except Exception as e:
+                debug_log(f"savefig capture failed: {type(e).__name__}: {e}")
             return result
         finally:
             _savefig_in_progress[0] = False
@@ -131,6 +88,75 @@ def patch_savefig(exp: Experiment | None = None):
 
     plt.savefig = _hooked_plt_savefig
     mfig.Figure.savefig = _hooked_fig_savefig
+
+
+def _capture_saved_figure(fname, kwargs):
+    """Register a just-saved figure as an artifact (and on the session node).
+
+    Split out of the savefig hook so the whole capture sits behind one
+    error boundary — see the call site.
+    """
+    import os as _os
+    from pathlib import Path as _P
+    cur_exp = _nb_state.get("exp")
+
+    # savefig legitimately accepts a file-like target (io.BytesIO, an
+    # open file) as well as a path. There is no filesystem path to
+    # capture, register or copy for those; _P(str(fname)) would fabricate
+    # a bogus path from the object's repr, producing a phantom artifact
+    # row (NULL hash/size) and a "No such file" warning on every
+    # in-memory save. Nothing to do — the save itself already happened.
+    if not isinstance(fname, (str, bytes, _os.PathLike)):
+        return
+
+    orig_path = _P(_os.fsdecode(fname)).resolve()
+
+    if not orig_path.exists():
+        fmt = kwargs.get("format")
+        if not fmt:
+            try:
+                import matplotlib as _mpl
+                fmt = _mpl.rcParams.get("savefig.format", "png")
+            except Exception as e:
+                debug_log(f"could not detect savefig format: {e}")
+                fmt = "png"
+        candidate = orig_path.with_suffix("." + fmt)
+        if candidate.exists():
+            orig_path = candidate
+        else:
+            for ext in ('.png', '.pdf', '.svg', '.jpg', '.eps'):
+                candidate = orig_path.with_suffix(ext)
+                if candidate.exists():
+                    orig_path = candidate
+                    break
+
+    fig_title = _nb_state.pop("_last_fig_title", "")
+
+    # Session Trees: if a session node is active, record the figure path
+    # on it (by reference, no copy) so branches can show/compare plots.
+    # Independent of whether an experiment exists. Never let it break
+    # the user's savefig.
+    if orig_path.exists():
+        try:
+            from ..sessions import get_current_session
+            sm = get_current_session()
+            if sm is not None:
+                sm.record_image(str(orig_path), label=fig_title)
+        except Exception as _se:
+            print(f"[exptrack] session image capture warning: {_se}",
+                  file=sys.stderr)
+
+    # No experiment yet — buffer the artifact for later
+    if cur_exp is None:
+        if orig_path.exists():
+            _pending_artifacts.append({
+                "orig_path": str(orig_path),
+                "fig_title": fig_title,
+                "cell_hash": _nb_state.get("last_cell_hash"),
+            })
+        return
+
+    _register_and_protect(cur_exp, orig_path, fig_title)
 
 
 def _register_and_protect(exp, orig_path, fig_title=""):

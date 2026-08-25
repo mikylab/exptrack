@@ -370,7 +370,10 @@ function _diffFileIsScript(label, script) {
 // a time, and the body is already bounded by `max_git_diff_kb`.
 let _sdbsKey = null, _sdbsVal = null;
 function _splitDiffByScript(diffText, script) {
-  const key = String(script) + ' ' + String(diffText);
+  // Escaped, not a literal NUL byte: a raw NUL makes grep and ripgrep treat
+  // this file as binary and stop reading it mid-file, so any future
+  // grep-based integrity check silently skips everything below here.
+  const key = String(script) + '\u0000' + String(diffText);
   if (key === _sdbsKey) return _sdbsVal;
   const out = _splitDiffByScriptUncached(diffText, script);
   _sdbsKey = key; _sdbsVal = out;

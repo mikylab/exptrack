@@ -16,7 +16,13 @@ from pathlib import Path
 
 from .. import config as cfg
 from ..core import get_db
-from ..core.naming import make_run_name
+from ..core.db import accumulated_duration, register_artifact
+from ..core.utils import (
+    coerce_scalar,
+    decode_param_value,
+    is_value_token,
+    normalize_flag_key,
+)
 from .formatting import die
 
 
@@ -39,16 +45,6 @@ def _finite_metric(cmd: str, key: str, value) -> float | None:
               file=sys.stderr)
         return None
     return num
-
-
-def _coerce_str(v: str):
-    if v.lower() == "true":  return True
-    if v.lower() == "false": return False
-    try:    return int(v)
-    except (ValueError, TypeError): pass  # not an int, try float
-    try:    return float(v)
-    except (ValueError, TypeError): pass  # not a float, return as string
-    return v
 
 
 def _flatten_dict(d: dict, prefix: str = "") -> dict:
@@ -126,6 +122,19 @@ def _detect_calling_script() -> str:
     return ""
 
 
+def _ppid_from_proc_stat(raw: str) -> int:
+    """Parent pid out of a ``/proc/<pid>/stat`` line.
+
+    Field 2 is the executable name in parentheses and may itself contain spaces
+    and parens ("tmux: server"), so a bare ``split()`` shifted every later
+    field and read garbage as the ppid — calling-script detection then silently
+    gave up under tmux. Split after the *last* closing paren, as procfs(5)
+    prescribes: what follows is state, ppid, ...
+    """
+    after_comm = raw.rsplit(")", 1)[-1].split()
+    return int(after_comm[1])
+
+
 def _get_parent_cmdline(pid: int) -> tuple[int, list[str]]:
     """Get parent PID and its command line arguments.
 
@@ -134,8 +143,11 @@ def _get_parent_cmdline(pid: int) -> tuple[int, list[str]]:
     # Linux: read from /proc
     proc_stat = Path(f"/proc/{pid}/stat")
     if proc_stat.exists():
-        stat = proc_stat.read_text().split()
-        ppid = int(stat[3])
+        # Field 2 is the executable name in parentheses and may itself contain
+        # spaces ("tmux: server"), which shifted every later field and made the
+        # ppid read garbage — so calling-script detection silently gave up
+        # under tmux. Split after the closing paren, as procfs(5) prescribes.
+        ppid = _ppid_from_proc_stat(proc_stat.read_text())
         cmdline = Path(f"/proc/{ppid}/cmdline").read_text().split("\0")
         return ppid, [a for a in cmdline if a]
 
@@ -173,17 +185,20 @@ def _parse_freeform_params(raw):
         a = raw[i]
         if a.startswith("--"):
             key = a[2:]
+            # Reserved check is on the raw flag name (matches --stage-name etc.);
+            # the stored key is normalized so `run-start --batch-size` and
+            # `exptrack run --batch-size` land under the same key `batch_size`.
             if "=" in key:
                 k, v = key.split("=", 1)
                 if k not in _RUN_START_RESERVED:
-                    params[k] = _coerce_str(v)
-            elif i + 1 < len(raw) and not raw[i + 1].startswith("--"):
+                    params[normalize_flag_key(k)] = coerce_scalar(v)
+            elif i + 1 < len(raw) and is_value_token(raw[i + 1]):
                 if key not in _RUN_START_RESERVED:
-                    params[key] = _coerce_str(raw[i + 1])
+                    params[normalize_flag_key(key)] = coerce_scalar(raw[i + 1])
                 i += 1
             else:
                 if key not in _RUN_START_RESERVED:
-                    params[key] = True
+                    params[normalize_flag_key(key)] = True
         i += 1
     return params
 
@@ -239,7 +254,17 @@ def _resolve_run_start_experiment(args, params, naming_hint, calling_script):
             exp.log_params(params)
         return exp
     return Experiment(
-        name=args.name or make_run_name(naming_hint, params),
+        # `name=` is what marks a run user-named. Passing the generated name
+        # here made every pipeline run register as explicitly named, so the
+        # "auto" badge, the bulk-rename filter and the un-renamed count all
+        # skipped shell/SLURM runs. Let the constructor generate it.
+        name=args.name,
+        naming_hint=naming_hint,
+        # The pipeline takes its params from its own `--key value` args, which
+        # it has already parsed; sys.argv here is the `exptrack run-start`
+        # invocation, so raw-argv capture would record --resume/--study as
+        # hyperparameters.
+        auto_capture=False,
         params=params,
         tags=args.tags or [],
         notes=args.notes or "",
@@ -303,8 +328,16 @@ def cmd_run_start(args):
     # The actual script field is the calling shell script, falling back to the
     # run-start command itself.
     naming_hint = args.script or os.environ.get("SLURM_JOB_NAME", "pipeline")
-    calling_script = _detect_calling_script() or (
-        "exptrack run-start " + " ".join(args.params))
+    # The `script` field is a run's *identity* — vs-previous, "What changed",
+    # `--resume latest` and duplicate detection all group by it. Embedding this
+    # invocation's param values in it ("exptrack run-start --lr 0.5") gave every
+    # interactive pipeline run a unique script, so none of those ever fired.
+    # Prefer the real calling shell script; fall back to the stable `--script`
+    # hint, then to a bare, param-free wrapper name. The full invocation is
+    # still recorded — in `command`, which is where it belongs.
+    calling_script = (_detect_calling_script() or args.script
+                      or os.environ.get("SLURM_JOB_NAME", "")
+                      or "exptrack run-start")
 
     exp = _resolve_run_start_experiment(args, params, naming_hint, calling_script)
 
@@ -343,18 +376,34 @@ def _capture_pipeline_command(conn, exp, cmd, calling_script):
                 from ..core.db import store_code_snapshot
                 h = store_code_snapshot(conn, src, kind="shellscript", path=str(p))
                 if h:
+                    # `_params` holds *decoded* values, so json.loads on the
+                    # existing list raised — the script snapshot the wrapper had
+                    # already taken was dropped, and what remained was written
+                    # back double-encoded. The result: `compare_run_code` said
+                    # "no code change" after a real edit and `exptrack source`
+                    # said nothing was captured.
                     existing = exp._params.get("_code_snapshot")
-                    lst = []
-                    if existing:
-                        try:
-                            lst = json.loads(existing)
-                        except Exception:
-                            lst = []
-                    lst.append({"hash": h, "kind": "shellscript", "path": str(p)})
-                    exp.log_param("_code_snapshot", json.dumps(lst))
+                    if isinstance(existing, str):        # legacy stored rows
+                        existing = decode_param_value(existing)
+                    lst = list(existing) if isinstance(existing, list) else []
+                    entry = {"hash": h, "kind": "shellscript", "path": str(p)}
+                    # Dedupe so a --resume doesn't append the same shell script
+                    # once per resume.
+                    if entry not in lst:
+                        lst.append(entry)
+                    exp.log_param("_code_snapshot", lst)
     except Exception as e:
         from ..core.utils import debug_log
         debug_log(f"could not snapshot calling script: {e}")
+
+
+def _elapsed_duration(conn, exp_id: str, ts: str) -> float:
+    """Wall time to record on a pipeline run finishing at *ts*.
+
+    Thin alias for the shared rule in `core.db`; kept as a name because this
+    module and its tests refer to it.
+    """
+    return accumulated_duration(conn, exp_id, ts)
 
 
 def _gather_finish_metrics(args, exp_id, step, ts):
@@ -397,12 +446,12 @@ def _gather_finish_params(args, exp_id):
     for pair in args.params:
         if "=" in pair:
             k, v = pair.split("=", 1)
-            params[k] = _coerce_str(v)
+            params[normalize_flag_key(k)] = coerce_scalar(v)
     return [(exp_id, k, json.dumps(v)) for k, v in params.items()]
 
 
 def _gather_finish_artifacts(conn, exp_id, ts):
-    """Scan the experiment's output_dir for new files. Returns (rows, files).
+    """Scan the experiment's output_dir for new files. Returns the files.
 
     Only reads the DB (dedup check); the inserts happen in the atomic write.
     """
@@ -411,7 +460,7 @@ def _gather_finish_artifacts(conn, exp_id, ts):
     ).fetchone()
     out_dir = out_row["output_dir"] if out_row else None
     if not out_dir or not Path(out_dir).is_dir():
-        return [], []
+        return []
     hidden = {'.exptrack_run.env', '.DS_Store'}
     candidates = [p for p in Path(out_dir).rglob('*')
                   if p.is_file() and not p.name.startswith('.') and p.name not in hidden]
@@ -419,17 +468,16 @@ def _gather_finish_artifacts(conn, exp_id, ts):
     # SELECT per file).
     known = {r["path"] for r in conn.execute(
         "SELECT path FROM artifacts WHERE exp_id=?", (exp_id,)).fetchall()}
-    rows, files = [], []
+    files = []
     for p in candidates:
         try:
             resolved = str(p.resolve())
             if resolved not in known:
                 known.add(resolved)
-                rows.append((exp_id, p.name, resolved, ts))
                 files.append(p)
         except Exception as e:
             print(f"[exptrack] warning: could not register artifact: {e}", file=sys.stderr)
-    return rows, files
+    return files
 
 
 def _note_if_trashed(conn, exp_id: str, cmd: str) -> None:
@@ -472,29 +520,37 @@ def cmd_run_finish(args):
 
     metric_rows, metric_count = _gather_finish_metrics(args, exp_id, args.step, ts)
     param_rows = _gather_finish_params(args, exp_id)
-    artifact_rows, artifact_files = _gather_finish_artifacts(conn, exp_id, ts)
+    artifact_files = _gather_finish_artifacts(conn, exp_id, ts)
 
-    created = conn.execute(
-        "SELECT created_at FROM experiments WHERE id=?", (exp_id,)
-    ).fetchone()["created_at"]
-    duration = (datetime.fromisoformat(ts) - datetime.fromisoformat(created)).total_seconds()
+    duration = _elapsed_duration(conn, exp_id, ts)
 
     real_cmd = getattr(args, "cmd", "")
 
     # Single atomic write: metrics + params + artifacts + status land together.
     with conn:
         if metric_rows:
+            # source='pipeline' is what capture.md promises and what the
+            # dashboard already styles a badge for; these writers omitted the
+            # column entirely, so every shell-pipeline metric claimed to be an
+            # auto-capture.
             conn.executemany(
-                "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)",
+                "INSERT INTO metrics (exp_id, key, value, step, ts, source) "
+                "VALUES (?,?,?,?,?,'pipeline')",
                 metric_rows)
         if param_rows:
+            # Upsert, not OR REPLACE: OR REPLACE deletes the row and
+            # re-inserts it, resetting a dashboard-edited param's `source` from
+            # 'manual' back to the 'auto' column default.
             conn.executemany(
-                "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+                "INSERT INTO params (exp_id, key, value) VALUES (?,?,?) "
+                "ON CONFLICT(exp_id, key) DO UPDATE SET value=excluded.value",
                 param_rows)
-        if artifact_rows:
-            conn.executemany(
-                "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
-                artifact_rows)
+        # Through `register_artifact`, so a pipeline run's outputs get the
+        # resolved path and content hash every other writer records — a bare
+        # INSERT left rows `exptrack verify` could not check and the rename
+        # and delete paths could not match.
+        for p in artifact_files:
+            register_artifact(conn, exp_id, p, label=p.name)
         # --cmd on run-finish records the real command (last writer wins over
         # any --cmd given at run-start).
         if real_cmd:
@@ -535,12 +591,12 @@ def cmd_run_fail(args):
 
     _note_if_trashed(conn, exp_row["id"], "run-fail")
     now = datetime.now(timezone.utc).isoformat()
-    duration = (datetime.fromisoformat(now) -
-                datetime.fromisoformat(exp_row["created_at"])).total_seconds()
+    duration = _elapsed_duration(conn, exp_row["id"], now)
     reason = args.reason or "shell script exited non-zero"
     with conn:
         conn.execute(
-            "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+            "INSERT INTO params (exp_id, key, value) VALUES (?,?,?) "
+            "ON CONFLICT(exp_id, key) DO UPDATE SET value=excluded.value",
             (exp_row["id"], "error", json.dumps(reason))
         )
         conn.execute("""
@@ -586,7 +642,8 @@ def cmd_log_metric(args):
 
     with conn:
         conn.executemany(
-            "INSERT INTO metrics (exp_id, key, value, step, ts) VALUES (?,?,?,?,?)", rows
+            "INSERT INTO metrics (exp_id, key, value, step, ts, source) "
+            "VALUES (?,?,?,?,?,'pipeline')", rows
         )
     for _, k, v, step, _ in rows:
         step_str = f" step={step}" if step is not None else ""
@@ -612,14 +669,17 @@ def cmd_log_artifact(args):
         out_path.write_bytes(content)
         args.path = str(out_path)
 
-    ts = datetime.now(timezone.utc).isoformat()
     label = args.label or Path(args.path).name
+    # Through the shared writer: resolved path, content hash, and dedupe on
+    # (run, path). A bare INSERT here left relative paths with NULL hashes, so
+    # three invocations made three rows and `exptrack verify` had nothing to
+    # check them against.
     with conn:
-        conn.execute(
-            "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
-            (exp_row["id"], label, args.path, ts)
-        )
-    print(f"[exptrack] Artifact: {label} -> {args.path}", file=sys.stderr)
+        inserted = register_artifact(conn, exp_row["id"], args.path, label=label)
+    if inserted:
+        print(f"[exptrack] Artifact: {label} -> {args.path}", file=sys.stderr)
+    else:
+        print(f"[exptrack] Artifact already registered: {args.path}", file=sys.stderr)
 
 
 def cmd_log_output(args):
@@ -651,18 +711,8 @@ def cmd_log_output(args):
         pass
 
     # Register as artifact
-    ts = datetime.now(timezone.utc).isoformat()
-    resolved = str(log_path.resolve())
     with conn:
-        existing = conn.execute(
-            "SELECT 1 FROM artifacts WHERE exp_id=? AND path=?",
-            (exp_row["id"], resolved)
-        ).fetchone()
-        if not existing:
-            conn.execute(
-                "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
-                (exp_row["id"], f"[log] {label}", resolved, ts)
-            )
+        register_artifact(conn, exp_row["id"], log_path, label=f"[log] {label}")
     print(f"[exptrack] Output captured: {log_path}", file=sys.stderr)
 
 
@@ -761,19 +811,10 @@ def cmd_link_dir(args):
         sys.exit(1)
 
     label = args.label or dir_path.name
-    ts = datetime.now(timezone.utc).isoformat()
 
     # Register the directory itself as an artifact
     with conn:
-        existing = conn.execute(
-            "SELECT 1 FROM artifacts WHERE exp_id=? AND path=?",
-            (exp_row["id"], str(dir_path))
-        ).fetchone()
-        if not existing:
-            conn.execute(
-                "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
-                (exp_row["id"], f"[dir] {label}", str(dir_path), ts)
-            )
+        register_artifact(conn, exp_row["id"], dir_path, label=f"[dir] {label}")
 
     # Scan files in directory and register them too
     if dir_path.is_dir():
@@ -781,16 +822,7 @@ def cmd_link_dir(args):
         for p in dir_path.rglob('*'):
             if not p.is_file():
                 continue
-            resolved = str(p.resolve())
-            existing = conn.execute(
-                "SELECT 1 FROM artifacts WHERE exp_id=? AND path=?",
-                (exp_row["id"], resolved)
-            ).fetchone()
-            if not existing:
-                conn.execute(
-                    "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
-                    (exp_row["id"], p.name, resolved, ts)
-                )
+            if register_artifact(conn, exp_row["id"], p, label=p.name):
                 file_count += 1
         if file_count:
             conn.commit()

@@ -26,6 +26,38 @@ function _buildCopyDropdown(n) {
   return h;
 }
 
+// The *selected* runs that are still `running`. Read from the loaded rows, so
+// it costs no request and stays right as the 5s poll updates statuses.
+function _selectedRunningIds() {
+  return (typeof allExperiments !== 'undefined' ? allExperiments : [])
+    .filter(e => selectedIds.has(e.id) && e.status === 'running')
+    .map(e => e.id);
+}
+
+// Mark every running run in the selection as done. A crashed launcher leaves
+// runs `running` in batches — a SLURM array, a killed sweep — and clearing them
+// meant opening each detail view in turn.
+async function bulkFinish() {
+  // Only the ids the button counted. Posting the whole selection made the
+  // result report "7 already done" about runs it never offered to touch, and
+  // paid a lookup for each of them.
+  const ids = _selectedRunningIds();
+  const n = ids.length;
+  if (!n) { owlSay('No running runs selected.'); return; }
+  if (!confirm('Mark ' + n + ' running run' + (n === 1 ? '' : 's') + ' as done?')) return;
+  const d = await postApi('/api/bulk-finish', {ids});
+  if (!d || d.error) { owlSay('Finish failed' + (d && d.error ? ': ' + d.error : '.')); return; }
+  // Say what actually happened to each group rather than one total: a run that
+  // was already done is not a failure, and an id that resolved to nothing is
+  // the one thing the user needs told.
+  let msg = 'Finished ' + d.finished + ' run' + (d.finished === 1 ? '' : 's');
+  if (d.already_done) msg += ' (' + d.already_done + ' already done)';
+  if (d.failed && d.failed.length) msg += ' — ' + d.failed.length + ' failed';
+  owlSay(msg + '.');
+  loadStats();
+  loadExperiments();
+}
+
 function renderTableActionsBar() {
   const bar = document.getElementById('table-actions-bar');
   if (!bar) return;
@@ -42,6 +74,14 @@ function renderTableActionsBar() {
   }
   html += '<button onclick="hideSelected()">Hide (' + n + ')</button>';
   html += '<button onclick="promptBulkAddToStudy()">Add to Study</button>';
+  // Only when the selection actually contains running runs, and counting only
+  // those: a "Finish (7)" that would change 2 runs offers an action against
+  // the set the user picked rather than the set it can act on.
+  const running = _selectedRunningIds().length;
+  if (running) {
+    html += '<button onclick="bulkFinish()" title="Mark the running runs in this '
+      + 'selection as done">Finish (' + running + ')</button>';
+  }
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
   html += '<button onclick="bulkCompact()">Compact</button>';
@@ -52,24 +92,30 @@ function renderTableActionsBar() {
 // sidebarBulkDelete() now lives in JS_TRASH — opens the confirm modal with
 // aggregate scope and a Trash / Permanent-delete choice.
 
+// Turn a /api/bulk-export response into text, or null when the request failed.
+// postApi() returns null on a failed request and the server reports errors as
+// {"error": ...} — neither is export content, and writing them into a blob
+// produced a downloaded `.csv` containing `{"error":...}` under a success
+// toast.
+function _exportText(data, fmt) {
+  if (!data || data.error) return null;
+  if (fmt === 'plain') {
+    const exps = Array.isArray(data) ? data : [data];
+    return exps.map(d => _formatExpPlainText(d)).join('\n' + '='.repeat(60) + '\n\n');
+  }
+  if (data.content) return data.content;
+  return JSON.stringify(data, null, 2);
+}
+
 async function sidebarExportFmt(fmt) {
   owlSpeak('export');
   const ids = [...selectedIds];
-  let text;
-  if (fmt === 'plain') {
-    // Plain text: fetch JSON data and format client-side
-    const data = await postApi('/api/bulk-export', {ids, format: 'json'});
-    const exps = Array.isArray(data) ? data : [data];
-    text = exps.map(d => _formatExpPlainText(d)).join('\n' + '='.repeat(60) + '\n\n');
-  } else {
-    const data = await postApi('/api/bulk-export', {ids, format: fmt});
-    if (data.content) {
-      text = data.content;
-    } else if (Array.isArray(data)) {
-      text = JSON.stringify(data, null, 2);
-    } else {
-      text = JSON.stringify(data, null, 2);
-    }
+  const data = await postApi('/api/bulk-export',
+                             {ids, format: fmt === 'plain' ? 'json' : fmt});
+  const text = _exportText(data, fmt);
+  if (text === null) {
+    owlSay('Export failed' + (data && data.error ? ': ' + data.error : '.'));
+    return;
   }
   const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt'};
   const filename = 'exptrack_export_' + ids.length + '_experiments' + (ext[fmt] || '.txt');
@@ -179,20 +225,12 @@ function _formatExpPlainText(d) {
 
 async function sidebarCopyFmt(fmt) {
   const ids = [...selectedIds];
-  let text;
-  if (fmt === 'plain') {
-    const data = await postApi('/api/bulk-export', {ids, format: 'json'});
-    const sections = (Array.isArray(data) ? data : []).map(d => _formatExpPlainText(d));
-    text = sections.join('\n\n---\n\n');
-  } else {
-    const data = await postApi('/api/bulk-export', {ids, format: fmt});
-    if (data.content) {
-      text = data.content;
-    } else if (Array.isArray(data)) {
-      text = JSON.stringify(data, null, 2);
-    } else {
-      text = JSON.stringify(data, null, 2);
-    }
+  const data = await postApi('/api/bulk-export',
+                             {ids, format: fmt === 'plain' ? 'json' : fmt});
+  const text = _exportText(data, fmt);
+  if (text === null) {
+    owlSay('Copy failed' + (data && data.error ? ': ' + data.error : '.'));
+    return;
   }
   await navigator.clipboard.writeText(text);
   document.querySelectorAll('.export-dropdown-menu').forEach(d => d.style.display = 'none');
@@ -254,15 +292,25 @@ function updateSortHeaders() {
 // value always sort to the bottom, regardless of sort direction — flipping the
 // direction should reorder the runs that *have* the value, not promote the ones
 // that don't. Present values compare normally and then honour `sortDir`.
-function _cmpMissingLast(va, vb, aMiss, bMiss) {
+// `dir` overrides the list's own `sortDir`, so a view with its own sort state
+// (the parameter matrix) shares this rule instead of restating it — the two
+// had already drifted, one comparing lowercased strings and the other using
+// localeCompare, so the same param set sorted differently in the two views.
+function _cmpMissingLast(va, vb, aMiss, bMiss, dir) {
   if (aMiss && bMiss) return 0;
   if (aMiss) return 1;
   if (bMiss) return -1;
   const cmp = va < vb ? -1 : va > vb ? 1 : 0;
-  return sortDir === 'desc' ? -cmp : cmp;
+  const desc = dir === undefined ? sortDir === 'desc' : dir < 0;
+  return desc ? -cmp : cmp;
 }
 
-function getFilteredExperiments() {
+// `opts.includeFailed` forces failed runs through regardless of the `showFailed`
+// toggle. The parameter matrix needs that: it carries its own "Show failed"
+// control, and the list's toggle would otherwise strip those runs out before
+// the matrix ever saw them — leaving its own checkbox visibly checked and
+// doing nothing, and silently under-reporting the search.
+function getFilteredExperiments(opts) {
   // Defensive: every render path funnels through here, so a non-array payload
   // (failed fetch, unexpected error object) must degrade to "no rows" rather
   // than throw and take the whole table/sidebar render down with it.
@@ -279,7 +327,7 @@ function getFilteredExperiments() {
   if (autoNamedOnly) {
     exps = exps.filter(e => e.name_is_auto || recentlyRenamedIds.has(e.id));
   }
-  if (!showFailed && currentFilter !== 'failed') {
+  if (!showFailed && currentFilter !== 'failed' && !(opts && opts.includeFailed)) {
     // Broken runs are hidden by default so the user never has to remember to
     // delete them; the "Show failed" toggle brings them back. But when the user
     // has explicitly filtered to the "Failed" status chip, honor that — else the
@@ -311,6 +359,14 @@ function getFilteredExperiments() {
       (e.notes || '').toLowerCase().includes(q)
     );
   }
+  // Sorting by the Result column ranks runs against each other, so it needs the
+  // one metric the *set* is judged by — computed once here, not per comparison.
+  // Runs resolving a different key sink rather than interleaving: 0.11 of a
+  // loss and 0.92 of an accuracy have no order between them, and sorting them
+  // together produces a ranking that looks authoritative and means nothing.
+  // Mirrors core/param_study.consensus_metric (most common key wins).
+  const primaryKey = sortCol === 'primary' ? consensusMetricKey(exps) : '';
+
   // Sort: pinned first, then by sort column
   exps = [...exps].sort((a, b) => {
     const ap = pinnedIds.has(a.id) ? 0 : 1;
@@ -324,6 +380,20 @@ function getFilteredExperiments() {
       const ma = a.metrics && a.metrics[mk] ? Number(a.metrics[mk].value) : null;
       const mb = b.metrics && b.metrics[mk] ? Number(b.metrics[mk].value) : null;
       return _cmpMissingLast(ma, mb, ma === null || isNaN(ma), mb === null || isNaN(mb));
+    }
+    // Sort by each run's own primary metric. Two runs can resolve *different*
+    // keys (a run override, a per-study setting), so this orders by whatever
+    // each run is judged by rather than by one shared key — which is the point
+    // of the column, and also why it can't reuse the `metric:` branch above.
+    // Runs with no value sink, as everywhere else.
+    if (sortCol === 'primary') {
+      const pv = e => {
+        const p = e.primary_metric || {};
+        if (primaryKey && p.key !== primaryKey) return null;
+        return typeof p.final === 'number' ? p.final : null;
+      };
+      const va = pv(a), vb = pv(b);
+      return _cmpMissingLast(va, vb, va === null, vb === null);
     }
     // Sort by a param value: sortCol is 'param:<key>'. Numeric params compare
     // numerically (so lr 0.003 < 0.01 < 0.1, not the string order "0.003" <

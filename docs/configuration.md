@@ -18,6 +18,20 @@ exptrack stores config in `.exptrack/config.json`. Safe to commit — no secrets
   "snapshot_max_kb":       512,       // size cap for the per-run script source snapshot
   "var_fingerprint_max_mb": 100,      // objects larger than this fall back to a shape/dtype
                                       // signature instead of a content hash (notebook capture)
+  "code_change_max_chars": 20000,     // cap on the "what changed in the code" summary;
+                                      // truncation is always stated, never silent
+  "max_source_diff_kb":    20,        // cap on a stored per-cell source diff
+  "max_cell_source_kb":    50,        // cap on one captured notebook cell's source
+  "max_cell_output_chars": 2000,      // cap on one captured cell's output text
+  "max_vars_per_cell":     50,        // most variables fingerprinted per cell
+  "max_assignment_expr_len": 500,     // longest assignment expression recorded verbatim
+  "notebook_history":      false,     // write per-run notebook cell snapshots to disk
+
+  // --- Secrets ---
+  // Params whose *name* matches any of these (case-insensitive regex search) have
+  // their value stored as ***REDACTED***. Replacing this list replaces the whole
+  // rule — keep the entries you still want.
+  "param_redact_patterns": ["api.key", "password", "token", "secret", "credential"],
 
   // --- Artifacts ---
   "artifact_strategy":     "reference",  // "reference" (default) = log path only; "copy" = copy file into outputs
@@ -35,9 +49,38 @@ exptrack stores config in `.exptrack/config.json`. Safe to commit — no secrets
                                      // training loop — batching them is ~18x faster on a long run.
                                      // 0 restores a commit per log_metric() call.
 
+  // --- Which metric a run is judged by ---
+  // Resolution is run → study → project → heuristic. A configured metric is
+  // never silently substituted: a run that didn't log it reports it as missing
+  // rather than falling back to whatever else it happened to record.
+  // Either a bare name or {"key": ..., "goal": "min"|"max"}.
+  "primary_metric":          "",   // e.g. "val_acc", or {"key": "val_loss", "goal": "min"}
+  "primary_metric_by_study": {},   // per study: {"sweep-a": "f1"}
+  // Set from the CLI: exptrack primary-metric val_acc [--goal min] [--study S] [--run ID]
+
+  // --- One name for one measurement ---
+  // Two models rarely agree on what to call a number. Map a canonical name to
+  // the spellings that mean it, and every surface compares them as one metric.
+  // Display-level only: each run keeps the key it logged, and removing an alias
+  // gives the original names back. Merges are always reported, never silent.
+  "metric_aliases":        {},   // {"val_acc": ["accuracy", "val/acc"]}
+
+  // --- The run everything is measured against ---
+  "reference_run":          "",  // run id, set by: exptrack reference <id>
+  "reference_run_by_study": {},  // per study: {"sweep-a": "<run id>"}
+  // Read it with: exptrack vs-reference
+
   // --- Runs ---
   "auto_trash_failed":     false, // move a run that finishes `failed` straight to Trash,
                                   // so the list only shows runs worth comparing
+  "warn_duplicate_runs":   true,  // warn when a run repeats a configuration already tried.
+                                  // Three answers are kept distinct: identical rerun,
+                                  // same params + different code, same params + different data
+  "protect_on_rerun":      true,  // archive an existing run's artifacts on an output-path
+                                  // conflict instead of writing over them
+  "result_types": ["accuracy", "loss", "auroc", "f1", "precision", "recall",
+                   "mse", "mae", "r2", "perplexity", "bleu"],  // result kinds the
+                                  // dashboard's Results tab offers
 
   // --- Display ---
   "timezone":              "",   // dashboard timezone: "" = UTC, or e.g. "America/New_York"

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from exptrack.core.queries import find_experiment, update_experiment_tags
 
-from ._shared import body_str
+from ._shared import body_int, body_str
 
 
 def api_add_note(conn, exp_id: str, body: dict) -> dict:
@@ -37,6 +37,21 @@ def api_set_variant_of(conn, exp_id: str, body: dict) -> dict:
     """
     from exptrack.core.queries import set_variant_of
     return set_variant_of(conn, exp_id, body_str(body, "variant_of"))
+
+
+def api_set_reference(conn, exp_id: str, body: dict) -> dict:
+    """Pin this run as the reference, at the project or one study's level.
+
+    Distinct from ``set-variant-of`` above, and deliberately so: that declares
+    what a run *descends from* (lineage), this declares what everything is
+    *measured against* (a target). Folding them together would mean pinning a
+    reference silently rewrote every run's "what changed since last time".
+
+    Body: ``{"study": "" | "<name>", "clear": bool}``.
+    """
+    from exptrack.core.reference import set_reference
+    study = body_str(body, "study")
+    return set_reference(conn, "" if body.get("clear") else exp_id, study)
 
 
 def api_add_tag(conn, exp_id: str, body: dict) -> dict:
@@ -132,6 +147,42 @@ def api_finish(conn, exp_id: str) -> dict:
     return result
 
 
+def api_bulk_finish(conn, body: dict) -> dict:
+    """Mark several selected runs as done in one call.
+
+    A crashed or interrupted launcher leaves runs `running`, and they arrive in
+    batches — a SLURM array, a killed sweep — so clearing them one detail view
+    at a time was the actual cost. `stale` does this from the CLI but only on an
+    age rule; this is "these ones, that I picked".
+
+    Counts are reported separately rather than summed: a run already `done` is
+    not a failure and must not read as one, and an id that resolves to nothing
+    is the caller's mistake and has to be visible. Durations come from the same
+    `finish_experiment` the single-run route uses, so a run finished in a batch
+    records what it would have recorded finished alone.
+    """
+    from exptrack.core.queries import AmbiguousPrefixError, finish_experiment
+    ids = body.get("ids") or []
+    if not isinstance(ids, list) or not ids:
+        return {"error": "no ids provided"}
+    finished, already, failed = [], [], []
+    for eid in ids:
+        try:
+            res = finish_experiment(conn, eid)
+        except AmbiguousPrefixError as e:
+            failed.append({"id": str(eid), "error": str(e)})
+            continue
+        if res.get("error"):
+            failed.append({"id": str(eid), "error": res["error"]})
+        elif res.get("message") == "already done":
+            already.append(res["id"])
+        else:
+            finished.append(res["id"])
+    conn.commit()
+    return {"ok": True, "finished": len(finished), "already_done": len(already),
+            "failed": failed, "finished_ids": finished}
+
+
 def api_add_artifact(conn, exp_id: str, body: dict) -> dict:
     exp = find_experiment(conn, exp_id)
     if not exp:
@@ -142,11 +193,12 @@ def api_add_artifact(conn, exp_id: str, body: dict) -> dict:
         return {"error": "provide label or path"}
     if not label:
         label = Path(path).name
-    ts = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        "INSERT INTO artifacts (exp_id, label, path, created_at) VALUES (?,?,?,?)",
-        (exp["id"], label, path, ts)
-    )
+    # The one artifact writer: it resolves the path and hashes the content.
+    # This route did neither, so an artifact added from the dashboard was a row
+    # `verify` could not check, at a relative path the rename and delete paths
+    # could not match — and adding the same one twice made two rows.
+    from exptrack.core.db import register_artifact
+    register_artifact(conn, exp["id"], path, label=label)
     conn.commit()
     return {"ok": True, "label": label, "path": path}
 
@@ -182,7 +234,9 @@ def api_edit_tag(conn, exp_id: str, body: dict) -> dict:
 
 def api_edit_notes(conn, exp_id: str, body: dict) -> dict:
     from exptrack.core.queries import replace_notes
-    notes = body.get("notes", "")
+    # body_str, not body.get: bound straight into an UPDATE, a non-string
+    # (JSON object/array) raised sqlite3.ProgrammingError out of the route.
+    notes = body_str(body, "notes")
     result = replace_notes(conn, exp_id, notes)
     if result.get("error"):
         return result
@@ -198,6 +252,14 @@ def api_delete_artifact(conn, exp_id: str, body: dict) -> dict:
     path = body.get("path", "")
     if not label and not path:
         return {"error": "provide label or path"}
+    if path:
+        # Match the form the writer stored. `register_artifact` resolves the
+        # path, so deleting by the relative one the user typed matched nothing
+        # and reported ok.
+        try:
+            path = str(Path(str(path)).resolve())
+        except OSError:
+            pass
     if label and path:
         conn.execute(
             "DELETE FROM artifacts WHERE exp_id=? AND label=? AND path=?",
@@ -398,11 +460,11 @@ def api_log_path(conn, exp_id: str, body: dict) -> dict:
         if path not in paths:
             paths.append(path)
     elif action == "delete":
-        index = body.get("index", -1)
+        index = body_int(body, "index")
         if 0 <= index < len(paths):
             paths.pop(index)
     elif action == "edit":
-        index = body.get("index", -1)
+        index = body_int(body, "index")
         path = body_str(body, "path")
         if 0 <= index < len(paths) and path:
             paths[index] = path
@@ -435,11 +497,11 @@ def api_image_path(conn, exp_id: str, body: dict) -> dict:
         if path not in paths:
             paths.append(path)
     elif action == "delete":
-        index = body.get("index", -1)
+        index = body_int(body, "index")
         if 0 <= index < len(paths):
             paths.pop(index)
     elif action == "edit":
-        index = body.get("index", -1)
+        index = body_int(body, "index")
         path = body_str(body, "path")
         if 0 <= index < len(paths) and path:
             paths[index] = path

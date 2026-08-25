@@ -222,6 +222,81 @@ def test_an_edited_branch_forks_once_not_once_per_run_all(sm):
     assert sm._current_node_id == fork
 
 
+def test_collision_fork_carries_this_cells_metrics_and_images(sm):
+    """A metric/image logged in the cell whose edited code triggers a collision
+    fork must move to the fork, not stay on the pre-fork node.
+
+    Regression: the fork is decided at record_cell time (after the body ran),
+    but metric()/savefig() fired during the body when the current node was still
+    the original. The fork carried the code while the original kept numbers it
+    never produced — the exact cross-branch attribution error write-time tagging
+    exists to prevent."""
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+
+    conn = get_db()
+    exp = Experiment(script="train.py")
+
+    def node_metrics(node_id):
+        return {r["value"] for r in conn.execute(
+            "SELECT value FROM metrics WHERE session_node_id=?", (node_id,))}
+
+    def node_image_count(node_id):
+        row = conn.execute("SELECT images FROM session_nodes WHERE id=?",
+                           (node_id,)).fetchone()
+        import json
+        return len(json.loads(row["images"])) if row and row["images"] else 0
+
+    sid = sm.start("s", "nb.ipynb")
+    sm.checkpoint("base")
+    sm.branch("A")
+    node_A = sm._current_node_id
+    exp.log_metric("acc", 0.5)          # the original A run's number
+    sm.record_cell("t = 0.7")
+
+    # The user edits A's cell and re-runs: metric + image fire mid-cell (tagged
+    # to A), then record_cell diverges and forks to A (2).
+    sm.start("s", "nb.ipynb")
+    sm.checkpoint("base")
+    sm.branch("A")
+    assert sm._current_node_id == node_A          # switched onto A, collision armed
+    exp.log_metric("acc", 0.7)                     # produced by the edited code
+    sm.record_image("/tmp/exptrack_fork_plot.png", label="fork")
+    sm.record_cell("t = 0.9")
+
+    fork = conn.execute(
+        "SELECT id FROM session_nodes WHERE session_id=? AND label='A (2)'",
+        (sid,),
+    ).fetchone()["id"]
+
+    # 0.7 (and the plot) belong to the fork; 0.5 (the original run) stays on A.
+    assert node_metrics(fork) == {0.7}
+    assert node_metrics(node_A) == {0.5}
+    assert node_image_count(fork) == 1
+    assert node_image_count(node_A) == 0
+
+
+def test_promote_note_is_idempotent_under_run_all(sm):
+    """%exptrack promote appended `promoted: <label>` to the node note every
+    pass, so a Run-All grew a duplicate line each time — a magic must be
+    idempotent under Run-All."""
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+
+    exp = Experiment(script="train.py")
+    conn = get_db()
+    sm.start("s", "nb.ipynb")
+    sm.checkpoint("base")
+    node = sm._current_node_id
+
+    for _ in range(3):
+        sm.promote("final", exp.id)
+
+    note = conn.execute("SELECT note FROM session_nodes WHERE id=?",
+                        (node,)).fetchone()["note"]
+    assert note.split("\n").count("promoted: final") == 1, repr(note)
+
+
 def test_a_renamed_fork_is_not_re_forked(sm):
     """The fork notice invites the user to rename the node, which used to defeat
     the guard: identity was a `label (N)` prefix match, so a renamed fork stopped

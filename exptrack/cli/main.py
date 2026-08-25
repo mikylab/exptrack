@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from ..core.queries import AmbiguousPrefixError
 from .admin_cmds import (
     cmd_backup,
     cmd_compact,
@@ -36,6 +37,7 @@ from .admin_cmds import (
     cmd_ui_stop,
     cmd_upgrade,
 )
+from .help_cmds import cmd_docs, cmd_examples
 from .inspect_cmds import (
     cmd_compare,
     cmd_diff,
@@ -45,7 +47,9 @@ from .inspect_cmds import (
     cmd_show,
     cmd_source,
     cmd_timeline,
+    cmd_top,
     cmd_verify,
+    cmd_vs_reference,
     cmd_watch,
 )
 from .mutate_cmds import (
@@ -55,11 +59,15 @@ from .mutate_cmds import (
     cmd_edit_note,
     cmd_finish,
     cmd_note,
+    cmd_primary_metric,
+    cmd_reference,
+    cmd_restore_run,
     cmd_rm,
     cmd_stage,
     cmd_studies,
     cmd_study,
     cmd_tag,
+    cmd_trash,
     cmd_unstudy,
     cmd_untag,
     cmd_variant_of,
@@ -118,7 +126,11 @@ def _build_parser():
     p.add_argument("--version", "-V", action="version", version=f"exptrack {_ver}")
     p.add_argument("--no-color", action="store_true",
                     help="Disable colored output (also auto-detected for non-TTY)")
-    sub = p.add_subparsers(dest="cmd")
+    # dest is deliberately NOT "cmd": run-start/run-finish take a --cmd option
+    # (the real command a pipeline step ran). Sharing the dest let that option's
+    # default ("") overwrite the subcommand name, so `exptrack run-finish ID`
+    # dispatched to nothing, printed top-level help and exited 0.
+    sub = p.add_subparsers(dest="_subcmd")
 
     # ── Project setup ─────────────────────────────────────────────────────────
     p_init = sub.add_parser("init", help="Initialize exptrack in project directory")
@@ -223,6 +235,15 @@ def _build_parser():
     p_ls = sub.add_parser("ls", help="List experiments (default: most recent 20)")
     p_ls.add_argument("-n", type=int, default=20, help="Number of experiments to show")
     p_ls.add_argument("--tag", help="Filter by tag")
+    p_ls.add_argument("--since", default="",
+                      help="Only runs since then: 7d, 24h, or a date (2026-08-01)")
+    p_ls.add_argument("--param", action="append", default=[], metavar="KEY=VALUE",
+                      help="Only runs whose param matches (repeatable); values "
+                           "compare normalized, so lr=0.01 finds \"0.01\" too")
+    p_ls.add_argument("--script", default="",
+                      help="Only runs whose script matches (substring), e.g. "
+                           "--script model_a — the CLI entry point for "
+                           "comparing runs of different models")
     p_ls.add_argument("--status", choices=["done", "failed", "running"],
                        help="Filter by status")
     p_ls.add_argument("--study", help="Filter by study")
@@ -239,6 +260,30 @@ def _build_parser():
                         help="Artifacts to list before summarising the rest "
                              "(0 for all)")
 
+    p_top = sub.add_parser("top",
+        help="Rank runs by the primary metric (the CLI leaderboard)")
+    p_top.add_argument("-l", "--limit", type=int, default=10,
+                       help="How many runs to show (default 10)")
+    p_top.add_argument("-n", type=int, default=500,
+                       help="How many recent runs to rank over (default 500)")
+    p_top.add_argument("--script", default="",
+                       help="Only runs whose script matches (substring)")
+    p_top.add_argument("--study", default="", help="Only runs in this study")
+    p_top.add_argument("--best", action="store_true",
+                       help="Rank by each run's best point instead of its final value")
+    p_top.add_argument("--include-running", action="store_true",
+                       help="Include runs still in progress")
+    p_top.add_argument("--exclude-failed", action="store_true",
+                       help="Exclude failed runs (they are included by default)")
+
+    p_vsref = sub.add_parser("vs-reference",
+        help="Every run measured against the pinned reference")
+    p_vsref.add_argument("-n", type=int, default=50,
+                         help="How many recent runs to show (default 50)")
+    p_vsref.add_argument("--script", default="",
+                         help="Only runs whose script matches (substring)")
+    p_vsref.add_argument("--study", default="", help="Only runs in this study")
+
     p_diff = sub.add_parser("diff", help="Print captured git diff for an experiment")
     p_diff.add_argument("id")
 
@@ -247,6 +292,9 @@ def _build_parser():
     p_cmp.add_argument("id1", help="First experiment ID (or sole ID for within-exp compare)")
     p_cmp.add_argument("id2", nargs="?", default="",
                        help="Second experiment ID (omit for within-exp compare)")
+    p_cmp.add_argument("ids", nargs="*", default=[],
+                       help="Further experiment IDs — three or more switches to "
+                            "the N-way table (one column per run)")
     p_cmp.add_argument("--seq1", type=int, default=None,
                        help="Timeline seq point 1 (within-experiment comparison)")
     p_cmp.add_argument("--seq2", type=int, default=None,
@@ -289,6 +337,30 @@ def _build_parser():
     p_variant.add_argument("baseline", nargs="?", default="",
                            help="The run to compare against; omit to clear the link")
 
+    p_pm = sub.add_parser(
+        "primary-metric",
+        help="Show, set or clear the metric runs are judged by")
+    p_pm.add_argument("key", nargs="?", default="",
+                      help="Metric key; omit to show what is set")
+    p_pm.add_argument("--goal", choices=["max", "min"], default="",
+                      help="Which direction is better (default: inferred from the name)")
+    p_pm.add_argument("--study", default="",
+                      help="Set for one study instead of the whole project")
+    p_pm.add_argument("--run", default="",
+                      help="Set for one run instead of the whole project")
+    p_pm.add_argument("--clear", action="store_true",
+                      help="Clear the primary metric at that level")
+
+    p_ref = sub.add_parser(
+        "reference",
+        help="Show, set or clear the run everything else is measured against")
+    p_ref.add_argument("id", nargs="?", default="",
+                       help="Run to pin as the reference; omit to show the current one")
+    p_ref.add_argument("--study", default="",
+                       help="Set for one study instead of the whole project")
+    p_ref.add_argument("--clear", action="store_true",
+                       help="Clear the reference at that level")
+
     p_edit_note = sub.add_parser("edit-note", help="Replace an experiment's notes")
     p_edit_note.add_argument("id"); p_edit_note.add_argument("text")
 
@@ -326,7 +398,23 @@ def _build_parser():
 
     p_rm = sub.add_parser("rm", help="Delete one or more experiments and their output files")
     p_rm.add_argument("id", nargs="+", help="Experiment ID(s) to delete")
+    p_rm.add_argument("--yes", "-y", action="store_true",
+                      help="Skip confirmation prompt (required to script a delete)")
+    p_rm.add_argument("--keep-files", action="store_true",
+                      help="Delete the run's records but leave its output files on disk")
+    p_rm.add_argument("--trash", action="store_true",
+                      help="Move to the Trash instead of deleting permanently "
+                           "(recoverable with `exptrack restore-run`)")
+    p_trash = sub.add_parser("trash", help="List runs in the Trash (recoverable deletes)")
+    del p_trash
+
+    p_restore_run = sub.add_parser("restore-run",
+        help="Restore a run from the Trash (see `exptrack trash`)")
+    p_restore_run.add_argument("id", help="Experiment ID of the trashed run")
+
     p_clean = sub.add_parser("clean", help="Remove failed or old experiments")
+    p_clean.add_argument("--yes", "-y", action="store_true",
+                         help="Skip confirmation prompt (required to script a delete)")
     p_clean.add_argument("--baselines", action="store_true",
                          help="Delete code baselines (next run re-records full code)")
     p_clean.add_argument("--older-than", dest="older_than", default=None,
@@ -544,6 +632,21 @@ def _build_parser():
         help="Print a paste-able guard cell so a notebook runs with or "
              "without exptrack installed (magics degrade to no-ops)")
 
+    # ── Self-documenting ─────────────────────────────────────────────────────
+    p_ex = sub.add_parser("examples",
+        help="List bundled runnable examples, print one, or copy it here")
+    p_ex.add_argument("name", nargs="?",
+        help="Example name (omit to list them)")
+    p_ex.add_argument("--copy", action="store_true",
+        help="Copy the example file into the current directory instead of printing it")
+    p_ex.add_argument("--force", action="store_true",
+        help="Overwrite an existing file when copying")
+
+    p_docs = sub.add_parser("docs",
+        help="Open the documentation in a browser (omit topic to list topics)")
+    p_docs.add_argument("topic", nargs="?",
+        help="Doc topic to open (omit to list them)")
+
     return p
 
 
@@ -573,6 +676,8 @@ _DISPATCH = {
     "show":         cmd_show,
     "diff":         cmd_diff,
     "compare":      cmd_compare,
+    "top":          cmd_top,
+    "vs-reference": cmd_vs_reference,
     "timeline":     cmd_timeline,
     "history":      cmd_history,
     "tag":          cmd_tag,
@@ -580,6 +685,8 @@ _DISPATCH = {
     "delete-tag":   cmd_delete_tag,
     "note":         cmd_note,
     "variant-of":   cmd_variant_of,
+    "primary-metric": cmd_primary_metric,
+    "reference":    cmd_reference,
     "edit-note":    cmd_edit_note,
     "study":        cmd_study,
     "unstudy":      cmd_unstudy,
@@ -590,36 +697,59 @@ _DISPATCH = {
     "watch":        cmd_watch,
     "verify":       cmd_verify,
     "rm":           cmd_rm,
+    "trash":        cmd_trash,
+    "restore-run":  cmd_restore_run,
     "clean":        cmd_clean,
     "ui":           cmd_ui,
     "ui-stop":      cmd_ui_stop,
     "sessions":     cmd_sessions,
     "session":      cmd_session,
     "notebook-guard": cmd_notebook_guard,
+    "examples":     cmd_examples,
+    "docs":         cmd_docs,
 }
 
 
 def main():
     # run-start accepts arbitrary --key value user params — handle before argparse
-    # consumes them as unknown flags.
-    if len(sys.argv) > 1 and sys.argv[1] == "run-start":
-        p_rs = argparse.ArgumentParser(prog="exptrack run-start")
-        _add_run_start_args(p_rs)
-        known, unknown = p_rs.parse_known_args(sys.argv[2:])
-        known.params = unknown
-        try:
-            cmd_run_start(known)
-        finally:
-            from ..core.db import close_db
-            close_db()
-        return
+    # consumes them as unknown flags. The subcommand does not have to be argv[1]:
+    # the documented global flags come first (`exptrack --no-color run-start
+    # --lr 0.5`), and routing only on argv[1] sent that form through the main
+    # parser, where the REMAINDER positional never fires without a preceding
+    # positional and it died on "unrecognized arguments: --lr".
+    if "run-start" in sys.argv[1:]:
+        at = sys.argv.index("run-start")
+        globals_before = sys.argv[1:at]
+        # Only when everything before it is a flag — otherwise "run-start" is a
+        # value someone passed to another command, not the subcommand.
+        # --no-color needs no handling here: formatting reads sys.argv directly.
+        if all(a.startswith("-") for a in globals_before):
+            p_rs = argparse.ArgumentParser(prog="exptrack run-start")
+            _add_run_start_args(p_rs)
+            known, unknown = p_rs.parse_known_args(sys.argv[at + 1:])
+            known.params = unknown
+            try:
+                cmd_run_start(known)
+            finally:
+                from ..core.db import close_db
+                close_db()
+            return
 
     p = _build_parser()
     args = p.parse_args()
-    if not args.cmd:
+    if not args._subcmd:
         p.print_help(); return
     try:
-        _DISPATCH[args.cmd](args)
+        _DISPATCH[args._subcmd](args)
+    except AmbiguousPrefixError as e:
+        # A short id prefix matched several runs — refuse rather than act on an
+        # arbitrary one (only rm used to guard this). List the candidates.
+        from .formatting import die
+        lines = [str(e) + ":"]
+        for eid, name in e.matches[:10]:
+            lines.append(f"  {eid[:8]}  {name}")
+        lines.append("Provide a longer ID prefix to identify the run uniquely.")
+        die("\n".join(lines))
     finally:
         # Checkpoint WAL and close the DB so the WAL file does not bloat
         from ..core.db import close_db

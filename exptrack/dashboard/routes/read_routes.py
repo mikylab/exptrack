@@ -43,7 +43,25 @@ def _qint(qs: dict, key: str, default: int) -> int:
 
 
 def api_stats(conn) -> dict:
-    return get_stats(conn)
+    """Project counters, plus which runs are pinned as references.
+
+    The reference ids ride along here rather than on every list row: there are
+    at most a handful, the stats call already runs on boot and after every
+    mutation, and per-row resolution would mean re-deriving each run's study
+    membership for a badge. The client marks a run that *is* a reference; which
+    reference applies *to* a given run stays a detail-view question, where the
+    strip can state the level it was set at.
+
+    Read from config with **no query** — this is the most-called endpoint in the
+    app, and resolving each reference's row here would be one PK select per
+    configured level per call for fields (name, status, staleness) that a badge
+    throws away. The detail strip resolves properly, where it matters.
+    """
+    from ...core.reference import configured_ids
+
+    stats = get_stats(conn)
+    stats["references"] = configured_ids()
+    return stats
 
 
 # Ceiling on rows one /api/experiments request may return. The client pages in
@@ -170,6 +188,19 @@ def api_run_delta(conn, exp_id: str) -> dict:
     return diff
 
 
+def api_reference_delta(conn, exp_id: str) -> dict:
+    """This run measured against the reference run in force for it.
+
+    Separate from ``/api/run-delta/`` on purpose: that answers "what changed
+    since last time" (lineage), this answers "is it better than the thing I am
+    trying to beat" (a fixed target). Both are rendered from the same
+    ``diff_runs`` rules, so they differ only in which baseline they name — which
+    is exactly the distinction the user is meant to see.
+    """
+    from ...core.reference import delta_vs_reference
+    return delta_vs_reference(conn, exp_id)
+
+
 def api_compare(conn, qs: dict) -> dict:
     id1, id2 = qs.get("id1", ""), qs.get("id2", "")
     if not id1 or not id2:
@@ -286,18 +317,6 @@ def api_result_types() -> dict:
 
 def api_studies(conn) -> dict:
     return {"studies": get_studies(conn)}
-
-
-def api_multi_compare(conn, qs: dict) -> dict:
-    """Compare multiple experiments: names, latest metrics, and results."""
-    from ...core.queries import get_multi_compare
-    ids_str = qs.get("ids", "")
-    if not ids_str:
-        return {"error": "provide ids parameter (comma-separated)"}
-    ids = [i.strip() for i in ids_str.split(",") if i.strip()]
-    if len(ids) < 2:
-        return {"error": "provide at least 2 experiment ids"}
-    return {"experiments": get_multi_compare(conn, ids)}
 
 
 # Directories a project-wide scan never descends into: version control,

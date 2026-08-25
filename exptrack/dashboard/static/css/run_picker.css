@@ -1,0 +1,80 @@
+/* ── Run picker ───────────────────────────────────────────────────────────── */
+/* The shared "which runs?" dialog. Built on the .dc-overlay/.dc-dialog/.dc-button
+   modal shell the delete-confirm and finalize dialogs use, so a third modal
+   look does not appear on the page — only the width and the row list are new. */
+
+.rp-dialog { width: 780px; height: 80vh; max-height: 88vh; }
+
+.rp-toolbar {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+}
+.rp-search {
+  flex: 1 1 auto; font-family: var(--font-mono); font-size: var(--text-sm);
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text-1);
+}
+.rp-search:focus { outline: none; border-color: var(--accent); }
+.rp-count { color: var(--text-3); font-size: var(--text-xs); white-space: nowrap; }
+
+.rp-body { padding: 0; }
+.rp-empty { padding: var(--space-6); text-align: center; color: var(--text-2); }
+.rp-notice {
+  padding: var(--space-2) var(--space-3); font-size: var(--text-xs);
+  color: var(--text-2); background: var(--surface-2);
+  border-top: 1px solid var(--border);
+}
+.rp-notice button { margin-left: var(--space-2); }
+
+/* One row per run, two lines: identity on top, the parameters that actually
+   distinguish it underneath. The second line is the point of the whole
+   surface — a picker that shows only names can only be used by someone who
+   already knows them. */
+.rp-row {
+  display: flex; align-items: flex-start; gap: var(--space-3);
+  padding: 8px 16px; border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.rp-row:hover { background: var(--surface-2); }
+.rp-row.rp-on { background: var(--accent-soft); }
+.rp-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* The whole row is the control; the box is its indicator, so it must not
+   swallow the click and toggle twice. */
+.rp-cb { margin-top: 3px; pointer-events: none; flex: none; }
+.rp-cb-single { color: var(--text-3); font-size: var(--text-md); line-height: 1; }
+
+.rp-main { min-width: 0; flex: 1 1 auto; }
+.rp-line1 { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
+.rp-name {
+  font-size: var(--text-sm); font-weight: 500; color: var(--text-1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rp-id { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-3); }
+.rp-status {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 1px 6px; border-radius: 8px; flex: none;
+  background: var(--surface-2); color: var(--text-2);
+}
+.rp-status-done { background: var(--status-success-soft); color: var(--status-success); }
+.rp-status-failed { background: var(--status-danger-soft); color: var(--status-danger); }
+.rp-status-running { background: var(--status-warning-soft); color: var(--status-warning); }
+
+.rp-line2 {
+  display: flex; align-items: baseline; gap: var(--space-2);
+  flex-wrap: wrap; margin-top: 3px;
+}
+.rp-chip {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--text-2); background: var(--surface-2);
+  padding: 1px var(--space-2); border-radius: var(--radius-sm);
+}
+.rp-chip-more { cursor: help; }
+.rp-noparams { color: var(--text-3); font-size: var(--text-xs); font-style: italic; }
+.rp-date { color: var(--text-3); font-size: var(--text-xs); margin-left: auto; white-space: nowrap; }
+
+.rp-selcount { color: var(--text-2); font-size: var(--text-xs); }
+
+@media (max-width: 700px) {
+  .rp-dialog { width: 100%; height: 92vh; max-height: 92vh; }
+  .rp-date { margin-left: 0; }
+}

@@ -23,17 +23,40 @@
   .compare-selector { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 300px; }
 
   .compare-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+  /* Compare's own controls, matched to the toolbar the rest of the app uses.
+     They were their own thing: the selects took no `color`, so they rendered in
+     the platform's default ink on a themed background (grey-on-dark in dark
+     mode), and every button was a solid `var(--fg)` block — a filled black
+     button next to the toolbar's outlined ones and the dialogs' `.dc-button`s,
+     with the *secondary* actions (Export CSV, Copy link, Select All) drawn
+     heavier than the primary one beside them. One outlined default, one blue
+     primary, same as everywhere else. */
   .compare-input select, .compare-input input {
-    font-family: inherit; font-size: 14px;
-    border: 1px solid var(--border); padding: 8px 14px; min-width: 260px;
-    background: var(--card-bg); border-radius: 4px;
+    font-family: inherit; font-size: 13px;
+    border: 1px solid var(--border); padding: 7px 12px; min-width: 260px;
+    background: var(--card-bg); color: var(--fg); border-radius: 4px;
   }
+  .compare-input select:hover { border-color: var(--blue); }
+  .compare-input select:focus, .compare-input input:focus {
+    outline: none; border-color: var(--blue);
+  }
+  /* The rank-by select is a small inline control, not a run picker, so it does
+     not carry the pickers' 260px floor. */
+  #cmp-multi-basis { min-width: 0; }
   .compare-input button {
-    font-family: inherit; font-size: 14px;
-    background: var(--fg); color: var(--bg); border: none;
-    padding: 8px 18px; cursor: pointer; border-radius: 4px;
+    font-family: inherit; font-size: 13px; padding: 7px 16px;
+    background: var(--card-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px;
+    cursor: pointer; white-space: nowrap; line-height: 1.4;
+    transition: background 0.15s, border-color 0.15s;
   }
-  .compare-input button.primary { background: var(--blue); color: #fff; }
+  .compare-input button:hover { background: var(--code-bg); border-color: var(--blue); color: var(--blue); }
+  .compare-input button.primary,
+  .cmp-pick-actions .primary {
+    background: var(--blue); color: #fff; border: 1px solid var(--blue);
+  }
+  .compare-input button.primary:hover,
+  .cmp-pick-actions .primary:hover { filter: brightness(1.08); color: #fff; }
   .compare-input .vs-label { font-weight: 600; color: var(--muted); font-size: 16px; padding-bottom: 6px; }
   .differs { color: var(--yellow); font-weight: 600; }
   .diff-added { color: var(--diff-add); background: var(--diff-add-bg); }
@@ -63,3 +86,112 @@
   .multi-compare-image-cell { flex: 0 0 auto; min-width: 160px; max-width: 280px; }
   .multi-compare-image-cell img { width: 100%; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; transition: transform 0.15s; }
   .multi-compare-image-cell img:hover { transform: scale(1.03); border-color: var(--blue); }
+
+/* Honesty notices: a comparison that covers fewer runs or fewer images than
+   the user selected has to say so, and it must be legible rather than
+   decorative — this is the difference between a partial answer and a wrong
+   one. */
+.cmp-missing {
+  margin: 8px 0; padding: 6px 10px; border-radius: 6px;
+  background: var(--status-warning-soft); color: var(--text-1);
+  font-size: var(--text-sm);
+}
+.cmp-trunc-note { margin: 6px 0 0; color: var(--text-2); font-size: var(--text-xs); }
+.cmp-code-dir { margin: 4px 0 10px; color: var(--text-2); font-size: var(--text-xs); }
+
+/* ── Multi Compare: the staged run set ────────────────────────────────────
+   A `<select multiple>` could hold the set but not show it: the picks were
+   whichever blue lines happened to be scrolled into view, and one stray click
+   replaced all of them. Chips state the set outright and each carries its own
+   remove control. */
+.cmp-multi-pick { margin-bottom: 16px; }
+.cmp-picked {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  min-height: 38px; padding: 6px 8px; margin: 4px 0 8px;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg);
+}
+.cmp-picked-empty { color: var(--muted); font-size: 12px; padding: 2px 4px; }
+.cmp-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 4px 2px 8px; border-radius: 10px;
+  background: var(--accent-soft); color: var(--text-1);
+  font-size: 12px; white-space: nowrap; overflow: hidden;
+}
+.cmp-chip-x {
+  font-family: inherit; font-size: 13px; line-height: 1;
+  background: none; border: none; cursor: pointer; color: var(--muted);
+  padding: 0 3px;
+}
+.cmp-chip-x:hover { color: var(--red); }
+.cmp-pick-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cmp-pick-actions .primary {
+  font-family: inherit; font-size: 12px; padding: 5px 12px;
+  border-radius: 4px; cursor: pointer; white-space: nowrap; line-height: 1.4;
+}
+.cmp-pick-actions .primary:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+
+/* Pair pickers: the <select> plus its Browse escape hatch. */
+.cmp-select-row { display: flex; gap: 6px; align-items: stretch; }
+.cmp-select-row select { flex: 1 1 auto; min-width: 0; }
+
+
+/* ── The colour key above the charts ──────────────────────────────────────
+   Chart.js's own legend can only say as much as the series label does, and a
+   label built from one parameter is deliberately ambiguous — two runs sharing
+   `lr=0.0001` get two identical entries. This is the unambiguous statement of
+   which colour is which run, and it is a link to that run. */
+.cmp-key {
+  display: flex; flex-wrap: wrap; gap: 6px 18px;
+  padding: 8px 12px; margin: 4px 0 12px;
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.cmp-key-item {
+  display: inline-flex; align-items: center; gap: 8px;
+  text-decoration: none; color: var(--fg); font-size: 12px;
+  padding: 2px 4px; border-radius: 3px; min-width: 0;
+}
+.cmp-key-item:hover { background: var(--code-bg); }
+.cmp-key-item:hover .cmp-key-name { color: var(--blue); text-decoration: underline; }
+.cmp-key-swatch {
+  flex: none; width: 12px; height: 12px; border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+}
+.cmp-key-name { font-weight: 500; white-space: nowrap; }
+.cmp-key-id { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); }
+.cmp-key-params { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.cmp-key-chip {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-2); background: var(--surface-2);
+  padding: 1px 6px; border-radius: 3px; white-space: nowrap;
+}
+
+/* "Label series by": the control that makes a legend of auto-named runs
+   readable. Sits directly above the charts it relabels. */
+.cmp-label-by { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.cmp-label-by label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+
+/* Held-constant fold under the Configuration table — same shape as the
+   parameter matrix's, since it answers the same question. */
+.cmp-constants { margin: 8px 0 4px; font-size: var(--text-sm); }
+.cmp-constants summary { cursor: pointer; color: var(--text-2); padding: var(--space-2) 0; }
+.cmp-const-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-2); padding: var(--space-2) 0;
+}
+.cmp-const-item {
+  display: flex; justify-content: space-between; gap: var(--space-2);
+  padding: 4px 8px; background: var(--surface-2); border-radius: var(--radius-sm);
+  font-family: var(--font-mono); font-size: var(--text-xs);
+}
+.cmp-const-key { color: var(--text-2); }
+.cmp-const-val { color: var(--text-1); overflow: hidden; text-overflow: ellipsis; }
+
+/* The metric name doubles as its polarity control. Styled as text, not as a
+   button, so the table still reads as a table — the arrow is the affordance. */
+.cmp-polarity {
+  background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  cursor: pointer; text-align: left;
+}
+.cmp-polarity:hover { text-decoration: underline dotted; }
+.cmp-polarity-arrow { color: var(--text-2); font-size: var(--text-xs); }

@@ -90,7 +90,7 @@ def test_capture_argv_fallback(tmp_project):
 
 def test_coerce_types(tmp_project):
     """_coerce() properly converts string values to typed values."""
-    from exptrack.capture.argparse_patch import _coerce
+    from exptrack.core.utils import coerce_scalar as _coerce
 
     assert _coerce("true") is True
     assert _coerce("false") is False
@@ -312,7 +312,7 @@ def test_capture_remaining_keeps_negative_values(tmp_project):
 
 
 def test_is_value_token_rule():
-    from exptrack.capture.argparse_patch import _is_value_token
+    from exptrack.core.utils import is_value_token as _is_value_token
 
     assert _is_value_token("0.5")
     assert _is_value_token("-0.5")
@@ -321,3 +321,106 @@ def test_is_value_token_rule():
     assert not _is_value_token("--lr")
     assert not _is_value_token("-x")
     assert not _is_value_token("--3")
+
+
+def test_non_serializable_value_does_not_crash_parse_args(tmp_project):
+    """A capture failure must never abort the user's parse_args().
+
+    Regression test: if an argparse argument produces a value that isn't
+    JSON-serializable (a custom ``type=`` callable returning an object,
+    ``type=pathlib.Path``, an enum, ...), logging it used to raise TypeError
+    *synchronously inside* the user's parse_args() and abort the training run.
+    The capture hooks must swallow that and let parsing return normally, exactly
+    as the matplotlib and tensorboard patches do.
+    """
+    import exptrack.capture.argparse_patch as ap_mod
+    from exptrack.capture.argparse_patch import patch_argparse
+    from exptrack.core import Experiment
+
+    ap_mod._patched = False
+
+    exp = Experiment(script="train.py")
+    patch_argparse(exp)
+
+    class _Weird:  # not JSON-serializable
+        pass
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--obj", type=lambda s: _Weird())
+    parser.add_argument("--lr", type=float, default=0.01)
+
+    old_argv = sys.argv
+    sys.argv = ["train.py", "--obj", "anything", "--lr", "0.5"]
+    try:
+        # The whole point: this line must NOT raise.
+        ns = parser.parse_args()
+    finally:
+        sys.argv = old_argv
+        ap_mod._patched = False
+
+    # Parsing still returns the real, correct namespace to the user's script.
+    assert isinstance(ns.obj, _Weird)
+    assert ns.lr == 0.5
+    # And the experiment is still usable afterwards (the run continues).
+    exp.finish()
+
+
+def test_capture_argv_does_not_crash_on_bad_experiment(tmp_project):
+    """capture_argv runs at launch, before the user's script; it must not raise
+    even if the underlying log_params fails."""
+    from exptrack.capture.argparse_patch import capture_argv
+
+    class _Boom:
+        _params = {}
+
+        def log_params(self, params):
+            raise RuntimeError("simulated DB failure")
+
+    old_argv = sys.argv
+    sys.argv = ["train.py", "--lr", "0.1"]
+    try:
+        # Must swallow the failure rather than propagate it into launch.
+        capture_argv(_Boom())
+    finally:
+        sys.argv = old_argv
+
+
+def test_coerce_never_produces_non_finite_floats():
+    """"inf"/"nan"/overflow parse as float but aren't valid JSON — keep as str.
+
+    Regression: _coerce turned a literal string arg like `--stage inf` into
+    float('inf'), which both mangles the value and injects a non-finite float
+    that core/utils.json_dumps exists to keep out of our JSON (server.md)."""
+    from exptrack.core.utils import coerce_scalar as _coerce
+
+    for token in ["inf", "-inf", "nan", "Infinity", "infinity", "1e999"]:
+        assert _coerce(token) == token, f"{token!r} should stay a string"
+
+    # Real numbers are still coerced as before.
+    assert _coerce("0.01") == 0.01
+    assert _coerce("42") == 42
+    assert _coerce("1e3") == 1000.0
+    assert _coerce("true") is True
+
+
+def test_coerce_only_coerces_clean_decimal_literals():
+    """Only an unambiguous ASCII decimal literal coerces to a number; anything
+    else keeps its original string so a param round-trips to what was typed.
+
+    Regression: bare int()/float() accept "007" (padding lost), "1_000"
+    (underscores), Arabic-Indic digits, and " 5 " (whitespace) — each silently
+    stored a value different from the literal the user passed."""
+    from exptrack.core.utils import coerce_scalar as c
+
+    # These used to coerce to a *different* value; now kept as-is.
+    for s in ["007", "08", "1_000", "555_1234", "3.14_15", "١٢٣", " 5 ", "0x10", "1,000"]:
+        assert c(s) == s, f"{s!r} should stay a string"
+
+    # Clean literals still coerce.
+    assert c("42") == 42 and isinstance(c("42"), int)
+    assert c("-7") == -7
+    assert c("0") == 0
+    assert c("3.14") == 3.14
+    assert c(".5") == 0.5
+    assert c("5.") == 5.0
+    assert c("1e-4") == 0.0001

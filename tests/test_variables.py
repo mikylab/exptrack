@@ -44,6 +44,24 @@ def test_is_obs_comments_only():
     assert is_observational("# comment\n# another") is False
 
 
+def test_is_obs_debug_fstring():
+    """A self-documenting f-string print is observational, not state-changing.
+
+    Regression: the `=` inside a Python 3.8+ debug f-string (`{x=}`, `{x=:.2f}`,
+    `{x=!r}`) matched the assignment regex, so `print(f"{x=}")` was logged as a
+    state-changing cell_exec instead of an observational event. Those `=`
+    forms sit immediately before `}`/`:`/`!`, none of which follow `=` in a
+    real assignment, so excluding them is safe.
+    """
+    assert is_observational('print(f"{x=}")') is True
+    assert is_observational('print(f"{loss=:.2f}")') is True
+    assert is_observational('print(f"{y=!r}")') is True
+    # Controls: real assignments (incl. walrus and a tight dict literal) still
+    # register as state-changing.
+    assert is_observational("d = {1: 2}") is False
+    assert is_observational("print((x := 5))") is False
+
+
 # ---------------------------------------------------------------------------
 # var_summary
 # ---------------------------------------------------------------------------

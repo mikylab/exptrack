@@ -272,3 +272,22 @@ def test_session_node_lookup_still_uses_the_index(db_conn):
         ("node1",)).fetchall()
     assert any("idx_metrics_session_node" in str(tuple(r)) for r in plan), \
         f"node-tagged metric lookup no longer uses the index: {[tuple(r) for r in plan]}"
+
+
+def test_non_finite_single_metric_flushes_a_pending_point(tmp_project):
+    """log_metric(nan) must still tick the commit window like an all-non-finite
+    log_metrics does. The singular path skipped the tick, so an earlier
+    kept-but-uncommitted point could stay invisible to the dashboard's separate
+    connection past the window it should have flushed in."""
+    _set_interval(tmp_project, 10_000)   # one long window
+    from exptrack.core.experiment import Experiment
+
+    exp = Experiment(name="nonfinite")
+    exp.log_metric("loss", 0.0, step=0)   # first write commits immediately
+    exp.log_metric("loss", 1.0, step=1)   # buffered in the still-open window
+    assert _rows(tmp_project) == 1        # not yet visible to another connection
+    # The window is now genuinely elapsed (simulate the pause the tick guards).
+    exp._last_metric_commit -= 100
+    exp.log_metric("loss", float("nan"), step=2)   # non-finite → must tick/flush
+    assert _rows(tmp_project) == 2, "non-finite singular did not tick the window"
+    exp.finish()

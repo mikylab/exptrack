@@ -13,10 +13,28 @@ from pathlib import Path
 
 from .. import config as cfg
 from ..core import get_db
-from ..core.db import COMPACT_PREFIX, is_diff_sentinel, resolve_git_diff
+from ..core.db import (
+    COMPACT_PREFIX,
+    accumulated_duration,
+    is_diff_sentinel,
+    resolve_git_diff,
+)
 from ..core.queries import find_experiment
 from ..core.storage import compact_git_diffs, preview_git_diff_compact
-from .formatting import C, G, R, W, Y, bold, col, die, dim, fmt_bytes
+from .formatting import (
+    C,
+    G,
+    R,
+    W,
+    Y,
+    bold,
+    col,
+    confirm,
+    die,
+    dim,
+    fmt_bytes,
+    parse_age_delta,
+)
 
 
 def cmd_init(args):
@@ -88,19 +106,27 @@ def cmd_ui(args):
     # Handle --token / --clear-token. The token lives in the gitignored
     # .exptrack/dashboard_token (0600), never in the committable config.json.
     # A legacy token still sitting in config.json is warned about by ui_main.
+    # --token / --clear-token are token *management*, not "start the dashboard
+    # with this token": they used to fall through and launch a server the user
+    # had not asked for, from a command that reads as configuration.
     if getattr(args, "clear_token", False):
         removed = cfg.token_file_path().is_file()
         cfg.token_file_path().unlink(missing_ok=True)
         conf = cfg.load()
         if conf.pop("dashboard_token", None) is not None:
+            # `cfg.save` persists only what differs from the defaults, so this
+            # no longer needs a private JSON writer to avoid freezing today's
+            # defaults into a file documented as safe to commit.
             cfg.save(conf)
             removed = True
         print(col("Dashboard token removed." if removed else "No dashboard token set.", G),
               file=sys.stderr)
-    elif getattr(args, "token", None):
+        return
+    if getattr(args, "token", None):
         tf = cfg.write_token(args.token)
         print(col(f"Dashboard token saved to {tf} (gitignored, mode 600)", G),
               file=sys.stderr)
+        return
 
     ui_main(host=host, port=port, no_auth=no_auth)
 
@@ -156,7 +182,7 @@ def cmd_stale(args):
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     rows = conn.execute("""
         SELECT id, name, created_at FROM experiments
-        WHERE status='running' AND created_at < ?
+        WHERE status='running' AND created_at < ? AND deleted_at IS NULL
     """, (cutoff.isoformat(),)).fetchall()
     if not rows:
         print(dim(f"No stale experiments (running > {args.hours}h).")); return
@@ -165,10 +191,10 @@ def cmd_stale(args):
     # One transaction for the whole batch instead of a commit (fsync) per row.
     with conn:
         for r in rows:
-            duration = (datetime.fromisoformat(now) -
-                        datetime.fromisoformat(r["created_at"])).total_seconds()
+            duration = accumulated_duration(conn, r["id"], now)
             conn.execute(
-                "INSERT OR REPLACE INTO params (exp_id, key, value) VALUES (?,?,?)",
+                "INSERT INTO params (exp_id, key, value) VALUES (?,?,?) "
+                "ON CONFLICT(exp_id, key) DO UPDATE SET value=excluded.value",
                 (r["id"], "error", json.dumps(f"timed-out after {args.hours}h"))
             )
             conn.execute("""
@@ -310,48 +336,14 @@ def cmd_compact(args):
     freed_total = 0
 
     if dry_run:
-        modes = []
         # Which runs each enabled mode would *actually* touch. The count used to
         # be `len(rows)` — the whole selection — so `compact --code-changes` on a
         # project of 50 runs announced "Would compact 50 experiment(s)" beside a
         # modes line reading "1 row(s) in 1 run(s)". The selection is the set we
         # considered; a dry-run has to name the set it would change.
-        affected: set = set()
-        if do_git_diff:
-            # Same selection the write uses, so the dry-run provably describes
-            # it — down to the byte figure, which is neither the sum of the
-            # columns (pointers) nor of the bodies (counted once per run
-            # sharing them). See `storage._git_diff_selection`.
-            st = preview_git_diff_compact(conn, exp_ids)
-            modes.append(f"git_diff (~{fmt_bytes(st['bytes'])}, "
-                         f"{st['runs']} run(s))")
-            affected |= set(st["run_ids"])
-        if do_cells:
-            cell_bytes = _cell_lineage_size(conn, exp_ids)
-            ids = _cell_lineage_exp_ids(conn, exp_ids)
-            modes.append(f"cell_lineage.source (~{fmt_bytes(cell_bytes)}, "
-                         f"{len(ids)} run(s))")
-            affected |= ids
-        if do_timeline:
-            tl_bytes = _timeline_diff_size(conn, exp_ids)
-            ids = _timeline_diff_exp_ids(conn, exp_ids)
-            modes.append(f"timeline.source_diff (~{fmt_bytes(tl_bytes)}, "
-                         f"{len(ids)} run(s))")
-            affected |= ids
-        if do_snapshots:
-            snap_bytes = _snapshot_disk_size(exp_ids)
-            modes.append(f"notebook_history/ (~{fmt_bytes(snap_bytes)})")
-            if snap_bytes:
-                affected |= set(exp_ids)
-        if do_code_changes:
-            from ..core.storage import preview_code_change_compact
-            st = preview_code_change_compact(conn, exp_ids)
-            modes.append(f"_code_changes (~{fmt_bytes(st['bytes'])}, "
-                         f"{st['rows']} row(s) in {st['runs']} run(s))")
-            if st["skipped_no_snapshot"]:
-                modes.append(f"skipping {len(st['skipped_no_snapshot'])} run(s) "
-                             f"with no code snapshot")
-            affected |= set(st.get("run_ids") or ())
+        modes, affected = _compact_preview(
+            conn, exp_ids, do_git_diff, do_cells, do_timeline, do_snapshots,
+            do_code_changes)
         if not affected:
             print(dim(f"Nothing to compact in {len(rows)} matching experiment(s)."))
             print(dim(f"  Checked: {', '.join(modes)}"))
@@ -364,6 +356,14 @@ def cmd_compact(args):
         if len(shown) > 10:
             print(dim(f"  ... and {len(shown) - 10} more"))
         return
+
+    # The same selection the dry run reports, computed before the writes land
+    # so the closing summary can name the runs actually changed. The real-run
+    # summary used to claim it had compacted the whole selection while the dry
+    # run correctly said "Would compact 1 of 5".
+    _, affected_ids = _compact_preview(
+        conn, exp_ids, do_git_diff, do_cells, do_timeline, do_snapshots,
+        do_code_changes)
 
     # ── 1. Git diff compaction ────────────────────────────────────────────
     if do_git_diff:
@@ -428,40 +428,114 @@ def cmd_compact(args):
                       f"code snapshot (summary is their only copy)"))
 
     if freed_total:
+        # Count the runs actually affected, not the whole selection: the
+        # real-run summary claimed it had compacted every selected run while
+        # the dry run correctly said "Would compact 1 of 5".
+        affected = sorted(affected_ids)
+        by_id = {r["id"]: r for r in rows}
         print()
-        print(col(f"Compacted {len(rows)} experiment(s), freed ~{fmt_bytes(freed_total)} total.", G))
-        for r in rows[:10]:
-            print(f"  {col(r['id'][:8], C)}  {r['name'][:50]}")
-        if len(rows) > 10:
-            print(dim(f"  ... and {len(rows) - 10} more"))
+        print(col(f"Compacted {len(affected)} of {len(rows)} experiment(s), "
+                  f"freed ~{fmt_bytes(freed_total)} total.", G))
+        for eid in affected[:10]:
+            r = by_id.get(eid)
+            if r:
+                print(f"  {col(r['id'][:8], C)}  {r['name'][:50]}")
+        if len(affected) > 10:
+            print(dim(f"  ... and {len(affected) - 10} more"))
     else:
         print(dim("Nothing to compact."))
 
 
+def _compact_preview(conn, exp_ids, do_git_diff, do_cells, do_timeline,
+                     do_snapshots, do_code_changes) -> tuple[list[str], set]:
+    """What a compact with these modes would change: ``(descriptions, run ids)``.
+
+    One walk of the modes for both callers. The dry run built this list inline
+    and the real path had a second copy that computed only the id set, so
+    adding a mode meant editing two lists — and any mismatch reintroduced the
+    dry-run/real-run disagreement the affected-set was written to fix.
+    """
+    modes: list[str] = []
+    affected: set = set()
+    try:
+        if do_git_diff:
+            # Same selection the write uses, so the dry-run provably describes
+            # it — down to the byte figure, which is neither the sum of the
+            # columns (pointers) nor of the bodies (counted once per run
+            # sharing them). See `storage._git_diff_selection`.
+            st = preview_git_diff_compact(conn, exp_ids)
+            modes.append(f"git_diff (~{fmt_bytes(st['bytes'])}, "
+                         f"{st['runs']} run(s))")
+            affected |= set(st["run_ids"])
+        if do_cells:
+            ids = _cell_lineage_exp_ids(conn, exp_ids)
+            modes.append(f"cell_lineage.source "
+                         f"(~{fmt_bytes(_cell_lineage_size(conn, exp_ids))}, "
+                         f"{len(ids)} run(s))")
+            affected |= ids
+        if do_timeline:
+            ids = _timeline_diff_exp_ids(conn, exp_ids)
+            modes.append(f"timeline.source_diff "
+                         f"(~{fmt_bytes(_timeline_diff_size(conn, exp_ids))}, "
+                         f"{len(ids)} run(s))")
+            affected |= ids
+        if do_snapshots:
+            snap_bytes = _snapshot_disk_size(exp_ids)
+            modes.append(f"notebook_history/ (~{fmt_bytes(snap_bytes)})")
+            if snap_bytes:
+                affected |= set(exp_ids)
+        if do_code_changes:
+            from ..core.storage import preview_code_change_compact
+            st = preview_code_change_compact(conn, exp_ids)
+            modes.append(f"_code_changes (~{fmt_bytes(st['bytes'])}, "
+                         f"{st['rows']} row(s) in {st['runs']} run(s))")
+            if st["skipped_no_snapshot"]:
+                modes.append(f"skipping {len(st['skipped_no_snapshot'])} run(s) "
+                             f"with no code snapshot")
+            affected |= set(st.get("run_ids") or ())
+    except Exception as e:
+        print(f"[exptrack] warning: could not determine affected runs: {e}",
+              file=sys.stderr)
+    return modes, affected
+
+
 def _compact_exp_query(args):
     """Build WHERE clause for selecting experiments to compact (no git_diff filter)."""
-    from datetime import timedelta
     conditions = []
     query_args = []
 
     if args.ids:
-        clauses = []
+        # Resolve through find_experiment, like every other id-taking command:
+        # a raw LIKE let a typo'd prefix match nothing and report "No matching
+        # experiments." with exit 0, and an ambiguous prefix silently compact
+        # several runs. It also let `%` select the whole project.
+        from ..core.queries import AmbiguousPrefixError, find_experiment
+        resolved, unknown = [], []
+        conn = get_db()
         for prefix in args.ids:
-            clauses.append("id LIKE ?")
-            query_args.append(prefix + "%")
-        conditions.append(f"({' OR '.join(clauses)})")
+            try:
+                exp = find_experiment(conn, prefix, "id")
+            except AmbiguousPrefixError as e:
+                die(f"Ambiguous ID prefix '{prefix}' matches "
+                    f"{len(e.matches)} experiments; provide a longer prefix.")
+            if exp:
+                resolved.append(exp["id"])
+            else:
+                unknown.append(prefix)
+        if unknown:
+            die("No such experiment(s): " + ", ".join(unknown))
+        conditions.append(f"id IN ({','.join('?' * len(resolved))})")
+        query_args.extend(resolved)
     elif not getattr(args, "all", False):
         conditions.append("status = 'done'")
 
+    # Trashed runs are excluded from every other listing; compacting one strips
+    # its diff without it ever appearing in a list the user can see.
+    conditions.append("deleted_at IS NULL")
+
     older_than = getattr(args, "older_than", None)
     if older_than:
-        age = older_than.rstrip("d")
-        try:
-            days = int(age)
-        except ValueError:
-            print(col(f"Invalid age: {older_than} (use e.g. 7d)", R), file=sys.stderr)
-            return "1=0", []
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - parse_age_delta(older_than)).isoformat()
         conditions.append("created_at < ?")
         query_args.append(cutoff)
 
@@ -736,9 +810,9 @@ def cmd_backup(args):
         dest = backup_dir / f"{timestamp}.db"
 
     if dest.exists() and not getattr(args, "force", False):
-        print(col(f"Backup file already exists: {dest}", R), file=sys.stderr)
-        print("Use --force to overwrite.", file=sys.stderr)
-        return
+        # die(), not print+return: a nightly `exptrack backup || alert` that
+        # exits 0 on every failure is a backup that silently stops existing.
+        die(f"Backup file already exists: {dest}\nUse --force to overwrite.")
 
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -747,8 +821,7 @@ def cmd_backup(args):
         conn.backup(backup_conn)
         backup_conn.close()
     except Exception as e:
-        print(col(f"Backup failed: {e}", R), file=sys.stderr)
-        return
+        die(f"Backup failed: {e}")
 
     size = dest.stat().st_size
     print(col(f"Backup saved to {dest} ({fmt_bytes(size)})", G))
@@ -760,8 +833,13 @@ def cmd_restore(args):
 
     source = Path(args.path)
     if not source.exists():
-        print(col(f"Backup file not found: {source}", R), file=sys.stderr)
-        return
+        hint = ""
+        if not source.suffix and len(str(source)) <= 32:
+            # `restore` means restore-the-database-from-a-backup; an id-shaped
+            # argument is almost certainly someone reaching for the Trash.
+            hint = ("\nTo bring a run back out of the Trash, use "
+                    "`exptrack restore-run <id>`.")
+        die(f"Backup file not found: {source}{hint}")
 
     conf = cfg.load()
     root = cfg.project_root()
@@ -770,12 +848,7 @@ def cmd_restore(args):
     if not getattr(args, "yes", False):
         print(f"This will overwrite the current database at {db_path}")
         print(f"with the backup from {source}")
-        try:
-            answer = input("Continue? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("\nAborted.")
-            return
-        if answer not in ("y", "yes"):
+        if not confirm("Continue? [y/N] "):
             print("Aborted.")
             return
 
@@ -790,8 +863,7 @@ def cmd_restore(args):
         dest_conn.close()
         backup_conn.close()
     except Exception as e:
-        print(col(f"Restore failed: {e}", R), file=sys.stderr)
-        return
+        die(f"Restore failed: {e}")
 
     print(col(f"Database restored from {source}", G))
 
@@ -1234,7 +1306,8 @@ def _print_storage_health(conn, s):
 
     # Runs left 'running' — usually a killed process, not a live job.
     stale_running = _q1(conn, "SELECT COUNT(*) FROM experiments WHERE status='running' "
-                              "AND created_at < datetime('now', '-24 hours')")
+                              "AND created_at < datetime('now', '-24 hours') "
+                              "AND deleted_at IS NULL")
     if stale_running:
         print(col(f"    {stale_running} experiment(s) running for >24h — "
                   f"possible orphans. Use \"exptrack stale\" to review.", Y))

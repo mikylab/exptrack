@@ -469,3 +469,49 @@ def test_session_delete_whole(session_tree):
 
 def test_session_delete_missing(db_conn):
     assert wr.api_session_delete(db_conn, "nope", {}) == {"error": "not found"}
+
+
+def test_bulk_finish_marks_every_running_run_in_the_selection(tmp_project):
+    """A crashed launcher leaves runs `running` in batches — a SLURM array, a
+    killed sweep — and clearing them meant opening each detail view in turn."""
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+    running = [Experiment(script=f"t{i}.py") for i in range(3)]
+    conn = get_db()
+    res = wr.api_bulk_finish(conn, {"ids": [e.id for e in running]})
+    assert res["finished"] == 3 and res["already_done"] == 0 and res["failed"] == []
+    statuses = {r["status"] for r in conn.execute(
+        "SELECT status FROM experiments").fetchall()}
+    assert statuses == {"done"}
+
+
+def test_bulk_finish_separates_already_done_from_failed(tmp_project):
+    """An already-finished run is not a failure and must not read as one; an id
+    that resolves to nothing is the caller's mistake and has to be visible."""
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+    live = Experiment(script="a.py")
+    done = Experiment(script="b.py"); done.finish()
+    res = wr.api_bulk_finish(get_db(), {"ids": [live.id, done.id, "nope123"]})
+    assert res["finished"] == 1
+    assert res["already_done"] == 1
+    assert [f["id"] for f in res["failed"]] == ["nope123"]
+
+
+def test_bulk_finish_refuses_an_empty_selection(tmp_project):
+    from exptrack.core.db import get_db
+    assert wr.api_bulk_finish(get_db(), {"ids": []}).get("error")
+
+
+def test_bulk_finish_records_the_shared_duration_rule(tmp_project):
+    """A run finished in a batch records what it would have recorded alone —
+    accumulated running time, not elapsed-since-creation."""
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+    e = Experiment(script="dur.py")
+    conn = get_db()
+    wr.api_bulk_finish(conn, {"ids": [e.id]})
+    row = conn.execute("SELECT duration_s, status FROM experiments WHERE id=?",
+                       (e.id,)).fetchone()
+    assert row["status"] == "done"
+    assert row["duration_s"] is not None and row["duration_s"] >= 0

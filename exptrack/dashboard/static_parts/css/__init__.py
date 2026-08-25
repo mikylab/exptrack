@@ -13,7 +13,9 @@ from .components import CSS_COMPONENTS
 from .detail import CSS_DETAIL
 from .images import CSS_IMAGE_COMPARE, CSS_IMAGES
 from .layout import CSS_LAYOUT
+from .matrix import CSS_MATRIX
 from .reset import CSS_RESET
+from .run_picker import CSS_RUN_PICKER
 from .sessions import CSS_SESSIONS
 from .studies import CSS_STUDIES
 from .table import CSS_TABLE
@@ -27,7 +29,8 @@ def get_all_css() -> str:
     return (CSS_RESET + CSS_LAYOUT + CSS_CARDS + CSS_TABLE +
             CSS_DETAIL + CSS_CHARTS + CSS_CODE + CSS_TIMELINE + CSS_COMPARE +
             CSS_COMPONENTS + CSS_STUDIES + CSS_IMAGES + CSS_IMAGE_COMPARE +
-            CSS_TOOLBOX + CSS_SESSIONS + CSS_TRASH)
+            CSS_TOOLBOX + CSS_SESSIONS + CSS_TRASH + CSS_RUN_PICKER +
+            CSS_MATRIX)
 
 
 __all__ = [
@@ -40,7 +43,9 @@ __all__ = [
     "CSS_IMAGES",
     "CSS_IMAGE_COMPARE",
     "CSS_LAYOUT",
+    "CSS_MATRIX",
     "CSS_RESET",
+    "CSS_RUN_PICKER",
     "CSS_SESSIONS",
     "CSS_STUDIES",
     "CSS_TABLE",

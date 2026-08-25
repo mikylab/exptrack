@@ -103,3 +103,37 @@ def test_run_finish_cmd_overrides(tmp_project):
     conn = get_db()
     cmd = conn.execute("SELECT command FROM experiments WHERE id=?", (exp_id,)).fetchone()["command"]
     assert cmd == "python eval.py"
+
+
+def test_script_git_calls_are_non_interactive(tmp_project, monkeypatch):
+    """script_snapshot's `git ls-files`/`git diff HEAD` must run through git.py's
+    non-interactive hardening (GIT_TERMINAL_PROMPT=0, GIT_OPTIONAL_LOCKS=0,
+    stdin=DEVNULL) rather than a bare subprocess — the stated invariant is 'git
+    capture must be non-interactive and never block', and these two call sites
+    used to reach around it."""
+    import subprocess
+
+    from exptrack.core import script_snapshot as ss
+
+    calls = []
+    real_run = subprocess.run
+
+    def spy(cmd, *a, **kw):
+        if cmd and cmd[0] == "git":
+            calls.append(kw)
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(ss.subprocess, "run", spy)
+
+    tmp_path = tmp_project  # already a git project via the fixture
+    script = tmp_path / "train.py"
+    script.write_text("print('hi')\n")
+    ss._tracked_status(tmp_path, "train.py")
+    ss._script_facts(str(script))
+
+    assert calls, "no git subprocess was invoked"
+    for kw in calls:
+        env = kw.get("env") or {}
+        assert env.get("GIT_TERMINAL_PROMPT") == "0", "missing non-interactive env"
+        assert env.get("GIT_OPTIONAL_LOCKS") == "0", "missing lock-skip env"
+        assert kw.get("stdin") is subprocess.DEVNULL, "stdin not detached"

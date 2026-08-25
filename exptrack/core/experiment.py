@@ -11,7 +11,6 @@ import atexit
 import hashlib
 import json
 import math
-import os
 import platform
 import re as _re
 import socket
@@ -32,7 +31,7 @@ from .git import git_info
 from .gpu import gpu_info
 from .naming import make_run_name, output_path
 from .script_snapshot import capture_script_snapshot
-from .utils import debug_log
+from .utils import debug_log, resolve_script_identity
 
 _VALID_STATUSES = {"running", "done", "failed"}
 
@@ -106,7 +105,7 @@ def mark_wrapper_foreign_child(exp: Experiment) -> None:
         _run_wrapper._had_foreign_child = True
 
 
-def _active_session_node() -> str | None:
+def _active_session_node(exp: Experiment | None = None) -> str | None:
     """Id of the Session Trees node currently being explored, or None.
 
     Stamped onto each metric as it's written so a metric belongs to the branch
@@ -122,8 +121,16 @@ def _active_session_node() -> str | None:
     try:
         from ..sessions import get_current_session
         sm = get_current_session()
-        if sm is not None and sm.session_id:
-            return sm._current_node_id
+        if sm is None or not sm.session_id:
+            return None
+        # Only tag metrics belonging to *this session's* run. The tag used to
+        # be applied to any metric logged while a session was active in the
+        # kernel, whoever owned the run — and `materialize` then copied those
+        # foreign numbers onto the graduated branch run, re-introducing the
+        # cross-attribution the tag exists to prevent.
+        if exp is not None and not sm.owns_experiment(exp.id):
+            return None
+        return sm._current_node_id
     except Exception as e:
         from .utils import debug_log
         debug_log(f"could not resolve active session node for metric: {e}")
@@ -229,6 +236,8 @@ class Experiment:
         script: str = "",
         thin_every: int | None = None,
         command: str = "",
+        naming_hint: str = "",
+        auto_capture: bool = True,
         _caller_depth: int = 1,
     ):
         if self._adopted:
@@ -273,10 +282,7 @@ class Experiment:
                 script = sys.argv[0]  # frame detection failed, fall back to argv
         # Resolve to absolute path if it looks like a real file path;
         # keep labels (e.g. "pipeline", "train") as-is from run-start
-        if script and (Path(script).is_file() or os.path.sep in script or script.startswith("/")):
-            self.script = str(Path(script).resolve())
-        else:
-            self.script = script
+        self.script = resolve_script_identity(script)
 
         # Build initial name (may be updated after argparse capture).
         # name_is_auto tracks whether the user ever deliberately named this run:
@@ -284,7 +290,11 @@ class Experiment:
         # Internal auto-renames (argparse/notebook capture) keep it True; only a
         # user rename in the dashboard/API flips it to False.
         self.name_is_auto = not bool(name)
-        self.name = name or make_run_name(script, self._params)
+        # `naming_hint` names the run without claiming the user chose the name:
+        # the shell pipeline generates a name from a `--script` hint that is not
+        # the run's `script` field, and passing that generated name in as `name`
+        # made every pipeline run look user-named.
+        self.name = name or make_run_name(naming_hint or script, self._params)
 
         # Snapshot git state at run time — this is the key traceability link
         ginfo = git_info()
@@ -319,10 +329,81 @@ class Experiment:
         self._snapshot_hash = self._compute_snapshot_hash()
 
         self._save()
+        if auto_capture:
+            self._install_capture_patches(conf)
         plugins.load_from_config(conf)
         plugins.on_start(self)
 
         print(f"[exptrack] {self.name}  ({self.id[:6]})", file=sys.stderr)
+
+    def _accumulated_duration(self, this_session: float) -> float:
+        """This session's wall time plus whatever earlier sessions recorded."""
+        prior = 0.0
+        if getattr(self, "_resumed", False):
+            try:
+                with get_db() as conn:
+                    row = conn.execute(
+                        "SELECT duration_s FROM experiments WHERE id=?", (self.id,)
+                    ).fetchone()
+                prior = float(row["duration_s"] or 0.0) if row else 0.0
+            except Exception as e:
+                debug_log(f"could not read prior duration: {e}")
+        return prior + max(0.0, this_session)
+
+    def _install_capture_patches(self, conf, force: bool = False):
+        """Arm the zero-friction capture patches for a script that started its
+        own run.
+
+        The patches used to be installed only by ``exptrack run`` and the
+        notebook extension, so a plain ``python train.py`` with
+        ``exp = Experiment()`` in it captured *no parameters at all* — and
+        moving a script between the two launchers made every param appear as a
+        change in the "What changed" card, because one side had them and the
+        other didn't. The run object is the thing that needs the patches, so it
+        arms them itself; ``exptrack run`` installs the same ones a moment
+        later, and each patch is idempotent.
+
+        Notebook runs are excluded: the notebook extension owns that path and
+        installs a superset (cell hooks, output capture) with its own state.
+        Best-effort throughout — a capture failure must never break a run.
+
+        A **resumed** run is skipped here because ``Experiment.resume`` bypasses
+        ``__init__`` entirely; ``exptrack run`` passes *force* so the resumed
+        case is armed from the one place that knows it happened, rather than
+        the launcher keeping a second copy of this list.
+        """
+        if str(self.script).endswith(".ipynb"):
+            return
+        if getattr(self, "_resumed", False) and not force:
+            return
+        auto = conf.get("auto_capture", {}) or {}
+        try:
+            from ..capture import capture_argv, patch_argparse, patch_savefig, patch_tensorboard
+            if auto.get("argparse", True):
+                patch_argparse(self)
+            # Raw-argv capture only when argv actually belongs to this run's
+            # script. `sys.argv` is process-global: a run created inside a test
+            # runner, a REPL or any host program would otherwise record that
+            # host's command line as its hyperparameters. `exptrack run`
+            # rewrites argv to the script's own before calling this, so the
+            # check passes there too.
+            if auto.get("argv", True) and self._argv_is_mine():
+                capture_argv(self)
+            patch_savefig(self)
+            if auto.get("tensorboard", True):
+                patch_tensorboard(self)
+        except Exception as e:
+            debug_log(f"could not install capture patches: {e}")
+
+    def _argv_is_mine(self) -> bool:
+        """Whether ``sys.argv[0]`` is this run's own script."""
+        try:
+            argv0 = sys.argv[0] if sys.argv else ""
+            if not argv0 or not self.script:
+                return False
+            return resolve_script_identity(argv0) == self.script
+        except Exception:
+            return False
 
     @classmethod
     def resume(cls, exp_id: str) -> Experiment:
@@ -485,12 +566,28 @@ class Experiment:
                 pass  # fall back to storing inline
         try:
             conn.execute("BEGIN IMMEDIATE")
+            # Upsert on the columns this method owns, rather than INSERT OR
+            # REPLACE: OR REPLACE deletes the row and re-inserts it, so every
+            # column absent from this list — duration_s, deleted_at, studies,
+            # stage, stage_name, session_node_id — would be silently reset to
+            # NULL by any re-save. Today _save runs once per run, which is the
+            # only reason that never bit; the upsert makes it safe by
+            # construction instead of by accident.
             conn.execute("""
-                INSERT OR REPLACE INTO experiments
+                INSERT INTO experiments
                 (id, project, name, status, created_at, updated_at,
                  script, command, git_branch, git_commit, git_diff,
                  hostname, python_ver, notes, tags, output_dir, name_is_auto)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                  project=excluded.project, name=excluded.name,
+                  status=excluded.status, updated_at=excluded.updated_at,
+                  script=excluded.script, command=excluded.command,
+                  git_branch=excluded.git_branch, git_commit=excluded.git_commit,
+                  git_diff=excluded.git_diff, hostname=excluded.hostname,
+                  python_ver=excluded.python_ver, notes=excluded.notes,
+                  tags=excluded.tags, output_dir=excluded.output_dir,
+                  name_is_auto=excluded.name_is_auto
             """, (
                 self.id, self.project, self.name, self.status,
                 self.created_at, self.created_at,
@@ -596,7 +693,47 @@ class Experiment:
             [(self.id, k, json.dumps(v)) for k, v in params.items()]
         )
 
-    def _rename(self, new_name: str):
+    def forget_params(self, keys):
+        """Drop params this run should not have recorded, in memory and in the DB.
+
+        Used by the capture layer to retract a raw-argv key once argparse has
+        revealed it was the same hyperparameter under a different name (a
+        ``--learning-rate`` flag whose ``dest`` is ``lr`` was stored twice, and
+        two keys for one knob show up in "what varies" as two axes).
+        """
+        keys = [k for k in keys if k in self._params]
+        if not keys:
+            return
+        for k in keys:
+            self._params.pop(k, None)
+        try:
+            with get_db() as conn:
+                conn.executemany(
+                    "DELETE FROM params WHERE exp_id=? AND key=?",
+                    [(self.id, k) for k in keys],
+                )
+                conn.commit()
+        except Exception as e:
+            debug_log(f"could not forget params {keys}: {e}")
+
+    def refresh_auto_name(self, quiet: bool = False):
+        """Re-generate this run's name now that its params are known.
+
+        The auto-naming *policy*, on the object that owns ``name_is_auto``:
+        a **resumed** run keeps its established name and output dir (the
+        script may depend on both), and a run the user named keeps that name —
+        regenerating over an explicit name replaced it with an auto one while
+        still reporting the run as user-named. The rule lived in the argparse
+        capture path with only half of it copied into the notebook path, so a
+        resumed auto-named run renamed its output dir under a notebook and not
+        under a script.
+        """
+        if getattr(self, "_resumed", False) or not getattr(self, "name_is_auto", True):
+            return
+        from .naming import make_run_name
+        self._rename(make_run_name(self.script, self._params), quiet=quiet)
+
+    def _rename(self, new_name: str, quiet: bool = False):
         """Update name in memory and DB (called after auto-capture fills params).
 
         Also renames the output folder on disk and updates artifact paths.
@@ -609,7 +746,8 @@ class Experiment:
             conn.execute("UPDATE experiments SET name=? WHERE id=?", (new_name, self.id))
             rename_output_folder(conn, self.id, old_name, new_name)
             conn.commit()
-        print(f"[exptrack] -> {self.name}", file=sys.stderr)
+        if not quiet:
+            print(f"[exptrack] -> {self.name}", file=sys.stderr)
 
     # ── Params ────────────────────────────────────────────────────────────────
 
@@ -654,8 +792,15 @@ class Experiment:
                      (text, self.id))
         self._maybe_commit(conn)
 
-    def add_note(self, text: str):
-        """Append to the notes for this experiment."""
+    def add_note(self, text: str, dedupe: bool = False):
+        """Append to the notes for this experiment.
+
+        *dedupe* skips a line that is already present — what the notebook
+        `%exp_note` magic needs to stay idempotent under a Run-All, without
+        making the plain append-only form (used for timestamped trails) lossy.
+        """
+        if dedupe and text.strip() in (self.notes or "").splitlines():
+            return
         self.notes = ((self.notes or "") + "\n" + text).strip()
         conn = get_db()
         conn.execute("UPDATE experiments SET notes=? WHERE id=?",
@@ -784,12 +929,13 @@ class Experiment:
         if not math.isfinite(fval):
             print(f"[exptrack] warning: metric '{key}' has non-finite value: {fval} — skipping",
                   file=sys.stderr)
+            self._tick_commit_window()   # same as an all-non-finite log_metrics
             return
         if not self._keep_metric_point(key):
             self._tick_commit_window()
             return
         ts = datetime.now(timezone.utc).isoformat()
-        node_id = _active_session_node()
+        node_id = _active_session_node(self)
         # NB: `conn = get_db()`, not `with get_db() as conn:` — sqlite3's
         # connection context manager commits on exit, which would defeat both
         # the coalescing below and batched_writes(). Same reason log_params
@@ -809,7 +955,7 @@ class Experiment:
                   file=sys.stderr)
             return
         ts = datetime.now(timezone.utc).isoformat()
-        node_id = _active_session_node()
+        node_id = _active_session_node(self)
         finite_metrics = {}
         for k, v in metrics.items():
             fv = float(v)
@@ -911,8 +1057,16 @@ class Experiment:
         if status == "done":
             from .dataset import capture_dataset_manifest
             capture_dataset_manifest(self)
+            # After the manifest, so the notice can say whether the data moved.
+            self._warn_if_duplicate()
         self._finished = True
-        self.duration_s = time.time() - self._start
+        # `duration_s` is **wall time this run was actually running, summed
+        # across resumes** — not elapsed-since-creation, which for a run resumed
+        # the next morning would report the night as compute time, and not
+        # this-session-only, which silently discarded every earlier session's
+        # work. The two finish paths (here and `run-finish`) disagreed on which
+        # of those it meant; both now accumulate.
+        self.duration_s = self._accumulated_duration(time.time() - self._start)
         self.status = status
         _live_runs.discard(self)   # already flushed above; nothing left to do at exit
 
@@ -964,6 +1118,30 @@ class Experiment:
         from .db import close_db
         close_db(sweep=False)
 
+    def _warn_if_duplicate(self):
+        """Print the "already run" notice, if this run repeats a configuration.
+
+        A one-line stderr notice, never a prompt and never a refusal:
+        re-running a configuration is often deliberate (a seed check, a flaky
+        result, a changed machine), so blocking on a heuristic would be wrong.
+        The value is in noticing the *accidental* repeat, and for that being
+        told once is enough.
+
+        The policy and wording live in ``core/param_study.duplicate_notice``;
+        this is the lifecycle hook. Best-effort — it sits on the finish path of
+        every run, and an advisory must never be able to break one.
+        """
+        if getattr(self, "_resumed", False):
+            return
+        try:
+            from . import param_study
+            msg = param_study.duplicate_notice(
+                get_db(), self.id, dict(self._params or {}), self.script or "")
+            if msg:
+                print(f"[exptrack] {msg}", file=sys.stderr)
+        except Exception as e:
+            debug_log(f"duplicate check failed: {e}")
+
     def _print_delta_vs_previous(self):
         """Print a one-line 'what changed vs the previous run of this script'
         summary to stderr. Silent when there's no previous run or no change."""
@@ -977,7 +1155,8 @@ class Experiment:
         if line:
             print(f"[exptrack] {line}", file=sys.stderr)
 
-    def fail(self, error: str = "", traceback: str | None = None):
+    def fail(self, error: str = "", traceback: str | None = None,
+             interrupted: bool = False):
         """Mark the run as failed.
 
         ``error`` is the short exception message (stored as the ``error``
@@ -986,9 +1165,20 @@ class Experiment:
         — ``_``-prefixed so it's skipped by run-naming and the param
         overwrite-warning — and surfaced as a dedicated panel on failed runs in
         the dashboard. Capped so a pathological traceback can't bloat the DB.
+
+        ``interrupted`` marks a deliberate Ctrl-C rather than a crash; see the
+        note below for why that is a param and not a fourth status.
         """
         if error:
             self.log_param("error", error)
+        if interrupted:
+            # A deliberate Ctrl-C and a crash are different facts, but they are
+            # both "this run did not produce a result", so the *status* stays
+            # `failed` — every filter, baseline rule and cleanup path that
+            # already understands `failed` keeps working. The distinction is
+            # recorded beside it so the surfaces that show a reason can say
+            # "interrupted" instead of implying the code broke.
+            self.log_param("_interrupted", True)
         if traceback:
             if len(traceback) > _MAX_TRACEBACK_CHARS:
                 traceback = "…(truncated)\n" + traceback[-_MAX_TRACEBACK_CHARS:]
@@ -1053,38 +1243,10 @@ class Experiment:
         large files the hash covers only the first ``hash_max_mb`` MB (see
         config) and is prefixed with ``partial:``.
         """
-        resolved = str(Path(str(path)).resolve())
-        ts = datetime.now(timezone.utc).isoformat()
-
-        # Compute content hash if not provided and file exists
-        size_bytes = None
-        if content_hash is None:
-            rp = Path(resolved)
-            if rp.is_file():
-                try:
-                    from .. import config as _cfg
-                    from .hashing import file_hash
-                    conf = _cfg.load()
-                    max_bytes = int(conf.get("hash_max_mb", 500)) * 1024 * 1024
-                    content_hash, size_bytes = file_hash(rp, max_bytes=max_bytes)
-                except Exception as e:
-                    print(f"[exptrack] warning: could not hash artifact {resolved}: {e}", file=sys.stderr)
-
+        from .db import register_artifact
         with get_db() as conn:
-            existing = conn.execute(
-                "SELECT id FROM artifacts WHERE exp_id=? AND path=?",
-                (self.id, resolved)
-            ).fetchone()
-            if existing:
-                return
-            conn.execute(
-                """INSERT INTO artifacts
-                   (exp_id, label, path, created_at, timeline_seq,
-                    content_hash, size_bytes)
-                   VALUES (?,?,?,?,?,?,?)""",
-                (self.id, label or Path(path).name, resolved, ts,
-                 timeline_seq, content_hash, size_bytes)
-            )
+            register_artifact(conn, self.id, path, label=label,
+                              timeline_seq=timeline_seq, content_hash=content_hash)
             conn.commit()
 
     def log_file(self, path, label="", category=""):
@@ -1144,7 +1306,13 @@ class Experiment:
         if exc_type is not None:
             if not self._finished:
                 tb = "".join(_tb.format_exception(exc_type, exc_val, exc_tb))
-                self.fail(str(exc_val), traceback=tb)
+                # Ctrl-C reaches here too — `KeyboardInterrupt` is a
+                # BaseException, but `with` still calls __exit__ for it. It was
+                # recorded as a crash with an empty message, so "I stopped this"
+                # and "this broke" were only distinguishable under
+                # `exptrack run`, which has its own handler.
+                self.fail(str(exc_val), traceback=tb,
+                          interrupted=exc_type is KeyboardInterrupt)
             return False
         if not self._finished:
             self.finish()

@@ -169,9 +169,13 @@ def api_delete_metric(conn, exp_id: str, body: dict) -> dict:
         step = body.get("step")
         if step is None:
             return {"error": "provide step number"}
+        try:
+            step = int(step)
+        except (TypeError, ValueError):
+            return {"error": "step must be an integer"}
         conn.execute(
             "DELETE FROM metrics WHERE exp_id=? AND key=? AND step=?",
-            (exp["id"], key, int(step))
+            (exp["id"], key, step)
         )
     else:
         # Delete just the last (highest step) entry

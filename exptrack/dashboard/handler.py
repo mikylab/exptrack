@@ -15,6 +15,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+from ..core.queries import AmbiguousPrefixError
 from ..core.utils import json_dumps
 from .routes import read_routes, write_routes
 from .static import DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_JS
@@ -126,7 +127,6 @@ _GET_EXACT = {
     "/api/stats":            lambda conn, qs, p: read_routes.api_stats(conn),
     "/api/experiments":      lambda conn, qs, p: read_routes.api_experiments(conn, qs),
     "/api/compare":          lambda conn, qs, p: read_routes.api_compare(conn, qs),
-    "/api/multi-compare":    lambda conn, qs, p: read_routes.api_multi_compare(conn, qs),
     "/api/all-tags":         lambda conn, qs, p: read_routes.api_all_tags(conn),
     "/api/config/timezone":  lambda conn, qs, p: read_routes.api_get_timezone(),
     "/api/config/metrics":   lambda conn, qs, p: read_routes.api_get_metric_settings(),
@@ -168,6 +168,7 @@ _GET_PREFIXED = (
      lambda conn, qs, p: read_routes.api_session_tree(conn, _last(p))),
 
     ("/api/run-delta/", "", lambda conn, qs, p: read_routes.api_run_delta(conn, _last(p))),
+    ("/api/reference-delta/", "", lambda conn, qs, p: read_routes.api_reference_delta(conn, _last(p))),
     ("/api/metrics/", "", lambda conn, qs, p: read_routes.api_metrics(conn, _last(p), qs)),
     ("/api/diff/", "", lambda conn, qs, p: read_routes.api_diff(conn, _last(p))),
     ("/api/timeline/", "", lambda conn, qs, p: read_routes.api_timeline(conn, _last(p), qs)),
@@ -531,6 +532,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "tag":             lambda: write_routes.api_add_tag(conn, exp_id, body),
                 "rename":          lambda: write_routes.api_rename(conn, exp_id, body),
                 "set-variant-of":  lambda: write_routes.api_set_variant_of(conn, exp_id, body),
+                "set-reference":   lambda: write_routes.api_set_reference(conn, exp_id, body),
                 "delete":          lambda: write_routes.api_delete(conn, exp_id),
                 "restore":         lambda: write_routes.api_restore(conn, exp_id),
                 "delete-permanent": lambda: write_routes.api_delete_permanent(conn, exp_id, body),
@@ -563,8 +565,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             }
             handler = dispatch.get(action)
             if handler:
-                self._json(handler())
-                self._wal_checkpoint(conn)
+                self._run_post(handler, conn)
                 return
 
         # Session-scoped mutations: /api/session/<id>/<action>
@@ -592,8 +593,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 }
                 handler = sess_dispatch.get(action)
                 if handler:
-                    self._json(handler())
-                    self._wal_checkpoint(conn)
+                    self._run_post(handler, conn)
                     return
 
         # Global mutations
@@ -604,7 +604,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/bulk-delete-permanent": lambda: write_routes.api_bulk_delete_permanent(conn, body),
             "/api/bulk-delete-preview":  lambda: write_routes.api_bulk_delete_preview(conn, body),
             "/api/bulk-compact":         lambda: write_routes.api_compact(conn, body),
+            "/api/bulk-finish":          lambda: write_routes.api_bulk_finish(conn, body),
             "/api/bulk-export":          lambda: write_routes.api_bulk_export(conn, body),
+            # A read, but over a posted id set — see write_routes/param_study.py
+            "/api/multi-compare":        lambda: write_routes.api_multi_compare(conn, body),
+            "/api/param-study":          lambda: write_routes.api_param_study(conn, body),
+            "/api/param-matrix":         lambda: write_routes.api_param_matrix(conn, body),
+            "/api/param-effects":        lambda: write_routes.api_param_effects(conn, body),
+            "/api/top-runs":             lambda: write_routes.api_top_runs(conn, body),
+            "/api/best-so-far":          lambda: write_routes.api_best_so_far(conn, body),
+            "/api/pareto":               lambda: write_routes.api_pareto(conn, body),
             "/api/config/timezone":      lambda: write_routes.api_set_timezone(body),
             "/api/config/metrics":       lambda: write_routes.api_set_metric_settings(body),
             "/api/config/capture":       lambda: write_routes.api_set_capture_settings(body),
@@ -634,8 +643,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }
         handler = global_dispatch.get(path)
         if handler:
-            self._json(handler())
-            self._wal_checkpoint(conn)
+            self._run_post(handler, conn)
         else:
             self.send_error(404)
 
@@ -730,6 +738,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # json_dumps, not json.dumps: a bare Infinity token from one non-finite
         # metric value makes the whole response unparseable in the browser.
         self._send_bytes(json_dumps(data, default=str).encode(), "application/json")
+
+    def _run_post(self, handler, conn):
+        """Invoke a POST route, then WAL-checkpoint.
+
+        An ambiguous id *prefix* in the posted body becomes a clean
+        ``{"error": ...}`` instead of a 500. The CLI catches
+        ``AmbiguousPrefixError`` at its own dispatch boundary; this is the
+        dashboard's single equivalent, so every write route is covered in one
+        place — including the ``bulk-*`` / ``param-study`` handlers that resolve
+        a whole posted id list in a loop, where one bad prefix used to abort the
+        entire batch mid-commit. The dashboard UI always posts full ids; this
+        guards the JSON API against a CLI-shaped client that posts prefixes.
+        No checkpoint on the error path — nothing was committed.
+        """
+        try:
+            result = handler()
+        except AmbiguousPrefixError as e:
+            self._json({"error": str(e)})
+            return
+        self._json(result)
+        self._wal_checkpoint(conn)
 
     def _serve_static(self, name: str):
         """Serve an assembled dashboard bundle from /static/dashboard.{js,css}.
