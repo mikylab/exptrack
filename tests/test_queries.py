@@ -22,6 +22,37 @@ def test_find_experiment_not_found(tmp_project):
     assert result is None
 
 
+def test_ambiguous_prefix_refuses_instead_of_picking_one(tmp_project):
+    """A prefix matching several runs must raise, not silently pick one.
+
+    Regression: only `rm` guarded this; tag/show/finish/etc. resolved a short
+    prefix to whichever row sorted first and acted on the wrong run silently."""
+    from exptrack.core import get_db
+    from exptrack.core.queries import (
+        AmbiguousPrefixError,
+        find_experiment,
+        resolve_experiment_id,
+    )
+
+    conn = get_db()
+    ts = "2026-01-01T00:00:00"
+    for eid, nm in [("ab12345000", "alpha"), ("ab12345999", "beta"), ("cd99", "g")]:
+        conn.execute(
+            "INSERT INTO experiments (id,name,status,created_at,updated_at) "
+            "VALUES (?,?,?,?,?)", (eid, nm, "done", ts, ts))
+    conn.commit()
+
+    # Unique prefix still resolves.
+    assert resolve_experiment_id(conn, "cd") == "cd99"
+    # An exact full id is never ambiguous, even as a prefix of a longer id.
+    assert resolve_experiment_id(conn, "ab12345000") == "ab12345000"
+    # An ambiguous prefix raises rather than choosing arbitrarily.
+    import pytest
+    with pytest.raises(AmbiguousPrefixError) as e:
+        find_experiment(conn, "ab")
+    assert {m[0] for m in e.value.matches} == {"ab12345000", "ab12345999"}
+
+
 def test_get_experiment_detail(tmp_project, sample_experiment):
     """get_experiment_detail returns full experiment with params and metrics."""
     from exptrack.core import get_db
@@ -333,3 +364,27 @@ def test_get_experiment_detail_survives_malformed_tags(tmp_project, sample_exper
     assert detail is not None
     assert detail["tags"] == ["nope"]
     assert detail["studies"] == ["{"]
+
+
+def test_detail_and_export_survive_a_malformed_param_value(tmp_project, sample_experiment):
+    """A param whose stored value isn't valid JSON (hand-edited/legacy/third-party
+    row) must not 500 the detail view (polled every 5s) or an export — the list
+    view already salvaged it, and now these two readers share the same rule."""
+    from exptrack.core import get_db
+    from exptrack.core.queries import get_experiment_detail, get_export_data
+
+    conn = get_db()
+    # Not valid JSON — a bare, unquoted string, the common corruption.
+    conn.execute(
+        "INSERT INTO params (exp_id, key, value, source) VALUES (?,?,?,?)",
+        (sample_experiment.id, "note", "not json at all", "manual"),
+    )
+    conn.commit()
+
+    detail = get_experiment_detail(conn, sample_experiment.id)
+    assert detail is not None
+    assert detail["params"]["note"] == "not json at all"  # salvaged to raw string
+
+    export = get_export_data(conn, sample_experiment.id)
+    assert export is not None
+    assert export["params"]["note"] == "not json at all"

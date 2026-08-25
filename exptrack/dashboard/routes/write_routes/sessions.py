@@ -5,11 +5,15 @@ Session Trees mutations: session lifecycle plus per-node operations.
 """
 from __future__ import annotations
 
+from ._shared import body_str
+
 
 def api_session_note_node(conn, session_id: str, body: dict) -> dict:
     """Annotate a session node by id."""
     node_id = body.get("node_id", "")
-    text = body.get("text", "")
+    # body_str, not body.get: bound into an UPDATE, a non-string raised
+    # sqlite3.ProgrammingError out of the route.
+    text = body_str(body, "text")
     if not node_id:
         return {"error": "missing node_id"}
     row = conn.execute(
@@ -130,7 +134,7 @@ def api_session_rename_node(conn, session_id: str, body: dict) -> dict:
     if err:
         return err
     from exptrack.sessions.manager import rename_node
-    r = rename_node(node_id, body.get("label", ""))
+    r = rename_node(node_id, body_str(body, "label"))
     if not r.get("ok"):
         return {"error": r.get("error", "rename failed")}
     return {"ok": True, "label": r["label"]}

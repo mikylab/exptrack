@@ -1,4 +1,39 @@
 
+  /* ── Small buttons ──────────────────────────────────────────────────────
+     `.btn-sm` / `.btn-ghost` were used by the parameter matrix's header, its
+     selection bar and the toolbar's Analyze button — and styled nowhere, so
+     every one of them rendered as a raw platform default button: system font,
+     grey bevel, wrong size, ignoring the theme entirely. Against the rest of a
+     page that has one button look, that read as an unfinished view rather than
+     as three unstyled elements. Same shape as `.dc-button`, one step smaller,
+     since these sit inside toolbars rather than in a dialog footer. */
+  .btn-sm {
+    font-family: inherit; font-size: 12px; padding: 5px 10px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--card-bg); color: var(--fg);
+    cursor: pointer; white-space: nowrap; line-height: 1.4;
+  }
+  .btn-sm:hover { background: var(--code-bg); border-color: var(--blue); color: var(--blue); }
+  .btn-sm:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-sm:disabled:hover { background: var(--card-bg); border-color: var(--border); color: var(--fg); }
+  .btn-ghost { background: none; border-color: transparent; color: var(--muted); }
+  .btn-ghost:hover { background: var(--code-bg); border-color: var(--border); color: var(--fg); }
+
+  /* The standing not-logged-in strip. A dialog that keeps reappearing is the
+     failure this replaces; this states the same thing without taking the page. */
+  .auth-banner {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 9998;
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    flex-wrap: wrap; padding: 8px 16px;
+    background: var(--status-warning-soft); color: var(--fg);
+    border-top: 1px solid var(--status-warning);
+    font-size: 13px; line-height: 1.5;
+  }
+  .auth-banner code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--card-bg); padding: 1px 5px; border-radius: 3px;
+  }
+
   .help-btn {
     font-family: inherit; font-size: 13px; background: var(--code-bg);
     border: 1px solid var(--border); padding: 6px 12px; cursor: pointer;
@@ -458,13 +493,19 @@
   @media (max-width: 1100px) {
     .gb-sep { margin-left: 0; border-left: none; padding-left: 0; }
   }
-  .group-select {
+  /* The toolbar-scale select. `.group-select` is the original name (the "Group
+     by" picker it was written for); `.select-sm` is the same control under a
+     name a second user can reach for. One rule, because a bare <select> does
+     not fall back to the page's look — it falls back to the *operating
+     system's*, which is how the parameter matrix ended up with five platform
+     dropdowns among themed controls. */
+  .group-select, .select-sm {
     font-family: inherit; font-size: 12px; background: var(--code-bg);
     border: 1px solid var(--border); padding: 4px 8px; cursor: pointer;
     border-radius: 3px; color: var(--fg);
   }
-  .group-select:hover { border-color: var(--blue); }
-  .group-select:focus { outline: none; border-color: var(--blue); }
+  .group-select:hover, .select-sm:hover { border-color: var(--blue); }
+  .group-select:focus, .select-sm:focus { outline: none; border-color: var(--blue); }
   .group-header td { background: var(--code-bg); font-size: 12px; font-weight: 600; padding: 8px 16px; cursor: pointer; user-select: none; border-bottom: 2px solid var(--border); }
   .group-header td:hover { background: var(--border); }
   .group-header .group-label { color: var(--fg); }

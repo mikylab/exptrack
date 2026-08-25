@@ -25,9 +25,17 @@ outputs/
 # Node (dev-only dashboard ESLint tooling)
 node_modules/
 
-# Ignore all Markdown files
+# Ignore stray Markdown (scratch notes, generated reports) but keep the real
+# documentation. NOTE: git never ignores an already-tracked file, so the pages
+# under docs/ survived this rule by accident — a NEW page was silently dropped,
+# with `git add` reporting nothing. Hence the explicit directory allowlists.
 *.md
 
-# But keep these
 !README.md
 !CLAUDE.md
+!CHANGELOG.md
+!CONTRIBUTING.md
+!MAINTENANCE.md
+!docs/**/*.md
+!examples/**/*.md
+!exptrack/**/*.md

@@ -26,6 +26,11 @@ let expPageLoaded = 0;
 let expHasMore = false;
 let expTotal = 0;
 let currentDetailId = '';
+// {exp_id: "where it was set"} for every run pinned as a reference, filled by
+// loadStats. A Map rather than a Set because the badge has to be able to say
+// *which* level pinned it — "reference" with no origin is the ambiguity the
+// whole feature exists to avoid.
+let _referenceIds = new Map();
 let sortCol = 'created_at';
 let sortDir = 'desc';
 // Main-table grouping. Defaults to 'script' and is remembered across reloads.
@@ -84,8 +89,16 @@ let recentlyRenamedIds = new Set();
 // script's absolute path) was not on the list, so a run whose script had been
 // edited showed that blob as the headline row of "What changed", burying the
 // hyperparameter the user actually changed.
+// `error` is the one un-prefixed internal key: Experiment.fail() writes the
+// failure message there for backward compatibility (`_error_traceback` got the
+// prefix when it was added later). Without this exception a failed run's error
+// message surfaced as a "param change" against every other failed run.
+// Mirrors LEGACY_INTERNAL_PARAM_KEYS in core/utils.py — keep the two in step.
+const LEGACY_INTERNAL_PARAM_KEYS = new Set(['error']);
+
 function isUserParamKey(k) {
-  return !String(k).startsWith('_');
+  const s = String(k);
+  return !s.startsWith('_') && !LEGACY_INTERNAL_PARAM_KEYS.has(s);
 }
 
 // Renders one param-diff <tr> comparing the same key across two params
@@ -156,6 +169,19 @@ function metricGoodDirection(key) {
     if (LOWER_IS_BETTER_RE.test(part)) return -1;
   }
   return 1;
+}
+
+// The overrides as the server states goals: `{key: "min"|"max"}`. Sent with
+// any request whose answer depends on which direction is better, so the two
+// ends of one table can't disagree about who won.
+function metricPolarityGoals() {
+  const out = {};
+  const ov = _metricPolarityOverrides();
+  for (const k of Object.keys(ov)) {
+    if (ov[k] === 'lower') out[k] = 'min';
+    else if (ov[k] === 'higher') out[k] = 'max';
+  }
+  return out;
 }
 
 function setMetricPolarity(key, dir) {
@@ -251,6 +277,27 @@ function abbrevMetric(key) {
 let highlightColors = {}; // study -> color mapping
 
 // Column configuration: id, label, default visibility, sortable, min-width
+// The metric a *set* of runs is judged by: the most common resolved key, ties
+// broken by name so the answer is stable between renders. The JS mirror of
+// core/param_study.consensus_metric, and it exists for the same reason — rows
+// arrive newest-first, so taking the first run's key would let one legacy run
+// define the axis for the whole list.
+//
+// It lives here, in one copy, because two views derive it (the Result column's
+// sort and the filmstrip's badge) and they must label the same list with the
+// same metric. The client genuinely has to derive it locally: the set is
+// whatever the list is filtered to, which the server never sees.
+function consensusMetricKey(exps) {
+  const counts = {};
+  for (const e of exps || []) {
+    const k = (e.primary_metric || {}).key;
+    if (k) counts[k] = (counts[k] || 0) + 1;
+  }
+  const keys = Object.keys(counts);
+  if (!keys.length) return '';
+  return keys.sort((a, b) => counts[b] - counts[a] || (a < b ? -1 : 1))[0];
+}
+
 const ALL_COLUMNS = [
   {id: 'pin', label: '', sortable: false, defaultOn: true, width: 28},
   {id: 'cb', label: '', sortable: false, defaultOn: true, width: 32},
@@ -264,6 +311,11 @@ const ALL_COLUMNS = [
   {id: 'studies', label: 'Studies', sortable: true, defaultOn: true, width: 84},
   {id: 'stage', label: 'Stage', sortable: true, defaultOn: true, width: 70},
   {id: 'notes', label: 'Notes', sortable: false, defaultOn: true, width: 112},
+  // The number each run is judged by, resolved server-side (run → study →
+  // project → heuristic). It sits before the general Metrics cell because that
+  // cell shows the first three keys a run happened to log in arbitrary order —
+  // useful for a glance, useless for "which of these won".
+  {id: 'primary', label: 'Result', sortable: true, defaultOn: true, width: 104},
   {id: 'metrics', label: 'Metrics', sortable: false, defaultOn: true, width: 190},
   {id: 'changes', label: 'Changes', sortable: false, defaultOn: false, width: 80},
   {id: 'started', label: 'Started', sortable: true, defaultOn: true, width: 118},
@@ -820,6 +872,14 @@ function _storageGet(k) { try { return localStorage.getItem(k) || ''; } catch (e
 function _storageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 function _storageDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
 
+// One CSV cell, quoted only when it has to be. Spelled out separately in every
+// surface that exports a table, so a fix to the quoting rule reached one of
+// them.
+function csvCell(v) {
+  const s = v === undefined || v === null ? '' : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
 function downloadBlob(text, filename, mime) {
   const blob = new Blob([text], {type: mime || 'text/plain'});
   const a = document.createElement('a');
@@ -1087,7 +1147,50 @@ async function ensureAuth() {
   return _authReady;
 }
 
-function _showLoginOverlay() {
+// The standing "not logged in" state. Deliberately a strip rather than a
+// dialog: it does not block the page, it does not come back on its own, and it
+// is the one control that reopens the prompt.
+function _showAuthBanner() {
+  if (document.getElementById('exptrack-auth-banner')) return;
+  const el = document.createElement('div');
+  el.id = 'exptrack-auth-banner';
+  el.className = 'auth-banner';
+  el.innerHTML = '<span>Not logged in \u2014 requests will keep failing. '
+    + 'Restarting <code>exptrack ui</code> mints a new token; opening the URL it '
+    + 'printed logs you back in.</span>'
+    + '<button class="btn-sm" onclick="openLoginPrompt()">Enter token</button>';
+  document.body.appendChild(el);
+}
+
+function _hideAuthBanner() {
+  const el = document.getElementById('exptrack-auth-banner');
+  if (el) el.remove();
+}
+
+function openLoginPrompt() { _showLoginOverlay(true); }
+
+// The token prompt. Shown at boot when there is no usable token, and again
+// whenever any request comes back 401 — which is not a rare event: `exptrack
+// ui` mints a *random token per session*, so restarting the dashboard
+// invalidates the one this browser stored, and the next background poll 401s.
+//
+// It used to have no way out: no Cancel, no Escape, no click-outside, over the
+// whole viewport at z-index 10000. So a stale token did not degrade the page,
+// it *locked* it — every control unreachable behind a dialog whose only exit
+// was a token the user had to go and find, with the error line ("Invalid token")
+// giving no hint that the reason was a restart. It is now dismissible, and says
+// what actually happened.
+// Once dismissed, a 401 raises the *banner* rather than the modal. Making the
+// modal dismissible fixed the lock-out and created a subtler failure in its
+// place: a session with a stale token renders (from cache, or empty), reads as
+// working, and then ambushes you with the full-screen prompt again at the first
+// thing you click — "the home page is fine but Compare demands a token". One
+// dismissal is one decision; after it the state is stated where you can see it
+// and act on it when you choose.
+let _authDismissed = false;
+
+function _showLoginOverlay(force) {
+  if (_authDismissed && !force) { _showAuthBanner(); return; }
   if (document.getElementById('exptrack-login-overlay')) return;
   const overlay = document.createElement('div');
   overlay.id = 'exptrack-login-overlay';
@@ -1098,9 +1201,12 @@ function _showLoginOverlay() {
     + 'border-radius:8px;padding:28px 32px;min-width:360px;max-width:440px;'
     + 'box-shadow:0 12px 40px rgba(0,0,0,.4);font-family:system-ui,sans-serif">'
     +   '<div style="font-size:18px;font-weight:600;margin-bottom:6px">exptrack dashboard</div>'
-    +   '<div style="color:var(--muted,#666);font-size:13px;margin-bottom:16px">'
-    +     'Paste the token from your terminal. The URL printed by '
-    +     '<code>exptrack ui</code> contains it after <code>?token=</code>.'
+    +   '<div style="color:var(--muted,#666);font-size:13px;margin-bottom:16px;line-height:1.5">'
+    +     'This dashboard needs the token printed by <code>exptrack ui</code> — '
+    +     'it is in that URL after <code>?token=</code>. '
+    +     '<strong>Restarting <code>exptrack ui</code> mints a new token</strong>, so an '
+    +     'older tab will ask for it again; opening the freshly printed URL logs you '
+    +     'straight back in.'
     +   '</div>'
     +   '<input id="exptrack-token-input" type="password" autocomplete="off" '
     +          'placeholder="token" '
@@ -1112,6 +1218,11 @@ function _showLoginOverlay() {
     +                  'background:#2563eb;color:#fff;font-size:14px;font-weight:600;cursor:pointer">'
     +     'Log in'
     +   '</button>'
+    +   '<button id="exptrack-login-dismiss" '
+    +           'style="margin-top:8px;width:100%;padding:8px;border:0;border-radius:4px;'
+    +                  'background:none;color:var(--muted,#666);font-size:13px;cursor:pointer">'
+    +     'Dismiss (Esc)'
+    +   '</button>'
     +   '<div id="exptrack-login-error" style="color:#dc3545;font-size:13px;'
     +        'margin-top:10px;min-height:18px"></div>'
     + '</div>';
@@ -1122,6 +1233,22 @@ function _showLoginOverlay() {
   const err = document.getElementById('exptrack-login-error');
   input.focus();
 
+  function dismiss() {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+    // Dismissed without a token, the page behind is stale or empty and every
+    // request will keep failing — leave a standing banner rather than a
+    // silently dead dashboard, and don't raise this dialog again unasked.
+    if (!_authToken) {
+      _authDismissed = true;
+      _showAuthBanner();
+    }
+  }
+  function onKey(ev) { if (ev.key === 'Escape') dismiss(); }
+  document.addEventListener('keydown', onKey);
+  overlay.addEventListener('click', ev => { if (ev.target === overlay) dismiss(); });
+  document.getElementById('exptrack-login-dismiss').onclick = dismiss;
+
   async function submit() {
     const tok = input.value.trim();
     if (!tok) { err.textContent = 'Enter a token.'; return; }
@@ -1130,10 +1257,17 @@ function _showLoginOverlay() {
       if (await _validateToken(tok)) {
         _authToken = tok;
         _storageSet(_TOKEN_KEY, tok);
+        _authDismissed = false;
+        _hideAuthBanner();
         overlay.remove();
+        document.removeEventListener('keydown', onKey);
         _authResolve(true);
+        // The request that 401'd returned empty and nothing retries it, so the
+        // view behind the dialog is whatever half-rendered before the token
+        // went stale. Reload it rather than leave a blank page logged in.
+        if (typeof loadExperiments === 'function') loadExperiments();
       } else {
-        err.textContent = 'Invalid token. Check the one printed by exptrack ui.';
+        err.textContent = 'Invalid token. Check the URL printed by the running exptrack ui.';
         _storageDel(_TOKEN_KEY);
       }
     } finally {
@@ -1296,6 +1430,15 @@ function fmtDur(s) {
 // created_at is stored as UTC ISO; bare timestamps are treated as UTC.
 function expDate(iso) {
   if (!iso) return null;
+  // Not every timestamp in the dashboard is an ISO string. `sessions` and
+  // `session_nodes` store unix floats, and these helpers are shared across
+  // both domains — `fmtTimeAgo(s.created_at * 1000)` on the sessions list
+  // handed a *number* to what assumed a string, and reading `.endsWith` off it
+  // threw a TypeError out of the render loop, taking the whole session list
+  // down with it. A number is epoch milliseconds, which is what `new Date(n)`
+  // already means; there is nothing to append a zone suffix to.
+  if (typeof iso === 'number') return isNaN(iso) ? null : new Date(iso);
+  if (typeof iso !== 'string') return null;
   return new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
 }
 
@@ -1489,7 +1632,10 @@ function fmtTimeAgo(iso) {
 
 function fmtDt(iso) {
   if (!iso) return '--';
-  const d = new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
+  // expDate is the one normalization — these used to re-implement it inline and
+  // so inherited the string-only assumption it has now shed.
+  const d = expDate(iso);
+  if (!d || isNaN(d)) return '--';
   if (currentTimezone) {
     try {
       const parts = new Intl.DateTimeFormat('en-US', {
@@ -1506,7 +1652,8 @@ function fmtDt(iso) {
 
 function fmtDtFull(iso) {
   if (!iso) return '--';
-  const d = new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
+  const d = expDate(iso);
+  if (!d || isNaN(d)) return '--';
   const opts = { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
   if (currentTimezone) opts.timeZone = currentTimezone;
   try { return d.toLocaleString('en-US', opts); } catch(e) {}

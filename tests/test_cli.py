@@ -135,3 +135,63 @@ def test_cmd_stale_ignores_recent_experiments(tmp_project):
 
     # Clean up
     exp.finish()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for bugs found in the stability hunt
+# ---------------------------------------------------------------------------
+
+def test_clean_excludes_trashed_runs(tmp_project):
+    """`clean` must not permanently delete already-trashed runs (data loss).
+
+    Regression: the failed-run and --older-than selects omitted
+    `deleted_at IS NULL`, so a soft-deleted run was fed to a permanent delete."""
+    from exptrack.cli.mutate_cmds import cmd_clean
+    from exptrack.core import Experiment, get_db
+
+    live = Experiment(script="train.py"); live.fail("boom")
+    trashed = Experiment(script="train.py"); trashed.fail("boom")
+    conn = get_db()
+    conn.execute("UPDATE experiments SET deleted_at=? WHERE id=?",
+                 ("2026-01-01T00:00:00", trashed.id))
+    conn.commit()
+
+    out, _ = _capture_output(cmd_clean, SimpleNamespace(dry_run=True))
+    assert live.id[:6] in out            # a real failed run is offered for cleaning
+    assert trashed.id[:6] not in out     # the already-trashed one is left alone
+
+
+def test_fmt_g_handles_none():
+    """A NULL metric value must render as '--', not crash the format spec."""
+    from exptrack.cli.inspect_cmds import _fmt_g
+    assert _fmt_g(None).strip() == "--"
+    assert _fmt_g(0.5).strip() == "0.5"
+
+
+def test_show_survives_null_metric_value(tmp_project):
+    """`show` must not TypeError on a metric whose value is NULL (legacy DB)."""
+    from exptrack.cli.inspect_cmds import cmd_show
+    from exptrack.core import Experiment, get_db
+
+    exp = Experiment(script="train.py"); exp.finish()
+    conn = get_db()
+    conn.execute("INSERT INTO metrics (exp_id, key, value, step) VALUES (?,?,?,?)",
+                 (exp.id, "loss", None, 0))
+    conn.commit()
+
+    out, _ = _capture_output(cmd_show, SimpleNamespace(id=exp.id))  # must not raise
+    assert "loss" in out
+
+
+def test_tag_exits_nonzero_on_unknown_id(tmp_project):
+    """tag/untag must fail (like note/study) when an id doesn't resolve, so a
+    script tagging a list can detect a typo."""
+    import pytest
+
+    from exptrack.cli.mutate_cmds import cmd_tag
+    from exptrack.core import Experiment
+
+    Experiment(script="train.py").finish()  # one real run exists
+    with pytest.raises(SystemExit) as e:
+        _capture_output(cmd_tag, SimpleNamespace(id=["zzzznope", "mytag"]))
+    assert e.value.code != 0

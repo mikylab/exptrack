@@ -21,7 +21,7 @@ from datetime import datetime
 from ..core.db import get_db
 from ..sessions.manager import build_tree
 from ..sessions.tree import find_session, list_sessions, render_ascii
-from .formatting import G, R, Y, bold, col, dim
+from .formatting import G, R, Y, bold, col, confirm, dim
 
 
 def cmd_sessions(args):
@@ -64,7 +64,7 @@ def cmd_session_nodes(args):
         sys.exit(1)
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, parent_id, node_type, label, seq, created_at "
+        "SELECT id, parent_id, node_type, label, seq, created_at, deleted_at "
         "FROM session_nodes WHERE session_id=? ORDER BY seq",
         (s["id"],),
     ).fetchall()
@@ -75,8 +75,12 @@ def cmd_session_nodes(args):
                 ts = datetime.fromtimestamp(r["created_at"]).strftime("%m/%d %H:%M")
             except Exception:
                 pass
+        # A trashed node reachable from a listing has to say it is trashed —
+        # this printed it indistinguishably from a live one, so a node someone
+        # had deleted still read as part of the tree.
+        mark = col("  [trashed]", Y) if r["deleted_at"] else ""
         print(f"{r['id'][:8]}  seq={r['seq']:>3}  {r['node_type']:10}  "
-              f"{r['label']:40}  {dim(ts)}")
+              f"{r['label']:40}  {dim(ts)}{mark}")
 
 
 def cmd_session_rm(args):
@@ -121,12 +125,11 @@ def cmd_session_purge(args):
                   f"move it there first with `exptrack session rm`", Y),
               file=sys.stderr)
         sys.exit(1)
-    if not getattr(args, "yes", False):
-        resp = input(f"Permanently delete session '{s['name']}' and all its "
-                     f"nodes? This cannot be undone [y/N] ")
-        if resp.strip().lower() not in ("y", "yes"):
-            print(dim("aborted"))
-            return
+    if not confirm(f"Permanently delete session '{s['name']}' and all its "
+                   f"nodes? This cannot be undone [y/N] ",
+                   getattr(args, "yes", False)):
+        print(dim("aborted"))
+        return
     from ..sessions.manager import purge_session
     purge_session(s["id"])
     print(col(f"permanently deleted session {s['id'][:8]} ({s['name']})", G))
@@ -166,11 +169,9 @@ def cmd_session_finalize(args):
         print(f"  {mark} {n['node_type']:10} {label:24} {note}")
     print(dim(f"study: {study}   "
               f"{'will move session to Trash' if soft_delete else 'session kept'}"))
-    if not getattr(args, "yes", False):
-        resp = input("Proceed? [y/N] ")
-        if resp.strip().lower() not in ("y", "yes"):
-            print(dim("aborted"))
-            return
+    if not confirm("Proceed? [y/N] ", getattr(args, "yes", False)):
+        print(dim("aborted"))
+        return
 
     res = finalize_session(s["id"], node_ids=nodes, study=study,
                            soft_delete=soft_delete)
@@ -213,10 +214,9 @@ def cmd_session_rm_node(args):
                f"{'s' if preview['experiments'] != 1 else ''} preserved)")
     if not getattr(args, "yes", False):
         print(f"About to delete {summary}.")
-        resp = input("Continue? [y/N] ").strip().lower()
-        if resp not in ("y", "yes"):
-            print(col("aborted", Y))
-            return
+    if not confirm("Continue? [y/N] ", getattr(args, "yes", False)):
+        print(col("aborted", Y))
+        return
     r = delete_node(row["id"])
     if not r.get("ok"):
         print(col(f"error: {r.get('error', 'unknown')}", R), file=sys.stderr)
@@ -267,10 +267,9 @@ def cmd_session_purge_node(args):
     if not getattr(args, "yes", False):
         print(f"Permanently delete {row['node_type']} \"{label}\" and its trashed "
               f"subtree? This cannot be undone.")
-        resp = input("Continue? [y/N] ").strip().lower()
-        if resp not in ("y", "yes"):
-            print(col("aborted", Y))
-            return
+    if not confirm("Continue? [y/N] ", getattr(args, "yes", False)):
+        print(col("aborted", Y))
+        return
     from ..sessions.manager import purge_node
     r = purge_node(row["id"])
     if not r.get("ok"):
@@ -294,10 +293,9 @@ def cmd_session_empty_trash(args):
     if not getattr(args, "yes", False):
         print(f"Permanently delete all {n} trashed node{'s' if n != 1 else ''} "
               f"in session {s['id'][:8]}? This cannot be undone.")
-        resp = input("Continue? [y/N] ").strip().lower()
-        if resp not in ("y", "yes"):
-            print(col("aborted", Y))
-            return
+    if not confirm("Continue? [y/N] ", getattr(args, "yes", False)):
+        print(col("aborted", Y))
+        return
     r = empty_trash(s["id"])
     print(col(f"emptied trash — removed {r['nodes']} node"
               f"{'s' if r['nodes'] != 1 else ''}", G))

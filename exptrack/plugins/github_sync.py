@@ -30,6 +30,7 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..core.utils import json_dumps
 from . import Plugin
 
 if TYPE_CHECKING:
@@ -80,8 +81,13 @@ class GitHubSyncPlugin(Plugin):
 
         try:
             current, sha = self._get_file(tok)
+            # json_dumps, not json.dumps: a non-finite param value (a run with
+            # --lr inf) is stored as a Python float and would serialize to the
+            # bare token `Infinity`, which is not valid JSON — it breaks
+            # `JSON.parse`/`jq`/any strict reader for the whole line. json_dumps
+            # renders it as null, keeping the pushed JSONL parseable everywhere.
             new_content = (current.rstrip("\n") + "\n" if current else "") + \
-                          json.dumps(record, default=str) + "\n"
+                          json_dumps(record, default=str) + "\n"
             self._put_file(tok, new_content, sha,
                            msg=f"exptrack: {exp.status} {exp.name[:50]} [{exp.id[:6]}]")
             print(f"[exptrack] Synced to {self.repo}/{self.file}")

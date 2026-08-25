@@ -89,11 +89,28 @@ def test_git_diff_sentinel_distinguishes_failure(monkeypatch):
 
     monkeypatch.setattr(git, "_git_status", lambda *cmd: (False, ""))
     monkeypatch.setattr(git, "_is_git_repo", lambda: True)
+    monkeypatch.setattr(git, "_has_unborn_head", lambda: False)
     assert git.git_diff("HEAD") == git.CAPTURE_FAILED
 
     # Not a repo → an empty diff is honest, not a capture failure.
     monkeypatch.setattr(git, "_is_git_repo", lambda: False)
     assert git.git_diff("HEAD") == ""
+
+
+def test_a_repo_with_no_commits_is_not_a_capture_failure(monkeypatch):
+    """`git diff` fails on an unborn HEAD because there is nothing to diff
+    against — the normal state right after `git init` — so recording
+    CAPTURE_FAILED made every early run claim its capture had broken."""
+    from exptrack.core import git
+
+    monkeypatch.setattr(git, "_git_status", lambda *cmd: (False, ""))
+    monkeypatch.setattr(git, "_is_git_repo", lambda: True)
+    monkeypatch.setattr(git, "_has_unborn_head", lambda: True)
+    assert git.git_diff("HEAD") == git.NO_COMMITS
+
+    from exptrack.core.db import diff_sentinel_kind, is_diff_sentinel
+    assert is_diff_sentinel(git.NO_COMMITS)
+    assert diff_sentinel_kind(git.NO_COMMITS) == "no_commits"
 
 
 # ── Snapshot capture is not exclusive to `exptrack run` ──────────────────────

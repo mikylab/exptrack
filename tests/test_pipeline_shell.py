@@ -105,7 +105,9 @@ class TestRunStart:
         ).fetchall()
         params = {r["key"]: json.loads(r["value"]) for r in rows}
         assert params["lr"] == 0.001
-        assert params["batch-size"] == 32
+        # Key is normalized (hyphen -> underscore) to match argparse capture, so
+        # `run-start --batch-size` and `exptrack run --batch-size` agree.
+        assert params["batch_size"] == 32
 
     def test_run_start_boolean_flags(self, tmp_project):
         """run-start treats lone --flag as True."""
@@ -118,7 +120,7 @@ class TestRunStart:
             "SELECT key, value FROM params WHERE exp_id=?", (exp_id,)
         ).fetchall()
         params = {r["key"]: json.loads(r["value"]) for r in rows}
-        assert params["use-gpu"] is True
+        assert params["use_gpu"] is True  # normalized to match argparse capture
         assert params["lr"] == 0.01
 
     def test_run_start_with_custom_name(self, tmp_project):
@@ -916,23 +918,23 @@ class TestCoerceStr:
     """Test the value coercion helper."""
 
     def test_coerce_int(self):
-        from exptrack.cli.pipeline_cmds import _coerce_str
+        from exptrack.core.utils import coerce_scalar as _coerce_str
         assert _coerce_str("42") == 42
 
     def test_coerce_float(self):
-        from exptrack.cli.pipeline_cmds import _coerce_str
+        from exptrack.core.utils import coerce_scalar as _coerce_str
         assert _coerce_str("0.01") == 0.01
 
     def test_coerce_bool_true(self):
-        from exptrack.cli.pipeline_cmds import _coerce_str
+        from exptrack.core.utils import coerce_scalar as _coerce_str
         assert _coerce_str("true") is True
 
     def test_coerce_bool_false(self):
-        from exptrack.cli.pipeline_cmds import _coerce_str
+        from exptrack.core.utils import coerce_scalar as _coerce_str
         assert _coerce_str("false") is False
 
     def test_coerce_string(self):
-        from exptrack.cli.pipeline_cmds import _coerce_str
+        from exptrack.core.utils import coerce_scalar as _coerce_str
         assert _coerce_str("resnet50") == "resnet50"
 
 
@@ -971,8 +973,9 @@ class TestRunStartHelpers:
         from exptrack.cli.pipeline_cmds import _parse_freeform_params
         got = _parse_freeform_params(
             ["--lr", "0.01", "--batch=32", "--use-gpu", "--name", "ignored"])
-        # space-separated, =-separated, bare flag all parsed; reserved key dropped
-        assert got == {"lr": 0.01, "batch": 32, "use-gpu": True}
+        # space-separated, =-separated, bare flag all parsed; reserved key dropped;
+        # keys normalized (use-gpu -> use_gpu) to match argparse capture.
+        assert got == {"lr": 0.01, "batch": 32, "use_gpu": True}
 
     def test_parse_freeform_params_drops_reserved(self):
         from exptrack.cli.pipeline_cmds import _parse_freeform_params

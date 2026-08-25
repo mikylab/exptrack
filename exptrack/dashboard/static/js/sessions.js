@@ -46,15 +46,10 @@ function toggleSessionsTab() {
     loadSessionsList();
     return;
   }
+  releaseCanvas();
   document.body.classList.add('sessions-active');
   const tab = document.getElementById('sessions-tab');
-  const welcome = document.getElementById('welcome-state');
-  const detail = document.getElementById('detail-view');
-  const compare = document.getElementById('compare-view');
   if (tab) tab.style.display = 'flex';
-  if (welcome) welcome.style.display = 'none';
-  if (detail) detail.style.display = 'none';
-  if (compare) compare.style.display = 'none';
   loadSessionsList();
 }
 
@@ -730,8 +725,7 @@ function toggleCompareMode() {
   _applyCompareMode();
   _rerenderTreeContainer();
   _renderCompareBar();
-  const panel = document.getElementById('session-compare');
-  if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+  _closeCompareResult();
 }
 
 // Sync the toggle button / body class / detail panel to the current
@@ -741,9 +735,19 @@ function _applyCompareMode() {
   const btn = document.getElementById('session-compare-toggle');
   if (btn) btn.classList.toggle('active', _compareMode);
   document.body.classList.toggle('session-compare-mode', _compareMode);
-  // Hide single-node detail while comparing.
   const detail = document.getElementById('session-detail');
-  if (detail) detail.classList.remove('visible');
+  if (!detail) return;
+  if (_compareMode) {
+    // Hide single-node detail while comparing.
+    detail.classList.remove('visible');
+    return;
+  }
+  // Leaving compare mode: put the node you had open back. Exiting used to hide
+  // the detail on the way out too, so "Done" dropped you on a tree with
+  // nothing selected and an empty panel beside it — the node you had been
+  // reading before you started comparing was still in `_selectedNodeId`, and
+  // the only way back to it was to find and click it again.
+  if (_selectedNodeId) selectNode(_selectedNodeId);
 }
 
 function toggleCompareNode(nodeId) {
@@ -846,22 +850,98 @@ function _renderCompareBar() {
     </span>`;
 }
 
+// Close the comparison *result* without touching the picks that produced it.
+//
+// The result panel's own Close button used to call clearCompare(), so dismissing
+// a comparison also discarded the selection behind it — and the picks are the
+// expensive part: on a tree of any size they are several deliberate clicks, and
+// wanting the columns off screen (to look at the tree again, to add a fourth
+// branch) is not wanting to start over. Clear is still one button away, and now
+// means only what it says.
+function _closeCompareResult() {
+  const panel = document.getElementById('session-compare');
+  if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+}
+
 function clearCompare() {
   _compareNodes = [];
   _rerenderTreeContainer();
   _renderCompareBar();
-  const panel = document.getElementById('session-compare');
-  if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+  _closeCompareResult();
+}
+
+// Picks that no longer resolve to a node, stated in one vocabulary wherever a
+// comparison reports itself — both heads below render this same chip, so the
+// count and the wording cannot drift apart.
+function _missingPicksHtml(missing) {
+  if (!missing) return '';
+  return `<span class="cmp-missing" title="Picked, but no longer in this tree — trashed, or removed since you picked it">`
+    + `${missing} pick${missing === 1 ? '' : 's'} no longer in the tree</span>`;
+}
+
+// Metrics per branch, from the `session_node_id` tag written at logging time.
+// The numbers were always there; this view showed type, cell count and diff
+// size but not the one thing you branch to find out — so comparing `val_acc`
+// across two branches meant materializing both into experiments first.
+// Best per row is marked using the shared polarity rule, so "green means
+// better" holds here as it does everywhere else.
+function _nodeMetricsTable(nodes) {
+  const keys = [...new Set(nodes.flatMap(n => Object.keys(n.metrics || {})))].sort();
+  if (!keys.length) return '';
+
+  let h = '<div class="cmp-metrics"><span class="section-title">Metrics per branch</span>'
+    + '<table class="metrics-table"><tr><th>Metric</th>';
+  for (const n of nodes) {
+    h += '<th>' + escapeHtml(n.label || '(unlabeled)') + '</th>';
+  }
+  h += '</tr>';
+  for (const k of keys) {
+    const vals = nodes.map(n => (n.metrics || {})[k]);
+    const nums = vals.filter(v => typeof v === 'number');
+    let best = null;
+    // `metricMoved`, not `!==`: two values that differ below the display
+    // precision would otherwise tint one of two identical-looking numbers as
+    // the winner. Same rule the multi-compare table this mirrors uses.
+    if (nums.length > 1 && metricMoved(Math.min(...nums), Math.max(...nums))) {
+      best = metricGoodDirection(k) < 0 ? Math.min(...nums) : Math.max(...nums);
+    }
+    h += '<tr><td>' + escapeHtml(k) + '</td>';
+    for (const v of vals) {
+      if (typeof v !== 'number') { h += '<td>--</td>'; continue; }
+      h += '<td' + (v === best ? ' class="cmp-best-max"' : '') + '>'
+        + escapeHtml(fmtMetricVal(v)) + '</td>';
+    }
+    h += '</tr>';
+  }
+  return h + '</table></div>';
 }
 
 function runCompare() {
   const data = _treeCache[_activeSessionId];
   if (!data || _compareNodes.length < 2) return;
-  const nodes = _compareNodes
-    .map(id => findNodeInTree(data.root, id))
-    .filter(Boolean);
+  // A pick can stop resolving between the click and the compare — the node was
+  // trashed in another tab, or the tree was reloaded without it. Dropping those
+  // silently rendered three columns for four picks, with the bar still saying
+  // four: a comparison quietly missing one of the things being compared, which
+  // is the one kind of wrong this view must not be.
+  const resolved = _compareNodes.map(id => findNodeInTree(data.root, id));
+  const nodes = resolved.filter(Boolean);
+  const missing = resolved.length - nodes.length;
   const panel = document.getElementById('session-compare');
   if (!panel) return;
+  if (nodes.length < 2) {
+    // Say so rather than no-op: the bar's Compare button is live (it counts
+    // picks, not resolvable ones), so a silent return reads as a dead button.
+    panel.innerHTML = `
+      <div class="cmp-head">
+        <span class="section-title">Nothing left to compare</span>
+        ${_missingPicksHtml(missing)}
+        <button class="ghost" onclick="clearCompare()">Clear picks</button>
+      </div>
+      <p class="cmp-empty">Pick two nodes that are still in the tree, or clear and start again.</p>`;
+    panel.style.display = 'block';
+    return;
+  }
   const cols = nodes.map(node => {
     const latest = _getLatestOutput(node);
     const cellCount = node.cell_source ? node.cell_source.split(_CELL_SEP_RE).length : 0;
@@ -886,8 +966,10 @@ function runCompare() {
   panel.innerHTML = `
     <div class="cmp-head">
       <span class="section-title">Comparing ${nodes.length} nodes</span>
-      <button class="ghost" onclick="clearCompare()">Close</button>
+      ${_missingPicksHtml(missing)}
+      <button class="ghost" onclick="_closeCompareResult()">Close</button>
     </div>
+    ${_nodeMetricsTable(nodes)}
     <div class="cmp-grid" style="grid-template-columns:repeat(${nodes.length}, minmax(220px, 1fr))">${cols}</div>`;
   panel.style.display = 'block';
   panel.scrollIntoView({behavior: 'smooth', block: 'nearest'});
@@ -1136,6 +1218,10 @@ function _pairHunkRows(rows) {
 
 function renderDiffSection(diff, title) {
   if (!diff) return '';
+  if (diff.startsWith('[no-commits-yet')) {
+    return `<div><span class="section-title">${escapeHtml(title)}</span>
+      <pre class="diff plain" style="font-style:italic">the repository had no commits yet (nothing to diff against).</pre></div>`;
+  }
   if (diff.startsWith('[capture-failed')) {
     return `<div><span class="section-title">${escapeHtml(title)}</span>
       <pre class="diff plain" style="color:var(--yellow,#e8a735);font-style:italic">git diff failed to capture for this checkpoint (not a clean tree).</pre></div>`;

@@ -180,6 +180,10 @@ def attach_notebook(exp: Experiment, nb_name: str = "notebook", ip=None):
     _nb_state["first_run"]    = True
     _nb_state["last_cell_hash"] = None
     _nb_state["hash_to_last_exec_hash"] = {}
+    # Reset like every other per-run key: a second run in the same kernel
+    # carried the first run's counter, so its setup cells were labelled
+    # setup_3, setup_4… instead of starting at 1.
+    _nb_state["setup_count"]  = 0
     _nb_state["last_error"]   = None
     if ip is None:
         try:
@@ -212,6 +216,7 @@ def attach_notebook_deferred(nb_file: str = "", ip=None, start_fn=None):
     _nb_state["exp"] = None
     _nb_state["last_cell_hash"] = None
     _nb_state["hash_to_last_exec_hash"] = {}
+    _nb_state["setup_count"] = 0
     _nb_state["last_error"] = None
 
     # Eagerly patch savefig so plots saved before the experiment is created
@@ -350,12 +355,18 @@ def _get_cell_source(result, ip):
             pass
     if output is None and source:
         try:
-            exec_count = ip.execution_count
+            # This cell's own execution count, not the shell's current one.
+            # `ip.execution_count` has already advanced in a real kernel (which
+            # is why the -1 fallback exists), but under
+            # `InteractiveShell.run_cell` — embedded shells, and the way tests
+            # drive this — it has not, so the fallback attributed the *previous*
+            # cell's value to a cell that produced no output.
+            exec_count = getattr(result, "execution_count", None)
+            if exec_count is None:
+                exec_count = ip.execution_count
             out_dict = ip.user_ns.get("Out", {})
             if exec_count in out_dict:
                 output = repr(out_dict[exec_count])
-            elif exec_count - 1 in out_dict:
-                output = repr(out_dict[exec_count - 1])
         except Exception as e:
             debug_log(f"could not get cell output from Out dict: {e}")
     return source, output
@@ -606,8 +617,11 @@ def _log_hp_params(exp, ns, new_vars, changed_vars, source_diff,
     hp_changed = {k: _scalar_val(k) for k in changed_vars if _HP_RE.match(k) and _scalar_val(k) is not None}
     if hp_new or hp_changed:
         exp.log_params({**hp_new, **hp_changed})
-        from ..core import make_run_name
-        exp._rename(make_run_name(exp.script, exp._params))
+        # Only rename a run that still carries a generated name. This used to
+        # be unconditional, so `%exp_start my-named-baseline` followed by a cell
+        # assigning `lr = 0.01` replaced the name the user had just chosen —
+        # while still reporting the run as user-named.
+        exp.refresh_auto_name()
 
     all_new_var = {f"_var/{k}": v["param"] for k, v in new_vars.items()}
     all_changed_var = {f"_var/{k}": d["param"] for k, d in changed_vars.items()}

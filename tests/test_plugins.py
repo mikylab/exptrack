@@ -124,3 +124,38 @@ def test_on_fail_dispatches(tmp_project):
     assert mock.events[0] == ("fail", exp.id, "out of memory")
 
     exp.finish()
+
+
+def test_github_sync_emits_parseable_json_for_non_finite_param(tmp_project, monkeypatch):
+    """github_sync must serialize with core.utils.json_dumps, not stdlib
+    json.dumps: a non-finite param value (a run with --lr inf, stored as a float)
+    would otherwise write the bare token Infinity/NaN into the pushed JSONL,
+    which is not valid JSON and breaks JSON.parse/jq for the whole line."""
+    import json
+    from types import SimpleNamespace
+
+    from exptrack.plugins.github_sync import GitHubSyncPlugin
+
+    plugin = GitHubSyncPlugin({"repo": "owner/repo", "file": "runs.jsonl"})
+    monkeypatch.setenv(plugin.token_env, "tok")
+
+    captured = {}
+    monkeypatch.setattr(plugin, "_get_file", lambda tok: ("", None))
+    monkeypatch.setattr(plugin, "_put_file",
+                        lambda tok, content, sha, msg: captured.__setitem__("c", content))
+
+    exp = SimpleNamespace(
+        id="abc123", name="run", status="done", project="p", created_at="t",
+        duration_s=1.0, script="train.py", git_branch=None, git_commit=None,
+        git_diff="", _params={"lr": float("inf"), "wd": float("nan")},
+        last_metrics=lambda: {}, tags=[], notes="",
+    )
+    plugin._push(exp)
+
+    def _reject(tok):
+        raise AssertionError(f"non-JSON token emitted: {tok}")
+
+    # Strict parse — bare Infinity/NaN would raise here, as JSON.parse/jq would.
+    parsed = json.loads(captured["c"].strip(), parse_constant=_reject)
+    assert parsed["params"]["lr"] is None
+    assert parsed["params"]["wd"] is None

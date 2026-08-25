@@ -32,10 +32,24 @@ Shell / SLURM Pipeline (works with any language — Python, C++, Julia, R, shell
 
 Inspect
   exptrack ls [-n 50]               List experiments (--tag, --study to filter)
+             [--script model_a]     Only runs of one model (substring match)
+             [--since 7d]           Only runs since then (7d, 24h, or a date)
+             [--param lr=0.01]      Only runs whose param matches (repeatable;
+                                      values compare normalized)
   exptrack show <id> [--timeline]   Full details (params, metrics, artifacts, diff)
   exptrack timeline <id> [-c]       Execution timeline (--type to filter events)
   exptrack diff <id>                Colorized git diff from run time
   exptrack compare <id1> <id2>      Side-by-side params + metrics
+  exptrack compare <id1> <id2> <id3>...
+                                    N-way table: one column per run, a script
+                                      row when they differ, varying params only
+  exptrack vs-reference             Every run measured against the pinned
+                                      reference (--script, --study, -n)
+  exptrack top [-l 10]              Rank runs by the primary metric
+              [--script name]       Only one model
+              [--study name]        Only one study
+              [--best]              Rank by each run's best point, not its final
+              [--include-running] [--exclude-failed]
   exptrack history <nb> [id]        Notebook cell snapshot history
   exptrack watch <id> [--interval]  Live-refresh a running experiment in the terminal
   exptrack studies                  List studies with run counts
@@ -43,6 +57,8 @@ Inspect
                      [--full]       Every metric point + every artifact
                      [--max-artifacts N] Artifact list cap (0 = all)
   exptrack verify [id] [--backfill] Check artifact file integrity
+  exptrack source [id]              Read back the code a run actually ran
+                 [--all] [--out DIR]  (from its snapshot, or its notebook cells)
 
 Organize
   exptrack tag <id> <tag>           Add tag
@@ -59,8 +75,26 @@ Organize
                                       clear the link
   exptrack finish <id>              Manually mark running experiment as done
 
+Analysis Settings
+  exptrack primary-metric <key>     The metric runs are judged by, project-wide
+                        [--goal max|min]  Which direction is better
+                                            (default: inferred from the name)
+                        [--study NAME]    Set for one study instead
+                        [--run ID]        Set for one run instead
+                        [--clear]         Clear it at that level
+  exptrack primary-metric           Show what is set, and where
+  exptrack reference <id>           Pin the run everything is measured against
+                    [--study NAME]  Set for one study instead of the project
+                    [--clear]       Clear it at that level
+  exptrack reference                Show what is pinned, and where
+
 Clean Up
   exptrack rm <id>                  Delete run (with confirmation)
+             [--trash]              Move to Trash instead (recoverable)
+             [--keep-files]         Delete records only, leave output files
+             [--yes]                Skip the prompt (required to script it)
+  exptrack trash                    List runs in the Trash
+  exptrack restore-run <id>         Bring a run back out of the Trash
   exptrack clean [--baselines]      Remove all failed runs (or clear code baselines)
                 [--older-than 30d]  Delete runs older than N days
                 [--all-statuses]    Include done runs (default: only failed)
@@ -69,6 +103,8 @@ Clean Up
                 [--vacuum]          Reclaim free space in the DB file (deletes nothing)
                 [--reset]           Wipe every run and reset the DB
                 [--dry-run]         List what would be deleted
+                [--yes]             Skip the prompt (required to script it)
+                                    One selection at a time; --vacuum runs after
   exptrack prune [id...]            Thin metric series you already logged
                  --max-points N     Thin each series to at most N points
                  --keep-every N     Keep every Nth point instead
@@ -106,6 +142,15 @@ Notebook
   exptrack notebook-guard           Print a paste-able guard cell so a notebook
                                       runs with OR without exptrack installed
                                       (session magics degrade to no-ops)
+
+Learn / self-documenting
+  exptrack examples                 List runnable examples bundled in the install
+  exptrack examples <name>          Print one example's source (stdout; run hint
+                                      to stderr, so `> train.py` stays clean)
+  exptrack examples <name> --copy   Copy it into the current directory
+                                      (--force to overwrite)
+  exptrack docs [topic]             Open the docs in a browser; omit topic to
+                                      list topics (URL always printed as fallback)
 
 Session Trees (see docs/session-trees.md)
   exptrack sessions                 List sessions
@@ -200,3 +245,118 @@ dashboard the same payload is **Export → JSON (full)**, or
 
 An empty project is about **148 KB** of database (the schema's 37 pages) and no
 WAL at rest — the `-wal`/`-shm` files exist only while a connection is open.
+
+---
+
+## Comparing different models
+
+Two models rarely agree on what to call a number. One logs `val_acc`, another
+`accuracy`, a TensorBoard writer contributes `val/acc`. Every surface that
+matches metrics matches them by name, so those runs shared no metric at all —
+the compare table was two rows of `--`. Tell exptrack they are the same
+measurement, once, in `.exptrack/config.json`:
+
+```json
+{
+  "metric_aliases": {
+    "val_acc": ["accuracy", "val/acc", "eval_accuracy"],
+    "val_loss": ["loss", "eval_loss"]
+  }
+}
+```
+
+The key is the **canonical** name every surface will show; the list is the
+spellings that mean it. Nothing is rewritten in the database — remove the alias
+and the original keys come back — and any surface that folds two spellings
+together says so.
+
+With that in place, the usual loop works across models:
+
+```bash
+exptrack ls --script model_a        # just one model's runs
+exptrack ls --since 7d --param lr=0.01   # this week's runs at one setting
+exptrack top                        # who won, by the primary metric
+exptrack top --script model_b       # ...within one model
+exptrack compare <a> <b> <c>        # side by side, script row included
+exptrack vs-reference               # everything against the run you must beat
+```
+
+`compare` with three or more ids prints one column per run, showing the script
+when the runs aren't all the same model and only the parameters that actually
+vary — with five runs, the constant ones push the differences off screen.
+
+Duplicate detection knows about models too: `model_a.py --lr 0.01` and
+`model_b.py --lr 0.01` are reported as *different scripts sharing a
+configuration*, not as "you already ran this".
+
+## Which metric a run is judged by
+
+Nearly every summary — the table's **Result** column, the parameter matrix, the
+rankings, the charts a run opens on — needs one answer to "what is *the* number
+here". `exptrack primary-metric` sets it, and the answer resolves through four
+levels, most specific first:
+
+```
+run override  →  study override  →  project default  →  heuristic
+```
+
+```bash
+exptrack primary-metric val_acc              # project default
+exptrack primary-metric val_loss --goal min  # state the direction explicitly
+exptrack primary-metric f1 --study sweep-a   # just this study
+exptrack primary-metric auroc --run abc123   # just this run
+exptrack primary-metric                      # show what's set, and where
+exptrack primary-metric --clear              # back to the heuristic
+```
+
+Two properties are worth knowing, because they are what make the number
+trustworthy:
+
+- **A configured metric is never silently substituted.** If the project is
+  judged by `val_auroc` and a run never logged it, that run reports the metric
+  as *not logged* rather than falling back to whatever it did record. A column
+  whose rows each mean a different metric reads as comparable when it isn't.
+- **Every answer says where it came from.** The level is reported alongside the
+  value, so a *heuristic* pick — exptrack guessing from the keys the run
+  happened to log — is shown as a guess rather than as your setting. The
+  heuristic runs only when nothing has been configured at any level.
+
+The level is chosen explicitly rather than inferred, because writing to the
+wrong one leaves a setting that appears to do nothing: a study or run override
+shadows the project default, so setting the project default while a study
+override exists changes nothing you can see.
+
+`--goal` states which direction is better. Left off, it is inferred from the
+metric's name (`loss`, `err`, `rmse`, `latency`… are lower-is-better), which is
+also what colours the deltas in the dashboard.
+
+---
+
+## The run everything is measured against
+
+exptrack already resolves a baseline for every run *chronologically* — the
+previous run of the same script, overridable per run with `exptrack variant-of`.
+That answers "what did I change since last time". A parameter search asks a
+different question constantly: "is this better than the thing I'm trying to
+beat?" — where the comparison point is one fixed run, not a moving one.
+
+```bash
+exptrack reference abc123               # pin it, project-wide
+exptrack reference abc123 --study sweep-a
+exptrack reference                      # show what's pinned, and where
+exptrack reference --clear
+```
+
+The two baselines are kept separate on purpose, and pinning a reference never
+rewrites any run's chronological baseline — a run declares what it descends
+from, the project declares what it is measured against. In the dashboard they
+appear as two strips side by side: **vs previous run** and **vs reference**.
+
+Resolution is study level → project level, and it **stops there**. It never
+continues on to "the best run so far" or "the previous run": a baseline that
+moves on its own as data arrives is one you cannot reason about. If nothing is
+pinned there is no reference, and the comparison is absent rather than quietly
+substituted. A reference pointing at a deleted or trashed run is reported as
+broken — naming what was set and at which level — rather than reading as "no
+reference set", which would hide that the comparison you had been reading
+stopped happening.

@@ -10,6 +10,7 @@ import uuid
 from typing import Any
 
 from ..core.db import get_db
+from ..core.utils import resolve_script_identity
 from ._shared import (
     _CELL_SEPARATOR,
     _detach_experiments,
@@ -55,7 +56,8 @@ def link_experiment(node_id: str, exp_id: str) -> dict[str, Any]:
         return {"ok": True, "linked": None}
     # Prefix match on the id. LIKE wildcards in the caller's string are escaped
     # so an id containing `%` or `_` can't match some arbitrary other run.
-    like = exp_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    from ..core.utils import like_prefix
+    like = like_prefix(exp_id)
     erow = conn.execute(
         "SELECT id FROM experiments WHERE id LIKE ? ESCAPE '\\' "
         "AND deleted_at IS NULL",
@@ -92,7 +94,8 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
     already has a linked run (returns the existing id)."""
     conn = get_db()
     row = conn.execute(
-        "SELECT n.*, s.git_branch AS sess_branch, s.name AS sess_name "
+        "SELECT n.*, s.git_branch AS sess_branch, s.name AS sess_name, "
+        "       s.notebook AS sess_notebook "
         "FROM session_nodes n LEFT JOIN sessions s ON s.id = n.session_id "
         "WHERE n.id=? AND n.deleted_at IS NULL",
         (node_id,),
@@ -148,15 +151,24 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
         note_parts.append(row["note"])
     notes = "\n\n".join(note_parts) or None
 
+    # A materialized run gets a `script` — the notebook it came from — so it can
+    # join the same baseline chains, "What changed" cards and duplicate
+    # detection as any other run. Without one, every graduated branch was a
+    # run of nothing, comparable to nothing.
+    script = resolve_script_identity(
+        (row["sess_notebook"] or "").strip()
+        or f"session:{row['sess_name'] or 'session'}")
     conn.execute(
         "INSERT INTO experiments (id, project, name, status, created_at, updated_at, "
-        "git_branch, git_commit, git_diff, hostname, python_ver, notes, tags, studies, "
-        "session_node_id, name_is_auto) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "script, git_branch, git_commit, git_diff, hostname, python_ver, notes, tags, "
+        "studies, session_node_id, name_is_auto) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (exp_id, load_config().get("project", ""), name, "done", created_at, now,
-         row["sess_branch"], row["git_commit"], git_diff,
+         script, row["sess_branch"], row["git_commit"], git_diff,
          socket.gethostname(), platform.python_version(),
          notes, "[]", "[]", node_id, 0),
     )
+    _copy_node_hyperparams(conn, node_id, exp_id)
 
     # Replay cells as cell_exec timeline events (source + output) so the
     # materialized run is browsable AND re-runnable on its own — not just a
@@ -272,6 +284,67 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
     _group_run_into_session_study(conn, exp_id, row["session_id"])
     conn.commit()
     return {"ok": True, "id": exp_id, "name": name}
+
+
+def _copy_node_hyperparams(conn, node_id: str, new_exp_id: str) -> int:
+    """Record the node's hyperparameter assignments as real params. Returns how
+    many were written.
+
+    A materialized branch used to arrive with no params at all, so a param
+    study over a finalized session reported *nothing varying* even though the
+    branches differed by exactly the knob the user was exploring — the whole
+    point of graduating them. The knob is in the node's own cells
+    (``lr = 0.2``), which is the only per-node record of it: a session's
+    ``_var/`` params live on the one auto-created run, attached to whichever
+    node happened to be current when the variable changed.
+
+    Only scalar literals assigned to HP-shaped names are promoted, so a cell
+    full of ``df = load()`` contributes nothing. The cells themselves are
+    replayed onto the run either way.
+    """
+    from ..capture.variables import _HP_RE, extract_assignments
+
+    row = conn.execute(
+        "SELECT cell_source FROM session_nodes WHERE id=?", (node_id,)
+    ).fetchone()
+    blob = (row["cell_source"] or "") if row else ""
+    if not blob:
+        return 0
+
+    out: dict[str, Any] = {}
+    for cell in blob.split(_CELL_SEPARATOR):
+        for name, rhs in extract_assignments(cell).items():
+            if not _HP_RE.match(name):
+                continue
+            value = _literal_scalar(rhs)
+            if value is not None:
+                out[name] = value          # later cells win, as execution did
+    if out:
+        conn.executemany(
+            "INSERT INTO params (exp_id, key, value, source) VALUES (?,?,?,'auto') "
+            "ON CONFLICT(exp_id, key) DO UPDATE SET value=excluded.value",
+            [(new_exp_id, k, json.dumps(v)) for k, v in out.items()],
+        )
+    return len(out)
+
+
+def _literal_scalar(rhs: str):
+    """A number/bool/string literal from an assignment's right-hand side, else
+    None. Deliberately literal-only: `lr = base_lr * 0.1` is not a value this
+    layer can know."""
+    text = (rhs or "").strip()
+    if not text:
+        return None
+    if text in ("True", "False"):
+        return text == "True"
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        inner = text[1:-1]
+        return inner if inner else None
+    return None
 
 
 def _copy_node_window_metrics(conn, node_row, new_exp_id: str) -> int:

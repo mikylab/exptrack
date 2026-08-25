@@ -89,12 +89,6 @@ def main(resume=None):
     sys.argv = sys.argv[1:]
 
     from . import config as cfg
-    from .capture import (
-        capture_argv,
-        patch_argparse,
-        patch_savefig,
-        patch_tensorboard,
-    )
     from .core import Experiment
 
     conf = cfg.load()
@@ -111,7 +105,7 @@ def main(resume=None):
 
     if resume:
         if resume == "latest":
-            exp = _find_latest_experiment(str(script_path))
+            exp = _find_latest_experiment(str(script_path), run_command)
         else:
             exp = Experiment.resume(resume)
     else:
@@ -129,21 +123,14 @@ def main(resume=None):
     # this invocation resolved. Idempotent for the same file.
     exp._maybe_snapshot_script(str(script_path))
 
-    # Patch argparse BEFORE the script runs — so parse_args() auto-logs params
-    if conf.get("auto_capture", {}).get("argparse", True):
-        patch_argparse(exp)
-
-    # Also capture raw argv now (catches --flags even if argparse isn't used)
-    if conf.get("auto_capture", {}).get("argv", True):
-        capture_argv(exp)
-
-    # Patch matplotlib.savefig so saved plots auto-register as artifacts
-    patch_savefig(exp)
-
-    # Patch TensorBoard's SummaryWriter so scalars/losses/activation histograms
-    # logged during training mirror into exptrack's metrics automatically
-    if conf.get("auto_capture", {}).get("tensorboard", True):
-        patch_tensorboard(exp)
+    # Arm argparse / argv / savefig / TensorBoard capture BEFORE the script
+    # runs. The run object owns the list (a plain `python train.py` with its own
+    # `Experiment()` arms the same patches from __init__); `force=True` covers
+    # the one case the constructor can't, a resumed run, since
+    # `Experiment.resume` bypasses __init__. A second copy of the list here
+    # re-ran argv capture — an identical `log_params` write and a redundant
+    # rename — on every wrapped run.
+    exp._install_capture_patches(conf, force=True)
 
     # Record start time for auto-detecting new output files
     start_ts = exp._start
@@ -222,6 +209,20 @@ def main(resume=None):
         if not exp._finished:
             exp.fail(f"SystemExit({e.code})", traceback=tb)
         sys.exit(e.code)
+    except KeyboardInterrupt:
+        # Ctrl-C is how a training run most often ends early, and it is not an
+        # `Exception` — so it fell straight through both handlers below and the
+        # run stayed `running` with no duration, no error and its log files
+        # still open. A run stuck `running` is excluded from every baseline
+        # (`_BASELINE_WHERE`) and only `stale` recovers it, 24 hours later.
+        sys.stderr.write("\n[exptrack] interrupted (Ctrl-C)\n")
+        _restore_streams(log_files)
+        if not exp._finished:
+            _auto_detect_outputs(exp, start_ts)
+            exp.fail("KeyboardInterrupt", interrupted=True)
+        # 130 is the conventional shell status for SIGINT, so a job script can
+        # tell "I stopped this" from "it crashed".
+        sys.exit(130)
     except Exception as e:
         # Print the traceback BEFORE restoring streams so it tees into
         # stderr.log (restoring closes the log files), and capture the full
@@ -241,8 +242,14 @@ def main(resume=None):
             sys.path[0] = original_path0
 
 
-def _find_latest_experiment(script_path: str):
-    """Find and resume the most recent experiment for this script."""
+def _find_latest_experiment(script_path: str, run_command: str = ""):
+    """Find and resume the most recent experiment for this script.
+
+    *run_command* is threaded through for the no-previous-run fallback: without
+    it the fresh run reconstructed its command from the mutated argv, recording
+    a Reproduce line with no interpreter that still carried ``--resume`` — i.e.
+    a command that cannot reproduce the run it describes.
+    """
     from .core import Experiment
     from .core.db import get_db
 
@@ -261,7 +268,7 @@ def _find_latest_experiment(script_path: str):
     if not row:
         print(f"[exptrack] No previous experiment found for {Path(script_path).name}, starting new",
               file=sys.stderr)
-        return Experiment(script=script_path, _caller_depth=0)
+        return Experiment(script=script_path, command=run_command, _caller_depth=0)
     return Experiment.resume(row["id"])
 
 
@@ -351,25 +358,47 @@ def _auto_detect_outputs(exp, start_ts):
     """Scan working directory for files created during the run and log them.
 
     Deduplicates against artifacts already registered on this experiment
-    (e.g. by the savefig patch) so the same file is never logged twice.
+    (e.g. by the savefig patch) so the same file is never logged twice, and
+    **skips files that belong to another run**.
+
+    The mtime window alone is not ownership. Two runs launched together — a
+    SLURM array, two terminals, a sweep — write into the window at the same
+    time, and whichever finished first registered the other's weights and log
+    files as its own artifacts. That also defeated the phantom-wrapper trash: a
+    sweep wrapper looked like it had "data of its own" because the scan had
+    swept its children's checkpoints onto it.
     """
     skip_dirs = _SKIP_DIRS
+    from .core.db import _norm_path, path_within_any
 
-    # Collect paths already registered so we don't double-log
+    # Collect paths already registered so we don't double-log, and the paths
+    # other runs own so we never log them at all. All three sets hold
+    # `_norm_path` forms so the walk below can compare against them without a
+    # `resolve()` syscall per candidate file.
     already_registered: set[str] = set()
+    foreign_paths: set[str] = set()
+    foreign_dirs: set[str] = set()
     try:
         from .core import get_db
+        from .core.db import claimed_output_paths
         with get_db() as conn:
+            # One pass over the table, split in Python: mine and everyone
+            # else's answer two different questions about the same rows, and
+            # asking twice re-read the whole table at the end of every run.
             rows = conn.execute(
-                "SELECT path FROM artifacts WHERE exp_id=?", (exp.id,)
+                "SELECT path, exp_id FROM artifacts WHERE path IS NOT NULL AND path != ''"
             ).fetchall()
+            foreign_dirs = claimed_output_paths(conn, exclude_id=exp.id)
         for r in rows:
-            if r["path"]:
-                try:
-                    already_registered.add(str(Path(r["path"]).resolve()))
-                except Exception as e:
-                    print(f"[exptrack] warning: could not resolve artifact path: {e}", file=sys.stderr)
-                    already_registered.add(r["path"])
+            try:
+                # `register_artifact` stores resolved paths, but rows written
+                # before it existed may be relative, so normalize lexically —
+                # the same rule the ownership scan compares claims with, and
+                # no syscall per row.
+                norm = _norm_path(r["path"])
+            except Exception:
+                norm = r["path"]
+            (already_registered if r["exp_id"] == exp.id else foreign_paths).add(norm)
     except Exception as e:
         print(f"[exptrack] warning: could not load existing artifacts: {e}", file=sys.stderr)
 
@@ -382,10 +411,13 @@ def _auto_detect_outputs(exp, start_ts):
                     continue
                 fp = os.path.join(root, f)
                 try:
-                    resolved = str(Path(fp).resolve())
-                    if os.path.getmtime(fp) >= start_ts and resolved not in already_registered:
+                    norm = _norm_path(fp)
+                    if (os.path.getmtime(fp) >= start_ts
+                            and norm not in already_registered
+                            and norm not in foreign_paths
+                            and not path_within_any(norm, foreign_dirs)):
                         exp.log_file(fp)
-                        already_registered.add(resolved)
+                        already_registered.add(norm)
                 except OSError as e:
                     print(f"[exptrack] warning: could not auto-detect output {fp}: {e}",
                           file=sys.stderr)

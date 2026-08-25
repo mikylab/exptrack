@@ -14,6 +14,7 @@ import hashlib
 import subprocess
 from typing import TYPE_CHECKING
 
+from .git import _git_env
 from .utils import debug_log, summarize_changed_lines
 
 if TYPE_CHECKING:
@@ -45,6 +46,7 @@ def _tracked_status(root, rel) -> str:
         r = subprocess.run(
             ["git", "ls-files", "--error-unmatch", "--", str(rel)],
             capture_output=True, text=True, timeout=10, cwd=str(root),
+            stdin=subprocess.DEVNULL, env=_git_env(),
         )
         return "clean" if r.returncode == 0 else "untracked"
     except Exception as e:
@@ -115,7 +117,7 @@ def _script_facts(script_path: str) -> dict | None:
         r = subprocess.run(
             ["git", "diff", "HEAD", "--", str(rel)],
             capture_output=True, text=True, timeout=10,
-            cwd=str(root),
+            cwd=str(root), stdin=subprocess.DEVNULL, env=_git_env(),
         )
         if r.returncode != 0:
             # No repository here, or git is unusable. Either way there is no

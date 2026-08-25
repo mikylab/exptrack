@@ -158,7 +158,7 @@ Because a run logging every iteration would otherwise emit tens of thousands of 
 ### How do I compare experiments?
 
 **CLI:** `exptrack compare <id1> <id2>`
-**Dashboard:** Click "Compare" → Pair (side-by-side) or Multi (bar charts across 3+ runs).
+**Dashboard:** Click **Compare**, choose any number of runs in the picker (it searches names, ids, parameters, status, script and date), and compare. Two runs also get the pair-only panels: all parameters with differences marked, a Delta column, the code diff, the variable table and the image overlay.
 
 ### What happens on rerun?
 
@@ -170,4 +170,4 @@ Yes. CSV, TSV, JSON, and JSONL artifacts appear under the **Data Files** tab as 
 
 ### How do I view images?
 
-Image artifacts (PNG, JPG, GIF, SVG, WebP) appear in the **Images** tab as a gallery grid. Click to enlarge. Pair Compare supports side-by-side, overlay, and swipe modes.
+Image artifacts (PNG, JPG, GIF, SVG, WebP) appear in the **Images** tab as a gallery grid. Click to enlarge. Comparing exactly two runs adds an **Overlay two images** panel with side-by-side, overlay and swipe modes.

@@ -199,15 +199,92 @@ function renderSidebarActionsBar() {
 }
 
 // ── View switching ───────────────────────────────────────────────────────────
+
+// Everything that can hold the canvas: the full-screen views (DOM siblings, so
+// raising one means putting the others down), plus `matrix-bar`, the matrix's
+// floating selection bar, which is laid out outside `#matrix-view` and would
+// otherwise strand itself over whatever comes up next.
+//
+// The body classes matter as much as the display values: `sessions-active` and
+// `matrix-active` suppress their neighbours from CSS with `!important`, which
+// no inline `style.display` on the target can override. Leave one set and the
+// view you raise stays invisible.
+// Background: docs/design/patterns/dashboard-views.md
+const CANVAS_VIEWS = ['welcome-state', 'detail-view', 'compare-view',
+                      'matrix-view', 'trash-view', 'sessions-tab', 'matrix-bar'];
+const CANVAS_CLASSES = ['sessions-active', 'matrix-active', 'trash-active'];
+
+// Put every canvas view down so the caller can raise exactly its own.
+//
+// Deliberately *not* built out of `closeSessionsTab()`/`closeTrashView()`:
+// those restore whichever view they were opened from, which is the opposite of
+// what a switcher about to raise its own view wants.
+function releaseCanvas() {
+  CANVAS_CLASSES.forEach(c => document.body.classList.remove(c));
+  CANVAS_VIEWS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+}
+
+// ── Browser history ──────────────────────────────────────────────────────────
+// The dashboard is one page, and the only thing it ever wrote to history was a
+// `replaceState` — the boot-time strip of `?token=` and the compare hash. So no
+// in-app navigation created a history entry, and the browser's Back button (the
+// reflex for leaving a full-screen view) did not go back a view: it left the
+// dashboard entirely. Landing back on the page then meant a URL with no
+// `?token=` in it, which works only while localStorage still holds the token —
+// and when it doesn't, the arrival is the login prompt.
+//
+// The two full-canvas views reachable by a deliberate click therefore push an
+// entry, and `popstate` puts the named view back up. Deliberately a hash: it
+// never reaches the server, so no run id or token lands in an access log, and
+// it needs no route. Run detail and the Sessions/Trash tabs are not addressed
+// yet — Back from those still leaves the page, as it always did.
+// `replace` is for *returning* to a view rather than entering one: Compare's
+// Back going home to the matrix is a step back, so pushing an entry for it
+// would leave the browser's own Back bouncing between the two.
+function _pushViewHash(hash, replace) {
+  try {
+    if (window.location.hash === hash) return;
+    const url = hash || (window.location.pathname + window.location.search);
+    if (replace) window.history.replaceState(null, '', url);
+    else window.history.pushState(null, '', url);
+  } catch (e) {
+    // A sandboxed iframe can refuse history writes; the view itself is
+    // unaffected, so this must never surface as an error.
+    void e;
+  }
+}
+
+// Drop a view hash without adding an entry — leaving a view is not a place to
+// come back to.
+function _clearViewHash() {
+  try {
+    const h = String(window.location.hash || '');
+    if (h.startsWith('#compare=') || h === '#matrix') {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  } catch (e) { void e; }
+}
+
+async function _onPopView() {
+  const hash = String(window.location.hash || '');
+  // `restoreCompareFromUrl` owns the `#compare=` vocabulary — one parser, so a
+  // shared link and the Back button can't disagree about what a hash means.
+  if (hash.startsWith('#compare=')) { await restoreCompareFromUrl(); return; }
+  if (hash === '#matrix') { openParamMatrix(); return; }
+  showWelcome();
+}
+
+window.addEventListener('popstate', _onPopView);
+
 function showWelcome() {
   currentDetailId = '';
   stopAutoRefresh();
-  // Make sure the Sessions tab isn't holding the canvas
-  if (typeof closeSessionsTab === 'function') closeSessionsTab();
-  if (typeof closeTrashView === 'function') closeTrashView();
+  releaseCanvas();
+  _clearViewHash();
   document.getElementById('welcome-state').style.display = '';
-  document.getElementById('detail-view').style.display = 'none';
-  document.getElementById('compare-view').style.display = 'none';
   document.getElementById('exp-sidebar').classList.add('collapsed');
   renderExpList();
   if (allExperiments.length === 0) owlSpeak('empty');
@@ -215,21 +292,17 @@ function showWelcome() {
 
 function showCompareView() {
   stopAutoRefresh();
-  document.getElementById('welcome-state').style.display = 'none';
-  document.getElementById('detail-view').style.display = 'none';
+  releaseCanvas();
   document.getElementById('compare-view').style.display = '';
-  populateCompareDropdowns();
+  // Opened from the toolbar, so Back means the experiments list. Callers that
+  // came from somewhere else (the matrix) set their own origin *after* this.
+  _setCompareOrigin('');
+  populateMultiCompareSelector();
 }
 
 function showDetailView() {
-  // The Sessions tab overlays the canvas and hides #detail-view with
-  // `display:none !important` while body.sessions-active is set, so a node's
-  // "→ exp" badge would fetch the experiment but never show it. Drop the
-  // overlay first (mirrors showWelcome) so exp navigation actually lands.
-  if (typeof closeSessionsTab === 'function') closeSessionsTab();
-  document.getElementById('welcome-state').style.display = 'none';
+  releaseCanvas();
   document.getElementById('detail-view').style.display = '';
-  document.getElementById('compare-view').style.display = 'none';
 }
 
 // ── Unified selection ─────────────────────────────────────────────────────────

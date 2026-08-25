@@ -72,6 +72,35 @@ def test_load_merges_user_config(tmp_project):
     assert conf2["outputs_dir"] == "outputs"
 
 
+def test_nonnumeric_config_degrades_to_default(tmp_project, capsys):
+    """A hand-edited non-numeric value for a numeric key degrades to the default.
+
+    Regression: config.json is documented as safe to hand-edit, and several
+    caps are read with a bare int() deep in the capture path. A value like
+    "var_fingerprint_max_mb": "lots" raised inside capture and, caught only at
+    the top boundary, aborted capture on *every* cell — the run recorded
+    nothing. An unusable value must always degrade to the documented default.
+    """
+    from exptrack import config as cfg
+
+    conf = cfg.load()
+    conf["var_fingerprint_max_mb"] = "lots"   # garbage → must fall back to 100
+    conf["max_vars_per_cell"] = "50"          # clean string number → coerced
+    conf["naming"]["max_param_keys"] = "oops"  # nested key also guarded
+    cfg.save(conf)
+
+    cfg._cache = None
+    conf2 = cfg.load()
+    assert conf2["var_fingerprint_max_mb"] == 100          # default
+    assert conf2["max_vars_per_cell"] == 50                # coerced from "50"
+    assert conf2["naming"]["max_param_keys"] == 4          # nested default
+    # The value is a real int, so the downstream int(...) * 1024 * 1024 is safe.
+    assert isinstance(conf2["var_fingerprint_max_mb"], int)
+    assert int(conf2["var_fingerprint_max_mb"]) * 1024 * 1024 > 0
+    # Booleans are read as booleans, never coerced through the int path.
+    assert conf2["auto_capture"]["argparse"] is True
+
+
 def test_deep_merge():
     """_deep_merge recursively merges nested dicts."""
     from exptrack.config import _deep_merge

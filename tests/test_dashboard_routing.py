@@ -94,7 +94,6 @@ EXACT = [
     ("/api/config/capture", "api_get_capture_settings"),
     ("/api/result-types", "api_result_types"),
     ("/api/studies", "api_studies"),
-    ("/api/multi-compare", "api_multi_compare"),
     ("/api/todos", "api_get_todos"),
     ("/api/commands", "api_get_commands"),
     ("/api/all-studies", "api_all_studies"),

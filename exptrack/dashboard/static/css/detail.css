@@ -134,3 +134,14 @@
   .vs-prev-open { margin-left: auto; color: var(--blue); text-decoration: none; font-size: 11.5px; border: 1px solid var(--blue); padding: 0 8px; border-radius: 9px; white-space: nowrap; }
   .vs-prev-open:hover { text-decoration: underline; }
   .vs-prev-when { color: var(--text-3); font-family: var(--font-mono); }
+
+  /* The reference strip is the same shape as "vs previous" but a different
+     baseline, so it reads as a sibling rather than a repeat: the violet used
+     everywhere else for a deliberate pick (compare picks), never the blue
+     accent that already means "previous". */
+  .vs-ref-strip { border-left-color: var(--compare-accent); margin-top: -8px; }
+  .vs-ref-label { color: var(--compare-accent); }
+  .vs-ref-where { color: var(--text-3); font-size: 11px; margin-left: 6px; }
+  .vs-ref-self { color: var(--text-2); font-style: italic; }
+  .vs-ref-stale { color: var(--status-danger); }
+

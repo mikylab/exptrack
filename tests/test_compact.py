@@ -255,10 +255,38 @@ def test_compact_no_diff():
         _insert_experiment(conn, "exp011", git_diff="")
 
         from exptrack.cli.admin_cmds import cmd_compact
-        args = SimpleNamespace(ids=["exp01"], all=False, older_than=None, dry_run=False, export=None)
+        # Full ids: "exp01" is an ambiguous prefix here, and compact now
+        # refuses one rather than silently compacting several runs.
+        args = SimpleNamespace(ids=["exp010", "exp011"], all=False,
+                               older_than=None, dry_run=False, export=None)
         output = _capture_stdout(cmd_compact, args)
         assert "Nothing to compact" in output
         print("  [PASS] test_compact_no_diff")
+
+
+def test_compact_refuses_an_ambiguous_prefix():
+    """A raw LIKE let a short prefix silently compact several runs, and a
+    typo'd one report "No matching experiments." with exit 0."""
+    import pytest
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        conn = _setup_project()
+        _insert_experiment(conn, "exp010", git_diff=None)
+        _insert_experiment(conn, "exp011", git_diff=None)
+
+        from exptrack.cli.admin_cmds import cmd_compact
+        args = SimpleNamespace(ids=["exp01"], all=False, older_than=None,
+                               dry_run=False, export=None)
+        with pytest.raises(SystemExit) as e:
+            _capture_stdout(cmd_compact, args)
+        assert e.value.code != 0
+
+        args.ids = ["nosuchrun"]
+        with pytest.raises(SystemExit) as e:
+            _capture_stdout(cmd_compact, args)
+        assert e.value.code != 0
+        print("  [PASS] test_compact_refuses_an_ambiguous_prefix")
 
 
 def test_cli_diff_shows_compacted_message():

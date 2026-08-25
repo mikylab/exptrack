@@ -22,6 +22,27 @@ async function loadStats() {
   if (!s) return;
   // Drives the "showing N of M" truncation notice.
   expTotal = s.total || 0;
+  // Which runs are pinned as a reference, so the list can mark them. Resolved
+  // here rather than per row — see api_stats. The payload is
+  // {exp_id: "project" | "<study name>"}.
+  //
+  // This request races /api/experiments at boot, so a table already rendered
+  // from an empty map has to be repainted — otherwise the badge shows only when
+  // stats happens to win, which reads as an intermittent bug in the feature
+  // rather than in the ordering.
+  const refsBefore = [..._referenceIds.keys()].sort().join(',');
+  // A run can be pinned at more than one level at once (the project reference
+  // *and* a study's), so the payload carries a list per run and the badge names
+  // every level rather than whichever one was written last.
+  const _levelLabel = lvl => (lvl === 'project' ? 'this project'
+                                                : 'study “' + lvl + '”');
+  _referenceIds = new Map(Object.entries(s.references || {}).map(
+    ([id, levels]) => [id, (Array.isArray(levels) ? levels : [levels])
+      .map(_levelLabel).join(' and ')]));
+  if ([..._referenceIds.keys()].sort().join(',') !== refsBefore
+      && (allExperiments || []).length) {
+    _renderExpViews();
+  }
   renderTruncNotice();
   const statsEl = document.getElementById('stats');
   if (statsEl) {
@@ -235,12 +256,13 @@ function renderExpRow(e) {
     // Middle-ellipsis, not head-truncation: an auto name's distinguishing part
     // (`…__lr0.01__2aac1081`) is its tail, so cutting the tail made every row
     // in a rerun burst read identically.
-    name: '<td class="truncate-cell">' + (e.name_is_auto ? '<span class="auto-name-badge" title="Auto-generated name — double-click to rename">auto</span>' : '') + '<span class="editable-cell" data-rename-slot="' + e.id + '" title="' + esc(e.name) + '"' + editOn('startInlineRename', false) + '>' + esc(midEllipsis(e.name, nameCellMaxChars(e.name_is_auto))) + editIcon('startInlineRename') + '</span></td>',
+    name: '<td class="truncate-cell">' + (e.name_is_auto ? '<span class="auto-name-badge" title="Auto-generated name — double-click to rename">auto</span>' : '') + _refBadgeHtml(e.id) + '<span class="editable-cell" data-rename-slot="' + e.id + '" title="' + esc(e.name) + '"' + editOn('startInlineRename', false) + '>' + esc(midEllipsis(e.name, nameCellMaxChars(e.name_is_auto))) + editIcon('startInlineRename') + '</span></td>',
     status: '<td class="truncate-cell status-' + e.status + '">' + e.status + '</td>',
     tags: '<td class="tags-cell wrap-cell editable-cell"' + editOn('startInlineTag') + '>' + chipCell(e.tags, 'startInlineTag', '#', '') + editIcon('startInlineTag') + '</td>',
     studies: '<td class="tags-cell wrap-cell editable-cell"' + editOn('startInlineStudy') + '>' + chipCell(e.studies, 'startInlineStudy', '', 'background:rgba(44,90,160,0.1);color:var(--blue)') + editIcon('startInlineStudy') + '</td>',
     stage: '<td class="wrap-cell stage-cell editable-cell"' + editOn('startInlineStage') + '>' + (e.stage != null ? '<span style="font-weight:600">' + esc(String(e.stage)) + '</span>' + (e.stage_name ? ' <span style="color:var(--muted)">\u00b7</span> <span style="color:var(--muted)">' + esc(e.stage_name) + '</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon('startInlineStage') + '</td>',
     notes: '<td class="truncate-cell notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '"' + editOn('startInlineNote', false) + '>' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon('startInlineNote') + '</td>',
+    primary: _primaryCellHtml(e),
     metrics: (function() {
       const parts = [];
       for (const [k, m] of Object.entries(e.metrics || {}).slice(0, 3)) {
@@ -275,6 +297,49 @@ function renderExpRow(e) {
   // regex-parsing the rendered onclick attribute (see _restoreEditedCell).
   return '<tr class="' + rowCls + '"' + rowStyle + ' data-id="' + escJsAttr(e.id) +
     '" onclick="onRowClick(\'' + e.id + '\')">' + tds + '</tr>';
+}
+
+// "This run is the reference" — and which level pinned it. A bare "ref" badge
+// would reintroduce exactly the ambiguity the reference feature exists to
+// remove, so the origin is always in the title.
+function _refBadgeHtml(id) {
+  const where = _referenceIds.get(id);
+  if (!where) return '';
+  return '<span class="ref-badge" title="Every run is measured against this one'
+    + ' — set for ' + esc(where) + '">ref</span>';
+}
+
+// The primary-metric cell. Four states, and blurring any two of them is the
+// failure this column exists to avoid:
+//
+//   a value          — the number this run is judged by
+//   missing          — the metric IS configured, this run never logged it. NOT
+//                      a fallback to whatever else it recorded: a column whose
+//                      rows each mean a different metric reads as comparable
+//                      when it isn't.
+//   no metric at all — the run logged nothing, so nothing was resolved
+//   a guess          — a heuristic key, marked, because it is exptrack's pick
+//                      and not the user's
+function _primaryCellHtml(e) {
+  const p = e.primary_metric || {};
+  if (!p.key) {
+    return '<td class="truncate-cell primary-cell"'
+      + ' title="This run logged no metrics, so there is nothing to judge it by">'
+      + '<span style="color:var(--muted)">--</span></td>';
+  }
+  if (p.missing) {
+    return '<td class="truncate-cell primary-cell" title="' + esc(p.key)
+      + ' is this project\'s metric, but this run never logged it">'
+      + '<span class="primary-missing">not logged</span></td>';
+  }
+  const guess = p.source === 'heuristic';
+  const title = p.key + ' = ' + fmtMetricVal(p.final)
+    + (guess ? ' — picked from this run\'s own metrics; set one with `exptrack primary-metric`'
+             : ' — set for this ' + p.source);
+  return '<td class="truncate-cell primary-cell" title="' + esc(title) + '">'
+    + '<span class="primary-val">' + esc(fmtMetricVal(p.final)) + '</span>'
+    + '<span class="primary-key' + (guess ? ' primary-guess' : '') + '">'
+    + esc(abbrevMetric(p.key).split('/').pop()) + '</span></td>';
 }
 
 // A param value as a table cell. Objects/arrays are JSON-stringified; the full

@@ -14,6 +14,7 @@ import sys
 # ── Database ──────────────────────────────────────────────────────────────────
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import config as cfg
@@ -31,7 +32,7 @@ _local = threading.local()
 # ``_create_base_schema`` or a new/changed ``_migrate_*`` helper), otherwise
 # existing databases will never see the new migration. ``exptrack upgrade``
 # always forces a full re-run regardless of the stamp.
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 # Serializes the open-time WAL switch + schema migration *within this process*.
 # Threads (the dashboard serves one per request) otherwise race each other to
@@ -431,18 +432,105 @@ def _ensure_schema(conn, force: bool = False):
     ok = all([
         _migrate_sessions(conn),
         _migrate_session_nodes(conn),
+        # experiments first: _migrate_params' backfill reads
+        # experiments.hostname, which _migrate_experiments may still be about
+        # to add.
+        _migrate_experiments(conn),
         _migrate_experiment_session_link(conn),
         _migrate_artifacts(conn),
         _migrate_metrics(conn),
         _migrate_params(conn),
-        _migrate_experiments(conn),
     ])
     # Stamp the DB so future connections skip the probes above. Constant is
     # a module-level int — never user input — so the f-string is safe
     # (PRAGMA doesn't accept bound parameters).
+    missing = _missing_columns(conn)
+    if missing:
+        # The stamp is what makes get_db() skip this function, so stamping a DB
+        # whose columns are not actually present makes the gap permanent — no
+        # later connection ever retries, and only a manual `exptrack upgrade`
+        # recovers. Verify the end state rather than trusting that each helper
+        # reported honestly.
+        ok = False
+        print(f"[exptrack] warning: schema migration incomplete, missing: "
+              f"{', '.join(missing)}", file=sys.stderr)
     if ok:
         conn.execute(f"PRAGMA user_version = {int(_SCHEMA_VERSION)}")
     conn.commit()
+
+
+# ── The migrated columns, per table ───────────────────────────────────────────
+#
+# Each maps column name → the DDL fragment following `ADD COLUMN <name>`. The
+# `_migrate_*` helpers add them and `_missing_columns` verifies them, from this
+# one definition: kept as two lists, a column added to a migration but not to
+# the check silently weakened the guard instead of failing loudly, and
+# `image_paths`/`log_paths` had already drifted out of it.
+
+_EXPERIMENTS_COLUMNS = {
+    # The six columns below predate the _migrate_* convention: they only ever
+    # existed in _create_base_schema, which does nothing for a table that
+    # already exists. A DB created before them therefore never gained them, and
+    # every run then died on "table experiments has no column named command".
+    "command": "TEXT",
+    "hostname": "TEXT",
+    "python_ver": "TEXT",
+    "duration_s": "REAL",
+    "notes": "TEXT",
+    "tags": "TEXT",
+    "output_dir": "TEXT",
+    "studies": "TEXT",
+    "stage": "INTEGER",
+    "stage_name": "TEXT",
+    "image_paths": "TEXT",
+    "log_paths": "TEXT",
+    "deleted_at": "TEXT",
+    # 1 = run still carries its generated name (never renamed by the user).
+    "name_is_auto": "INTEGER DEFAULT 0",
+    "session_node_id": "TEXT",
+}
+_ARTIFACTS_COLUMNS = {
+    "timeline_seq": "INTEGER",
+    "content_hash": "TEXT",
+    "size_bytes": "INTEGER",
+}
+_METRICS_COLUMNS = {"session_node_id": "TEXT"}
+_PARAMS_COLUMNS = {"source": "TEXT DEFAULT 'auto'"}
+
+# Columns that only ever came from the base schema, so they have no migration
+# to derive them from — but their absence is still a broken database.
+_BASE_COLUMNS = {
+    "experiments": {"id", "project", "name", "status", "created_at",
+                    "updated_at", "script", "git_branch", "git_commit",
+                    "git_diff"},
+    "params": {"exp_id", "key", "value"},
+    "metrics": {"exp_id", "key", "value", "step", "ts"},
+    "artifacts": {"exp_id", "label", "path", "created_at"},
+}
+
+# Every column the current code requires, per table. Checked after the
+# migration helpers run and *before* the version stamp is written.
+_REQUIRED_COLUMNS = {
+    "experiments": _BASE_COLUMNS["experiments"] | set(_EXPERIMENTS_COLUMNS),
+    "params": _BASE_COLUMNS["params"] | set(_PARAMS_COLUMNS),
+    "metrics": _BASE_COLUMNS["metrics"] | set(_METRICS_COLUMNS),
+    "artifacts": _BASE_COLUMNS["artifacts"] | set(_ARTIFACTS_COLUMNS),
+}
+
+
+def _missing_columns(conn) -> list[str]:
+    """``table.column`` for every required column not present. Empty when the
+    schema is complete."""
+    out = []
+    for table, required in _REQUIRED_COLUMNS.items():
+        try:
+            have = _table_columns(conn, table)
+        except Exception:
+            continue          # table itself missing is a different failure
+        if not have:
+            continue
+        out.extend(f"{table}.{c}" for c in sorted(required - have))
+    return out
 
 
 def _create_base_schema(conn):
@@ -675,7 +763,8 @@ def _migrate_session_nodes(conn) -> bool:
 def _migrate_experiment_session_link(conn) -> bool:
     # Add session_node_id to experiments if missing
     try:
-        _add_columns(conn, "experiments", {"session_node_id": "TEXT"})
+        _add_columns(conn, "experiments",
+                     {"session_node_id": _EXPERIMENTS_COLUMNS["session_node_id"]})
         return True
     except sqlite3.OperationalError:
         return False
@@ -687,11 +776,7 @@ def _migrate_experiment_session_link(conn) -> bool:
 def _migrate_artifacts(conn) -> bool:
     # Add timeline_seq, content_hash, size_bytes to artifacts if missing
     try:
-        _add_columns(conn, "artifacts", {
-            "timeline_seq": "INTEGER",
-            "content_hash": "TEXT",
-            "size_bytes": "INTEGER",
-        })
+        _add_columns(conn, "artifacts", _ARTIFACTS_COLUMNS)
         return True
     except sqlite3.OperationalError:
         return False  # column may already exist
@@ -726,7 +811,7 @@ def _migrate_metrics(conn) -> bool:
     # wanted this index.)
     ok = True
     try:
-        _add_columns(conn, "metrics", {"session_node_id": "TEXT"})
+        _add_columns(conn, "metrics", _METRICS_COLUMNS)
         # Replace the older full index in place; DROP is a no-op when the
         # database was created after this change.
         idx = conn.execute(
@@ -788,13 +873,20 @@ def _migrate_params(conn) -> bool:
     # Add source column to params (auto vs manual). Backfill existing params
     # on manually-created experiments (hostname/python_ver are NULL there).
     try:
-        added = _add_columns(conn, "params", {"source": "TEXT DEFAULT 'auto'"})
-        if "source" in added:
-            conn.execute(
-                "UPDATE params SET source='manual' WHERE exp_id IN "
-                "(SELECT id FROM experiments "
-                " WHERE hostname IS NULL AND python_ver IS NULL)"
-            )
+        _add_columns(conn, "params", _PARAMS_COLUMNS)
+        # Deliberately NOT gated on "the ALTER ran this pass". It used to be,
+        # and that is how a legacy DB could be stamped current with columns
+        # still missing: pass 1 added `source`, then this backfill failed
+        # because `experiments.hostname` did not exist, so no stamp was
+        # written; pass 2 skipped the already-done ALTER, the backfill never
+        # ran, every helper "succeeded" and the DB was stamped. The UPDATE is
+        # idempotent, so running it on every migration pass is free and closes
+        # the hole.
+        conn.execute(
+            "UPDATE params SET source='manual' WHERE source='auto' AND exp_id IN "
+            "(SELECT id FROM experiments "
+            " WHERE hostname IS NULL AND python_ver IS NULL)"
+        )
         return True
     except sqlite3.OperationalError:
         return False
@@ -807,17 +899,11 @@ def _migrate_experiments(conn) -> bool:
     # Add output_dir, studies, stage columns to experiments if missing
     try:
         cols = _table_columns(conn, "experiments")  # snapshot for the 'groups' checks
-        added = _add_columns(conn, "experiments", {
-            "output_dir": "TEXT",
-            "studies": "TEXT",
-            "stage": "INTEGER",
-            "stage_name": "TEXT",
-            "image_paths": "TEXT",
-            "log_paths": "TEXT",
-            "deleted_at": "TEXT",
-            # 1 = run still carries its generated name (never renamed by the user).
-            "name_is_auto": "INTEGER DEFAULT 0",
-        }, existing=cols)
+        # session_node_id has its own helper (it carries an index and runs
+        # under its own error boundary), so it is excluded here.
+        spec = {k: v for k, v in _EXPERIMENTS_COLUMNS.items()
+                if k != "session_node_id"}
+        added = _add_columns(conn, "experiments", spec, existing=cols)
         # Migrate data from old 'groups' column into the new 'studies' column
         if "studies" in added and "groups" in cols:
             conn.execute("UPDATE experiments SET studies = groups WHERE groups IS NOT NULL")
@@ -878,8 +964,8 @@ def is_diff_sentinel(diff: str | None) -> bool:
     caller can classify what it just resolved without reaching into another
     layer; works on a raw column value as well as a resolved one.
     """
-    from .git import CAPTURE_FAILED
-    return bool(diff) and (diff in (CAPTURE_FAILED, DIFF_UNAVAILABLE)
+    from .git import CAPTURE_FAILED, NO_COMMITS
+    return bool(diff) and (diff in (CAPTURE_FAILED, DIFF_UNAVAILABLE, NO_COMMITS)
                            or diff.startswith(COMPACT_PREFIX))
 
 
@@ -887,11 +973,13 @@ def diff_sentinel_kind(diff: str | None) -> str | None:
     """Classify a sentinel for the client: ``capture_failed`` / ``unavailable``
     / ``compacted``, else None. Lets the dashboard branch on a field instead of
     re-hardcoding the marker strings in JS."""
-    from .git import CAPTURE_FAILED
+    from .git import CAPTURE_FAILED, NO_COMMITS
     if not diff:
         return None
     if diff == CAPTURE_FAILED:
         return "capture_failed"
+    if diff == NO_COMMITS:
+        return "no_commits"
     if diff == DIFF_UNAVAILABLE:
         return "unavailable"
     if diff.startswith(COMPACT_PREFIX):
@@ -973,6 +1061,49 @@ def get_code_snapshot(conn: sqlite3.Connection, snapshot_hash: str) -> dict | No
         "FROM code_snapshots WHERE hash=?", (snapshot_hash,)
     ).fetchone()
     return dict(row) if row else None
+
+
+def register_artifact(conn: sqlite3.Connection, exp_id: str, path,
+                      label: str = "", timeline_seq=None,
+                      content_hash: str | None = None) -> bool:
+    """Register one output file against a run. True if a row was inserted.
+
+    The one implementation of "record an artifact": resolve the path, hash the
+    content, then check-before-insert on ``(exp_id, resolved_path)``. Both the
+    in-process ``Experiment.log_artifact`` and the CLI ``exptrack log-artifact``
+    go through it — the CLI used to do a bare INSERT with the relative path and
+    no hash, so three invocations left three rows pointing at a path `verify`
+    could not check.
+    """
+    resolved = str(Path(str(path)).resolve())
+    ts = datetime.now(timezone.utc).isoformat()
+
+    size_bytes = None
+    if content_hash is None:
+        rp = Path(resolved)
+        if rp.is_file():
+            try:
+                from .. import config as _cfg
+                from .hashing import file_hash
+                max_bytes = int(_cfg.load().get("hash_max_mb", 500)) * 1024 * 1024
+                content_hash, size_bytes = file_hash(rp, max_bytes=max_bytes)
+            except Exception as e:
+                print(f"[exptrack] warning: could not hash artifact {resolved}: {e}",
+                      file=sys.stderr)
+
+    existing = conn.execute(
+        "SELECT id FROM artifacts WHERE exp_id=? AND path=?", (exp_id, resolved)
+    ).fetchone()
+    if existing:
+        return False
+    conn.execute(
+        """INSERT INTO artifacts
+           (exp_id, label, path, created_at, timeline_seq, content_hash, size_bytes)
+           VALUES (?,?,?,?,?,?,?)""",
+        (exp_id, label or Path(str(path)).name, resolved, ts,
+         timeline_seq, content_hash, size_bytes),
+    )
+    return True
 
 
 # ── Deletion helpers ──────────────────────────────────────────────────────────
@@ -1084,7 +1215,7 @@ def find_orphan_output_paths(conn: sqlite3.Connection) -> list[Path]:
         if child.is_dir():
             if norm not in claimed:
                 orphans.append(child)
-        elif not any(norm == d or norm.startswith(d + os.sep) for d in claimed):
+        elif not path_within_any(norm, claimed):
             orphans.append(child)
     return orphans
 
@@ -1310,6 +1441,52 @@ def _norm_path(p) -> str:
     return os.path.normpath(os.path.abspath(str(p)))
 
 
+def accumulated_duration(conn: sqlite3.Connection, exp_id: str,
+                         finish_ts: str) -> float:
+    """Wall time to record on a run finishing at *finish_ts*.
+
+    The one definition of ``duration_s``: time the run was actually running,
+    accumulated across resumes. Elapsed-since-creation counts the gap between a
+    resumed run's sessions as compute time — for a job resumed the next
+    morning, most of the recorded duration was the night. Three writers still
+    computed it that way (the dashboard's "mark done", ``exptrack finish`` and
+    the ``stale`` sweep), so how long a run took depended on which surface
+    ended it.
+    """
+    row = conn.execute(
+        "SELECT created_at, updated_at, duration_s FROM experiments WHERE id=?",
+        (exp_id,),
+    ).fetchone()
+    if not row:
+        return 0.0
+    prior = float(row["duration_s"] or 0.0)
+    # A resumed run's last `updated_at` is when the previous session ended, so
+    # the current session started no earlier than that.
+    since = row["updated_at"] if prior else row["created_at"]
+    try:
+        this_session = (datetime.fromisoformat(finish_ts)
+                        - datetime.fromisoformat(since)).total_seconds()
+    except (TypeError, ValueError):
+        this_session = 0.0
+    return prior + max(0.0, this_session)
+
+
+def path_within(path: str, directory: str) -> bool:
+    """Whether *path* is *directory* itself or something underneath it.
+
+    The one containment rule for output-dir claims. Both sides must already be
+    ``_norm_path``-normalized. Written out at four call sites, one of which
+    only asserted in a comment that it agreed with the others — a prefix test
+    without the separator counts ``outputs/run-10`` as inside ``outputs/run-1``.
+    """
+    return path == directory or path.startswith(directory + os.sep)
+
+
+def path_within_any(path: str, directories) -> bool:
+    """``path_within`` against a collection of claimed directories."""
+    return any(path_within(path, d) for d in directories)
+
+
 def _outputs_base() -> Path | None:
     """The configured ``outputs/`` directory, or None if config is unreadable."""
     try:
@@ -1532,7 +1709,7 @@ def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str) -> dict:
             if not fp.is_file():
                 continue
             rp = str(fp.resolve())
-            if any(rp == hd or rp.startswith(hd + os.sep) for hd in handled_dirs):
+            if path_within_any(rp, handled_dirs):
                 continue  # already moved with the output directory
             _bump(_trash_or_local(fp, label="artifact"))
         except Exception as e:
@@ -1843,8 +2020,16 @@ def rename_output_folder(conn: sqlite3.Connection, exp_id: str,
             "SELECT id, path FROM artifacts WHERE exp_id=?", (exp_id,)
         ).fetchall()
         for r in rows:
-            if r["path"] and r["path"].startswith(old_prefix):
-                new_path = str(new_dir) + r["path"][len(old_prefix):]
+            # Boundary match, not a bare startswith: renaming `run1` → `run2`
+            # also rewrote artifacts under `outputs/run1_extra/` to a path that
+            # does not exist, leaving a dangling row whose file `verify` and
+            # the delete path could no longer see. Same rule the ownership
+            # scan (`claimed_output_paths`) already uses.
+            path = r["path"]
+            if not path:
+                continue
+            if path_within(path, old_prefix):
+                new_path = str(new_dir) + path[len(old_prefix):]
                 conn.execute("UPDATE artifacts SET path=? WHERE id=?",
                              (new_path, r["id"]))
 

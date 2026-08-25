@@ -121,6 +121,8 @@ class SessionManager:
         self._pending_collision: dict[str, Any] | None = None
         # One-shot guard for auto-linking the notebook's run to this session.
         self._auto_linked_run_id: str | None = None
+        # Memoized `owns_experiment` verdicts, keyed by run id — see there.
+        self._owns_cache: dict[str, bool] = {}
         # True when the last start() re-adopted an existing session (kernel
         # restart) rather than creating one — the magic reports which happened.
         self.reattached: bool = False
@@ -321,7 +323,7 @@ class SessionManager:
         # Same collision arbitration tracked cells get: `branch("X")` on a reused
         # label defers the merge-or-fork decision to the first cell that runs
         # under it, and that first cell may well be a `%%setup` block.
-        self._resolve_branch_collision(recorded)
+        self._resolve_branch_collision(recorded, is_setup=True)
         if self._write_setup_segment(recorded, output or ""):
             return
         # The node was trashed out from under us (dashboard / CLI in another
@@ -525,9 +527,19 @@ class SessionManager:
                          "ts": time.time()})
             if len(imgs) > _NODE_IMAGES_MAX:
                 imgs = imgs[-_NODE_IMAGES_MAX:]
-            conn.execute("UPDATE session_nodes SET images=? WHERE id=?",
-                         (json.dumps(imgs), self._current_node_id))
+            # `deleted_at IS NULL` + the re-anchor recovery every other per-cell
+            # write already has: without it a figure saved after the node was
+            # trashed (from the dashboard or another process) was written onto
+            # the trashed row, where nothing shows it.
+            cur = conn.execute(
+                "UPDATE session_nodes SET images=? WHERE id=? AND deleted_at IS NULL",
+                (json.dumps(imgs), self._current_node_id))
             conn.commit()
+            if cur.rowcount == 0 and self._recover_current_node():
+                conn.execute(
+                    "UPDATE session_nodes SET images=? WHERE id=? AND deleted_at IS NULL",
+                    (json.dumps(imgs), self._current_node_id))
+                conn.commit()
         except Exception as e:
             print(f"[exptrack] session image capture warning: {e}", file=sys.stderr)
 
@@ -547,6 +559,7 @@ class SessionManager:
         the deletion fell back to.
         """
         self._current_node_id = node_id
+        self._invalidate_owns_cache()
         row = self._get_node(node_id, "cell_source, cell_outputs, setup_source") \
             if node_id else None
         self._current_cell_source = (row["cell_source"]
@@ -658,16 +671,33 @@ class SessionManager:
         recorded without a detected notebook name (or a magic run before
         detection works) must not block re-adoption of the obvious candidate.
         """
+        # `status='active'` alone missed the commonest notebook shape there is:
+        # `%exptrack session start` at the top and `%exptrack session end` at
+        # the bottom. After one Run-All the session is `ended`, so the next pass
+        # re-created the whole tree — three passes, three duplicate trees. An
+        # ended session of the same name in the same notebook is re-adopted and
+        # re-opened instead.
         rows = get_db().execute(
-            "SELECT id, notebook FROM sessions "
-            "WHERE name=? AND status='active' AND deleted_at IS NULL "
-            "ORDER BY created_at DESC",
+            "SELECT id, notebook, status FROM sessions "
+            "WHERE name=? AND status IN ('active','ended') AND deleted_at IS NULL "
+            "ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at DESC",
             (name,),
         ).fetchall()
         want = (notebook or "").strip()
         for r in rows:
             have = (r["notebook"] or "").strip()
+            if r["status"] == "ended" and not (want and have and want == have):
+                # An ended session is only re-adopted on a *definite* notebook
+                # match. The lenient rule below exists so a missing notebook
+                # name can't block re-adoption after a kernel restart, and
+                # applying it to ended sessions would let an unrelated notebook
+                # reopen a session someone deliberately closed.
+                continue
             if not want or not have or want == have:
+                if r["status"] == "ended":
+                    get_db().execute(
+                        "UPDATE sessions SET status='active' WHERE id=?", (r["id"],))
+                    get_db().commit()
                 return r["id"]
         return None
 
@@ -772,8 +802,62 @@ class SessionManager:
         self._last_setup_idx = None
         self._pending_collision = None
         self._auto_linked_run_id = None
+        self._owns_cache = {}
         self.reattached = False
         self._liveness_warned = False
+
+    def owns_experiment(self, exp_id: str) -> bool:
+        """Whether *exp_id* is a run this session is recording into.
+
+        A session is active per *kernel*, not per run, so "a session is
+        running" is not the same as "this metric belongs to a branch". Used by
+        the metric writer to decide whether to stamp `session_node_id`: the tag
+        used to go on any metric logged while a session was live, whoever owned
+        the run, and `materialize` then copied those foreign numbers onto the
+        graduated branch run.
+
+        Memoized per run id, because this sits on the metric write path — the
+        one place `metrics.md` says must stay nearly free — and every point of
+        a run other than the autolinked one paid a `get_db()` plus a two-table
+        join. The verdict can only change when the session adopts a run, moves
+        node or ends, and each of those clears the cache.
+        """
+        if not exp_id or not self.session_id:
+            return False
+        if self._auto_linked_run_id == exp_id:
+            return True
+        cached = self._owns_cache.get(exp_id)
+        if cached is not None:
+            return cached
+        try:
+            row = get_db().execute(
+                "SELECT e.session_node_id AS link, n.session_id AS sid "
+                "FROM experiments e "
+                "LEFT JOIN session_nodes n ON n.id = e.session_node_id "
+                "WHERE e.id=?",
+                (exp_id,),
+            ).fetchone()
+        except Exception:
+            return False
+        if row is None:
+            return False
+        if row["link"]:
+            # Linked somewhere: ours only if the node is in this session.
+            verdict = row["sid"] == self.session_id
+        else:
+            # Not linked to any node yet. That is the normal state during the
+            # first cell of a session (the hook autolinks *after* the body
+            # runs), so an unlinked run is ours — unless this session has
+            # already adopted a different one, in which case this is a second,
+            # unrelated run and its numbers must not be attributed to a branch.
+            verdict = self._auto_linked_run_id is None
+        self._owns_cache[exp_id] = verdict
+        return verdict
+
+    def _invalidate_owns_cache(self) -> None:
+        """Drop the memoized ownership verdicts. Called wherever the answer can
+        change: adopting a run, switching node, and ending the session."""
+        self._owns_cache.clear()
 
     def autolink_run(self, exp_id: str) -> None:
         """Group a notebook's auto-created run under the current node, once.
@@ -798,6 +882,7 @@ class SessionManager:
         _group_run_into_session_study(conn, exp_id, self.session_id)
         conn.commit()
         self._auto_linked_run_id = exp_id
+        self._invalidate_owns_cache()
 
     # ── nodes ────────────────────────────────────────────────────────────────
 
@@ -896,18 +981,42 @@ class SessionManager:
             return None
         # Moving off whatever branch we were on — freeze its diff first.
         self._refresh_branch_diff()
+        # "checkpoint" is in the lookup because `promote_to_checkpoint` changes
+        # a branch node's type in place: without it, a Run-All after a promote
+        # found no node with that label and created a second one right beside
+        # the promoted original.
         existing = self._find_child_by_label(
-            self._last_checkpoint_id, label, ("branch", "abandoned"))
+            self._last_checkpoint_id, label, ("branch", "abandoned", "checkpoint"))
         if existing:
             self._reactivate_branch(existing)
             self._switch_to_node(existing)
             first = (self._current_cell_source.split(self._CELL_SEPARATOR)[0]
                      if self._current_cell_source else "")
+            # A branch whose first replayed cell is `%%setup` never matches the
+            # tracked-cell baseline (setup code is kept in its own store), so
+            # every Run-All decided "different code" and forked `tryA (2)`,
+            # `tryA (3)`… Arm the setup baseline in parallel and compare like
+            # against like.
+            setup_row = self._get_node(existing, "setup_source")
+            setup_blob = (setup_row["setup_source"]
+                          if setup_row and setup_row["setup_source"] else "")
+            setup_first = (setup_blob.split(self._CELL_SEPARATOR)[0]
+                           if setup_blob else "")
+            # Marks that bound "logged during the cell we're about to run", so a
+            # collision *fork* can carry this cell's metrics/images to the fork
+            # instead of leaving them on the pre-fork node (see
+            # _reattach_cell_records). Captured now, the instant we switch onto
+            # the existing node and before its cell body runs.
+            metric_mark = get_db().execute(
+                "SELECT COALESCE(MAX(id), 0) FROM metrics").fetchone()[0]
             self._pending_collision = {
                 "existing_id": existing,
                 "label": label,
                 "parent_id": self._last_checkpoint_id,
                 "baseline_first": first,
+                "baseline_setup_first": setup_first,
+                "metric_mark": metric_mark,
+                "image_mark": time.time(),
             }
             return existing
 
@@ -998,7 +1107,7 @@ class SessionManager:
             n += 1
         return f"{label} ({n})"
 
-    def _resolve_branch_collision(self, recorded: str) -> None:
+    def _resolve_branch_collision(self, recorded: str, is_setup: bool = False) -> None:
         """Decide a pending branch-label collision using the first recorded cell.
 
         Armed by branch() when a label was reused. If the incoming cell's source
@@ -1010,18 +1119,22 @@ class SessionManager:
         if not pc or self._current_node_id != pc["existing_id"]:
             return
         self._pending_collision = None
-        baseline = (pc["baseline_first"] or "").strip()
+        baseline = (pc["baseline_setup_first"] if is_setup
+                    else pc["baseline_first"]) or ""
+        baseline = baseline.strip()
         if not baseline or baseline == recorded.strip():
             return  # first cell / identical re-run — merge as before
         # A previous Run-All of this same edited branch already forked a node —
         # return to it rather than forking another.
         existing_fork = self._find_sibling_by_first_cell(pc["parent_id"], recorded)
         if existing_fork:
+            self._reattach_cell_records(pc["existing_id"], existing_fork, pc)
             self._reactivate_branch(existing_fork)
             self._switch_to_node(existing_fork)
             return
         new_label = self._unique_branch_label(pc["parent_id"], pc["label"])
         nid = self._create_branch_node(pc["parent_id"], new_label)
+        self._reattach_cell_records(pc["existing_id"], nid, pc)
         self._switch_to_node(nid)
         print(
             f"[exptrack] branch {pc['label']!r} already had different code under "
@@ -1029,6 +1142,61 @@ class SessionManager:
             f"Rename it in the dashboard (double-click the node label) if you like.",
             file=sys.stderr,
         )
+
+    def _reattach_cell_records(self, old_id: str, new_id: str, pc: dict) -> None:
+        """Move this cell's metrics and images from `old_id` to the fork `new_id`.
+
+        A branch-label collision is only decided at `record_cell` time, *after*
+        the cell body ran — but `metric()` and the savefig patch fired *during*
+        the body, when the current node was still the pre-fork `old_id`. Left
+        alone, the fork carries the cell's code while `old_id` keeps numbers (and
+        plots) it never produced — the exact silent cross-branch attribution
+        error that write-time tagging exists to prevent, reintroduced through the
+        fork path. The marks captured when `branch()` armed the collision bound
+        "logged during this cell": metric rows with `id` past `metric_mark`, node
+        images with a `ts` past `image_mark`. The identical-re-run merge path
+        never calls this — those records already sit on the right node."""
+        conn = get_db()
+        conn.execute(
+            "UPDATE metrics SET session_node_id=? WHERE session_node_id=? AND id>?",
+            (new_id, old_id, pc.get("metric_mark", 0)),
+        )
+        conn.commit()
+        self._move_recent_images(old_id, new_id, pc.get("image_mark", 0))
+
+    def _move_recent_images(self, old_id: str, new_id: str, mark: float) -> None:
+        """Move node images logged after `mark` (this cell) from old to new node.
+
+        Images live in `session_nodes.images` as a JSON list with a per-entry
+        `ts`; there is no row id to key on, so the timestamp mark is the bound.
+        Deduped by path and capped on the destination, matching record_image."""
+        conn = get_db()
+        old_row = self._get_node(old_id, "images")
+        try:
+            old_imgs = json.loads(old_row["images"]) if old_row and old_row["images"] else []
+        except Exception:
+            return
+        moving = [im for im in old_imgs
+                  if isinstance(im, dict) and im.get("ts", 0) > mark]
+        if not moving:
+            return
+        keep = [im for im in old_imgs if im not in moving]
+        new_row = self._get_node(new_id, "images")
+        try:
+            new_imgs = json.loads(new_row["images"]) if new_row and new_row["images"] else []
+        except Exception:
+            new_imgs = []
+        moving_paths = {im.get("path") for im in moving}
+        new_imgs = [im for im in new_imgs
+                    if isinstance(im, dict) and im.get("path") not in moving_paths]
+        new_imgs.extend(moving)
+        if len(new_imgs) > _NODE_IMAGES_MAX:
+            new_imgs = new_imgs[-_NODE_IMAGES_MAX:]
+        conn.execute("UPDATE session_nodes SET images=? WHERE id=?",
+                     (json.dumps(keep), old_id))
+        conn.execute("UPDATE session_nodes SET images=? WHERE id=?",
+                     (json.dumps(new_imgs), new_id))
+        conn.commit()
 
     def _compute_diff_vs_checkpoint(self, checkpoint_id: str | None,
                                     head_commit: str | None) -> str:
@@ -1062,14 +1230,29 @@ class SessionManager:
         # node's diff reflects the working tree as of now.
         self._refresh_branch_diff()
         conn = get_db()
+        # A node links to at most one run — the invariant the dashboard's link
+        # path enforces with the same call. Skipping it here left two runs on
+        # one node, so the tree's "→ exp" badge showed whichever row came back
+        # first and a checkpoint's totals double-counted.
+        _detach_experiments(conn, [self._current_node_id])
         conn.execute(
             "UPDATE experiments SET session_node_id=? WHERE id=?",
             (self._current_node_id, exp_id),
         )
         _group_run_into_session_study(conn, exp_id, self.session_id)
         conn.commit()
+        # Idempotent under a Run-All: the magic re-runs every pass, but the note
+        # line is appended only if it isn't already there. (append_to_current_note
+        # stays deliberately append-only for %%pin's timestamped trail.)
         if label:
-            self.append_to_current_note(f"promoted: {label}")
+            line = f"promoted: {label}"
+            row = conn.execute(
+                "SELECT note FROM session_nodes WHERE id=?",
+                (self._current_node_id,),
+            ).fetchone()
+            existing = row["note"] if row and row["note"] else ""
+            if line not in existing.splitlines():
+                self.append_to_current_note(line)
 
     def append_to_current_note(self, text: str) -> None:
         """Append a line to the current node's `note` field. Used by promote
@@ -1108,6 +1291,41 @@ class SessionManager:
         return build_tree(sid)
 
 
+def _node_metrics(conn, session_id: str) -> dict[str, dict]:
+    """``{node_id: {metric_key: last_value}}`` for one session's nodes.
+
+    Last value per (node, key) by the same ordering every other metric reader
+    uses — step, then ts, then insert order — so a branch's number here is the
+    number its detail view shows.
+
+    One row per (node, key) rather than every point: the reader only ever keeps
+    the last of each group, so shipping a run's 100k logged points to Python to
+    discard all but a handful re-read the whole metrics table on every
+    sessions-view load.
+    """
+    rows = conn.execute(
+        "SELECT nid, key, value FROM ("
+        "  SELECT m.session_node_id AS nid, m.key AS key, m.value AS value,"
+        "         ROW_NUMBER() OVER ("
+        "           PARTITION BY m.session_node_id, m.key"
+        "           ORDER BY COALESCE(m.step, -1) DESC, m.ts DESC, m.rowid DESC"
+        "         ) AS rn"
+        "  FROM metrics m"
+        "  JOIN session_nodes n ON n.id = m.session_node_id"
+        "  WHERE n.session_id=? AND m.value IS NOT NULL"
+        ") WHERE rn = 1",
+        (session_id,),
+    ).fetchall()
+    out: dict[str, dict] = {}
+    for r in rows:
+        out.setdefault(r["nid"], {})[r["key"]] = r["value"]
+    # One alias table for the whole session rather than one per node: building
+    # it reads config and rebuilds the map, and this runs inside a loop.
+    from ..core.metric_alias import alias_map, merge_metric_map
+    amap = alias_map()
+    return {nid: merge_metric_map(m, amap) for nid, m in out.items()}
+
+
 def build_tree(session_id: str) -> dict[str, Any]:
     """Reconstruct a session's tree as a nested dict.
 
@@ -1138,6 +1356,12 @@ def build_tree(session_id: str) -> dict[str, Any]:
     # a blob), so each is resolved back to text here — memoized, since that
     # sharing means one body would otherwise be re-read once per node.
     diff_cache: dict[str, str] = {}
+    # Per-node metrics, in one query for the whole tree. The numbers have been
+    # tagged with `session_node_id` at write time since Session Trees shipped,
+    # but nothing read them back: comparing `val_acc` across two branches meant
+    # materializing both branches into experiments first, which is a
+    # heavyweight, irreversible-feeling step to answer "which one was better".
+    metrics_by_node = _node_metrics(conn, session_id)
     by_id: dict[str, dict] = {}
     for r in nodes:
         by_id[r["id"]] = {
@@ -1157,6 +1381,7 @@ def build_tree(session_id: str) -> dict[str, Any]:
             "created_at": r["created_at"],
             "exp_id": r["exp_id"],
             "exp_name": r["exp_name"],
+            "metrics": metrics_by_node.get(r["id"], {}),
             "children": [],
         }
 

@@ -11,12 +11,36 @@ from pathlib import Path
 
 from .. import config as cfg
 from ..core import get_db
-from ..core.utils import json_dumps
+from ..core.param_study import MISSING as _MISSING
+from ..core.param_study import params_differ
+from ..core.primary_metric import goal_for_key
+from ..core.utils import is_user_param_key, json_dumps
 from .formatting import STATUS_C, STATUS_I, C, G, M, R, W, Y, bold, col, die, dim, fmt_dt, fmt_dur
 
 # How many artifacts `exptrack show` lists before summarising the rest. Lower
 # than the export cap: a terminal has a screenful, not a page.
 ARTIFACT_SHOW_LIMIT = 15
+
+
+def _fmt_g(value, width: int = 10) -> str:
+    """Right-aligned 4-sig-fig number, or a padded '--' when the value is None.
+
+    A metric can carry a NULL value (a hand-edited or legacy DB — the normal
+    log_metric path coerces via float()), and a `:.4g` format spec crashes on
+    None. Mirrors the `--` the query/export layer already renders for None.
+    """
+    return f"{value:>{width}.4g}" if value is not None else f"{'--':>{width}}"
+
+
+def _delta_is_better(key: str, delta: float) -> bool:
+    """Whether a metric moving by *delta* is an improvement for *key*.
+
+    One rule for every CLI delta: `compare` coloured green-when-bigger and
+    `watch` hardcoded the opposite, so the same falling loss read as a
+    regression on one surface and an improvement on the other. Green means
+    better, not bigger.
+    """
+    return (delta < 0) if goal_for_key(key) == "min" else (delta > 0)
 
 
 def _artifact_limit(args) -> int:
@@ -26,14 +50,55 @@ def _artifact_limit(args) -> int:
     return ARTIFACT_LIST_LIMIT if n is None else n
 
 
+def _since_iso(spec: str) -> str:
+    """``"7d"`` / ``"24h"`` / an ISO date → an ISO lower bound, or ``""``.
+
+    Accepts the same ``Nd`` shape `clean --older-than` uses, plus ``Nh`` and a
+    literal date, because "this week's runs" is one of the two ways a set is
+    actually described and neither the CLI nor the dashboard could express it.
+    """
+    from datetime import datetime, timezone
+
+    from ..core.utils import parse_age
+    spec = (spec or "").strip()
+    if not spec:
+        return ""
+    delta = parse_age(spec)
+    if delta is not None:
+        return (datetime.now(timezone.utc) - delta).isoformat()
+    try:
+        return datetime.fromisoformat(spec).isoformat()
+    except ValueError:
+        die(f"Invalid --since: '{spec}'. Use 7d, 24h, or a date like 2026-08-01.")
+
+
+def _parse_param_filters(specs) -> list:
+    """``["lr=0.01", "opt=adam"]`` → ``[("lr", "0.01"), ("opt", "adam")]``."""
+    out = []
+    for spec in specs:
+        if "=" not in str(spec):
+            die(f"Invalid --param: '{spec}'. Use --param key=value.")
+        k, v = str(spec).split("=", 1)
+        k = k.strip()
+        if not k:
+            die(f"Invalid --param: '{spec}'. Use --param key=value.")
+        out.append((k, v.strip()))
+    return out
+
+
 def cmd_ls(args):
     from ..core.queries import list_experiments
     conn = get_db()
     tag_filter = getattr(args, "tag", None) or ""
     status_filter = getattr(args, "status", None) or ""
     study_filter = getattr(args, "study", None) or ""
+    script_filter = getattr(args, "script", None) or ""
+    since = _since_iso(getattr(args, "since", "") or "")
+    param_filters = _parse_param_filters(getattr(args, "param", None) or [])
     experiments = list_experiments(conn, limit=args.n, status=status_filter,
-                                  tag=tag_filter, study=study_filter)
+                                  tag=tag_filter, study=study_filter,
+                                  script=script_filter, since=since,
+                                  param_filters=param_filters)
 
     if not experiments:
         print(dim("No experiments found."), file=sys.stderr); return
@@ -79,7 +144,7 @@ def cmd_ls(args):
         for k in shown_m:
             if k in m:
                 v = m[k]["value"] if isinstance(m[k], dict) else m[k]
-                mvals.append(f"{v:.4g}")
+                mvals.append(_fmt_g(v, 0).strip() if v is not None else dim("--"))
             else:
                 mvals.append(dim("--"))
 
@@ -149,7 +214,7 @@ def cmd_show(args):
     if params:
         sec("Params")
         for k, v in params.items():
-            if not k.startswith("_"):
+            if is_user_param_key(k):
                 print(f"    {col(k, M):<30} {v}")
         print()
 
@@ -159,8 +224,8 @@ def cmd_show(args):
         print(f"    {'KEY':<24} {'LAST':>10} {'MIN':>10} {'MAX':>10} {'STEPS':>6}")
         print(dim("    " + "-"*62))
         for m in metrics:
-            print(f"    {col(m['key'], G):<32} {m['last']:>10.4g}"
-                  f" {m['min']:>10.4g} {m['max']:>10.4g} {m['n']:>6}")
+            print(f"    {col(m['key'], G):<32} {_fmt_g(m['last'])}"
+                  f" {_fmt_g(m['min'])} {_fmt_g(m['max'])} {m['n']:>6}")
         print()
 
     artifacts = exp.get("artifacts", [])
@@ -333,7 +398,10 @@ def cmd_diff(args):
     from ..core.db import resolve_git_diff
     diff = resolve_git_diff(conn, exp["git_diff"])
     from ..core.db import DIFF_UNAVAILABLE
-    from ..core.git import CAPTURE_FAILED
+    from ..core.git import CAPTURE_FAILED, NO_COMMITS
+    if diff == NO_COMMITS:
+        print(col("  The repository had no commits yet when this run started.", Y))
+        print(dim("  (Nothing to diff against — not a capture failure, and not a clean tree.)")); return
     if diff == CAPTURE_FAILED:
         print(col("  Uncommitted changes could not be captured for this run.", Y))
         print(dim("  (git diff failed at capture time — this is NOT the same as a clean tree.)")); return
@@ -358,6 +426,203 @@ def cmd_diff(args):
     print()
 
 
+def _compare_many(conn, ids):
+    """N-way comparison: one column per run, params and metrics as rows.
+
+    Only *varying* params are shown — with five runs the constant ones fill the
+    screen with the context you already know. Metric rows mark the best value
+    per row using the shared polarity rule, so "green means better" holds here
+    too.
+
+    Built on ``get_multi_compare``, the same payload the dashboard's Multi
+    Compare renders, so the two surfaces cannot answer "how do these N runs
+    differ" differently — and so the CLI reports alias merges, which its own
+    assembly of this table did not.
+    """
+    from ..core.queries import (
+        get_multi_compare,
+        resolve_experiment_rows,
+        varying_param_keys,
+    )
+
+    rows = resolve_experiment_rows(conn, ids, "id, name")
+    known = {r["id"] for r in rows}
+    for raw in ids:
+        if not any(rid.startswith(raw) or rid == raw for rid in known):
+            die(f"Not found: {raw}")
+
+    exps = get_multi_compare(conn, [r["id"] for r in rows])
+    resolved = [e["id"] for e in exps]
+    names = [e["name"] for e in exps]
+    params_by_exp = {e["id"]: e["params"] for e in exps}
+    metrics = {e["id"]: e["metrics"] for e in exps}
+    varying = varying_param_keys(exps)
+    metric_keys = sorted({k for m in metrics.values() for k in m})
+    merged = {}
+    for e in exps:
+        for canon, spellings in (e.get("merged_metric_keys") or {}).items():
+            merged.setdefault(canon, set()).update(spellings)
+
+    w = 18
+    print()
+    print("  " + "".ljust(22) + "".join(bold(col(n[:16].ljust(w), C)) for n in names))
+    print(dim("  " + "-" * (22 + w * len(resolved))))
+
+    # The script is the first thing that differs in a model bake-off and is not
+    # a param, so it would otherwise not appear at all — leaving a table that
+    # says two runs differ only in `lr` when they ran different models.
+    scripts = [e["script"] for e in exps]
+    if len({s for s in scripts}) > 1:
+        print(bold(col("  Script", C)))
+        cells = [Path(sc).name[:16].ljust(w) if sc else dim("--").ljust(w)
+                 for sc in scripts]
+        print(f"  {'script':<22}" + "".join(cells))
+        print()
+
+    if varying:
+        print(bold(col("  Params (varying only)", Y)))
+        for k in varying:
+            cells = []
+            for e in resolved:
+                v = params_by_exp.get(e, {}).get(k)
+                cells.append((dim("--") if v is None else str(v))[:16].ljust(w))
+            print(f"  {k[:20]:<22}" + "".join(cells))
+        print()
+    else:
+        print(dim("  No parameters vary across these runs."))
+        print()
+
+    if metric_keys:
+        print(bold(col("  Metrics (last)", G)))
+        for k in metric_keys:
+            vals = [metrics[e].get(k) for e in resolved]
+            nums = [v for v in vals if isinstance(v, (int, float))]
+            best = None
+            if len(nums) > 1 and min(nums) != max(nums):
+                best = min(nums) if goal_for_key(k) == "min" else max(nums)
+            cells = []
+            for v in vals:
+                if v is None:
+                    cells.append(dim("--").ljust(w))
+                    continue
+                text = f"{v:.4g}"
+                cells.append(col(text.ljust(w), G) if v == best else text.ljust(w))
+            print(f"  {k[:20]:<22}" + "".join(cells))
+        # A merge the user cannot see is indistinguishable from a metric that
+        # was silently dropped — the rule metric_alias states, which only the
+        # dashboard was keeping.
+        for canon, spellings in sorted(merged.items()):
+            others = sorted(s for s in spellings if s != canon)
+            if others:
+                print(dim(f"  {canon}: merged from {', '.join(others)}"))
+        print()
+    else:
+        print(dim("  No metrics logged on these runs."))
+        print()
+
+
+def cmd_vs_reference(args):
+    """Every run in the set measured against the pinned reference.
+
+    The shape cross-model evaluation usually wants and the one surface the
+    reference feature never had: `exptrack reference` pins the run everything
+    is measured against, but the only way to *read* that comparison was one run
+    at a time, on the dashboard's vs-reference strip.
+    """
+    from ..core import reference as ref
+    from ..core.queries import get_latest_metrics, get_latest_metrics_batch, list_experiments
+
+    conn = get_db()
+    r = ref.resolve(conn)
+    if not r:
+        die("No reference pinned. Set one with `exptrack reference <id>`.")
+    if r.get("stale"):
+        # Stated, never silently absent — the whole point of the stale marker.
+        die(f"The pinned reference is unavailable ({r['stale']}): {r['id'][:8]}. "
+            f"Restore it, or pin another with `exptrack reference <id>`.")
+
+    rows = list_experiments(conn, limit=args.n,
+                            script=getattr(args, "script", "") or "",
+                            study=getattr(args, "study", "") or "")
+    base = get_latest_metrics(conn, r["id"])
+    keys = sorted(base)
+    if not keys:
+        die(f"The reference '{r['name']}' logged no metrics to compare against.")
+
+    where = "this project" if r.get("source") == "project" else f"study '{r.get('study')}'"
+    print()
+    print(bold(col(f"  vs reference: {r['name']}  ({where})", W)))
+    print(dim("  " + "-" * 76))
+    header = "  " + "NAME".ljust(34) + "".join(k[:12].rjust(14) for k in keys[:4])
+    print(bold(col(header, W)))
+
+    others = [row for row in rows if row["id"] != r["id"]]
+    latest = get_latest_metrics_batch(conn, [row["id"] for row in others])
+    for row in others:
+        mine = latest.get(row["id"], {})
+        cells = []
+        for k in keys[:4]:
+            v, b = mine.get(k), base.get(k)
+            if v is None or b is None:
+                cells.append(dim("--").rjust(14))
+                continue
+            d = v - b
+            if not d:
+                cells.append("=".rjust(14))
+                continue
+            text = f"{'+' if d > 0 else ''}{d:.4g}"
+            cells.append(col(text.rjust(14), G if _delta_is_better(k, d) else R))
+        print("  " + row["name"][:32].ljust(34) + "".join(cells))
+    if len(keys) > 4:
+        print()
+        print(dim(f"  Showing 4 of {len(keys)} metrics the reference logged."))
+    print()
+
+
+def cmd_top(args):
+    """Rank the project's runs by their primary metric.
+
+    The whole ranking layer (top_runs / best_so_far / pareto_front) was
+    dashboard-only, so the SLURM and SSH audience — the people most likely to
+    have a hundred runs and no browser — had no way to ask "which run won".
+    """
+    from ..core.leaderboard import top_runs
+    from ..core.queries import list_experiments
+
+    conn = get_db()
+    rows = list_experiments(conn, limit=args.n, script=getattr(args, "script", "") or "",
+                            study=getattr(args, "study", "") or "")
+    if not rows:
+        print(dim("No experiments found.")); return
+
+    result = top_runs(conn, [r["id"] for r in rows],
+                      limit=args.limit,
+                      rank_by="best" if getattr(args, "best", False) else "final",
+                      include_running=getattr(args, "include_running", False),
+                      include_failed=not getattr(args, "exclude_failed", False))
+    metric = result.get("metric") or {}
+    key, goal, source = metric.get("key"), metric.get("goal"), metric.get("source")
+    if not key:
+        print(dim("No metric to rank by — log one, or set "
+                  "`exptrack primary-metric <key>`.")); return
+
+    how = f" ({source})" if source else ""
+    print()
+    print(bold(col(f"  Ranked by {key} — {goal}imize{how}", W)))
+    print(dim("  " + "-" * 74))
+    for i, r in enumerate(result.get("runs", []), 1):
+        val = r.get("value")
+        cfg = ", ".join(f"{k}={v}" for k, v in list((r.get("params") or {}).items())[:3])
+        print(f"  {i:>2}. {col(r['id'][:6], C)}  {_fmt_g(val)}  "
+              f"{r['name'][:34]:<36}{dim(cfg[:40])}")
+    unscored = result.get("unscored") or []
+    if unscored:
+        # Counted separately, never dropped to make the list look complete.
+        print()
+        print(dim(f"  {len(unscored)} run(s) never logged {key} and are not ranked."))
+    print()
+
+
 def cmd_compare(args):
     from ..core.queries import get_experiment_detail, get_latest_metrics, get_vars_at_seq
     conn = get_db()
@@ -367,6 +632,14 @@ def cmd_compare(args):
 
     if seq1 is not None and seq2 is not None:
         _compare_within(conn, args.id1, int(seq1), int(seq2))
+        return
+
+    extra = [i for i in (getattr(args, "ids", None) or []) if i]
+    if extra:
+        # Three or more runs is the shape a sweep or a model bake-off actually
+        # has; the pairwise-only form meant the terminal could never answer
+        # "how do these five compare", which the dashboard has done since 1.1.
+        _compare_many(conn, [args.id1, args.id2, *extra])
         return
 
     e1 = get_experiment_detail(conn, args.id1)
@@ -385,11 +658,14 @@ def cmd_compare(args):
     if p1 or p2:
         print(bold(col("  Params", Y)))
         for k in sorted(set(p1) | set(p2)):
-            if k.startswith("_"):
+            if not is_user_param_key(k):
                 continue
             v1 = str(p1.get(k, dim("--")))
             v2 = str(p2.get(k, dim("--")))
-            marker = col("  < differs", Y) if p1.get(k) != p2.get(k) else ""
+            # Normalized equality (the rule param_study groups by), so `0.01`
+            # captured as a float and as a string is one setting, not a diff.
+            differs = params_differ(p1.get(k, _MISSING), p2.get(k, _MISSING))
+            marker = col("  < differs", Y) if differs else ""
             print(f"  {k:<26} {v1:<30} {v2:<30}{marker}")
         print()
 
@@ -407,12 +683,17 @@ def cmd_compare(args):
     if m1 or m2:
         print(bold(col("  Metrics (last)", G)))
         for k in sorted(set(m1) | set(m2)):
-            sv1 = f"{m1[k]:.4g}" if k in m1 else dim("--")
-            sv2 = f"{m2[k]:.4g}" if k in m2 else dim("--")
+            sv1 = f"{m1[k]:.4g}" if m1.get(k) is not None else dim("--")
+            sv2 = f"{m2[k]:.4g}" if m2.get(k) is not None else dim("--")
             marker = ""
-            if k in m1 and k in m2:
-                d = m1[k] - m2[k]
-                marker = col(f"  {'>' if d>0 else '<'}{abs(d):.3g}", G if d < 0 else R)
+            if m1.get(k) is not None and m2.get(k) is not None:
+                d = m2[k] - m1[k]          # movement from the first run to the second
+                if d:
+                    # Green means *better*, not bigger: a loss falling 0.9 -> 0.5
+                    # is an improvement and must not render red.
+                    better = _delta_is_better(k, d)
+                    marker = col(f"  {'+' if d > 0 else '-'}{abs(d):.3g}",
+                                 G if better else R)
             print(f"  {k:<26} {sv1:<30} {sv2:<30}{marker}")
         print()
 
@@ -708,7 +989,11 @@ def cmd_watch(args):
                     if k in changed_keys:
                         delta = v - prev_metrics[k]
                         sign = "+" if delta >= 0 else ""
-                        delta_str = "  " + col(f"({sign}{delta:.4g})", G if delta < 0 else Y)
+                        # Polarity-aware, like every other delta surface: this
+                        # hardcoded lower-is-better, so a rising accuracy
+                        # watched live rendered as the warning colour.
+                        better = _delta_is_better(k, delta)
+                        delta_str = "  " + col(f"({sign}{delta:.4g})", G if better else Y)
                     else:
                         delta_str = dim("  (new)")
                     print(f"  {dim(ts)}  {col(k, M):<30} {v:.6g}{delta_str}")

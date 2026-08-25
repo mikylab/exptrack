@@ -25,3 +25,26 @@ def body_str(body: dict, key: str, default: str = "") -> str:
     if value is None:
         return default
     return value.strip() if isinstance(value, str) else str(value).strip()
+
+
+def body_int(body: dict, key: str, default: int = -1) -> int:
+    """Read a request-body field as an int, degrading to *default*.
+
+    The numeric sibling of ``body_str`` for the ``index`` fields on the
+    log-path / image-path / result-type routes. These were read as
+    ``body.get("index", -1)`` and then used in ``0 <= index < len(...)``, so a
+    typed-but-non-numeric value — ``{"index": "0"}`` from a non-dashboard
+    client — raised ``TypeError`` straight out of the route (an opaque 500
+    rather than a readable error). The default is ``-1`` precisely so a bad
+    value fails the ``0 <= index`` bound and becomes the same no-op these
+    routes already produce for an out-of-range index, rather than changing
+    their contract. ``bool`` is rejected: a JSON ``true`` is an ``int``
+    subclass but never a valid index.
+    """
+    value = body.get(key, default)
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

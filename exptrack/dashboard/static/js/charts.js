@@ -26,6 +26,11 @@ function chartMetricKeys(metricsData) {
     .map(([k]) => k);
 }
 
+// The colour for a "every run, behind the highlighted series" scatter — the
+// role the progress and trade-off charts both need. Beside the palette so it
+// can't be spelled at two different alphas in two files.
+const CHART_MUTED = 'rgba(130,130,130,0.55)';
+
 const CHART_COLORS = [
   '#2c5aa0', '#e07b39', '#2d8659', '#c0392b', '#8e44ad',
   '#16a085', '#d4ac0d', '#7f8c8d', '#e84393', '#00b894',
@@ -413,12 +418,28 @@ function initChartsTab(container, metricsData, viewMode, initScale) {
     renderSingleChart(container, sel.value, metricsData, getChartScaleOpts());
   });
 
-  // Keep the user's pick across reloads; fall back to the first metric when it
-  // isn't in this run (switching experiments) or nothing is remembered yet.
-  const initialKey = metricKeys.includes(_chartsSelectedKey) ? _chartsSelectedKey : metricKeys[0];
+  // Keep the user's pick across reloads; otherwise open on the run's primary
+  // metric (see _defaultChartKey).
+  const initialKey = _defaultChartKey(metricKeys, _chartsSelectedKey);
   sel.value = initialKey;
   _chartsSelectedKey = initialKey;
   renderSingleChart(container, initialKey, metricsData, initScale);
+}
+
+// The chart to open on. The user's remembered pick wins, then the run's primary
+// metric — the number it is judged by is the one worth seeing first, and
+// "whichever key sorted first" was an arbitrary default on the tab most likely
+// to be read while a run is still going. Falls back to the first key.
+function _defaultChartKey(metricKeys, remembered) {
+  if (metricKeys.includes(remembered)) return remembered;
+  // From the list row rather than a cached detail payload: `list_experiments`
+  // already resolves `primary_metric` for every run, so this needs no new state
+  // and no request.
+  const row = (Array.isArray(allExperiments) ? allExperiments : [])
+    .find(e => e.id === currentDetailId);
+  const pk = ((row && row.primary_metric) || {}).key;
+  if (pk && metricKeys.includes(pk)) return pk;
+  return metricKeys[0];
 }
 
 async function loadChartsTab(expId, viewMode) {
@@ -495,7 +516,7 @@ function renderOverviewChartPreview(metricsData) {
   if (metricKeys.length === 0) return;
 
   const selHtml = metricKeys.length > 1
-    ? '<select id="overview-chart-select" style="font-family:inherit;font-size:12px;padding:3px 8px;background:var(--code-bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);cursor:pointer;margin-right:8px">'
+    ? '<select id="overview-chart-select" class="select-sm" style="margin-right:8px">'
       + metricKeys.map(k => '<option value="' + esc(k) + '">' + esc(k) + '</option>').join('')
       + '</select>'
     : '';
@@ -518,7 +539,7 @@ function renderOverviewChartPreview(metricsData) {
   // whole Overview panel on every metric poll, so without this the preview snaps
   // back to the first metric every 5 seconds. Falls back to the first key when
   // the remembered one isn't in this run (switching experiments).
-  const initialKey = metricKeys.includes(_overviewPreviewKey) ? _overviewPreviewKey : metricKeys[0];
+  const initialKey = _defaultChartKey(metricKeys, _overviewPreviewKey);
   _overviewPreviewKey = initialKey;
 
   const sel = document.getElementById('overview-chart-select');

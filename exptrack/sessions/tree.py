@@ -144,8 +144,8 @@ def find_session(session_id_or_name: str,
     # LIKE wildcards in the caller's string are escaped so an id fragment
     # containing `%` or `_` can't prefix-match some arbitrary other session
     # (same rule as materialize.link_experiment).
-    like = (session_id_or_name.replace("\\", "\\\\")
-            .replace("%", "\\%").replace("_", "\\_"))
+    from ..core.utils import like_prefix
+    like = like_prefix(session_id_or_name)
     q = "SELECT * FROM sessions WHERE (id LIKE ? ESCAPE '\\' OR name=?)"
     if not include_trashed:
         q += " AND deleted_at IS NULL"

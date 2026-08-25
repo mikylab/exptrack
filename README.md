@@ -375,6 +375,7 @@ The [`examples/`](https://github.com/mikylab/exptrack/blob/main/examples/) direc
 | Doc | What's in it |
 |-----|-------------|
 | [CLI Reference](https://github.com/mikylab/exptrack/blob/main/docs/cli-reference.md) | Every subcommand |
+| [Dashboard](https://github.com/mikylab/exptrack/blob/main/docs/dashboard.md) | Saved command templates, Compare, the matrix, bulk actions |
 | [Configuration](https://github.com/mikylab/exptrack/blob/main/docs/configuration.md) | Every `.exptrack/config.json` option |
 | [Python API](https://github.com/mikylab/exptrack/blob/main/docs/python-api.md) | `Experiment` class properties and methods |
 | [Plugins](https://github.com/mikylab/exptrack/blob/main/docs/plugins.md) | Writing plugins, GitHub Sync |

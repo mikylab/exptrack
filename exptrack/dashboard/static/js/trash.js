@@ -383,21 +383,14 @@ function toggleTrashView() {
 let _trashReturnView = null;
 
 function openTrashView() {
+  // Read the view being left before releasing it — that's what Close returns to.
   _trashReturnView = document.body.classList.contains('sessions-active') ? 'sessions' : null;
+  // Put every other canvas view down first (releaseCanvas, unlike
+  // closeSessionsTab/closeTrashView, has no return-to-previous side effect that
+  // would leave #welcome-state sitting on top of #trash-view).
+  releaseCanvas();
   document.body.classList.add('trash-active');
-  document.body.classList.remove('sessions-active');
   const tv = document.getElementById('trash-view');
-  const welcome = document.getElementById('welcome-state');
-  const detail = document.getElementById('detail-view');
-  const compare = document.getElementById('compare-view');
-  const sessTab = document.getElementById('sessions-tab');
-  // Hide everything else FIRST, then show trash. Don't call closeSessionsTab()
-  // here — it has a side effect of re-showing #welcome-state, which would sit
-  // on top of #trash-view.
-  if (welcome) welcome.style.display = 'none';
-  if (detail) detail.style.display = 'none';
-  if (compare) compare.style.display = 'none';
-  if (sessTab) sessTab.style.display = 'none';
   if (tv) tv.style.display = '';
   // Also close the Settings panel if it's open (this is usually how Trash is launched).
   const settings = document.getElementById('settings-panel');
