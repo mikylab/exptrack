@@ -180,6 +180,22 @@ async function loadAllCompareRuns() {
 }
 
 
+// Other runs holding the same path. An artifact row is a *link* to a file, not
+// ownership of it — and which runs share a file is the fact that decides what a
+// delete may take, so the row that offers "unlink" says it up front instead of
+// leaving it to be discovered in a confirm dialog.
+function _artifactLinkBadge(a) {
+  const others = (a && a.linked_by) || [];
+  if (!others.length) return '';
+  const who = others.slice(0, 4).map(h =>
+    (h.id || '').slice(0, 6) + (h.name ? ' ' + h.name : '')).join(', ');
+  const more = others.length > 4 ? ', +' + (others.length - 4) + ' more' : '';
+  return ' <span class="artifact-link-badge" title="Also linked by ' +
+    esc(who + more) + '. Deleting this run leaves the file for ' +
+    (others.length === 1 ? 'it' : 'them') + '.">also in ' + others.length +
+    ' run' + (others.length === 1 ? '' : 's') + '</span>';
+}
+
 // Coarse artifact type. Mirrors core/queries.py:artifact_kind — same vocabulary,
 // so the terminal, the export and the dashboard name the same file the same
 // thing. Kept separate from the badge renderer because counting artifacts by
@@ -412,7 +428,7 @@ function _buildCodeSection(codeChanges, exp, diffData) {
     // whose own script was clean, or untracked, sits in a repo that is usually
     // dirty *somewhere* — so without this the panel would show a wall of other
     // people's files and never say the one thing this run was asked about.
-    const parts = _splitDiffByScript(d.diff, exp.script);
+    const parts = _splitDiffByScript(d.diff, exp.script, exp.code_files);
     body = (captured && !parts.scriptFiles
               ? _scriptStatusNote(exp, status, recover, true) : '')
       + parts.scriptHtml
@@ -470,6 +486,8 @@ function _diffActionsHtml(exp) {
   return '<span style="float:right;font-size:12px;font-weight:normal">'
     + '<button class="action-btn" style="padding:1px 8px" onclick="event.stopPropagation();exportDiff(\''
     + exp.id + '\')">Export</button>'
+    + '<button class="action-btn" style="padding:1px 8px;margin-left:4px" onclick="event.stopPropagation();copyDiff(\''
+    + exp.id + '\')" title="Copy this diff as markdown">Copy</button>'
     + '<button class="action-btn" style="padding:1px 8px;margin-left:4px" onclick="event.stopPropagation();compactDiff(\''
     + exp.id + '\')">Compact</button></span>';
 }
@@ -783,7 +801,7 @@ async function refreshDetail(id, opts) {
       : '';
     const searchKey = ((a.label || '') + ' ' + (a.path || '')).toLowerCase();
     const overflow = i >= ARTIFACT_TRUNCATE_THRESHOLD ? ' overflow' : '';
-    return `<tr data-artifact-search="${esc(searchKey)}" class="artifact-row-tr${overflow}"><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}</div></td><td class="artifact-path-cell" title="${esc(a.path)}">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${escJsAttr(a.label)}','${escJsAttr(a.path)}')">edit</button><button class="art-del" onclick="deleteArtifact('${exp.id}','${escJsAttr(a.label)}','${escJsAttr(a.path)}')">del</button></div></td></tr>`;
+    return `<tr data-artifact-search="${esc(searchKey)}" class="artifact-row-tr${overflow}"><td><div class="artifact-row">${artifactTypeBadge(a.path)} ${esc(a.label)}${_artifactLinkBadge(a)}</div></td><td class="artifact-path-cell" title="${esc(a.path)}">${esc(a.path)}</td><td><div class="artifact-actions">${viewBtn}<button onclick="editArtifact('${exp.id}','${escJsAttr(a.label)}','${escJsAttr(a.path)}')">edit</button><button class="art-del" title="Remove this record from the run. The file on disk is not touched." onclick="unlinkArtifact('${exp.id}','${escJsAttr(a.label)}','${escJsAttr(a.path)}')">unlink</button></div></td></tr>`;
   };
   const artGroupRowHtml = (a) => artRowHtml(a, 0);
 
@@ -1016,7 +1034,7 @@ async function refreshDetail(id, opts) {
             </div>
           </span>
           ${_referenceBtnHtml(exp)}
-          ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button>` : ''}
+          ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button><button class="action-btn" onclick="copyDiff('${exp.id}')" title="Copy the diff as markdown">Copy Diff</button>` : ''}
           ${_compactBtnHtml(exp)}
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${escJsAttr(exp.name)}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
@@ -1052,7 +1070,7 @@ async function refreshDetail(id, opts) {
               <span class="label">Studies</span><span class="tag-list" id="detail-studies">${studiesDetailHtml}</span>
               <span class="label">Stage</span><span id="detail-stage" class="editable-hint" onclick="startDetailStageEdit('${exp.id}',this)" title="Click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
               <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" onclick="startDetailNoteEdit('${exp.id}',this)" title="Click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">click to add notes</span>'}</span>
-              <span class="label">Uncommitted</span><span>${diffData.diff ? (diffCompacted ? '<span style="color:var(--yellow)">' + esc(diffData.diff.split(' — ')[1] || 'compacted') + '</span>' : '<span style="color:var(--green)">' + exp.diff_lines + ' lines</span> <button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:6px" onclick="exportDiff(\'' + exp.id + '\')">Export</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="compactDiff(\'' + exp.id + '\')">Compact</button>') : '<span style="color:var(--muted)">none (all changes were committed)</span>'}</span>
+              <span class="label">Uncommitted</span><span>${diffData.diff ? (diffCompacted ? '<span style="color:var(--yellow)">' + esc(diffData.diff.split(' — ')[1] || 'compacted') + '</span>' : '<span style="color:var(--green)">' + exp.diff_lines + ' lines</span> <button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:6px" onclick="exportDiff(\'' + exp.id + '\')">Export</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="copyDiff(\'' + exp.id + '\')" title="Copy the diff as markdown">Copy</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="compactDiff(\'' + exp.id + '\')">Compact</button>') : '<span style="color:var(--muted)">none (all changes were committed)</span>'}</span>
             </div>
             ${reproHtml}
             <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Params (${Object.keys(regularParams).length})<span class="section-actions" onclick="event.stopPropagation()"><button class="copy-btn" title="Copy as a markdown table — pastes into lab notebooks, Obsidian, GitHub, Jupyter markdown cells" onclick="copyExportFmt('${exp.id}','params-md')">Copy</button></span></h2>

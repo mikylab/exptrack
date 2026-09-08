@@ -120,6 +120,10 @@ def api_delete_permanent(conn, exp_id: str, body: dict) -> dict:
     if not exp:
         return {"error": "not found"}
     delete_files = bool(body.get("delete_files", False))
+    # Two questions, not one: whether this run's files go, and whether files a
+    # *different* run also needs go with them. The second defaults to no, so a
+    # client that never asks can never take another run's results.
+    delete_shared = bool(body.get("delete_shared_files", False))
     from exptrack.core.db import checkpoint_truncate, delete_experiment
     from exptrack.core.storage import free_space
     # Measured either side of the commit: SQLite moves deleted pages to the
@@ -127,15 +131,17 @@ def api_delete_permanent(conn, exp_id: str, body: dict) -> dict:
     # this the UI can only say "deleted" while the database stays the same
     # size on disk — which reads as the delete having done nothing.
     free_before = free_space(conn)["bytes"]
-    file_stats = delete_experiment(conn, exp["id"], delete_files=delete_files)
+    file_stats = delete_experiment(conn, exp["id"], delete_files=delete_files,
+                                   delete_shared_files=delete_shared)
     conn.commit()
     freed = max(0, free_space(conn)["bytes"] - free_before)
     # A delete pushes every rewritten page through the WAL, and the
     # per-request checkpoint is PASSIVE (it must never wait on a live run), so
     # without this the WAL is left sitting at the size of what was deleted.
     checkpoint_truncate(conn)
-    return {"ok": True, "deleted_files": delete_files, "file_stats": file_stats,
-            "freed_bytes": freed}
+    return {"ok": True, "deleted_files": delete_files,
+            "deleted_shared_files": delete_shared,
+            "file_stats": file_stats, "freed_bytes": freed}
 
 
 def api_finish(conn, exp_id: str) -> dict:

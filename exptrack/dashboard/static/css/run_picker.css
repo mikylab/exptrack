@@ -17,6 +17,48 @@
 .rp-search:focus { outline: none; border-color: var(--accent); }
 .rp-count { color: var(--text-3); font-size: var(--text-xs); white-space: nowrap; }
 
+/* One-click narrowing, above the list. The bar is bounded and scrolls on its
+   own: a project with six parameters would otherwise push the runs it filters
+   off the bottom of the dialog. */
+.rp-facetbar { flex: none; }
+.rp-facets {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border); background: var(--surface-2);
+  max-height: 132px; overflow-y: auto;
+}
+.rp-facets-head {
+  display: flex; align-items: center; gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+.rp-facets-title {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.4px; color: var(--text-3);
+}
+.rp-facets-active { font-size: var(--text-xs); color: var(--accent); }
+.rp-facet-row {
+  display: flex; align-items: baseline; flex-wrap: wrap;
+  gap: 4px; padding: 2px 0;
+}
+.rp-facet-key {
+  font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-3);
+  min-width: 68px; flex: none;
+}
+.rp-facet {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--text-2); background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 1px var(--space-2); cursor: pointer; line-height: 1.6;
+}
+.rp-facet:hover { border-color: var(--accent); color: var(--text-1); }
+.rp-facet-on {
+  background: var(--accent-soft); border-color: var(--accent); color: var(--text-1);
+  font-weight: 600;
+}
+.rp-facet-zero { opacity: 0.45; }
+.rp-facet-n { margin-left: 5px; color: var(--text-3); }
+.rp-facet-on .rp-facet-n { color: var(--accent); }
+.rp-facet-rest { font-size: var(--text-xs); color: var(--text-3); cursor: help; }
+
 .rp-body { padding: 0; }
 .rp-empty { padding: var(--space-6); text-align: center; color: var(--text-2); }
 .rp-notice {

@@ -315,7 +315,19 @@ function buildChartsTabContent(metricsData, viewMode) {
       + '<select id="chart-metric-select">' + options + '</select>';
   }
   html += '<button class="action-btn" id="chart-download-png" style="margin-left:auto" '
-    + 'title="Download the visible chart(s) as PNG">⬇ PNG</button>';
+    + 'title="Download the visible chart(s) as PNG'
+    + (isSingle ? '' : ' — one file per metric')
+    + '">⬇ PNG</button>';
+  // "Show All" answers "how did every metric move", and the only way to take
+  // that answer anywhere was one file per canvas, to be reassembled by hand in
+  // something else. The sheet is the view itself, as one image.
+  if (!isSingle) {
+    html += '<button class="action-btn" id="chart-download-sheet" '
+      + 'title="Download every visible chart as one image">⬇ Sheet</button>';
+  }
+  html += '<button class="action-btn" id="chart-copy-png" '
+    + 'title="Copy ' + (isSingle ? 'this chart' : 'the charts as one image')
+    + ' to the clipboard">⧉ Copy</button>';
   html += '</div>';
 
   // Scale controls bar (both modes)
@@ -400,6 +412,10 @@ function initChartsTab(container, metricsData, viewMode, initScale) {
 
   const dlBtn = container.querySelector('#chart-download-png');
   if (dlBtn) dlBtn.addEventListener('click', downloadChartsPng);
+  const sheetBtn = container.querySelector('#chart-download-sheet');
+  if (sheetBtn) sheetBtn.addEventListener('click', downloadChartsSheetPng);
+  const copyBtn = container.querySelector('#chart-copy-png');
+  if (copyBtn) copyBtn.addEventListener('click', copyChartsPng);
 
   const smooth = container.querySelector('#chart-smoothing');
   if (smooth) smooth.addEventListener('input', () => setChartSmoothing(smooth.value));
@@ -482,6 +498,102 @@ function _downloadCanvasPng(canvas, filename) {
   ctx.fillRect(0, 0, tmp.width, tmp.height);
   ctx.drawImage(canvas, 0, 0);
   tmp.toBlob(blob => { if (blob) downloadBlob(blob, filename, 'image/png'); });
+}
+
+// The charts on screen, in the order they are drawn, with the metric each one
+// shows. `charts` is keyed `all_<metric>` in the grid view and `_active` in the
+// single view, so this is the one place that has to know the difference.
+function _visibleCharts() {
+  if (_chartsViewMode === 'all') {
+    return Object.keys(charts)
+      .filter(k => k.startsWith('all_') && charts[k] && charts[k].canvas)
+      .map(k => ({name: k.slice(4), canvas: charts[k].canvas}));
+  }
+  const c = charts._active;
+  if (!c || !c.canvas) return [];
+  return [{name: (c.data.datasets[0] || {}).label || 'chart', canvas: c.canvas}];
+}
+
+function _chartsInk() {
+  return document.body.classList.contains('dark')
+    ? {bg: '#1e1e1e', fg: '#e6e6e6'} : {bg: '#ffffff', fg: '#1a1a1a'};
+}
+
+// Every visible chart composited into one image: a grid, each cell captioned
+// with its metric, on an opaque theme-matched ground. Chart.js canvases are
+// transparent and device-pixel scaled, so the cell size comes from the canvases
+// themselves rather than from CSS pixels -- scaling them to a guessed size is
+// what makes an exported figure blurry.
+function _chartsSheetCanvas(items) {
+  const list = items || _visibleCharts();
+  if (!list.length) return null;
+  const cols = list.length === 1 ? 1 : (list.length <= 4 ? 2 : 3);
+  const rows = Math.ceil(list.length / cols);
+  const cw = Math.max(...list.map(i => i.canvas.width));
+  const ch = Math.max(...list.map(i => i.canvas.height));
+  const scale = Math.max(1, Math.round(cw / 600));   // caption size follows the DPR
+  const cap = 22 * scale, pad = 14 * scale;
+  const sheet = document.createElement('canvas');
+  sheet.width = cols * cw + pad * (cols + 1);
+  sheet.height = rows * (ch + cap) + pad * (rows + 1);
+  const ctx = sheet.getContext('2d');
+  const ink = _chartsInk();
+  ctx.fillStyle = ink.bg;
+  ctx.fillRect(0, 0, sheet.width, sheet.height);
+  ctx.fillStyle = ink.fg;
+  ctx.font = (13 * scale) + "px 'IBM Plex Mono', monospace";
+  ctx.textBaseline = 'top';
+  list.forEach((item, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    const x = pad + col * (cw + pad);
+    const y = pad + row * (ch + cap + pad);
+    ctx.fillText(item.name, x, y);
+    ctx.drawImage(item.canvas, x, y + cap);
+  });
+  return sheet;
+}
+
+// Writing an image to the clipboard needs both the async clipboard API and a
+// secure context: 127.0.0.1 is one, a plain-http tunnel to the dashboard is not.
+// A button that silently does nothing there reads as a broken button, so the
+// reason is said and the download is named as the way through.
+function _copyCanvasPng(canvas, what) {
+  if (!canvas) { owlSay('No chart to copy'); return; }
+  if (!(navigator.clipboard && window.ClipboardItem && window.isSecureContext)) {
+    owlSay('This browser will not let a page write an image to the clipboard '
+      + 'over plain http — use ⬇ PNG instead.');
+    return;
+  }
+  const tmp = document.createElement('canvas');
+  tmp.width = canvas.width;
+  tmp.height = canvas.height;
+  const ctx = tmp.getContext('2d');
+  ctx.fillStyle = _chartsInk().bg;
+  ctx.fillRect(0, 0, tmp.width, tmp.height);
+  ctx.drawImage(canvas, 0, 0);
+  tmp.toBlob(blob => {
+    if (!blob) { owlSay('Could not render the image'); return; }
+    navigator.clipboard.write([new window.ClipboardItem({'image/png': blob})])
+      .then(() => owlSay('Copied ' + (what || 'the chart') + ' to the clipboard!'))
+      .catch(err => owlSay('Clipboard refused the image: ' + (err && err.message || err)));
+  });
+}
+
+function downloadChartsSheetPng() {
+  const list = _visibleCharts();
+  const sheet = _chartsSheetCanvas(list);
+  if (!sheet) { owlSay('No charts to download'); return; }
+  _downloadCanvasPng(sheet, 'charts.png');
+  owlSay('Downloaded ' + list.length + ' chart' + (list.length > 1 ? 's' : '') + ' as one image');
+}
+
+function copyChartsPng() {
+  const list = _visibleCharts();
+  if (!list.length) { owlSay('No chart to copy'); return; }
+  // One chart is itself; several are the sheet -- the clipboard holds one image,
+  // so copying nine charts one at a time would keep only the last.
+  if (list.length === 1) { _copyCanvasPng(list[0].canvas, 'the chart'); return; }
+  _copyCanvasPng(_chartsSheetCanvas(list), list.length + ' charts');
 }
 
 function downloadChartsPng() {

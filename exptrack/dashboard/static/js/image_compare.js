@@ -8,6 +8,9 @@ let _swipePct = 50;
 let _swipeDragging = false;
 
 function openCompareModal(src1, name1, src2, name2) {
+  // See _holdMainScroll: the thumbnails this was opened from are in the page
+  // scroller, and a collapse there clamps the reader to the top.
+  const restore = _holdMainScroll();
   _imgCmpData = {src1, name1, src2, name2};
   _imgCmpMode = 'side';
   const overlay = document.createElement('div');
@@ -32,18 +35,24 @@ function openCompareModal(src1, name1, src2, name2) {
   const escHandler = function(ev) { if (ev.key === 'Escape') { closeCompareModal(); document.removeEventListener('keydown', escHandler); } };
   document.addEventListener('keydown', escHandler);
   overlay.__escHandler = escHandler;
+  overlay.__restoreScroll = restore;
 
   renderCompareBody();
+  restore();
+  requestAnimationFrame(restore);
 }
 
 function closeCompareModal() {
   const el = document.getElementById('img-cmp-overlay');
+  let restore = null;
   if (el) {
     if (el.__escHandler) document.removeEventListener('keydown', el.__escHandler);
+    restore = el.__restoreScroll;
     el.remove();
   }
   _imgCmpData = null;
   _swipeDragging = false;
+  if (restore) { restore(); requestAnimationFrame(restore); }
 }
 
 function setCompareMode(mode, btn) {
@@ -160,6 +169,8 @@ function toggleImgCompare(expId) {
   loadImages(expId);
 }
 
+// `expId` is kept in the signature: the inline handlers in the gallery markup
+// pass it, and it is what a future reload would need. Nothing here reloads.
 function selectImgCompare(src, name, expId) {
   if (imgCmpA === null || (imgCmpA !== null && imgCmpB !== null)) {
     imgCmpA = {src, name};
@@ -167,7 +178,7 @@ function selectImgCompare(src, name, expId) {
   } else {
     imgCmpB = {src, name};
   }
-  loadImages(expId);
+  _imgCmpRepaint();
 }
 
 function doIntraCompare() {
@@ -176,5 +187,5 @@ function doIntraCompare() {
 
 function clearIntraCompare(expId) {
   imgCmpA = null; imgCmpB = null;
-  loadImages(expId);
+  _imgCmpRepaint();
 }

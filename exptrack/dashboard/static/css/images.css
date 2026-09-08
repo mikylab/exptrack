@@ -30,6 +30,17 @@
   .img-path-del { color: var(--red); font-size: 16px; font-weight: bold; }
   .img-path-edit:hover { color: var(--accent); border-color: var(--border); background: var(--surface-2); }
   .img-path-del:hover { border-color: var(--border); background: var(--surface-2); }
+  /* The scan-path editor fills its row.
+     It borrows `.name-edit-input` from the experiments table, where the shared
+     rule caps the width at 300px because there the input sits inside a
+     fixed-width column and a wider one would paint over its neighbour. In a
+     scan-path row there is no neighbour: the row is as wide as the panel, so
+     the cap left a third-width box floating in a full-width bar — and a path
+     is the one value most likely to be longer than the box you edit it in,
+     which is what the editor's own `width: 100%` was already trying to say.
+     `max-width` beats an inline `width`, so it has to be lifted here. */
+  .img-path-row .name-edit-input { max-width: none; width: 100%; }
+
   .img-path-add { display: flex; gap: 8px; margin-top: 8px; }
   .img-path-add input { font-family: var(--font-mono); font-size: 13px; border: 1px solid var(--border); padding: 8px 10px; border-radius: var(--radius-sm); background: var(--card-bg); color: var(--fg); flex: 1; min-width: 0; }
   .img-path-add input:focus { outline: none; border-color: var(--accent); }

@@ -242,3 +242,83 @@ def test_a_named_run_keeps_its_name_through_param_capture(tmp_project):
     _capture_namespace(exp, Namespace(lr=0.25))
     assert exp.name == "my-baseline"
     exp.finish()
+
+
+def test_a_rerun_reclaims_the_file_it_overwrote(tmp_project):
+    """The ownership rule is about runs in flight, not runs that are over.
+
+    Rerunning a script that writes a fixed path (`files/plot.png`) left the
+    second run with no artifact row at all: the first run's row claimed the
+    path, so the finish-time scan skipped the file the second run had just
+    written. The file then belonged, on paper, only to a run whose output was
+    already overwritten — so permanently deleting that first run trashed the
+    *live* file, and the survivor never showed the plot it produced.
+    """
+    from exptrack.__main__ import _auto_detect_outputs
+    from exptrack.core import Experiment, get_db
+    from exptrack.core.db import delete_experiment
+
+    plot = Path("files") / "plot.png"
+    plot.parent.mkdir(exist_ok=True)
+
+    first = Experiment(script="t.py")
+    plot.write_bytes(b"first")
+    first.log_file(str(plot))
+    first.finish()
+
+    second = Experiment(script="t.py")
+    plot.write_bytes(b"second")          # same path, after the first run ended
+    _auto_detect_outputs(second, second._start)
+    second.finish()
+
+    conn = get_db()
+    mine = [r["path"] for r in conn.execute(
+        "SELECT path FROM artifacts WHERE exp_id=?", (second.id,)).fetchall()]
+    assert any(p.endswith("plot.png") for p in mine), \
+        "the run that wrote the file has no row for it"
+
+    delete_experiment(conn, first.id, delete_files=True)
+    conn.commit()
+    assert plot.is_file(), "delete of the overwritten run took the live file"
+
+
+def test_a_stale_claim_from_a_killed_run_is_reported(tmp_project, capsys):
+    """A run killed outright stays `running`, so it keeps owning its files —
+    nothing can tell it from a run still working. The scan may not steal the
+    file, but it must not drop it in silence either: this is the one message
+    that points at `exptrack stale`."""
+    from exptrack.__main__ import _auto_detect_outputs
+    from exptrack.core import Experiment
+
+    zombie = Experiment(script="killed.py")     # never finished
+    shared = Path("weights.pt")
+    shared.write_bytes(b"z")
+    zombie.log_file(str(shared))
+
+    mine = Experiment(script="t.py")
+    shared.write_bytes(b"m")
+    _auto_detect_outputs(mine, mine._start)
+
+    err = capsys.readouterr().err
+    assert "weights.pt" in err and zombie.id[:6] in err
+
+
+def test_naive_timestamps_are_read_as_utc(tmp_project):
+    """`updated_at` gained its offset in a later version; a naive row read as
+    *local* time lands hours in the future, which would mark every pre-upgrade
+    run as still in flight and block a rerun from recording its own files."""
+    from datetime import datetime, timedelta, timezone
+
+    from exptrack.core import Experiment, get_db
+    from exptrack.core.db import runs_in_flight_since
+
+    old = Experiment(script="old.py")
+    old.finish()
+    conn = get_db()
+    ended = datetime.now(timezone.utc) - timedelta(minutes=5)
+    conn.execute("UPDATE experiments SET updated_at=? WHERE id=?",
+                 (ended.replace(tzinfo=None).isoformat(), old.id))
+    conn.commit()
+
+    now = datetime.now(timezone.utc).timestamp()
+    assert old.id not in runs_in_flight_since(conn, now)

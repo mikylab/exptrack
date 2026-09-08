@@ -411,16 +411,83 @@ def cmd_rm(args):
                   f"(restore with `exptrack restore-run <id>`).", G), file=sys.stderr)
         return
 
+    delete_shared = False
+    if not keep_files:
+        delete_shared = _resolve_shared_files(conn, to_delete, args)
+
     free_before = _free_bytes(conn)
+    kept_shared = 0
     for exp in to_delete:
-        delete_experiment(conn, exp["id"], delete_files=not keep_files,
-                          reclaim_blobs=False)
+        stats = delete_experiment(conn, exp["id"], delete_files=not keep_files,
+                                  reclaim_blobs=False,
+                                  delete_shared_files=delete_shared)
+        kept_shared += (stats or {}).get("kept_shared", 0)
     _sweep_blobs(conn)  # once for the batch, not per run
     conn.commit()
     what = "records only" if keep_files else "including output files"
     print(col(f"Deleted {len(to_delete)} experiment(s) ({what}).", G),
           file=sys.stderr)
+    if kept_shared:
+        print(dim(f"Kept {kept_shared} file(s) another run uses, or written "
+                  f"after this run ended. `exptrack unlink-artifact <id> "
+                  f"<path>` detaches a record that is wrong; `exptrack "
+                  f"log-artifact <id> <path>` attaches one that is missing."),
+              file=sys.stderr)
     _print_reclaimed(conn, free_before)
+
+
+def _shared_file_report(conn, to_delete) -> list[tuple[dict, dict]]:
+    """(run, artifact) pairs the delete would keep back: files another run also
+    references, and files written after the run ended.
+
+    Read from ``get_delete_preview`` rather than recomputed, so what the prompt
+    shows and what the delete does cannot drift — the preview and the delete
+    already share their claim rule for exactly that reason.
+    """
+    from ..core.db import get_delete_preview
+    found: list[tuple[dict, dict]] = []
+    for exp in to_delete:
+        prev = get_delete_preview(conn, exp["id"], source_check=False)
+        for art in prev.get("artifacts", []):
+            if art.get("shared"):
+                found.append((exp, art))
+    return found
+
+
+def _resolve_shared_files(conn, to_delete, args) -> bool:
+    """Decide whether this delete may take files other runs still use.
+
+    Kept out of `cmd_rm` so the question is asked in exactly one place: the
+    delete of a *run* and the delete of a *file another run needs* are two
+    different decisions, and folding the second into the first is how deleting
+    a stale run took the results of the run that replaced it.
+    """
+    choice = getattr(args, "shared_files", None)
+    if choice == "keep":
+        return False
+    shared = _shared_file_report(conn, to_delete)
+    if not shared:
+        return choice == "delete"      # nothing to weigh either way
+    noun = "file is" if len(shared) == 1 else "files are"
+    print(col(f"{len(shared)} {noun} not this delete's alone:", Y),
+          file=sys.stderr)
+    for _exp, art in shared[:20]:
+        holders = art.get("shared_with") or []
+        if holders:
+            who = ", ".join(f"{h['id'][:6]} {h['name']}".strip() for h in holders[:3])
+            why = f"also used by {who}"
+        else:
+            why = "modified after this run ended — probably a later run's output"
+        print(f"  {art['path']}  ({fmt_bytes(art.get('size_bytes') or 0)}) — {why}",
+              file=sys.stderr)
+    if len(shared) > 20:
+        print(dim(f"  … and {len(shared) - 20} more"), file=sys.stderr)
+    if choice == "delete":
+        return True
+    print(dim("Keeping them leaves the other run's results intact; the run's "
+              "own records are deleted either way."), file=sys.stderr)
+    noun = "that file" if len(shared) == 1 else f"those {len(shared)} files"
+    return confirm(f"Also delete {noun}? [y/N] ", assume_yes=False)
 
 
 def cmd_clean(args):

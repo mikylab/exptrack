@@ -478,6 +478,22 @@ function _cmpImageCol(name, imgs, side) {
   }
   return h + '</div>';
 }
+// Two runs pointing at one path is one file, and a file has one content: what
+// the grid shows in both cells is whatever the later run wrote. Unmarked, that
+// row is a picture of two runs agreeing perfectly — the most misleading thing
+// this view can render, and the shape a rerun into a fixed output path takes
+// every time. `shared` is set server-side and scoped to the compared set.
+function _sharedImageNote(imgs) {
+  const paths = new Set();
+  for (const img of imgs) {
+    if (img && img.shared) paths.add(img.path);
+  }
+  if (!paths.size) return '';
+  return '<div class="cmp-img-shared-note">Same file on disk — these runs wrote'
+    + ' to one path, so this is whichever ran last, not each run\'s own output.'
+    + '</div>';
+}
+
 function multiChartId(i) { return 'multi-chart-' + i; }
 
 // ── Multi Compare ───────────────────────────────────────────────────────────
@@ -1077,25 +1093,40 @@ function _renderMultiComparison(data, ids, token, cachedSeries) {
     html += '</div></details>';
   }
 
-  // Image comparison — group by label across experiments
-  const allImageLabels = new Set();
+  // Image comparison — one row per plot, one cell per run.
+  //
+  // The pairing key is `img.group`, decided server-side
+  // (queries._assign_image_groups) so one rule serves every surface: an exact
+  // filename both runs wrote, else a digit-normalized family so
+  // `loss_epoch10.png` and `loss_epoch12.png` land in the same row. Grouping on
+  // the raw `label || basename` here — what this did — paired only the runs
+  // whose files happened to be named identically, which is why the grid lined
+  // up for some projects and not others.
+  const imgGroups = new Map();
   for (const e of exps) {
     for (const img of (e.images || [])) {
-      allImageLabels.add(img.label || img.path.split('/').pop());
+      const key = img.group || img.label || img.path.split('/').pop();
+      if (!imgGroups.has(key)) imgGroups.set(key, new Map());
+      const byExp = imgGroups.get(key);
+      if (!byExp.has(e.id)) byExp.set(e.id, img);
     }
   }
-  if (allImageLabels.size > 0) {
+  if (imgGroups.size > 0) {
     html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Images</summary>';
-    for (const label of [...allImageLabels].sort()) {
-      html += '<div class="multi-compare-image-group"><h4 style="font-size:13px;color:var(--muted);margin:8px 0 4px">' + esc(label) + '</h4>';
+    for (const key of [...imgGroups.keys()].sort()) {
+      const byExp = imgGroups.get(key);
+      html += '<div class="multi-compare-image-group"><h4 style="font-size:13px;color:var(--muted);margin:8px 0 4px">' + esc(key) + '</h4>';
+      html += _sharedImageNote([...byExp.values()]);
       html += '<div class="multi-compare-image-row">';
       for (const e of exps) {
-        const img = (e.images || []).find(i => (i.label || i.path.split('/').pop()) === label);
+        const img = byExp.get(e.id);
         const name = _cmpColName(e.name);
         html += '<div class="multi-compare-image-cell">';
         html += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + esc(name) + '</div>';
         if (img) {
+          const label = img.label || img.path.split('/').pop();
           html += '<img src="' + fileUrl(img.path) + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + escJsAttr(label) + '\')">';
+          html += '<div class="multi-compare-image-name">' + esc(label) + '</div>';
         } else {
           html += '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">No image</div>';
         }

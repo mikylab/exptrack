@@ -146,6 +146,164 @@ def _script_facts(script_path: str) -> dict | None:
     return facts
 
 
+# Directory names that mean "this file is not the project's own code", checked
+# per path component. An interpreter's `sys.modules` is mostly other people's
+# code, and a virtualenv living *inside* the project root would otherwise put
+# every installed dependency through the snapshot store.
+_NOT_PROJECT_CODE = frozenset((
+    "site-packages", "dist-packages", "__pycache__", ".git", ".exptrack",
+    ".venv", "venv", "env", ".tox", ".mypy_cache", "node_modules",
+))
+
+
+def _exptrack_package_dir():
+    """Directory of exptrack's own source, so a run never snapshots the tracker.
+
+    In development the tracker *is* a project-local package (this repository
+    tracks its own runs), so the project-root test alone would pull all of
+    ``exptrack/`` into every run's snapshot.
+    """
+    from pathlib import Path as _Path
+    return _Path(__file__).resolve().parent.parent
+
+
+def _project_module_files(modules: dict, root, script_path: str) -> list:
+    """Project-local ``.py`` files among *modules*, as (relative, absolute) pairs.
+
+    Sorted by relative path so a run's capture is deterministic and two runs
+    that imported the same files record them in the same order.
+    """
+    from pathlib import Path as _Path
+
+    try:
+        root_res = _Path(root).resolve()
+    except OSError:
+        return []
+    pkg_dir = _exptrack_package_dir()
+    try:
+        script_res = _Path(script_path).resolve() if script_path else None
+    except OSError:
+        script_res = None
+
+    found: dict[str, _Path] = {}
+    for mod in list(modules.values()):
+        f = getattr(mod, "__file__", None)
+        if not f or not str(f).endswith(".py"):
+            continue
+        try:
+            p = _Path(f).resolve()
+        except OSError:
+            continue
+        if script_res is not None and p == script_res:
+            continue        # already stored by capture_script_snapshot
+        if p == pkg_dir or pkg_dir in p.parents:
+            continue
+        try:
+            rel = p.relative_to(root_res)
+        except ValueError:
+            continue        # outside the project: the stdlib, site-packages, …
+        if _NOT_PROJECT_CODE & set(rel.parts):
+            continue
+        found[rel.as_posix()] = p
+    return [(rel, found[rel]) for rel in sorted(found)]
+
+
+def capture_module_snapshots(exp: Experiment, modules: dict | None = None) -> int:
+    """Snapshot the project-local modules this run imported. Returns the count.
+
+    The entry script used to be the only source a run recorded, which made a
+    perfectly ordinary layout invisible: ``main.py`` imports ``script.py``, you
+    edit ``script.py`` and rerun ``main.py``, and both runs stored the same
+    ``main.py`` — so ``compare_run_code`` reported *no code change* for two runs
+    that executed different code, and the run detail filed the edit under
+    "Other files in the working tree" beneath a headline saying the script
+    matched the commit. The working-tree diff held the answer the whole time
+    and nothing connected it to the run.
+
+    Called at finish rather than at construction: the imports have happened by
+    then, so ``sys.modules`` is the record of what the run actually loaded —
+    which is narrower and more honest than walking the project for ``.py``
+    files, most of which this run never touched.
+
+    Everything here is bounded, because a run must never pay for the tracker:
+    only files under the project root, never the tracker's own package, never a
+    vendored/virtualenv path (``_NOT_PROJECT_CODE``), each capped at
+    ``snapshot_max_kb`` and the set capped at ``snapshot_max_files``. Hitting
+    the cap records ``_code_files_truncated`` — the number of candidates — so a
+    partial capture is never presented as the whole of what ran.
+
+    Idempotent: entries are keyed by relative path, so a second call (a
+    finish-after-finish, a notebook re-run) adds nothing.
+    """
+    import sys as _sys
+
+    from .. import config as _cfg
+    from .db import get_db, store_code_snapshot
+
+    if modules is None:
+        modules = _sys.modules
+    try:
+        conf = _cfg.load()
+        root = _cfg.project_root()
+    except Exception as e:
+        debug_log(f"module capture: could not resolve project root: {e}")
+        return 0
+
+    try:
+        cap_kb = int(conf.get("snapshot_max_kb", 512))
+    except (TypeError, ValueError, OverflowError):
+        cap_kb = 512
+    try:
+        max_files = max(0, int(conf.get("snapshot_max_files", 50)))
+    except (TypeError, ValueError, OverflowError):
+        max_files = 50
+    if not max_files:
+        return 0
+
+    candidates = _project_module_files(modules, root,
+                                      exp._script_snapshotted or "")
+    if not candidates:
+        return 0
+
+    existing = exp._params.get("_code_snapshot")
+    if not isinstance(existing, list):
+        existing = []
+    have = {e.get("path") for e in existing
+            if isinstance(e, dict) and e.get("kind") == "module"}
+
+    conn = get_db()
+    added = []
+    for rel, abs_path in candidates[:max_files]:
+        if rel in have:
+            continue
+        try:
+            src = abs_path.read_text()
+        except Exception as e:
+            debug_log(f"module capture: could not read {abs_path}: {e}")
+            continue
+        if len(src.encode("utf-8", "replace")) > cap_kb * 1024:
+            debug_log(f"module capture: {rel} over snapshot_max_kb, skipped")
+            continue
+        try:
+            h = store_code_snapshot(conn, src, kind="module", path=rel)
+        except Exception as e:
+            debug_log(f"module capture: could not store {rel}: {e}")
+            continue
+        if h:
+            added.append({"hash": h, "kind": "module", "path": rel})
+
+    if not added:
+        return 0
+    try:
+        conn.commit()
+    except Exception as e:
+        debug_log(f"module capture: commit failed: {e}")
+    exp.log_param("_code_snapshot", existing + added)
+    if len(candidates) > max_files:
+        exp.log_param("_code_files_truncated", len(candidates))
+    return len(added)
+
+
 def capture_script_snapshot(exp: Experiment, script_path: str):
     """
     Diff the script against the last git commit (HEAD) and log only the

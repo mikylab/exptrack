@@ -48,6 +48,7 @@ instead of rejecting it. A text-defaulted key also accepts a dict, since a few
   "resume_flags": ["--resume"],
   "auto_trash_failed": false,
   "snapshot_max_kb": 512,
+  "snapshot_max_files": 50,
   "code_change_max_chars": 20000,
   "auto_capture": { "argparse": true, "argv": true, "notebook": true, "tensorboard": true },
   "naming": { "max_param_keys": 4, "key_max_len": 8, "date_style": "readable" },
@@ -98,7 +99,11 @@ vote.
 
 `auto_trash_failed` (default false): when true, a run that finishes `failed` is
 moved straight to Trash at finish time, so the experiment list only shows runs
-worth comparing. `snapshot_max_kb` (default 512): size cap for the content-addressed
+worth comparing. `snapshot_max_files` (default 50): how many project-local modules a
+run snapshots alongside its entry script — `0` means the script only. Each module is
+stored content-addressed, so unchanged files cost one copy across every run that
+imported them; hitting the cap records `_code_files_truncated` rather than presenting a
+partial capture as the whole of what ran. `snapshot_max_kb` (default 512): size cap for the content-addressed
 script/shell-script source snapshot stored in `code_snapshots` (see the
 **Run-vs-run loop** pattern).
 

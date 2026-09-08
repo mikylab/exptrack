@@ -23,7 +23,7 @@ from ..core.utils import (
     is_value_token,
     normalize_flag_key,
 )
-from .formatting import die
+from .formatting import G, col, die
 
 
 def _finite_metric(cmd: str, key: str, value) -> float | None:
@@ -680,6 +680,50 @@ def cmd_log_artifact(args):
         print(f"[exptrack] Artifact: {label} -> {args.path}", file=sys.stderr)
     else:
         print(f"[exptrack] Artifact already registered: {args.path}", file=sys.stderr)
+
+
+def cmd_unlink_artifact(args):
+    """Detach files from a run: exptrack unlink-artifact $EXP_ID files/plot.png
+
+    The manual override for a claim that is wrong. A run's artifact row says
+    "this run produced this file", and two things make that stop being true: a
+    later run overwrote the file, or the row was never this run's to hold. The
+    row is what a delete consults, so a wrong one either protects a file nobody
+    needs or drags a live file into somebody else's delete.
+
+    This removes the *record* only — the file on disk is never touched, which is
+    the opposite of `exptrack rm`. `exptrack log-artifact` is the other
+    direction: attach a file to the run that actually produced it.
+    """
+    from ..core.db import _norm_path
+    from ..core.queries import find_experiment
+    conn = get_db()
+    exp_row = find_experiment(conn, args.id, "id, name")
+    if not exp_row:
+        print(f"[exptrack] unlink-artifact: not found: {args.id}", file=sys.stderr)
+        sys.exit(1)
+
+    removed = 0
+    with conn:
+        for raw in args.path:
+            norm = _norm_path(raw)
+            rows = conn.execute(
+                "SELECT rowid AS rid, path FROM artifacts WHERE exp_id=?",
+                (exp_row["id"],),
+            ).fetchall()
+            hit = [r for r in rows if _norm_path(r["path"] or "") == norm]
+            if not hit:
+                print(f"[exptrack] not attached to {exp_row['id'][:6]}: {raw}",
+                      file=sys.stderr)
+                continue
+            for r in hit:
+                conn.execute("DELETE FROM artifacts WHERE rowid=?", (r["rid"],))
+                removed += 1
+            print(f"[exptrack] detached: {raw}", file=sys.stderr)
+    if removed:
+        print(col(f"Detached {removed} artifact record(s) from "
+                  f"{exp_row['name']} ({exp_row['id'][:6]}). "
+                  f"The file(s) on disk were not touched.", G), file=sys.stderr)
 
 
 def cmd_log_output(args):

@@ -376,11 +376,12 @@ def _auto_detect_outputs(exp, start_ts):
     # `_norm_path` forms so the walk below can compare against them without a
     # `resolve()` syscall per candidate file.
     already_registered: set[str] = set()
-    foreign_paths: set[str] = set()
+    foreign_paths: dict[str, str] = {}     # path -> the run still holding it
     foreign_dirs: set[str] = set()
+    in_flight: set[str] = set()
     try:
         from .core import get_db
-        from .core.db import claimed_output_paths
+        from .core.db import claimed_output_paths, runs_in_flight_since
         with get_db() as conn:
             # One pass over the table, split in Python: mine and everyone
             # else's answer two different questions about the same rows, and
@@ -389,6 +390,11 @@ def _auto_detect_outputs(exp, start_ts):
                 "SELECT path, exp_id FROM artifacts WHERE path IS NOT NULL AND path != ''"
             ).fetchall()
             foreign_dirs = claimed_output_paths(conn, exclude_id=exp.id)
+            # Only a run that could still have been writing owns anything here:
+            # a run that finished before this one started has an artifact row
+            # for a file this run has since overwritten. See
+            # `runs_in_flight_since`.
+            in_flight = runs_in_flight_since(conn, start_ts, exclude_id=exp.id)
         for r in rows:
             try:
                 # `register_artifact` stores resolved paths, but rows written
@@ -398,7 +404,10 @@ def _auto_detect_outputs(exp, start_ts):
                 norm = _norm_path(r["path"])
             except Exception:
                 norm = r["path"]
-            (already_registered if r["exp_id"] == exp.id else foreign_paths).add(norm)
+            if r["exp_id"] == exp.id:
+                already_registered.add(norm)
+            elif r["exp_id"] in in_flight:
+                foreign_paths[norm] = r["exp_id"]
     except Exception as e:
         print(f"[exptrack] warning: could not load existing artifacts: {e}", file=sys.stderr)
 
@@ -412,12 +421,21 @@ def _auto_detect_outputs(exp, start_ts):
                 fp = os.path.join(root, f)
                 try:
                     norm = _norm_path(fp)
-                    if (os.path.getmtime(fp) >= start_ts
-                            and norm not in already_registered
-                            and norm not in foreign_paths
-                            and not path_within_any(norm, foreign_dirs)):
-                        exp.log_file(fp)
-                        already_registered.add(norm)
+                    if (os.path.getmtime(fp) < start_ts
+                            or norm in already_registered
+                            or path_within_any(norm, foreign_dirs)):
+                        continue
+                    owner = foreign_paths.get(norm)
+                    if owner:
+                        # Not silent: a run killed outright stays `running` and
+                        # keeps its claim, so this is also how a stale claim
+                        # shows up. `exptrack stale` releases those.
+                        print(f"[exptrack] note: not logging {fp} — run "
+                              f"{owner[:6]} is still running and holds it",
+                              file=sys.stderr)
+                        continue
+                    exp.log_file(fp)
+                    already_registered.add(norm)
                 except OSError as e:
                     print(f"[exptrack] warning: could not auto-detect output {fp}: {e}",
                           file=sys.stderr)

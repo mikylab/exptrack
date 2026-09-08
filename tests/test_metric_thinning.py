@@ -175,3 +175,32 @@ def test_a_resumed_run_thins_without_an_initialized_counter(tmp_project, db_conn
     again.finish()
     # The resumed run counts its own points from zero: 8 logged → every 2nd.
     assert len(_points(db_conn, exp.id)) == 1 + 4
+
+
+def test_finish_states_stored_versus_logged(tmp_project, db_conn, capsys):
+    """The factor alone is the thing being misread.
+
+    `metric_keep_every` is a divisor, not a budget, and the gap between the two
+    readings is invisible while a run is going: a loop that already logs every
+    5th step with `metric_keep_every: 1000` stores a handful of points from a
+    long run, and the only feedback was a nearly-empty chart. The counts are
+    known at finish, so the run says them.
+    """
+    _set_keep_every(tmp_project, 100)
+    exp = Experiment(name="summary")
+    for i in range(1000):
+        exp.log_metric("loss", float(i), step=i)
+    exp.finish()
+
+    err = capsys.readouterr().err
+    assert "stored 10 of 1,000 points logged" in err
+    assert "1 of every N" in err
+    assert len(_points(db_conn, exp.id)) == 10
+
+
+def test_no_summary_when_nothing_was_dropped(tmp_project, db_conn, capsys):
+    exp = Experiment(name="nothin")
+    for i in range(10):
+        exp.log_metric("loss", float(i), step=i)
+    exp.finish()
+    assert "metric thinning stored" not in capsys.readouterr().err

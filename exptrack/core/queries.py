@@ -274,6 +274,10 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "SELECT label, path, created_at, timeline_seq FROM artifacts WHERE exp_id=?",
         (full_id,)
     ).fetchall()
+    # One query for the whole list, not one per row: a checkpoint-per-epoch run
+    # has thousands of artifacts and this is on the detail view's 5s poll.
+    from exptrack.core.db import _norm_path, artifact_claims_by_others
+    _artifact_claims = artifact_claims_by_others(conn, full_id)
 
     all_params = _params_dict(params)
     # Surface the dataset manifest as its own key (and keep it out of the params
@@ -310,6 +314,11 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "script": exp["script"],
         "command": exp["command"],
         "has_script_capture": has_script_capture,
+        # Every file this run snapshotted — the entry script plus the
+        # project-local modules it imported. The code panel groups the working
+        # tree's diff by this, so an edit to an imported module reads as this
+        # run's code rather than as unrelated tree noise.
+        "code_files": run_code_files(conn, full_id),
         "git_branch": exp["git_branch"],
         "git_commit": exp["git_commit"],
         "git_diff": _resolved_diff,
@@ -336,8 +345,14 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
             "source": m["src"],
             "step_min": m["step_min"], "step_max": m["step_max"],
         } for m in metrics],
+        # `linked_by` is every *other* run holding the same path. A file is
+        # tracked by reference, so a row is a link and not ownership — and the
+        # delete treats a linked file differently. The row that says "unlink"
+        # has to be able to say what else is holding on.
         "artifacts": [{"label": a["label"], "path": _rel_path(a["path"]),
-                       "timeline_seq": a["timeline_seq"]} for a in artifacts],
+                       "timeline_seq": a["timeline_seq"],
+                       "linked_by": _artifact_claims.get(_norm_path(a["path"]), [])}
+                      for a in artifacts],
         "compact_status": _get_compact_status(conn, full_id, exp["git_diff"]),
         "session_origin": _session_origin(conn, exp["session_node_id"]),
         # The run this one was declared a variant of, if any — the detail view
@@ -1047,31 +1062,84 @@ def _run_cells(conn, exp_id: str) -> list[dict]:
              "source": r["source"]} for r in rows]
 
 
+def _code_snapshot_entries(conn, exp_id: str) -> list:
+    """The run's ``_code_snapshot`` param as a list of entry dicts.
+
+    Legacy rows (before script_tracking stopped pre-encoding the list) stored
+    the value double-JSON-encoded, so one unwrap yields a string — decode again.
+    """
+    row = conn.execute(
+        "SELECT value FROM params WHERE exp_id=? AND key='_code_snapshot'", (exp_id,)
+    ).fetchone()
+    if not row:
+        return []
+    entries = _safe_json(row["value"])
+    if isinstance(entries, str):
+        entries = _safe_json(entries)
+    if not isinstance(entries, list):
+        return []
+    return [e for e in entries if isinstance(e, dict)]
+
+
 def _script_snapshot_source(conn, exp_id: str) -> str | None:
     """Full script source snapshot for a run, via the ``_code_snapshot`` param
     (content-addressed in ``code_snapshots``). None when the run has no snapshot
     (e.g. a notebook run, or a pre-L3 run)."""
     from .db import get_code_snapshot
-    row = conn.execute(
-        "SELECT value FROM params WHERE exp_id=? AND key='_code_snapshot'", (exp_id,)
-    ).fetchone()
-    if not row:
-        return None
-    entries = _safe_json(row["value"])
-    # Legacy rows (before script_tracking stopped pre-encoding the list) stored
-    # the value double-JSON-encoded, so one unwrap yields a string — decode again.
-    if isinstance(entries, str):
-        entries = _safe_json(entries)
-    if not isinstance(entries, list):
-        return None
-    for e in entries:
-        if not isinstance(e, dict):
-            continue
+    for e in _code_snapshot_entries(conn, exp_id):
         if e.get("kind") == "script" and e.get("hash"):
             snap = get_code_snapshot(conn, e["hash"])
             if snap and snap.get("content") is not None:
                 return snap["content"]
     return None
+
+
+def _snapshot_sources(conn, exp_id: str) -> dict | None:
+    """``{label: source}`` for every file this run snapshotted, or None if none.
+
+    The entry script's label is its file name and it sorts first (see
+    ``_compare_code``); imported project-local modules are labelled by their
+    path relative to the project root, which is how the capture stored them.
+
+    Returning every captured file — not just the script — is what lets a run
+    comparison see an edit to an imported module. A run whose ``main.py`` never
+    changed while ``script.py`` did used to compare as "no code change".
+    """
+    from .db import get_code_snapshot
+    out: dict[str, str] = {}
+    script_label = None
+    for e in _code_snapshot_entries(conn, exp_id):
+        h = e.get("hash")
+        if not h:
+            continue
+        snap = get_code_snapshot(conn, h)
+        if not snap or snap.get("content") is None:
+            continue
+        kind = e.get("kind")
+        path = str(e.get("path") or "")
+        if kind == "script":
+            label = path.replace("\\", "/").rsplit("/", 1)[-1] or "script"
+            script_label = label
+        elif kind == "module":
+            label = path.replace("\\", "/") or "module"
+        else:
+            continue
+        out[label] = snap["content"]
+    if not out:
+        return None
+    return {"files": out, "script_label": script_label}
+
+
+def run_code_files(conn, exp_id: str) -> list:
+    """Labels of the files a run snapshotted — the code it actually executed.
+
+    The run detail carries this so the code panel can group an imported module
+    with the run's own code instead of filing it under "Other files in the
+    working tree", which is where a change to ``script.py`` used to land while
+    the headline above it said ``main.py`` matched the commit.
+    """
+    src = _snapshot_sources(conn, exp_id)
+    return sorted(src["files"]) if src else []
 
 
 def compare_run_code(conn, id_a: str, id_b: str) -> dict:
@@ -1106,11 +1174,29 @@ def compare_run_code(conn, id_a: str, id_b: str) -> dict:
 def _compare_code(conn, base_id: str, new_id: str) -> dict:
     """Ordered (base → new) code diff — see ``compare_run_code``."""
     # ── Script snapshot diff (L3 real-command / snapshot capture) ──────────
-    sa = _script_snapshot_source(conn, base_id)
-    sb = _script_snapshot_source(conn, new_id)
+    #
+    # Every captured file, not only the entry script: a run's code is the script
+    # *plus* the project-local modules it imported, and comparing only the entry
+    # point reported "no code change" for the commonest layout there is —
+    # ``main.py`` calling ``script.py``, with the edit in ``script.py``.
+    #
+    # A file only one side captured is a real change (an added or dropped
+    # import), so it is reported with the missing side empty rather than
+    # skipped. The entry script leads: it is the file the reader ran.
+    sa = _snapshot_sources(conn, base_id)
+    sb = _snapshot_sources(conn, new_id)
     if sa is not None or sb is not None:
-        cells = ([] if (sa or "") == (sb or "")
-                 else [{"pos": None, "label": "script", "a": sa or "", "b": sb or ""}])
+        files_a = (sa or {}).get("files", {})
+        files_b = (sb or {}).get("files", {})
+        lead = (sb or {}).get("script_label") or (sa or {}).get("script_label")
+        labels = sorted(set(files_a) | set(files_b),
+                        key=lambda label: (0 if label == lead else 1, label))
+        cells = []
+        for label in labels:
+            a, b = files_a.get(label, ""), files_b.get(label, "")
+            if a == b:
+                continue
+            cells.append({"pos": None, "label": label, "a": a, "b": b})
         return {"mode": "script", "cells": cells}
 
     # ── Notebook cell diff ─────────────────────────────────────────────────
@@ -1600,6 +1686,7 @@ def get_multi_compare(conn, exp_ids: list[str], rank_by: str = "final",
     params_by_exp = load_params(conn, full_ids)
 
     images: dict[str, list] = {e: [] for e in full_ids}
+    path_owners: dict[str, set] = {}
     for chunk in chunked(full_ids):
         for r in conn.execute(
             f"SELECT exp_id, label, path FROM artifacts "
@@ -1607,8 +1694,19 @@ def get_multi_compare(conn, exp_ids: list[str], rank_by: str = "final",
         ).fetchall():
             p = r["path"] or ""
             if p and any(p.lower().endswith(ext) for ext in IMAGE_EXTS):
-                images[r["exp_id"]].append(
-                    {"label": r["label"], "path": _rel_path(p)})
+                rel = _rel_path(p)
+                images[r["exp_id"]].append({"label": r["label"], "path": rel})
+                path_owners.setdefault(rel, set()).add(r["exp_id"])
+    _set_image_keys(images)
+    _assign_image_groups(images)
+    # Artifacts are tracked by reference, so two runs pointed at one path share
+    # one file: what is on disk is whatever the later run wrote. Shown in both
+    # columns unmarked, that reads as "these two runs produced identical
+    # output" — the most misleading thing this view can say. Scoped to the
+    # compared set: a third run writing there says nothing about this pair.
+    for imgs in images.values():
+        for img in imgs:
+            img["shared"] = len(path_owners.get(img["path"], ())) > 1
 
     results = []
     for exp in rows:
@@ -1636,6 +1734,97 @@ def get_multi_compare(conn, exp_ids: list[str], rank_by: str = "final",
             "images": images[full_id],
         })
     return results
+
+
+def normalized_image_stem(name: str) -> str:
+    """A filename reduced to the *plot* it is, ignoring which point it captured.
+
+    ``loss_epoch10.png`` and ``loss_epoch12.png`` are one plot at two epochs;
+    ``cm_20260831_121500.png`` is the same plot the timestamp habit produces.
+    Digit runs collapse to a single marker and separators/case normalize, so all
+    of them land on one key.
+
+    Deliberately only a *fallback*: see ``_assign_image_groups`` for why an exact
+    filename match always wins.
+    """
+    import re as _re
+    stem = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    stem = stem.rsplit(".", 1)[0].lower()
+    stem = _re.sub(r"\d+", "#", stem)
+    stem = _re.sub(r"[\s._-]+", "-", stem).strip("-")
+    return stem or "image"
+
+
+def _set_image_keys(images_by_exp: dict) -> None:
+    """Set the ``_key`` the grouping rules read: the image's **file name**.
+
+    Deliberately not the artifact ``label``. The matplotlib capture builds a
+    label from the figure's title, so two runs of the same script produced
+    labels like ``loss scale=2.0 (loss_epoch10)`` and ``loss scale=5.0
+    (loss_epoch12)`` — different strings, so exact pairing failed, and the
+    surviving group heading was that mangled title rather than a file name
+    anyone could recognise. The path is what identifies the plot; the label is
+    still shown per cell.
+
+    A run that has two images sharing a file name (``train/loss.png`` and
+    ``val/loss.png``) keys *those* on their relative path instead — the grid
+    renders one cell per (run, group), so a colliding key would show one of them
+    and drop the other.
+    """
+    for imgs in images_by_exp.values():
+        counts: dict[str, int] = {}
+        for img in imgs:
+            base = img["path"].replace("\\", "/").rsplit("/", 1)[-1]
+            counts[base] = counts.get(base, 0) + 1
+        for img in imgs:
+            norm = img["path"].replace("\\", "/")
+            base = norm.rsplit("/", 1)[-1]
+            img["_key"] = base if counts[base] == 1 else norm
+
+
+def _assign_image_groups(images_by_exp: dict) -> None:
+    """Set ``group`` on every image so Compare can pair them across runs.
+
+    Compare's image grid renders one row per group and one cell per run, so the
+    group *is* the claim "these are the same plot". Three rules, in order:
+
+    1. **An exact filename shared by two or more runs is its own group.** This
+       is the rule that already worked and it must keep winning — a project
+       where both runs write ``loss.png`` must not have that pairing weakened by
+       a fuzzier one, and a run that writes both ``loss.png`` and
+       ``loss_epoch9.png`` must not have them merged.
+    2. **Otherwise, fall back to ``normalized_image_stem``** — but only where
+       merging cannot hide anything: if any single run has two images that
+       normalize alike (a per-epoch filmstrip), that family keeps its exact
+       filenames, because one cell per (run, group) would show one of them and
+       silently drop the rest.
+    3. Anything left keeps its own filename, which groups it alone.
+    """
+    exact_owners: dict[str, set] = {}
+    for exp_id, imgs in images_by_exp.items():
+        for img in imgs:
+            exact_owners.setdefault(img["_key"], set()).add(exp_id)
+
+    # Which normalized families are safe to merge, and which runs they span.
+    per_run_counts: dict[str, dict] = {}
+    for exp_id, imgs in images_by_exp.items():
+        for img in imgs:
+            if len(exact_owners[img["_key"]]) > 1:
+                continue          # rule 1 handles it; not a merge candidate
+            stem = normalized_image_stem(img["_key"])
+            per_run_counts.setdefault(stem, {})
+            per_run_counts[stem][exp_id] = per_run_counts[stem].get(exp_id, 0) + 1
+    mergeable = {stem for stem, by_run in per_run_counts.items()
+                 if len(by_run) > 1 and max(by_run.values()) == 1}
+
+    for imgs in images_by_exp.values():
+        for img in imgs:
+            key = img.pop("_key")
+            if len(exact_owners[key]) > 1:
+                img["group"] = key
+                continue
+            stem = normalized_image_stem(key)
+            img["group"] = stem if stem in mergeable else key
 
 
 def varying_param_keys(runs: list[dict]) -> list[str]:

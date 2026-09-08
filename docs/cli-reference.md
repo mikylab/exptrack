@@ -25,6 +25,9 @@ Shell / SLURM Pipeline (works with any language — Python, C++, Julia, R, shell
   exptrack run-fail <id> [reason]   Mark failed
   exptrack log-metric <id> <k> <v>  Log metric (--step N, --file f.json)
   exptrack log-artifact <id> <path> Register output file (--label name, --stdin)
+  exptrack unlink-artifact <id> <path>
+                                    Detach a file from a run (record only —
+                                      the file on disk is never touched)
   exptrack log-output <id>          Capture piped stdout (cmd | exptrack log-output $ID)
   exptrack log-result <id> <k> <v>  Log final result (--file f.json, --source label)
   exptrack link-dir <id> <path>     Link a directory and scan its files (--label name)
@@ -92,6 +95,11 @@ Clean Up
   exptrack rm <id>                  Delete run (with confirmation)
              [--trash]              Move to Trash instead (recoverable)
              [--keep-files]         Delete records only, leave output files
+             [--shared-files keep|delete]
+                                    Files another run also uses, or written
+                                      after this run ended: keep them (the
+                                      default) or delete them too. Interactive
+                                      runs are asked; --yes does not answer this
              [--yes]                Skip the prompt (required to script it)
   exptrack trash                    List runs in the Trash
   exptrack restore-run <id>         Bring a run back out of the Trash

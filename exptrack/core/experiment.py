@@ -31,7 +31,7 @@ from .git import git_info
 from .gpu import gpu_info
 from .naming import make_run_name, output_path
 from .script_snapshot import capture_script_snapshot
-from .utils import debug_log, resolve_script_identity
+from .utils import debug_log, resolve_script_identity, safe_call
 
 _VALID_STATUSES = {"running", "done", "failed"}
 
@@ -208,6 +208,11 @@ class Experiment:
     # shared by every run in the process. Set per instance in __init__/resume().
     _metric_logged = None
     _thin_notice_shown = False
+    # Points thinning discarded, so finish() can state stored-vs-logged. The
+    # opening notice can only name the factor; `metric_keep_every` reads like a
+    # budget ("keep 1000 points") and is a divisor, and the two differ by orders
+    # of magnitude for anyone whose loop already logs every Nth step.
+    _metric_dropped = 0
     # None = use the config default. Class-level so _keep_metric_point's
     # build-us-bare guard below is reachable instead of dying on the attribute
     # lookup that precedes it.
@@ -846,6 +851,7 @@ class Experiment:
         counts[key] = n + 1
         if n % keep_every == 0:
             return True
+        self._metric_dropped += 1
         # Thinning silently dropping data is what made this hard to diagnose:
         # the dashboard just showed an empty chart. Say it once per run.
         if not self._thin_notice_shown:
@@ -855,6 +861,27 @@ class Experiment:
                   f"Set metric_keep_every to 1 to record every point.",
                   file=sys.stderr)
         return False
+
+    def _print_thinning_summary(self):
+        """One line at finish naming what thinning actually stored.
+
+        The opening notice can only say the factor, and the factor is the thing
+        being misread: ``metric_keep_every`` is *1 of every N*, not "keep N
+        points", so a loop that already logs every 5th step and a config of
+        1,000 store a handful of points from a long run — with a chart that
+        looks like the run barely recorded anything and no number anywhere
+        connecting the two. The counts are known by the time the run ends, so
+        state them, and name the two non-destructive alternatives.
+        """
+        if not self._metric_dropped:
+            return
+        logged = sum((self._metric_logged or {}).values())
+        stored = logged - self._metric_dropped
+        print(f"[exptrack] metric thinning stored {stored:,} of {logged:,} points "
+              f"logged (metric_keep_every={self._keep_every()} means 1 of every N, "
+              f"not a target count). Set it to 1 to record every point; use "
+              f"metric_max_points for chart resolution, or `exptrack prune` to "
+              f"thin what is already stored.", file=sys.stderr)
 
     def _commit_metrics(self, conn):
         """Commit metric writes, but at most once per commit interval.
@@ -1051,6 +1078,16 @@ class Experiment:
         # here can raise — the run's last points must not depend on the rest of
         # finish() succeeding.
         self.flush_metrics()
+        # Snapshot the project-local modules this run imported. Here rather than
+        # in the constructor because the imports have happened by now — and for
+        # every status, since a crashed run's code is exactly what you want to
+        # read. Must precede `_finished`: it calls log_param.
+        try:
+            from .script_snapshot import capture_module_snapshots
+            capture_module_snapshots(self)
+        except Exception as e:
+            from .utils import debug_log
+            debug_log(f"module capture failed: {e}")
         # Fingerprint any dataset-shaped params before locking the run, so it
         # runs for every finish path (scripts, notebooks, programmatic), not just
         # `exptrack run`. Must precede `_finished` since it calls log_params.
@@ -1083,6 +1120,7 @@ class Experiment:
         m, s = divmod(self.duration_s, 60)
         icon = "done" if status == "done" else "FAILED"
         print(f"[exptrack] {icon}: {self.name}  ({int(m)}m {s:.1f}s)", file=sys.stderr)
+        safe_call(self._print_thinning_summary, context="thinning summary")
         # "What changed since last time" — compare to the previous run of the
         # same script and print a one-line delta. Best-effort; never blocks
         # finishing a run.

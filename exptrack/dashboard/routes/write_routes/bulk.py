@@ -51,16 +51,19 @@ def api_bulk_delete_permanent(conn, body: dict) -> dict:
     if not ids:
         return {"error": "no ids provided"}
     delete_files = bool(body.get("delete_files", False))
+    delete_shared = bool(body.get("delete_shared_files", False))
     from exptrack.core.db import _sweep_blobs, checkpoint_truncate, delete_experiment
     from exptrack.core.storage import free_space
     free_before = free_space(conn)["bytes"]
     deleted = 0
-    totals = {"os_trash": 0, "local_trash": 0, "failed": 0, "missing": 0}
+    totals = {"os_trash": 0, "local_trash": 0, "failed": 0, "missing": 0,
+              "kept_shared": 0}
     for eid in ids:
         exp = find_experiment(conn, eid)
         if exp:
             stats = delete_experiment(conn, exp["id"], delete_files=delete_files,
-                                      reclaim_blobs=False)
+                                      reclaim_blobs=False,
+                                      delete_shared_files=delete_shared)
             for k, v in (stats or {}).items():
                 totals[k] = totals.get(k, 0) + v
             deleted += 1
@@ -70,6 +73,7 @@ def api_bulk_delete_permanent(conn, body: dict) -> dict:
     freed = max(0, free_space(conn)["bytes"] - free_before)
     checkpoint_truncate(conn)   # see api_delete_permanent: PASSIVE won't shrink it
     return {"ok": True, "deleted": deleted, "deleted_files": delete_files,
+            "deleted_shared_files": delete_shared,
             "file_stats": totals, "freed_bytes": freed}
 
 
@@ -88,6 +92,11 @@ def api_bulk_delete_preview(conn, body: dict) -> dict:
         "params": 0,
         "artifacts": 0,
         "artifacts_existing": 0,
+        # Files another run also references, which the delete keeps. Summed
+        # like every other figure so the batch confirm can say what it spares.
+        "artifacts_shared": 0,
+        # What choosing to delete them as well would additionally free.
+        "shared_bytes": 0,
         "artifact_bytes": 0,
         "output_dirs_existing": 0,
         "output_dir_files": 0,
@@ -116,6 +125,8 @@ def api_bulk_delete_preview(conn, body: dict) -> dict:
         items.append({
             "id": p["id"], "name": p["name"],
             "artifacts": p["artifacts_count"],
+            "artifacts_shared": p.get("artifacts_shared", 0),
+            "shared_files": [a for a in (p.get("artifacts") or []) if a.get("shared")],
             "artifact_bytes": p["artifact_bytes"],
             "output_dir": p["output_dir"],
             "output_dir_bytes": p["output_dir_bytes"],
@@ -125,6 +136,8 @@ def api_bulk_delete_preview(conn, body: dict) -> dict:
         totals["params"] += p["params_count"]
         totals["artifacts"] += p["artifacts_count"]
         totals["artifacts_existing"] += p["artifacts_existing"]
+        totals["artifacts_shared"] += p.get("artifacts_shared", 0)
+        totals["shared_bytes"] += p.get("shared_bytes", 0)
         totals["artifact_bytes"] += p["artifact_bytes"]
         totals["output_dirs_existing"] += 1 if p["output_dir_exists"] else 0
         totals["output_dir_files"] += p["output_dir_files"]
