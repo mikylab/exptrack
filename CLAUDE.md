@@ -198,9 +198,10 @@ one Read usually covers a task.
 - **Logging the numbers after the run is over**: `%exp_log` / `log_last()` attaches metrics post-hoc to this notebook's latest surviving run, always printing which run it chose.
 - **A run can name its own baseline (`variant_of`)**: an explicit target beats chronology in *both* resolvers; a stale link degrades to chronological.
 - **Run adoption**: `exptrack run` publishes its wrapper so a script's own bare `Experiment()` adopts it instead of spawning a phantom second run. Only a *bare* construction adopts, and only once.
+- **A run's code is the script *plus* the modules it imported**: `capture_module_snapshots` records the project-local modules `sys.modules` shows at finish, so editing `script.py` and rerunning `main.py` reads as a code change instead of "no code change"; bounded by `snapshot_max_files`, never the tracker's own package or a vendored path.
 - **Every run snapshots its own source, however it was started**: `Experiment._maybe_snapshot_script` is the single entry point, so plain `python train.py` captures source too — and `_install_capture_patches` arms argparse/savefig/TensorBoard capture there as well. Raw-argv capture only fires when `sys.argv[0]` is the run's own script.
 - **Every way a run can end is an outcome**: Ctrl-C is recorded (`failed` + `_interrupted`, exit 130), never left `running`. A run's `script` is its identity and must not vary with its inputs.
-- **The mtime window is not ownership**: the finish-time output scan skips files another run owns, so concurrent launches don't cross-contaminate.
+- **The mtime window is not ownership, and ownership expires with the run**: the finish-time output scan skips files owned by a run still *in flight* (`runs_in_flight_since`), so concurrent launches don't cross-contaminate — while a rerun still records the fixed path it overwrote, which is what keeps the delete's file-claim rule able to see a second claimant.
 - **"What changed" card**: auto-diffs this run against the previous run of the same script — params, metrics, and a lazily-fetched code diff.
 
 ### `docs/design/patterns/analysis.md` — reading a set of runs
@@ -218,9 +219,10 @@ one Read usually covers a task.
 - **Zero-friction capture**, **diff-only storage**, **content-addressed cell lineage** (magic-only cells excluded), **auto artifact linking**, **auto output detection**, **auto-resume detection**, **no-copy artifact tracking**, **dataset/input versioning**, **failure capture** (traceback, not just a message), **TensorBoard metric auto-capture** (the only auto-capture path for metrics), **notebook cell output capture**, param/metric **source tracking**, plugin system, per-project storage.
 
 ### `docs/design/patterns/metrics.md` — the only code inside the user's inner loop
-- **Metric thinning**: count points, **never** test the step value (`step % N` silently stored *zero* points at common cadences).
+- **Metric thinning**: count points, **never** test the step value (`step % N` silently stored *zero* points at common cadences). `metric_keep_every` is a divisor, not a budget — finish states points stored vs logged.
 - **Metric write cost at loop scale**: a commit is an fsync. Time-windowed batching via `metric_commit_interval_ms`; never wrap metric writes in `with get_db()` — sqlite3's context manager commits on exit and defeats batching.
 - **Charts must render faster than the poll that refreshes them**: bucketing runs in SQL; `/api/metrics` is polled every 5s on live runs.
+- **A chart has to leave the page**: `_chartsSheetCanvas` composites *Show All* into one captioned image (opaque, at the canvases' own pixel size), and `⧉ Copy` puts it on the clipboard — stating why when the context is not secure enough to allow it.
 
 ### `docs/design/patterns/storage.md` — bytes, deletion and reclaim
 - **Knowing where the bytes went**: per-table figures are *exact* (dbstat); anything below a table is apportioned and labelled **estimated**.
@@ -228,6 +230,9 @@ one Read usually covers a task.
 - **Exports are summaries, `--full` is the way back**: every format, JSON included; truncation is always reported.
 - **A delete that reclaims nothing visible is indistinguishable from one that failed**: every delete reports what it freed and names `clean --vacuum`.
 - **Reclaiming storage without losing data**: DB rows are bookkeeping and sweep freely; content-addressed blobs are refcounted; **files are opt-in and always go to the OS Trash**, never `rmtree`. One shared reset list, one ownership rule for output dirs.
+- **A file another run still references is not this delete's to remove**: `artifact_claims_by_others` is the file-level half of the claim rule the directory helpers already applied; the preview marks it `shared`, names every holder and excludes its bytes.
+- **A shared file is a question, not a rule**: `delete_shared_files` is a *second* answer, defaulting to keep — `exptrack rm` prompts (`--shared-files keep|delete`), the dashboard confirms show the list with an unticked box, and `--yes` never answers it. A file whose mtime is newer than the run's end (`file_modified_after_run`) counts as shared too, which is how pre-fix runs with no second row are covered.
+- **The claim is editable**: `exptrack unlink-artifact` drops an artifact record without touching the file, `log-artifact` adds one — the manual override for a claim that protects the wrong file or none at all. The dashboard's Artifacts row carries the same action (**unlink**) plus an **also in N runs** badge (`linked_by`), and the delete confirm offers *Unlink and delete this experiment* / *Delete both* rather than a tick-box.
 - **Deleted files stay restorable**: `_trash_or_local` is the only way exptrack removes a file.
 - **Soft-delete (Trash) with an explicit permanent path**: `deleted_at` marks trashed; every list filters it; single-run lookups deliberately do not. Reachable from the CLI too (`rm --trash`, `trash`, `restore-run`).
 - **One confirmation prompt**: `cli/formatting.confirm` — EOF/Ctrl-C is a refusal, `--yes` is the scripted path. An id prefix is user input, so its LIKE wildcards are escaped.
@@ -244,7 +249,9 @@ one Read usually covers a task.
 - **A selection belongs to the surface that owns it**: table, matrix and session tree keep separate sets and share only the destination (`compareRuns(ids)`). A selection must not outlive the set it was made in. **Clearing the picks clears the comparison they produced** (`_discardComparison`, token bump included); dismissing a result does *not* clear the picks.
 - **Searchable Compare pickers**: one cached run list feeds all three pickers; a partial cache always renders a truncation notice.
 - **One way to answer "which runs?"**: `openRunPicker` (js/run_picker.js) is the shared picker for Compare and the matrix's analysed set — rows carry each run's parameters and the search matches them, so a run is reachable without knowing its name. It reads the Compare cache, so no two surfaces can search different sets.
+- **A run list must be narrowable without knowing what to type**: the picker's facet chips (`_rpFacetGroups`) are values the runs actually hold — OR inside a group, AND across groups, each count saying what clicking it would leave. `_rpFiltered` is the single answer to "what is listed"; picks and filters clear separately.
 - **Leaving a view is as reachable as entering it**: Compare's Back returns to its `_compareOrigin`; `_pushViewHash`/`_onPopView` (js/sidebar.js) give `#matrix` and `#compare=` a history position so the browser's Back steps back a view instead of leaving the page; and **Compare n here** renders the comparison inside the matrix so the common case needs no navigation.
+- **Pairing two runs' images is a claim**: `_assign_image_groups` decides it server-side — an exact shared filename wins, else a digit-normalized family, and never a merge that would hide a run's second image; two runs on one path are marked `shared`, because the file has one content.
 - **A comparison column must keep the end of a run name**: auto-generated names differ in their tail — every compare surface uses `midEllipsis`, never a head truncation.
 
 ### `docs/design/patterns/dashboard-ui.md` — the list and detail view
@@ -252,6 +259,9 @@ one Read usually covers a task.
 - **Polarity-aware metric deltas**: green means *better*, not bigger.
 - **Failures are visible, never a silently blank view**: `_json_list` server-side, `_showApiError` client-side; `api()` can return `null`, so every caller guards.
 - **A live run's detail view keeps the view state you set**: the 5s poll must not reset the tab, scroll, chart picker or axis inputs; charts update **in place**.
+- **The page scroller clamps when content shrinks**: `_holdMainScroll()` (js/core.js) is the one helper; an image grid inside `#main-content` must reserve its boxes (`aspect-ratio`) or a dropped decode moves the reader to the top.
+- **A selection change repaints in place**: a handler that changes what is *selected* must not call the loader. Compare Within (`_cwRepaintSelection`) and the Images tab's compare picks (`_imgCmpRepaint`) both rebuilt their whole tab for a badge, collapsing `#main-content` so the browser clamped the scroll to the top.
+- **Export and copy are one answer at two distances**: `copyDiff` puts the same server-rendered markdown `exportDiff` downloads on the clipboard; every Export site has a Copy beside it.
 - **Inline editing**: exactly one cell editor open at a time; closing commits; the editor is an anchored panel, not laid out in the cell.
 - **A saved command is a template, and the template is never rewritten**: `{{var}}` tokens render editable inputs; substitution happens at render, an unfilled token stays visible, and date-like variables re-default rather than persist.
 - **A bulk action counts what it can act on**: `Finish (n)` counts only the *running* runs in the selection and is absent when there are none; the result separates finished / already-done / failed.
@@ -307,7 +317,7 @@ every install on upgrade.
 
 Frequently relevant: `metric_keep_every`, `metric_max_points`,
 `metric_commit_interval_ms` (250), `max_git_diff_kb` (256), `snapshot_max_kb`
-(512), `code_change_max_chars` (20000), `var_fingerprint_max_mb` (100),
+(512), `snapshot_max_files` (50), `code_change_max_chars` (20000), `var_fingerprint_max_mb` (100),
 `primary_metric` / `_by_study`, `reference_run` / `_by_study`,
 `warn_duplicate_runs`, `auto_trash_failed`, `auto_capture.*`, `naming.*`.
 

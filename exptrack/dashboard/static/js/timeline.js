@@ -551,12 +551,14 @@ async function loadImages(expId) {
     const displayLimit = imageLimit > 0 ? imageLimit : filtered.length;
     const limited = filtered.slice(0, displayLimit);
 
-    // Compare mode floating bar
+    // Compare mode floating bar. The two names and the button are addressable
+    // (`#img-cmp-bar`, `.img-cmp-a`/`.img-cmp-b`) because picking an image
+    // repaints them in place — see _imgCmpRepaint.
     if (imgCmpMode) {
-      html += '<div class="img-cmp-floating-bar">';
-      html += '<span>A: <strong>' + (imgCmpA ? esc(imgCmpA.name) : '(click to select)') + '</strong></span>';
+      html += '<div class="img-cmp-floating-bar" id="img-cmp-bar">';
+      html += '<span>A: <strong class="img-cmp-a">' + (imgCmpA ? esc(imgCmpA.name) : '(click to select)') + '</strong></span>';
       html += '<span style="color:var(--muted)">vs</span>';
-      html += '<span>B: <strong>' + (imgCmpB ? esc(imgCmpB.name) : '(click to select)') + '</strong></span>';
+      html += '<span>B: <strong class="img-cmp-b">' + (imgCmpB ? esc(imgCmpB.name) : '(click to select)') + '</strong></span>';
       html += '<button class="cmp-go" onclick="doIntraCompare()"' + (imgCmpA && imgCmpB ? '' : ' disabled') + '>Compare</button>';
       html += '<button class="cmp-clr" onclick="clearIntraCompare(\'' + expId + '\')">Clear</button>';
       html += '</div>';
@@ -615,7 +617,8 @@ async function loadImages(expId) {
       const clickFn = imgCmpMode
         ? 'selectImgCompare(\'' + esc(src) + '\',\'' + esc(img.name) + '\',\'' + expId + '\')'
         : 'openImageModal(\'' + esc(src) + '\',\'' + esc(img.name) + '\')';
-      html += '<div class="img-card' + selCls + '" onclick="' + clickFn + '" style="position:relative">';
+      html += '<div class="img-card' + selCls + '" data-src="' + esc(src)
+           + '" onclick="' + clickFn + '" style="position:relative">';
       if (isSelA) html += '<div class="img-cmp-badge">A</div>';
       if (isSelB) html += '<div class="img-cmp-badge">B</div>';
       html += '<div class="img-thumb"><img src="' + src + '" alt="' + esc(img.name) + '" loading="lazy"></div>';
@@ -631,7 +634,51 @@ async function loadImages(expId) {
     html += ' <button class="img-filter-select" onclick="loadImages(\'' + expId + '\')" title="Refresh images" style="cursor:pointer;margin-top:8px">&#x21bb; Refresh</button>';
   }
 
+  // Entering compare mode, Refresh and the filter selects all rebuild the tab.
+  // The gallery is the tallest thing in the detail view, so emptying it
+  // collapses `#main-content` and the browser clamps the scroll to the top.
+  const _restoreScroll = _holdMainScroll();
   container.innerHTML = html;
+  _restoreScroll();
+  requestAnimationFrame(_restoreScroll);
+}
+
+// Repaint what picking an image changed, and nothing else.
+//
+// `selectImgCompare` used to call `loadImages(expId)`: a fresh request for the
+// image list and a full rewrite of the tab, to move an A/B badge between two
+// cards. With up to 200 thumbnails the gallery is the tallest thing on the page,
+// so the rewrite collapsed `#main-content`, the browser clamped its scrollTop to
+// 0, and the click threw the reader to the top — with the thumbnail they were
+// aiming at now somewhere else. Identical to the Compare Within failure, and the
+// same fix: touch the badge, the selected card and the bar that names the picks.
+function _imgCmpRepaint() {
+  const bar = document.getElementById('img-cmp-bar');
+  if (bar) {
+    const a = bar.querySelector('.img-cmp-a');
+    const b = bar.querySelector('.img-cmp-b');
+    if (a) a.textContent = imgCmpA ? imgCmpA.name : '(click to select)';
+    if (b) b.textContent = imgCmpB ? imgCmpB.name : '(click to select)';
+    const go = bar.querySelector('.cmp-go');
+    if (go) go.disabled = !(imgCmpA && imgCmpB);
+  }
+  document.querySelectorAll('.img-gallery .img-card[data-src]').forEach(card => {
+    const src = card.dataset.src;
+    const isA = !!(imgCmpA && imgCmpA.src === src);
+    const isB = !!(imgCmpB && imgCmpB.src === src);
+    card.classList.toggle('compare-sel', isA || isB);
+    let badge = card.querySelector('.img-cmp-badge');
+    if (isA || isB) {
+      if (!badge) {
+        badge = document.createElement('div');
+        badge.className = 'img-cmp-badge';
+        card.prepend(badge);
+      }
+      badge.textContent = isA ? 'A' : 'B';
+    } else if (badge) {
+      badge.remove();
+    }
+  });
 }
 
 async function addImagePath(expId) {
@@ -723,19 +770,41 @@ function startEditLogPath(expId, index, el) {
 }
 
 function openImageModal(src, name) {
+  // The overlay is fixed and appended to <body>, so it does not itself move the
+  // scroller — but the grid it was opened from can collapse underneath it, and
+  // then `#main-content` clamps. Held both ways round: opening and closing.
+  const restore = _holdMainScroll();
+  closeImageModal();
   const overlay = document.createElement('div');
   overlay.className = 'img-modal-overlay';
-  overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
+  overlay.id = 'img-modal-overlay';
+  overlay.onclick = (ev) => { if (ev.target === overlay) closeImageModal(); };
 
   const content = document.createElement('div');
   content.className = 'img-modal-content';
-  content.innerHTML = '<div class="img-modal-header"><span class="img-modal-name">' + esc(name) + '</span><button class="img-modal-close" onclick="this.closest(\'.img-modal-overlay\').remove()">&times;</button></div>' +
+  content.innerHTML = '<div class="img-modal-header"><span class="img-modal-name">' + esc(name) + '</span><button class="img-modal-close" onclick="closeImageModal()">&times;</button></div>' +
     '<img src="' + src + '" alt="' + esc(name) + '" style="max-width:100%;max-height:calc(100vh - 80px);object-fit:contain">';
   overlay.appendChild(content);
   document.body.appendChild(overlay);
 
-  const handler = (ev) => { if (ev.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
+  // One handler, stored on the overlay, so every close path can take it off
+  // again. Inlined `.remove()` on the backdrop and the × left this listener
+  // attached for the life of the page, once per image ever opened.
+  const handler = (ev) => { if (ev.key === 'Escape') closeImageModal(); };
   document.addEventListener('keydown', handler);
+  overlay.__escHandler = handler;
+  overlay.__restoreScroll = restore;
+  restore();
+  requestAnimationFrame(restore);
+}
+
+function closeImageModal() {
+  const overlay = document.getElementById('img-modal-overlay');
+  if (!overlay) return;
+  if (overlay.__escHandler) document.removeEventListener('keydown', overlay.__escHandler);
+  const restore = overlay.__restoreScroll;
+  overlay.remove();
+  if (restore) { restore(); requestAnimationFrame(restore); }
 }
 
 // ── Logs tab ─────────────────────────────────────────────────────────────────
@@ -1134,6 +1203,49 @@ async function removeMetricItem(target, index) {
 let withinSeq1 = null, withinSeq2 = null;
 let _withinEvents = []; // cache timeline events
 
+// The checkpoints a run offers as comparison points. Derived from the cached
+// events, never re-requested: which points exist is a property of the run, and
+// picking one of them does not change it.
+function _cwCheckpoints() {
+  return _withinEvents.filter(e =>
+    e.event_type === 'cell_exec' || e.event_type === 'artifact' || e.event_type === 'metric'
+  );
+}
+
+function _cwDescribeEvent(ev) {
+  if (!ev) return '';
+  if (ev.event_type === 'cell_exec') {
+    const info = ev.value || {};
+    return (info.source_preview || ev.key || 'cell').split('\n')[0].slice(0, 50);
+  }
+  if (ev.event_type === 'metric') {
+    return ev.key + ' = ' + (typeof ev.value === 'object' ? JSON.stringify(ev.value) : ev.value);
+  }
+  if (ev.event_type === 'artifact') return ev.key || 'artifact';
+  return ev.key || ev.event_type;
+}
+
+function _cwEventIcon(type) {
+  if (type === 'cell_exec') return '<span class="tl-type-label tl-type-cell_exec">CELL</span>';
+  if (type === 'metric') return '<span class="tl-type-label tl-type-metric">METRIC</span>';
+  if (type === 'artifact') return '<span class="tl-type-label tl-type-artifact">ARTIFACT</span>';
+  return '<span class="tl-type-label">' + type.toUpperCase() + '</span>';
+}
+
+// How a chosen point reads in the selection bar.
+function _cwPointText(seq, which) {
+  if (seq === null) return which === 'a' ? 'Select start point' : 'Select end point';
+  const ev = _cwCheckpoints().find(e => e.seq === seq);
+  const label = _cwDescribeEvent(ev) || '#' + seq;
+  return '#' + seq + ': ' + label;
+}
+
+function _cwSeqCellHtml(seq) {
+  if (withinSeq1 === seq) return '<span class="cw-badge cw-badge-a">A</span>';
+  if (withinSeq2 === seq) return '<span class="cw-badge cw-badge-b">B</span>';
+  return String(seq);
+}
+
 async function loadCompareWithin(expId) {
   const events = await api('/api/timeline/' + expId);
   const container = document.getElementById('detail-tab-compare-within');
@@ -1142,29 +1254,7 @@ async function loadCompareWithin(expId) {
     return;
   }
   _withinEvents = events;
-
-  // Group events into meaningful checkpoints: cell_exec, metric, artifact
-  const checkpoints = events.filter(e =>
-    e.event_type === 'cell_exec' || e.event_type === 'artifact' || e.event_type === 'metric'
-  );
-
-  // Helper to describe an event
-  function describeEvent(ev) {
-    if (ev.event_type === 'cell_exec') {
-      const info = ev.value || {};
-      return (info.source_preview || ev.key || 'cell').split('\n')[0].slice(0, 50);
-    }
-    if (ev.event_type === 'metric') return ev.key + ' = ' + (typeof ev.value === 'object' ? JSON.stringify(ev.value) : ev.value);
-    if (ev.event_type === 'artifact') return ev.key || 'artifact';
-    return ev.key || ev.event_type;
-  }
-
-  function eventIcon(type) {
-    if (type === 'cell_exec') return '<span class="tl-type-label tl-type-cell_exec">CELL</span>';
-    if (type === 'metric') return '<span class="tl-type-label tl-type-metric">METRIC</span>';
-    if (type === 'artifact') return '<span class="tl-type-label tl-type-artifact">ARTIFACT</span>';
-    return '<span class="tl-type-label">' + type.toUpperCase() + '</span>';
-  }
+  const checkpoints = _cwCheckpoints();
 
   let html = '<div class="cw-header">';
   html += '<h3>Snapshot Comparison</h3>';
@@ -1173,20 +1263,19 @@ async function loadCompareWithin(expId) {
 
   // Selection bar
   html += '<div class="tl-compare-bar">';
-  const a1Label = withinSeq1 !== null ? describeEvent(checkpoints.find(e => e.seq === withinSeq1) || {event_type:'',value:null,key:'#'+withinSeq1}) : 'click below';
-  const a2Label = withinSeq2 !== null ? describeEvent(checkpoints.find(e => e.seq === withinSeq2) || {event_type:'',value:null,key:'#'+withinSeq2}) : 'click below';
   html += '<div class="cw-point cw-point-a' + (withinSeq1 !== null ? ' active' : '') + '">';
   html += '<span class="cw-point-label">A</span>';
-  html += '<span class="cw-point-desc">' + esc(withinSeq1 !== null ? '#' + withinSeq1 + ': ' + a1Label : 'Select start point') + '</span>';
+  html += '<span class="cw-point-desc">' + esc(_cwPointText(withinSeq1, 'a')) + '</span>';
   html += '</div>';
   html += '<span class="cw-arrow">&#8594;</span>';
   html += '<div class="cw-point cw-point-b' + (withinSeq2 !== null ? ' active' : '') + '">';
   html += '<span class="cw-point-label">B</span>';
-  html += '<span class="cw-point-desc">' + esc(withinSeq2 !== null ? '#' + withinSeq2 + ': ' + a2Label : 'Select end point') + '</span>';
+  html += '<span class="cw-point-desc">' + esc(_cwPointText(withinSeq2, 'b')) + '</span>';
   html += '</div>';
   html += '<div class="cw-actions">';
-  html += '<button onclick="doWithinCompare(\'' + expId + '\')"' + (withinSeq1 !== null && withinSeq2 !== null ? '' : ' disabled') + '>Compare</button>';
-  html += '<button onclick="withinSeq1=null;withinSeq2=null;loadCompareWithin(\'' + expId + '\')" class="cw-clear">Clear</button>';
+  html += '<button id="cw-go" onclick="doWithinCompare(\'' + escJsAttr(expId) + '\')"'
+       + (withinSeq1 !== null && withinSeq2 !== null ? '' : ' disabled') + '>Compare</button>';
+  html += '<button onclick="clearWithinSelection()" class="cw-clear">Clear</button>';
   html += '</div>';
   html += '</div>';
 
@@ -1197,15 +1286,14 @@ async function loadCompareWithin(expId) {
     const isB = withinSeq2 === ev.seq;
     const selCls = (isA || isB) ? ' tl-seq-select selected' : ' tl-seq-select';
     const markerCls = isA ? ' cw-marker-a' : (isB ? ' cw-marker-b' : '');
-    html += '<div class="tl-event tl-' + ev.event_type + selCls + markerCls + '" onclick="selectWithinSeq(' + ev.seq + ',\'' + expId + '\')" style="cursor:pointer">';
-    html += '<div class="tl-seq">';
-    if (isA) html += '<span class="cw-badge cw-badge-a">A</span>';
-    else if (isB) html += '<span class="cw-badge cw-badge-b">B</span>';
-    else html += ev.seq;
-    html += '</div>';
+    // `data-seq` is what lets a pick repaint the two rows it touches instead of
+    // the whole list they sit in.
+    html += '<div class="tl-event tl-' + ev.event_type + selCls + markerCls
+         + '" data-seq="' + ev.seq + '" onclick="selectWithinSeq(' + ev.seq + ')" style="cursor:pointer">';
+    html += '<div class="tl-seq">' + _cwSeqCellHtml(ev.seq) + '</div>';
     html += '<div class="tl-body">';
-    html += eventIcon(ev.event_type);
-    html += '<strong>' + esc(describeEvent(ev)) + '</strong>';
+    html += _cwEventIcon(ev.event_type);
+    html += '<strong>' + esc(_cwDescribeEvent(ev)) + '</strong>';
     html += ' <span style="color:var(--muted);margin-left:8px;font-size:11px">' + fmtDt(ev.ts) + '</span>';
     html += '</div></div>';
   }
@@ -1217,14 +1305,67 @@ async function loadCompareWithin(expId) {
   container.innerHTML = html;
 }
 
-function selectWithinSeq(seq, expId) {
+// Repaint what the selection changed, and only that.
+//
+// This used to be `loadCompareWithin(expId)`: every click on a checkpoint
+// re-requested the timeline and rewrote the tab's whole innerHTML. Two
+// scrollers paid for it. The checkpoint list is its own overflow box, so it
+// snapped back to the top and the row just clicked left the screen; and
+// emptying `#main-content` collapses its content, so the browser clamped the
+// page scroll to 0 as well -- the trap the detail refresh already documents
+// (js/detail.js). Choosing a point moved the point out from under the cursor.
+function _cwRepaintSelection() {
+  const container = document.getElementById('detail-tab-compare-within');
+  if (!container) return;
+  const scroller = document.getElementById('main-content');
+  const keptPage = scroller ? scroller.scrollTop : 0;
+  const list = container.querySelector('.cw-timeline');
+  const keptList = list ? list.scrollTop : 0;
+
+  for (const which of ['a', 'b']) {
+    const seq = which === 'a' ? withinSeq1 : withinSeq2;
+    const el = container.querySelector('.cw-point-' + which);
+    if (!el) continue;
+    el.classList.toggle('active', seq !== null);
+    const desc = el.querySelector('.cw-point-desc');
+    if (desc) desc.textContent = _cwPointText(seq, which);
+  }
+  const go = container.querySelector('#cw-go');
+  if (go) go.disabled = !(withinSeq1 !== null && withinSeq2 !== null);
+
+  container.querySelectorAll('.cw-timeline .tl-event[data-seq]').forEach(row => {
+    const seq = Number(row.dataset.seq);
+    const isA = withinSeq1 === seq, isB = withinSeq2 === seq;
+    row.classList.toggle('selected', isA || isB);
+    row.classList.toggle('cw-marker-a', isA);
+    row.classList.toggle('cw-marker-b', isB);
+    const cell = row.querySelector('.tl-seq');
+    if (cell) cell.innerHTML = _cwSeqCellHtml(seq);
+  });
+
+  // The panel below answered the previous pair of points; leaving it under a
+  // bar that now names different ones is worse than clearing it.
+  const res = document.getElementById('within-compare-result');
+  if (res) res.innerHTML = '';
+
+  if (list) list.scrollTop = keptList;
+  if (scroller) scroller.scrollTop = keptPage;
+}
+
+function selectWithinSeq(seq) {
   if (withinSeq1 === null || (withinSeq1 !== null && withinSeq2 !== null)) {
     withinSeq1 = seq;
     withinSeq2 = null;
   } else {
     withinSeq2 = seq;
   }
-  loadCompareWithin(expId);
+  _cwRepaintSelection();
+}
+
+function clearWithinSelection() {
+  withinSeq1 = null;
+  withinSeq2 = null;
+  _cwRepaintSelection();
 }
 
 async function doWithinCompare(expId) {

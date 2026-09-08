@@ -84,8 +84,33 @@
   .multi-compare-image-group { margin-bottom: 16px; }
   .multi-compare-image-row { display: flex; gap: 12px; overflow-x: auto; padding: 4px 0 8px; }
   .multi-compare-image-cell { flex: 0 0 auto; min-width: 160px; max-width: 280px; }
-  .multi-compare-image-cell img { width: 100%; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; transition: transform 0.15s; }
+  /* The box is reserved, not taken from the image. With `width: 100%` and no
+     height the cell's height came entirely from the decoded aspect ratio — zero
+     before the load, and zero again whenever the browser drops the decode of an
+     offscreen image (opening a full-size PNG in the modal is a good way to
+     provoke exactly that). This grid sits inside `#main-content`, which clamps
+     its own scrollTop when its content shrinks, so a collapse here throws the
+     reader to the top of a comparison they were part-way down. `.img-thumb` and
+     `.cmp-img-thumb` have always reserved theirs; 4/3 is matplotlib's default
+     figure ratio, and `contain` letterboxes anything else rather than cropping
+     a plot the grid is claiming to pair. */
+  .multi-compare-image-cell img {
+    width: 100%; aspect-ratio: 4 / 3; object-fit: contain;
+    background: var(--code-bg);
+    border-radius: 4px; border: 1px solid var(--border); cursor: pointer;
+    transition: transform 0.15s;
+  }
   .multi-compare-image-cell img:hover { transform: scale(1.03); border-color: var(--blue); }
+  /* The real file name under each cell: the row heading is the group (which may
+     be a normalized family), so without this a paired row stops saying which
+     file each run actually wrote. */
+  .multi-compare-image-name {
+    font-size: 10px; color: var(--muted); margin-top: 3px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .cmp-img-shared-note {
+    font-size: 11px; color: var(--yellow); margin: 0 0 4px;
+  }
 
 /* Honesty notices: a comparison that covers fewer runs or fewer images than
    the user selected has to say so, and it must be legible rather than

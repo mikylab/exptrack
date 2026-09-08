@@ -254,8 +254,8 @@ def test_detail_tabs_array_matches_the_button_row():
     from pathlib import Path
 
     static = Path(__file__).resolve().parents[1] / "exptrack" / "dashboard" / "static" / "js"
-    tabs_src = (static / "timeline.js").read_text()
-    detail_src = (static / "detail.js").read_text()
+    tabs_src = (static / "timeline.js").read_text(encoding="utf-8")
+    detail_src = (static / "detail.js").read_text(encoding="utf-8")
 
     arr = re.search(r"const DETAIL_TABS = \[(.*?)\];", tabs_src).group(1)
     declared = [t.strip().strip("'\"") for t in arr.split(",") if t.strip()]
@@ -558,7 +558,10 @@ def test_the_pickers_search_can_actually_narrow_the_list():
     js = get_all_js()
     body = _js_function_body(js, "function _rpFiltered(")
     assert "_rpSelected" not in body
-    assert "not matching this search" in _js_function_body(js, "function _rpRenderFooter(")
+    # The wording covers the facet chips too — a pick hidden by a chip is just
+    # as absent from the list as one hidden by the query.
+    assert "hidden by the search or filters" in _js_function_body(
+        js, "function _rpRenderFooter(")
 
 
 def test_the_picker_states_both_reasons_the_list_is_partial():
@@ -771,7 +774,7 @@ def test_every_select_in_the_matrix_view_carries_a_style_class():
     """
     from pathlib import Path
     src = (Path(__file__).resolve().parents[1] / "exptrack" / "dashboard" /
-           "static" / "js" / "matrix.js").read_text()
+           "static" / "js" / "matrix.js").read_text(encoding="utf-8")
     bare = [m for m in re.findall(r"<select[^>]*>", src) if "class=" not in m]
     assert not bare, f"unstyled <select> in the matrix view: {bare}"
     from exptrack.dashboard.static import DASHBOARD_CSS
@@ -873,3 +876,320 @@ def test_no_raw_nul_byte_in_the_bundle():
     """A literal NUL makes grep/ripgrep treat a file as binary and stop reading
     it mid-file — a trap for any grep-based check like the ones in this file."""
     assert "\x00" not in get_all_js()
+
+
+# ── picking a point in Compare Within ────────────────────────────────────────
+
+def test_picking_a_timeline_point_does_not_rebuild_the_whole_tab():
+    """Selecting A or B is a selection change, not a data change.
+
+    It used to call `loadCompareWithin`, which re-requests the timeline and
+    rewrites the tab's whole innerHTML — so the `.cw-timeline` list scrolled
+    itself back to the top and `#main-content` collapsed and re-clamped,
+    throwing the reader to the top of the page on every click. The one control
+    whose job is "click the event you mean" moved the event out from under the
+    cursor.
+    """
+    js = get_all_js()
+    body = _js_function_body(js, "function selectWithinSeq(", strip_comments=True)
+    assert "loadCompareWithin(" not in body, \
+        "a selection must repaint in place, not refetch and rebuild the tab"
+    assert "_cwRepaintSelection(" in body
+    # Clear is the same kind of change and must take the same path.
+    clear = _js_function_body(js, "function clearWithinSelection(", strip_comments=True)
+    assert "loadCompareWithin(" not in clear
+    assert "_cwRepaintSelection(" in clear
+
+
+def test_the_in_place_repaint_holds_the_page_and_list_scroll():
+    """Both scrollers: the page (`#main-content`, the pattern the detail refresh
+    already follows) and the checkpoint list's own overflow box."""
+    body = _js_function_body(get_all_js(), "function _cwRepaintSelection(",
+                             strip_comments=True)
+    assert "main-content" in body
+    assert "scrollTop" in body
+
+
+def test_a_stale_within_comparison_is_cleared_not_left_standing():
+    """The result panel answers one pair of points. Changing either point makes
+    it an answer to a question no longer on screen."""
+    body = _js_function_body(get_all_js(), "function _cwRepaintSelection(",
+                             strip_comments=True)
+    assert "within-compare-result" in body
+
+
+# ── narrowing the run picker ─────────────────────────────────────────────────
+
+def test_the_picker_can_be_narrowed_without_typing():
+    """A text box can only be used by someone who remembers what to type. With
+    twenty-odd runs listed, narrowing to "the failed cnn runs" meant guessing a
+    substring; the facet chips make each value the runs actually hold a click."""
+    js = get_all_js()
+    for name in ("_rpFacetGroups", "rpToggleFacet", "rpClearFacets", "_rpFacetSel"):
+        assert name in js, f"the picker needs {name}"
+    body = _js_function_body(js, "function _rpFiltered(", strip_comments=True)
+    assert "_rpMatchesFacets" in body, "the facets have to actually filter the list"
+
+
+def test_facet_values_within_a_group_are_an_or_and_groups_are_an_and():
+    """status=failed OR running, *and* script=train.py — the reading every
+    faceted list uses. An AND inside a group can only ever match nothing."""
+    body = _js_function_body(get_all_js(), "function _rpMatchesFacets(",
+                             strip_comments=True)
+    assert "return false" in body, "a group with no matching value rejects the run"
+
+
+def test_a_facet_count_is_what_clicking_it_would_leave():
+    """Counting against the unfiltered set promises rows that are not there:
+    with `script=eval.py` already on, a `status=failed` chip reading 14 must not
+    mean fourteen runs of which two are eval's. Counted against everything else
+    currently applied — the chip's own group excluded, or turning a second value
+    on in it would always read zero."""
+    body = _js_function_body(get_all_js(), "function _rpFacetGroups(",
+                             strip_comments=True)
+    assert "_rpMatchesFacets" in body or "except" in body
+
+
+def test_the_picks_and_the_filters_are_cleared_separately():
+    """Two different things to undo: the runs chosen, and the narrowing that
+    decided which runs were offered. One button for both would make dropping a
+    stray chip throw away a selection assembled across four searches."""
+    js = get_all_js()
+    picks = _js_function_body(js, "function rpClearSelection(", strip_comments=True)
+    assert "_rpFacetSel" not in picks, "clearing the picks must not drop the filters"
+    facets = _js_function_body(js, "function rpClearFacets(", strip_comments=True)
+    assert "_rpSelected" not in facets, "clearing the filters must not drop the picks"
+    assert "_rpFacetSel = {}" in facets
+    assert 'onclick="rpClearFacets()"' in js, "the facet bar needs its own clear"
+
+
+def test_the_picker_states_how_many_facets_are_narrowing_it():
+    """A list that is short because of a chip scrolled out of view is
+    indistinguishable from a project with four runs in it."""
+    js = get_all_js()
+    assert "_rpActiveFacetCount(" in js
+    bar = _js_function_body(js, "function _rpFacetBarHtml(", strip_comments=True)
+    assert "_rpActiveFacetCount(" in bar
+
+
+# ── taking the charts out of the page ────────────────────────────────────────
+
+def test_show_all_charts_can_be_taken_as_one_image():
+    """Nine downloads is not a figure. `Show All` is the view that answers "how
+    did every metric move" and the only way out of it was one PNG per canvas,
+    to be reassembled by hand in something else."""
+    js = get_all_js()
+    assert "function _chartsSheetCanvas(" in js
+    body = _js_function_body(js, "function _chartsSheetCanvas(", strip_comments=True)
+    assert "drawImage" in body
+    assert "chart-download-sheet" in js, "the sheet needs its own control"
+
+
+def test_a_chart_can_be_copied_not_only_downloaded():
+    """Pasting into a lab notebook or a message should not require finding the
+    file the browser just saved."""
+    js = get_all_js()
+    body = _js_function_body(js, "function copyChartsPng(", strip_comments=True)
+    assert "_copyCanvasPng(" in body
+    # The clipboard holds one image, so several charts go as the sheet — copying
+    # them one at a time would keep only the last.
+    assert "_chartsSheetCanvas(" in body
+    assert "chart-copy-png" in js
+
+
+def test_the_clipboard_path_says_why_it_is_unavailable():
+    """Writing an image to the clipboard needs a secure context: localhost is
+    one, a plain-http tunnel is not. A button that silently does nothing there
+    reads as a broken button."""
+    body = _js_function_body(get_all_js(), "function _copyCanvasPng(",
+                             strip_comments=True)
+    assert "ClipboardItem" in body
+    assert "owlSay" in body
+
+
+def test_every_chart_export_control_is_wired():
+    """The toolbar is built as a string and the listeners are attached
+    afterwards — a control with no addEventListener is a button that does
+    nothing at all."""
+    body = _js_function_body(get_all_js(), "function initChartsTab(")
+    for cid in ("chart-download-png", "chart-download-sheet", "chart-copy-png"):
+        assert cid in body, f"{cid} is never wired up"
+
+
+# ── taking the code diff out of the page ─────────────────────────────────────
+
+def test_the_code_diff_can_be_copied_not_only_exported():
+    js = get_all_js()
+    assert "async function copyDiff(" in js
+    body = _js_function_body(js, "async function copyDiff(", strip_comments=True)
+    assert "export-diff" in body, "same payload as the export, not a second render"
+    assert "clipboard" in body
+
+
+def test_every_diff_export_button_has_a_copy_beside_it():
+    """Export and copy answer the same need at different distances; a panel
+    offering only the download makes pasting a two-step detour through the
+    filesystem."""
+    js = get_all_js()
+    assert js.count("exportDiff(") == js.count("copyDiff("), \
+        "every exportDiff( site should have a copyDiff( beside it"
+
+
+# ── opening an image must not move the page under it ─────────────────────────
+
+def test_a_compare_image_reserves_its_box_before_it_loads():
+    """`.multi-compare-image-cell img` had `width: 100%` and no height, so the
+    cell's height came entirely from the decoded image's aspect ratio: zero
+    before the load, and zero again whenever the browser drops the decode for an
+    offscreen image (which opening a full-size PNG in the modal is a good way to
+    provoke). Every other image grid in the dashboard already reserves its box —
+    `.img-thumb` and `.cmp-img-thumb` both carry `aspect-ratio` — and this one,
+    inside the scroller, was the outlier: when it collapses, `#main-content`
+    clamps its own scrollTop and the page jumps to the top."""
+    from exptrack.dashboard.static import DASHBOARD_CSS
+    block = DASHBOARD_CSS[DASHBOARD_CSS.index(".multi-compare-image-cell img {"):]
+    block = block[:block.index("}")]
+    assert "aspect-ratio" in block, "the cell must not size itself from the decode"
+    # A reserved box that crops would make the pairing grid lie about the plots.
+    assert "object-fit: contain" in block
+
+
+def test_opening_an_image_holds_the_page_scroll():
+    """Both image modals are fixed overlays appended to `document.body`, so
+    neither *should* move the scroller — but the grid they are opened from can
+    collapse under them, and the page position is the reader's place in a
+    comparison. Held explicitly, the same way the detail refresh does it."""
+    js = get_all_js()
+    assert "function _holdMainScroll(" in js
+    hold = _js_function_body(js, "function _holdMainScroll(", strip_comments=True)
+    assert "main-content" in hold and "scrollTop" in hold
+    for opener in ("function openImageModal(", "function openCompareModal("):
+        body = _js_function_body(js, opener, strip_comments=True)
+        assert "_holdMainScroll()" in body, f"{opener} does not hold the scroll"
+
+
+def test_every_way_of_closing_an_image_modal_is_the_same_way():
+    """The overlay closed by three routes — the backdrop, the × and Escape — and
+    two of them inlined `.remove()`, so the keydown listener leaked on both and
+    any restore-on-close would have had to be written three times (or, as
+    happened here, in none of them)."""
+    js = get_all_js()
+    assert "function closeImageModal(" in js
+    body = _js_function_body(js, "function closeImageModal(", strip_comments=True)
+    assert "removeEventListener" in body, "the Escape handler has to come off too"
+    opener = _js_function_body(js, "function openImageModal(", strip_comments=True)
+    assert opener.count(".remove()") == 0, "every close path goes through closeImageModal"
+
+
+# ── picking the two images to compare, in a run's Images tab ─────────────────
+
+def test_picking_an_image_to_compare_does_not_reload_the_gallery():
+    """Images tab → Compare → click an image. `selectImgCompare` called
+    `loadImages(expId)`, which re-requests `/api/images/<id>` and rewrites the
+    whole tab's innerHTML — for an A/B badge. The gallery is up to 200 thumbnails
+    tall, so emptying it collapses `#main-content` and the browser clamps the
+    scroll to 0: the click threw the reader to the top of the page, and the
+    thumbnail they were aiming at moved. Same failure as the Compare Within tab
+    (`_cwRepaintSelection`), same fix."""
+    js = get_all_js()
+    for fn in ("function selectImgCompare(", "function clearIntraCompare("):
+        body = _js_function_body(js, fn, strip_comments=True)
+        assert "loadImages(" not in body, f"{fn} must repaint, not reload"
+        assert "_imgCmpRepaint()" in body
+
+
+def test_the_image_compare_repaint_touches_only_the_selection():
+    """The badge, the selected class and the bar that names the two picks —
+    nothing else, and no request."""
+    body = _js_function_body(get_all_js(), "function _imgCmpRepaint(", strip_comments=True)
+    assert "img-cmp-badge" in body
+    assert "compare-sel" in body
+    assert "img-cmp-bar" in body
+    assert "api(" not in body, "a selection change is not a fetch"
+
+
+def test_the_gallery_cards_carry_their_source():
+    """A surgical repaint has to find the card for an image; matching on the
+    inline handler's text would tie the repaint to how the handler is spelled."""
+    js = get_all_js()
+    gallery = _js_function_body(js, "async function loadImages(")
+    assert "data-src=" in gallery
+
+
+def test_rebuilding_the_images_tab_holds_the_page_scroll():
+    """Entering compare mode and Refresh do legitimately rebuild the tab. That
+    still must not move the reader."""
+    body = _js_function_body(get_all_js(), "async function loadImages(", strip_comments=True)
+    assert "_holdMainScroll()" in body
+
+
+def test_the_scan_path_editor_fills_its_row():
+    """The editor sets `width: 100%` inline and borrows `.name-edit-input`, whose
+    shared rule caps it at 300px — a cap that exists for the experiments table,
+    where the input sits in a fixed-width column. In a scan-path row, which is as
+    wide as the panel, that left a third-width box inside a full-width bar, on
+    the one value most likely to be longer than the box: a path. `max-width`
+    beats an inline `width`, so it has to be lifted for these rows."""
+    from exptrack.dashboard.static import DASHBOARD_CSS
+    assert ".name-edit-input {" in DASHBOARD_CSS
+    assert "max-width: 300px" in DASHBOARD_CSS, "the table's cap is still wanted there"
+    block = DASHBOARD_CSS[DASHBOARD_CSS.index(".img-path-row .name-edit-input {"):]
+    assert "max-width: none" in block[:block.index("}")]
+
+
+
+def test_every_delete_confirm_asks_the_shared_question_separately():
+    """The delete dialog's two answers must stay two, in every caller.
+
+    A shared file is only taken when the *shared* box is ticked as well as the
+    files box, and each ``onPermanent`` has to forward that second answer to
+    the server. A caller that forwards only the first one silently reverts to
+    "one yes deletes another run's results".
+    """
+    js = get_all_js()
+    # Both modal renderers pass two answers, and the second is gated on the first.
+    gated = js.count("opts.onPermanent(cb && cb.checked, "
+                     "!!(cb && cb.checked && sh && sh.checked))")
+    assert gated == 2, f"expected both modal renderers to gate it, found {gated}"
+    # No caller may take the single-argument shape any more.
+    assert "opts.onPermanent(cb && cb.checked);" not in js
+    # Every permanent-delete POST forwards it.
+    posts = re.findall(r"delete_files: !!deleteFiles([^}]*)\}", js)
+    assert posts, "no permanent-delete POST bodies found"
+    for tail in posts:
+        assert "delete_shared_files" in tail, \
+            f"a permanent-delete POST omits delete_shared_files: {tail!r}"
+
+
+def test_the_shared_block_names_the_runs_and_escapes_them():
+    """The list is built from run names, which are user-controlled."""
+    js = get_all_js()
+    body = _js_function_body(js, "function _sharedFilesHtml(files)")
+    assert "esc(a.path" in body and "esc((h.id" in body
+    assert "modified after this run ended" in body
+
+
+def test_the_shared_choice_is_two_named_outcomes_with_the_safe_one_default():
+    """A tick-box makes the safe outcome "the thing you didn't do". The dialog
+    offers both outcomes by name instead, and the one that cannot destroy
+    another run's results is the one already selected."""
+    js = get_all_js()
+    body = _js_function_body(js, "function _sharedCheckboxHtml(count, bytes)")
+    assert "Unlink and delete this experiment" in body
+    assert "Delete both" in body
+    # The keep option is preselected, and the delete option is the id the
+    # button handler reads — so an untouched dialog can only keep.
+    assert 'value="keep" checked' in body
+    assert 'value="delete" ' in body and 'id="dc-shared-checkbox"' in body
+    assert body.index('value="keep" checked') < body.index('value="delete" ')
+
+
+def test_the_artifact_row_offers_unlink_and_says_what_else_holds_the_file():
+    js = get_all_js()
+    assert 'unlinkArtifact(' in js
+    # The action says what it does not do — the old wording ("del") read as a
+    # file delete, which is the one thing it never was.
+    unlink = _js_function_body(js, "async function unlinkArtifact(id, label, path)")
+    assert "not touched" in unlink
+    badge = _js_function_body(js, "function _artifactLinkBadge(a)")
+    assert "linked_by" in badge and "also in" in badge

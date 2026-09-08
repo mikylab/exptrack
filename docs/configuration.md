@@ -16,6 +16,9 @@ exptrack stores config in `.exptrack/config.json`. Safe to commit — no secrets
                                         // (notebook JSON churn would eat the diff budget)
   "hash_max_mb":           500,       // partial-hash files larger than this (speeds up large artifacts)
   "snapshot_max_kb":       512,       // size cap for the per-run script source snapshot
+  "snapshot_max_files":    50,        // most project-local modules a run snapshots alongside
+                                      // its script (0 = script only); each is stored once
+                                      // across runs, content-addressed
   "var_fingerprint_max_mb": 100,      // objects larger than this fall back to a shape/dtype
                                       // signature instead of a content hash (notebook capture)
   "code_change_max_chars": 20000,     // cap on the "what changed in the code" summary;
@@ -130,12 +133,21 @@ for i in range(1000):
 # metric_keep_every: 10  →  20 points stored
 ```
 
+**It is a divisor, not a budget.** `metric_keep_every: 1000` does not mean
+"keep 1,000 points" — it means "keep one point in every thousand I log", and
+there is no write-time setting that caps a series at a target count. The
+difference is large in practice: a loop that already logs every 5th step of a
+100,000-step run logs 20,000 points, and `metric_keep_every: 1000` stores 20 of
+them. If what you want is a readable chart rather than a smaller database, leave
+this at `1` — `metric_max_points` already downsamples for display.
+
 Points it drops are never written to the database, so thinning cannot be undone
 afterwards. If you aren't sure you want it, leave it at `1` and thin later with
 [`exptrack prune`](cli-reference.md), which works on what you already recorded
 and always keeps each series' first, last, minimum and maximum point. A run with
 thinning active prints a one-line notice to stderr the first time it drops a
-point.
+point, and states how many points it stored out of how many you logged when it
+finishes.
 
 `metric_max_points` is unrelated and non-destructive: it's how many points the
 dashboard *draws*, downsampled server-side from everything you stored.

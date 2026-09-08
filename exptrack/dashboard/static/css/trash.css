@@ -71,6 +71,34 @@
   .dc-button.danger:hover { filter: brightness(1.1); }
   .dc-button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+  /* Files the delete would keep back (another run uses them, or they were
+     written after this run ended). Amber, not red: this is the part of the
+     delete that is NOT happening unless the box below is ticked. */
+  .dc-shared-block {
+    margin-top: 10px; padding: 8px 10px; border-radius: 4px;
+    background: rgba(234, 179, 8, 0.08); border: 1px solid rgba(234, 179, 8, 0.3);
+    font-size: 12px; line-height: 1.45;
+  }
+  .dc-shared-head { font-weight: 600; margin-bottom: 4px; }
+  .dc-shared-item { padding: 3px 0; border-top: 1px solid var(--border); }
+  .dc-shared-item:first-of-type { border-top: none; }
+  .dc-shared-path {
+    font-family: var(--font-mono, monospace); word-break: break-all;
+  }
+  .dc-shared-why { color: var(--muted); }
+  .dc-shared-more { color: var(--muted); padding-top: 3px; }
+  .dc-shared-foot { color: var(--muted); margin-top: 6px; }
+  .dc-shared-choice { display: flex; flex-direction: column; gap: 6px; }
+  .dc-shared-opt {
+    display: flex; align-items: flex-start; gap: 8px; cursor: pointer;
+    font-size: 13px; user-select: none;
+  }
+  .dc-shared-opt input { margin-top: 3px; }
+  .dc-shared-opt-label { line-height: 1.4; }
+  .dc-shared-opt-label .dc-shared-opt-hint {
+    display: block; color: var(--muted); font-size: 11px;
+  }
+
   /* Bulk list inside the modal */
   .dc-bulk-list {
     max-height: 180px; overflow-y: auto; margin-top: 8px;

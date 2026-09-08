@@ -103,6 +103,19 @@ async function exportDiff(id) {
   owlSay('Exported diff as markdown');
 }
 
+// The same payload the export downloads, on the clipboard instead. A diff is
+// read somewhere else -- a lab notebook, an issue, a message -- and the file
+// the browser just saved is a detour through the filesystem to get it there.
+// Rendered server-side either way, so the two can never disagree about what the
+// run's code change was.
+async function copyDiff(id) {
+  const d = await postApi('/api/experiment/' + id + '/export-diff');
+  if (!d || d.error) { alert((d && d.error) || 'Could not read the diff.'); return; }
+  navigator.clipboard.writeText(d.markdown)
+    .then(() => owlSay('Copied the diff as markdown!'))
+    .catch(err => alert('Clipboard refused the text: ' + (err && err.message || err)));
+}
+
 async function bulkCompact() {
   const ids = [...selectedIds];
   if (!ids.length) { alert('Select experiments first (click checkboxes in the list).'); return; }
@@ -192,11 +205,22 @@ function startDetailNoteEdit(id, el) {
 }
 
 
-async function deleteArtifact(id, label, path) {
-  if (!confirm('Delete artifact "' + label + '"?')) return;
+// Detach a file from this run. The record goes; the file on disk does not —
+// which is the opposite of what the old "del" button's wording implied, and the
+// difference matters most in the case this exists for: a link that is wrong,
+// held by a run whose delete would then decide the file's fate.
+async function unlinkArtifact(id, label, path) {
+  if (!confirm('Unlink "' + label + '" from this run?\n\n' + path +
+               '\n\nThe record is removed. The file on disk is not touched ' +
+               '(use Delete on the run, or your file manager, for that).')) return;
   const d = await postApi('/api/experiment/' + id + '/delete-artifact', {label, path});
   if (d.ok) { refreshDetail(id); }
   else alert(d.error || 'Failed');
+}
+
+// Kept: other modules and older inline handlers call this name.
+async function deleteArtifact(id, label, path) {
+  return unlinkArtifact(id, label, path);
 }
 
 async function editArtifact(id, oldLabel, oldPath) {

@@ -147,6 +147,7 @@ function _switchDcTab(tab) {
   const trashBtn = document.getElementById('dc-btn-trash');
   const permBtn = document.getElementById('dc-btn-perm');
   const filesRow = document.getElementById('dc-files-row');
+  const sharedRow = document.getElementById('dc-shared-row');
   if (tab === 'perm') {
     trashPane.style.display = 'none';
     permPane.style.display = '';
@@ -155,6 +156,7 @@ function _switchDcTab(tab) {
     if (trashBtn) trashBtn.style.display = 'none';
     if (permBtn) permBtn.style.display = '';
     if (filesRow) filesRow.style.display = '';
+    if (sharedRow) sharedRow.style.display = '';
   } else {
     trashPane.style.display = '';
     permPane.style.display = 'none';
@@ -163,6 +165,7 @@ function _switchDcTab(tab) {
     if (trashBtn) trashBtn.style.display = '';
     if (permBtn) permBtn.style.display = 'none';
     if (filesRow) filesRow.style.display = 'none';
+    if (sharedRow) sharedRow.style.display = 'none';
   }
 }
 
@@ -202,7 +205,8 @@ function _openDeleteModalSingle(id, name, p) {
       '<div class="dc-scope-key">Artifacts</div>' +
         '<div class="dc-scope-val">' + p.artifacts_count +
           ' (' + p.artifacts_existing + ' file' + (p.artifacts_existing === 1 ? '' : 's') +
-          ' on disk, ' + _fmtBytes(p.artifact_bytes) + ')</div>' +
+          ' on disk, ' + _fmtBytes(p.artifact_bytes) +
+          _sharedKeptNote(p.artifacts_shared) + ')</div>' +
       _outputDirRow(p) +
       _linkedDirsRows(p) +
       '<div class="dc-scope-key">Notebook history</div>' +
@@ -215,15 +219,18 @@ function _openDeleteModalSingle(id, name, p) {
     title: 'Delete experiment',
     trashSummaryHtml: trashSummary,
     permScopeHtml: scopeHtml,
+    sharedHtml: _sharedFilesHtml(p.artifacts),
+    sharedCount: p.artifacts_shared || 0,
+    sharedBytes: p.shared_bytes || 0,
     onTrash: async () => {
       const r = await postApi('/api/experiment/' + encodeURIComponent(id) + '/delete');
       if (!r.ok) { alert(r.error || 'Failed'); return; }
       _closeDeleteModal();
       _afterMutation(id);
     },
-    onPermanent: async (deleteFiles) => {
+    onPermanent: async (deleteFiles, deleteShared) => {
       const r = await postApi('/api/experiment/' + encodeURIComponent(id) + '/delete-permanent',
-        { delete_files: !!deleteFiles });
+        { delete_files: !!deleteFiles, delete_shared_files: !!deleteShared });
       if (!r.ok) { alert(r.error || 'Failed'); return; }
       _closeDeleteModal();
       _afterMutation(id);
@@ -284,6 +291,9 @@ function _openDeleteModalBulk(ids, p) {
     title: 'Delete ' + ids.length + ' experiment' + (ids.length === 1 ? '' : 's'),
     trashSummaryHtml: trashSummary,
     permScopeHtml: scopeHtml,
+    sharedHtml: _sharedFilesHtml(_bulkSharedFiles(p.items)),
+    sharedCount: t.artifacts_shared || 0,
+    sharedBytes: t.shared_bytes || 0,
     onTrash: async () => {
       const r = await postApi('/api/bulk-delete', { ids });
       if (!r.ok) { alert(r.error || 'Failed'); return; }
@@ -291,9 +301,9 @@ function _openDeleteModalBulk(ids, p) {
       selectedIds.clear();
       _afterMutation('');
     },
-    onPermanent: async (deleteFiles) => {
+    onPermanent: async (deleteFiles, deleteShared) => {
       const r = await postApi('/api/bulk-delete-permanent',
-        { ids, delete_files: !!deleteFiles });
+        { ids, delete_files: !!deleteFiles, delete_shared_files: !!deleteShared });
       if (!r.ok) { alert(r.error || 'Failed'); return; }
       _closeDeleteModal();
       selectedIds.clear();
@@ -327,6 +337,7 @@ function _renderDeleteModal(opts) {
         '</div>' +
         '<div id="dc-pane-perm" style="display:none">' +
           opts.permScopeHtml +
+          (opts.sharedHtml || '') +
           '<div class="dc-warning"><b>Permanent delete:</b> removes the database record for the experiment (metrics, params, artifact entries, timeline events). This cannot be undone. Files on disk are preserved unless the checkbox below is checked — in which case they go to your system Trash, not <code>rm -rf</code>.</div>' +
         '</div>' +
       '</div>' +
@@ -338,6 +349,7 @@ function _renderDeleteModal(opts) {
               '<span class="dc-files-checkbox-hint">artifact files and the output directory go to your OS Trash (recoverable in Finder/Files), with a <code>.exptrack/trash/</code> fallback if the OS call fails</span>' +
             '</span>' +
           '</label>' +
+          _sharedCheckboxHtml(opts.sharedCount, opts.sharedBytes) +
         '</div>' +
         '<div class="dc-footer-right">' +
           '<button class="dc-button" onclick="_closeDeleteModal()">Cancel</button>' +
@@ -352,7 +364,10 @@ function _renderDeleteModal(opts) {
   document.getElementById('dc-btn-trash').addEventListener('click', () => opts.onTrash());
   document.getElementById('dc-btn-perm').addEventListener('click', () => {
     const cb = document.getElementById('dc-files-checkbox');
-    opts.onPermanent(cb && cb.checked);
+    const sh = document.getElementById('dc-shared-checkbox');
+    // A shared file is taken only when *both* are ticked: "delete this run's
+    // files" and "yes, including the ones another run still needs".
+    opts.onPermanent(cb && cb.checked, !!(cb && cb.checked && sh && sh.checked));
   });
 }
 
@@ -784,9 +799,12 @@ async function trashPermanent(id, name) {
         '<span class="dc-subject-id">' + esc(id.slice(0, 8)) + '</span>' +
       '</div>' +
       _scopeGridHtml(preview),
-    onPermanent: async (deleteFiles) => {
+    sharedHtml: _sharedFilesHtml(preview.artifacts),
+    sharedCount: preview.artifacts_shared || 0,
+    sharedBytes: preview.shared_bytes || 0,
+    onPermanent: async (deleteFiles, deleteShared) => {
       const r = await postApi('/api/experiment/' + encodeURIComponent(id) + '/delete-permanent',
-        { delete_files: !!deleteFiles });
+        { delete_files: !!deleteFiles, delete_shared_files: !!deleteShared });
       if (!r.ok) { alert(r.error || 'Failed'); return; }
       _closeDeleteModal();
       _trashSelected.delete(id);
@@ -820,8 +838,12 @@ async function trashBulkPermanent() {
   _renderPermanentOnlyModal({
     title: 'Permanently delete ' + ids.length + ' experiment' + (ids.length === 1 ? '' : 's'),
     scopeHtml: _scopeGridHtmlBulk(t) + '<div class="dc-bulk-list" style="margin-top:8px">' + itemRows + moreNote + '</div>',
-    onPermanent: async (deleteFiles) => {
-      const r = await postApi('/api/bulk-delete-permanent', { ids, delete_files: !!deleteFiles });
+    sharedHtml: _sharedFilesHtml(_bulkSharedFiles(items)),
+    sharedCount: t.artifacts_shared || 0,
+    sharedBytes: t.shared_bytes || 0,
+    onPermanent: async (deleteFiles, deleteShared) => {
+      const r = await postApi('/api/bulk-delete-permanent',
+        { ids, delete_files: !!deleteFiles, delete_shared_files: !!deleteShared });
       if (!r.ok) { alert(r.error || 'Failed'); return; }
       _closeDeleteModal();
       _trashSelected.clear();
@@ -833,12 +855,87 @@ async function trashBulkPermanent() {
   });
 }
 
+// Files listed for this run that another run also references, so the delete
+// keeps them. Said in the confirm because otherwise the figures beside it look
+// wrong: a run with three artifacts reporting "0 files on disk" reads as a
+// broken preview rather than as three files being spared.
+function _sharedKeptNote(n) {
+  if (!n) return '';
+  return ', ' + n + ' kept for another run';
+}
+
+// The files this delete is *not* entitled to on its own: another run's artifact
+// row points at them, or their bytes were written after this run ended (the
+// same situation with the second row missing — runs recorded before the claim
+// rule never got one). Listed by name with whoever holds them, because "1 kept
+// for another run" gives a count and not what insisting would cost.
+function _sharedFilesHtml(files) {
+  const list = (files || []).filter(a => a && a.shared);
+  if (!list.length) return '';
+  const rows = list.slice(0, 20).map(a => {
+    const holders = a.shared_with || [];
+    const why = holders.length
+      ? 'also used by ' + holders.slice(0, 3).map(h =>
+          esc((h.id || '').slice(0, 6) + (h.name ? ' ' + h.name : ''))).join(', ')
+      : 'modified after this run ended, so it is probably a later run&#39;s output';
+    return '<div class="dc-shared-item">' +
+      '<div class="dc-shared-path">' + esc(a.path || '') + '</div>' +
+      '<div class="dc-shared-why">' + why +
+        (a.size_bytes ? ' \u00b7 ' + _fmtBytes(a.size_bytes) : '') + '</div>' +
+    '</div>';
+  }).join('');
+  const more = list.length > 20
+    ? '<div class="dc-shared-more">\u2026 ' + (list.length - 20) + ' more</div>' : '';
+  return '<div class="dc-shared-block">' +
+    '<div class="dc-shared-head">\u26a0 Another run is linked to ' +
+      (list.length === 1 ? 'this file' : 'these ' + list.length + ' files') +
+      '</div>' +
+    rows + more +
+    '<div class="dc-shared-foot">Choose below whether to unlink them or delete ' +
+      'them too. This run&#39;s own records are deleted either way.</div>' +
+  '</div>';
+}
+
+// Two named outcomes rather than a box to tick: the safe one is not "the box
+// you left alone", it is a thing you can read and choose. Unlink-and-delete is
+// preselected because it is the only one that cannot destroy a result the user
+// still has a run for.
+function _sharedCheckboxHtml(count, bytes) {
+  if (!count) return '';
+  const one = count === 1;
+  const files = one ? 'the file' : 'the ' + count + ' files';
+  const others = one ? 'the other run' : 'the other runs';
+  const keepHint = files + (one ? ' stays' : ' stay') + ' on disk for ' + others +
+    '; this run\u2019s records go';
+  const delHint = (bytes ? _fmtBytes(bytes) + ' \u2014 ' : '') + others +
+    (one ? ' keeps its records but loses the file it points at'
+         : ' keep their records but lose the files they point at') +
+    '; still your system Trash, not <code>rm -rf</code>';
+  return '<div class="dc-shared-choice" id="dc-shared-row" style="display:none">' +
+    '<label class="dc-shared-opt">' +
+      '<input type="radio" name="dc-shared-mode" value="keep" checked ' +
+        'id="dc-shared-keep">' +
+      '<span class="dc-shared-opt-label">Unlink and delete this experiment' +
+        '<span class="dc-shared-opt-hint">' + keepHint + '</span>' +
+      '</span>' +
+    '</label>' +
+    '<label class="dc-shared-opt">' +
+      '<input type="radio" name="dc-shared-mode" value="delete" ' +
+        'id="dc-shared-checkbox">' +
+      '<span class="dc-shared-opt-label">Delete both' +
+        '<span class="dc-shared-opt-hint">' + delHint + '</span>' +
+      '</span>' +
+    '</label>' +
+  '</div>';
+}
+
 function _scopeGridHtml(p) {
   return '<div class="dc-scope-grid">' +
       '<div class="dc-scope-key">Metrics</div><div class="dc-scope-val">' + p.metrics_count + '</div>' +
       '<div class="dc-scope-key">Params</div><div class="dc-scope-val">' + p.params_count + '</div>' +
       '<div class="dc-scope-key">Artifacts</div><div class="dc-scope-val">' + p.artifacts_count +
-        ' (' + p.artifacts_existing + ' on disk, ' + _fmtBytes(p.artifact_bytes) + ')</div>' +
+        ' (' + p.artifacts_existing + ' on disk, ' + _fmtBytes(p.artifact_bytes) +
+        _sharedKeptNote(p.artifacts_shared) + ')</div>' +
       _outputDirRow(p) +
       _linkedDirsRows(p) +
       '<div class="dc-scope-key">Notebook history</div><div class="dc-scope-val">' +
@@ -848,13 +945,31 @@ function _scopeGridHtml(p) {
                   p.dir_stat_max_files);
 }
 
+// One flat list of every shared file in a batch. The batch preview reports each
+// run's own kept-back files; the dialog asks one question for the whole batch,
+// so it has to show what all of them add up to.
+function _bulkSharedFiles(items) {
+  const out = [];
+  const seen = new Set();
+  (items || []).forEach(it => {
+    (it.shared_files || []).forEach(a => {
+      const key = a && a.path;
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(a);
+    });
+  });
+  return out;
+}
+
 function _scopeGridHtmlBulk(t) {
   return '<div class="dc-scope-grid">' +
       '<div class="dc-scope-key">Experiments</div><div class="dc-scope-val">' + (t.experiments || 0) + '</div>' +
       '<div class="dc-scope-key">Metrics</div><div class="dc-scope-val">' + (t.metrics || 0) + '</div>' +
       '<div class="dc-scope-key">Params</div><div class="dc-scope-val">' + (t.params || 0) + '</div>' +
       '<div class="dc-scope-key">Artifacts</div><div class="dc-scope-val">' + (t.artifacts || 0) +
-        ' (' + (t.artifacts_existing || 0) + ' on disk, ' + _fmtBytes(t.artifact_bytes || 0) + ')</div>' +
+        ' (' + (t.artifacts_existing || 0) + ' on disk, ' + _fmtBytes(t.artifact_bytes || 0) +
+        _sharedKeptNote(t.artifacts_shared) + ')</div>' +
       '<div class="dc-scope-key">Output dirs</div><div class="dc-scope-val">' + (t.output_dirs_existing || 0) +
         ' (' + _dirFigures(t.output_dir_files || 0, t.output_dir_bytes || 0,
                              t.dir_sizes_truncated) + ')</div>' +
@@ -877,6 +992,7 @@ function _renderPermanentOnlyModal(opts) {
       '</div>' +
       '<div class="dc-body">' +
         opts.scopeHtml +
+        (opts.sharedHtml || '') +
         '<div class="dc-warning"><b>Permanent delete:</b> removes the DB record (cannot be undone). Files on disk are preserved unless the checkbox below is checked — in which case they go to your system Trash, not <code>rm -rf</code>.</div>' +
       '</div>' +
       '<div class="dc-footer">' +
@@ -887,6 +1003,8 @@ function _renderPermanentOnlyModal(opts) {
               '<span class="dc-files-checkbox-hint">artifact files and the output directory go to your OS Trash (recoverable in Finder/Files), with a <code>.exptrack/trash/</code> fallback if the OS call fails</span>' +
             '</span>' +
           '</label>' +
+          _sharedCheckboxHtml(opts.sharedCount, opts.sharedBytes).replace(
+            'style="display:none"', '') +
         '</div>' +
         '<div class="dc-footer-right">' +
           '<button class="dc-button" onclick="_closeDeleteModal()">Cancel</button>' +
@@ -898,7 +1016,8 @@ function _renderPermanentOnlyModal(opts) {
   document.addEventListener('keydown', _deleteModalEsc);
   document.getElementById('dc-btn-perm-only').addEventListener('click', () => {
     const cb = document.getElementById('dc-files-checkbox');
-    opts.onPermanent(cb && cb.checked);
+    const sh = document.getElementById('dc-shared-checkbox');
+    opts.onPermanent(cb && cb.checked, !!(cb && cb.checked && sh && sh.checked));
   });
 }
 

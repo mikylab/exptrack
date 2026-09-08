@@ -82,6 +82,7 @@ from .pipeline_cmds import (
     cmd_run_fail,
     cmd_run_finish,
     cmd_run_start,
+    cmd_unlink_artifact,
 )
 from .session_cmds import cmd_session, cmd_sessions
 
@@ -405,6 +406,16 @@ def _build_parser():
     p_rm.add_argument("--trash", action="store_true",
                       help="Move to the Trash instead of deleting permanently "
                            "(recoverable with `exptrack restore-run`)")
+    p_rm.add_argument("--shared-files", choices=("keep", "delete"), default=None,
+                      help="What to do with files another run also uses (or that "
+                           "were written after this run ended): keep them (the "
+                           "default) or delete them too. Interactive runs are "
+                           "asked; scripts must say which they mean")
+    p_unlink = sub.add_parser("unlink-artifact",
+        help="Detach a file from a run (removes the record, never the file)")
+    p_unlink.add_argument("id", help="Experiment ID")
+    p_unlink.add_argument("path", nargs="+", help="Artifact path(s) to detach")
+
     p_trash = sub.add_parser("trash", help="List runs in the Trash (recoverable deletes)")
     del p_trash
 
@@ -659,6 +670,7 @@ _DISPATCH = {
     "run-fail":     cmd_run_fail,
     "log-metric":   cmd_log_metric,
     "log-artifact": cmd_log_artifact,
+    "unlink-artifact": cmd_unlink_artifact,
     "log-output":   cmd_log_output,
     "link-dir":     cmd_link_dir,
     "log-result":   cmd_log_result,

@@ -349,6 +349,25 @@ function _diffFileIsScript(label, script) {
   return s === f || s.endsWith('/' + f);
 }
 
+// Is this diff's file part of the code the run executed — the entry script, or
+// one of the project-local modules it imported (`code_files` on the detail
+// payload, written by the run's own snapshot capture)?
+//
+// Without the second half, a project laid out as `main.py` calling `script.py`
+// filed the edit to `script.py` under "Other files in the working tree",
+// beneath a headline stating the run's script matched the commit. The tree
+// wasn't dirty elsewhere: that file *is* the run's code, and it was the whole
+// reason the run differed from the previous one.
+function _diffFileIsRunCode(label, script, codeFiles) {
+  if (_diffFileIsScript(label, script)) return true;
+  if (!label || !codeFiles || !codeFiles.length) return false;
+  const f = String(label).split(' → ').pop().trim().replace(/\\/g, '/');
+  return codeFiles.some(c => {
+    const p = String(c).replace(/\\/g, '/');
+    return p === f || f.endsWith('/' + p) || p.endsWith('/' + f);
+  });
+}
+
 // Split a raw git diff into the run's own script and everything else, each
 // rendered as labelled per-file groups.
 //
@@ -369,18 +388,22 @@ function _diffFileIsScript(label, script) {
 // metrics are. One entry is the right size: the panel renders one run's diff at
 // a time, and the body is already bounded by `max_git_diff_kb`.
 let _sdbsKey = null, _sdbsVal = null;
-function _splitDiffByScript(diffText, script) {
+function _splitDiffByScript(diffText, script, codeFiles) {
   // Escaped, not a literal NUL byte: a raw NUL makes grep and ripgrep treat
   // this file as binary and stop reading it mid-file, so any future
   // grep-based integrity check silently skips everything below here.
   const key = String(script) + '\u0000' + String(diffText);
-  if (key === _sdbsKey) return _sdbsVal;
-  const out = _splitDiffByScriptUncached(diffText, script);
-  _sdbsKey = key; _sdbsVal = out;
+  // The run's imported modules are part of the key: the same diff splits
+  // differently once they are known, so keying on the diff and script alone
+  // would serve a cached pre-payload split to a payload that has them.
+  const ckey = key + (codeFiles || []).join(',');
+  if (ckey === _sdbsKey) return _sdbsVal;
+  const out = _splitDiffByScriptUncached(diffText, script, codeFiles);
+  _sdbsKey = ckey; _sdbsVal = out;
   return out;
 }
 
-function _splitDiffByScriptUncached(diffText, script) {
+function _splitDiffByScriptUncached(diffText, script, codeFiles) {
   const parsed = _parseDiff(String(diffText));
   const files = parsed.files.filter(f => f.hunks.length);
   if (!files.length) {
@@ -392,8 +415,10 @@ function _splitDiffByScriptUncached(diffText, script) {
   const groups = { script: [], other: [] };
   for (const f of files) {
     const label = _shortFileLabel(f.header);
-    const isScript = _diffFileIsScript(label, script);
-    groups[isScript ? 'script' : 'other'].push(_diffFileHtml(f, label, isScript));
+    const isEntry = _diffFileIsScript(label, script);
+    const isRunCode = isEntry || _diffFileIsRunCode(label, script, codeFiles);
+    groups[isRunCode ? 'script' : 'other'].push(
+      _diffFileHtml(f, label, isRunCode, isEntry));
   }
   return {
     scriptHtml: groups.script.join(''), otherHtml: groups.other.join(''),
@@ -402,7 +427,7 @@ function _splitDiffByScriptUncached(diffText, script) {
   };
 }
 
-function _diffFileHtml(f, label, isScript) {
+function _diffFileHtml(f, label, isScript, isEntry) {
   const rows = [];
   for (const h of f.hunks) {
     rows.push({ kind: 'hunk', text: h.header });
@@ -410,8 +435,14 @@ function _diffFileHtml(f, label, isScript) {
   }
   const stats = '<span class="dfile-stat dfile-plus">+' + f.plus + '</span>'
     + '<span class="dfile-stat dfile-minus">−' + f.minus + '</span>';
+  // Both tags say "this is code the run ran"; they differ only in how the run
+  // reached the file, which is the one thing the reader cannot infer from the
+  // path. `isEntry` is undefined for callers that don't distinguish them, and
+  // those are all entry-script callers, so only an explicit false switches.
   const tag = isScript
-    ? '<span class="dfile-tag" title="The script this run executed">this run\'s script</span>'
+    ? (isEntry === false
+        ? '<span class="dfile-tag" title="A project module this run imported">imported by this run</span>'
+        : '<span class="dfile-tag" title="The script this run executed">this run\'s script</span>')
     : '';
   return '<div class="dfile' + (isScript ? ' dfile-primary' : '') + '">'
     + '<div class="dfile-head"><code class="dfile-name">' + esc(label) + '</code>'

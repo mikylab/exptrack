@@ -1110,7 +1110,8 @@ def register_artifact(conn: sqlite3.Connection, exp_id: str, path,
 
 def delete_experiment(conn: sqlite3.Connection, exp_id: str,
                       delete_files: bool = True,
-                      reclaim_blobs: bool = True) -> dict:
+                      reclaim_blobs: bool = True,
+                      delete_shared_files: bool = False) -> dict:
     """Delete an experiment and all related DB records.
 
     If *delete_files* is True, also sends artifact files, the experiment's
@@ -1126,6 +1127,12 @@ def delete_experiment(conn: sqlite3.Connection, exp_id: str,
     source and working-tree diff readable in the database. Both survive a *soft*
     delete (the trashed row still holds the reference, so Restore is lossless).
 
+    A file another run also references, or one whose bytes were written after
+    this run ended, is **kept** unless *delete_shared_files* is true: removing a
+    run's records must not be able to remove a different run's results as a side
+    effect. ``get_delete_preview`` reports exactly those files, with the runs
+    holding them, so the question can be asked before the answer is needed.
+
     Pass ``reclaim_blobs=False`` when deleting in a loop and call
     :func:`_sweep_blobs` once afterwards — each reclaim scans every
     ``_code_snapshot`` param plus experiments ∪ session_nodes, so doing it
@@ -1133,7 +1140,8 @@ def delete_experiment(conn: sqlite3.Connection, exp_id: str,
     """
     file_stats: dict = {}
     if delete_files:
-        file_stats = _delete_experiment_files(conn, exp_id)
+        file_stats = _delete_experiment_files(
+            conn, exp_id, delete_shared=delete_shared_files)
     for table in ("metrics", "params", "artifacts", "timeline"):
         conn.execute(f"DELETE FROM {table} WHERE exp_id=?", (exp_id,))
     conn.execute("DELETE FROM experiments WHERE id=?", (exp_id,))
@@ -1587,6 +1595,162 @@ def output_dirs_owned_by(conn: sqlite3.Connection, exp_id: str,
 DIR_ARTIFACT_PREFIX = "[dir] "
 
 
+def runs_in_flight_since(conn: sqlite3.Connection, start_ts: float,
+                         exclude_id: str | None = None) -> set[str]:
+    """Ids of runs that could still have been writing files at *start_ts* or after.
+
+    The finish-time output scan refuses to log a file another run's artifact row
+    already points at, because the mtime window is not ownership — two runs in
+    flight at once would otherwise sweep each other's checkpoints. But a run
+    that *ended before this one began* cannot be writing anything: rerunning a
+    script that saves a fixed path (`files/plot.png`) left the second run with
+    no row for the file it had just written, so the only row for a live file
+    belonged to the run whose output it had replaced — and permanently deleting
+    that run trashed the file the survivor was still using.
+
+    "In flight" is therefore: still ``running``, or last updated at/after
+    *start_ts* (the run overlapped our window). ``updated_at`` is a naive local
+    ISO timestamp and *start_ts* is ``time.time()``; a row whose timestamp will
+    not parse counts as in flight, because the safe answer is to leave the other
+    run's file alone.
+    """
+    in_flight: set[str] = set()
+    sql = "SELECT id, status, updated_at FROM experiments"
+    params: tuple = ()
+    if exclude_id is not None:
+        sql += " WHERE id != ?"
+        params = (exclude_id,)
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except sqlite3.Error:
+        return in_flight
+    for r in rows:
+        if (r["status"] or "running") == "running":
+            in_flight.add(r["id"])
+            continue
+        try:
+            ended = datetime.fromisoformat(r["updated_at"])
+        except Exception:
+            in_flight.add(r["id"])
+            continue
+        # Rows written before the timestamps carried an offset are naive **UTC**,
+        # not local: read as local they land hours in the future, which would
+        # make every one of them look like it was still writing.
+        if ended.tzinfo is None:
+            ended = ended.replace(tzinfo=timezone.utc)
+        if ended.timestamp() >= start_ts:
+            in_flight.add(r["id"])
+    return in_flight
+
+
+def artifact_claims_by_others(conn: sqlite3.Connection,
+                              exp_id: str) -> dict[str, list[dict]]:
+    """Normalized artifact path -> the other runs that point at it.
+
+    The same question ``artifact_paths_claimed_by_others`` answers, plus *whose*
+    claim it is. A delete that keeps a file has to be able to say which run it
+    kept it for, and one that removes it anyway has to be able to name the runs
+    whose recorded output it is about to invalidate — "some other run" is not a
+    thing a user can act on.
+    """
+    claims: dict[str, list[dict]] = {}
+    try:
+        rows = conn.execute(
+            "SELECT a.path AS path, a.exp_id AS exp_id, e.name AS name "
+            "FROM artifacts a LEFT JOIN experiments e ON e.id = a.exp_id "
+            "WHERE a.exp_id != ? AND a.path IS NOT NULL AND a.path != ''",
+            (exp_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        return claims
+    for r in rows:
+        norm = _norm_path(r["path"])
+        holders = claims.setdefault(norm, [])
+        if not any(h["id"] == r["exp_id"] for h in holders):
+            holders.append({"id": r["exp_id"], "name": r["name"] or ""})
+    return claims
+
+
+def run_end_ts(conn: sqlite3.Connection, exp_id: str) -> float | None:
+    """When a run last wrote anything, as an epoch float (None if unknowable).
+
+    Used to tell a file this run produced from one a *later* run overwrote. Runs
+    recorded before the file-claim rule existed have no second artifact row to
+    give the answer, so the file's own mtime against this is the only evidence
+    left that the bytes on disk are somebody else's.
+    """
+    try:
+        row = conn.execute(
+            "SELECT status, updated_at FROM experiments WHERE id=?", (exp_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or not row["updated_at"]:
+        return None
+    if (row["status"] or "running") == "running":
+        return None          # still going: nothing it writes is out of date
+    try:
+        ended = datetime.fromisoformat(row["updated_at"])
+    except Exception:
+        return None
+    if ended.tzinfo is None:
+        ended = ended.replace(tzinfo=timezone.utc)
+    return ended.timestamp()
+
+
+# A file's mtime has to be this far past the run's end before the file counts as
+# somebody else's work. Clock skew between the DB timestamp and the filesystem,
+# and a last flush racing the finish write, are both worth a few seconds.
+_STALE_CONTENT_SLACK_S = 30.0
+
+
+def file_modified_after_run(path: str | Path, end_ts: float | None) -> float | None:
+    """The file's mtime if it was written *after* the run ended, else None.
+
+    "This run recorded the path" and "the bytes there are still this run's" are
+    different claims, and the delete used to treat them as one.
+    """
+    if end_ts is None:
+        return None
+    try:
+        mtime = Path(path).stat().st_mtime
+    except OSError:
+        return None
+    return mtime if mtime > end_ts + _STALE_CONTENT_SLACK_S else None
+
+
+def artifact_paths_claimed_by_others(conn: sqlite3.Connection,
+                                    exp_id: str) -> set[str]:
+    """Normalized artifact paths that some run other than *exp_id* points at.
+
+    Artifacts are tracked by reference, never copied, so two runs writing to the
+    same path — a `logs/<date>/` folder, a fixed `results.json`, a rerun after
+    clearing the directory out — each hold a row for the same file. The delete's
+    per-file loop had no claim rule, so removing the first run trashed the file
+    the second one had just written; the survivor's outputs were gone and its
+    artifact row pointed at nothing.
+
+    "No other run may claim it" is the same rule ``output_dirs_owned_by`` and
+    ``linked_dirs_owned_by`` already apply to directories — this is the file-level
+    half, which was missing. Trashed runs count, exactly as in
+    ``claimed_output_paths``: Restore has to stay lossless.
+
+    Comparison is lexical (``_norm_path``), consistent with the directory rules,
+    so the two can never disagree about the same path.
+    """
+    claimed: set[str] = set()
+    try:
+        rows = conn.execute(
+            "SELECT path FROM artifacts WHERE exp_id != ?", (exp_id,)
+        ).fetchall()
+    except sqlite3.Error:
+        return claimed
+    for r in rows:
+        if r["path"]:
+            claimed.add(_norm_path(r["path"]))
+    return claimed
+
+
 def linked_dirs_owned_by(conn: sqlite3.Connection, exp_id: str) -> list[Path]:
     """Directories linked to a run (`[dir] …` artifacts) a delete may remove.
 
@@ -1660,13 +1824,25 @@ def linked_dirs_owned_by(conn: sqlite3.Connection, exp_id: str) -> list[Path]:
     return owned
 
 
-def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str) -> dict:
+def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str,
+                             delete_shared: bool = False) -> dict:
     """Move artifact files, output directory, and notebook history snapshots
     to the OS Trash (with a local ``.exptrack/trash/`` fallback).
 
-    Returns counts: ``{"os_trash": N, "local_trash": N, "failed": N, "missing": N}``.
+    Two kinds of file are held back by default and only removed when
+    *delete_shared* is true — the caller having asked and been answered:
+
+    * one another run's artifact row still points at, and
+    * one whose bytes were written *after* this run ended, which is the same
+      situation with the second row missing (runs recorded before the claim
+      rule existed have no row for a path they overwrote).
+
+    Returns counts: ``{"os_trash": N, "local_trash": N, "failed": N,
+    "missing": N, "kept_shared": N}`` — ``kept_shared`` is what was left in
+    place, so no caller has to infer a skip from a total that didn't move.
     """
-    stats = {"os_trash": 0, "local_trash": 0, "failed": 0, "missing": 0}
+    stats = {"os_trash": 0, "local_trash": 0, "failed": 0, "missing": 0,
+             "kept_shared": 0}
 
     def _bump(result: str):
         stats[result] = stats.get(result, 0) + 1
@@ -1700,6 +1876,11 @@ def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str) -> dict:
     rows = conn.execute(
         "SELECT path FROM artifacts WHERE exp_id=?", (exp_id,)
     ).fetchall()
+    # A file another run still points at is not this delete's to remove unless
+    # the caller says so — the same rule the two directory helpers above apply.
+    # See artifact_claims_by_others.
+    claims = artifact_claims_by_others(conn, exp_id)
+    end_ts = run_end_ts(conn, exp_id)
     for r in rows:
         p = r["path"]
         if not p:
@@ -1707,6 +1888,20 @@ def _delete_experiment_files(conn: sqlite3.Connection, exp_id: str) -> dict:
         try:
             fp = Path(p)
             if not fp.is_file():
+                continue
+            holders = claims.get(_norm_path(fp)) or []
+            newer = None if holders else file_modified_after_run(fp, end_ts)
+            if (holders or newer) and not delete_shared:
+                stats["kept_shared"] += 1
+                if holders:
+                    who = ", ".join(f"{h['id'][:6]} {h['name']}".strip()
+                                    for h in holders[:3])
+                    print(f"[exptrack] note: leaving {p} in place — also used "
+                          f"by {who}", file=sys.stderr)
+                else:
+                    print(f"[exptrack] note: leaving {p} in place — it was "
+                          f"modified after this run ended, so the file is "
+                          f"probably a later run's output", file=sys.stderr)
                 continue
             rp = str(fp.resolve())
             if path_within_any(rp, handled_dirs):
@@ -1811,26 +2006,58 @@ def get_delete_preview(conn: sqlite3.Connection, exp_id: str,
     artifacts: list[dict] = []
     artifact_bytes = 0
     artifact_files_exist = 0
+    artifacts_shared = 0
+    # Same claim rule the delete applies, so the dialog never counts or sizes a
+    # file the delete leaves in place (see artifact_paths_claimed_by_others).
+    # Both halves matter: a preview that overstates the loss makes an ordinary
+    # rerun look destructive, and one that understates it is worse.
+    claims = artifact_claims_by_others(conn, exp_id)
+    end_ts = run_end_ts(conn, exp_id)
+    shared_bytes = 0
     for r in art_rows:
         p = r["path"] or ""
         exists = False
+        shared = False
+        holders: list[dict] = []
+        modified_after = None
         size = r["size_bytes"] or 0
         if p:
+            holders = claims.get(_norm_path(p)) or []
             try:
                 fp = Path(p)
                 if fp.is_file():
-                    exists = True
-                    artifact_files_exist += 1
+                    if not holders:
+                        # No second row, but the bytes are newer than the run:
+                        # a later run overwrote the file and (before the claim
+                        # rule) never recorded it. Treated as shared, because
+                        # what is on disk is not this run's output any more.
+                        modified_after = file_modified_after_run(fp, end_ts)
+                    shared = bool(holders or modified_after)
+                    exists = not shared
                     if not size:
                         size = fp.stat().st_size
+                    if shared:
+                        artifacts_shared += 1
+                        shared_bytes += size
+                    else:
+                        artifact_files_exist += 1
             except Exception:
                 pass
-        artifact_bytes += size
+        if not shared:
+            artifact_bytes += size
         artifacts.append({
             "label": r["label"] or "",
             "path": p,
             "size_bytes": size,
             "exists": exists,
+            # Another run points at this file (or wrote it after this run
+            # ended), so the delete keeps it unless it is told otherwise. The
+            # row stays listed: "this run recorded it" is still true, and a
+            # silently shortened list reads as though the run never wrote it.
+            "shared": shared,
+            "shared_with": holders,
+            "modified_after_run": modified_after,
+            "run_ended_ts": end_ts if modified_after else None,
         })
 
     output_dir = exp["output_dir"] or ""
@@ -1899,6 +2126,15 @@ def get_delete_preview(conn: sqlite3.Connection, exp_id: str,
         "artifacts_existing": artifact_files_exist,
         "artifacts": artifacts,
         "artifact_bytes": artifact_bytes,
+        # Files on disk that another run also references, so this delete keeps
+        # them. Counted separately from `artifacts_existing` because the confirm
+        # has to be able to say "3 files, 1 kept for another run" — a bare
+        # count that quietly excluded them would not match the list below it.
+        "artifacts_shared": artifacts_shared,
+        # What saying yes to "delete the shared files too" would additionally
+        # free, so the choice can state its own cost instead of the caller
+        # guessing it from the per-row list.
+        "shared_bytes": shared_bytes,
         "output_dir": output_dir,
         "output_dir_exists": output_dir_exists,
         "output_dir_files": output_dir_files,

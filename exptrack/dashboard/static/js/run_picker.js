@@ -23,12 +23,22 @@
 const RP_MAX_ROWS = 300;
 // Params shown per row before the rest are folded into a "+N" chip.
 const RP_MAX_CHIPS = 6;
+// Facet chips: how many values a group offers before the rest are folded, and
+// how many parameter groups appear. Both bounds are about the height of the bar
+// -- a filter strip taller than the list it filters is not a shortcut.
+const RP_FACET_MAX_VALUES = 8;
+const RP_FACET_MAX_GROUPS = 6;
 
 let _rpSelected = new Set();
 let _rpMode = 'multi';
 let _rpOnConfirm = null;
 let _rpConfirmLabel = 'Use selection';
 let _rpQuery = '';
+// Facet selections: {groupKey: Set(values)}. Values inside one group are an OR
+// (status failed *or* running), groups are an AND (and script=train.py) -- the
+// reading every faceted list uses, and the only one that can narrow to a
+// non-empty set.
+let _rpFacetSel = {};
 
 // `opts`: {title, mode: 'multi'|'single', preselect, confirmLabel, onConfirm(ids)}.
 // The picks are handed to `onConfirm` as an argument and never written to a
@@ -42,6 +52,7 @@ async function openRunPicker(opts) {
   _rpOnConfirm = o.onConfirm || null;
   _rpConfirmLabel = o.confirmLabel || 'Use selection';
   _rpQuery = '';
+  _rpFacetSel = {};
   _rpMount(o.title || 'Choose runs');
   // Painted before the fetch resolves so the dialog never opens as a blank
   // rectangle; the row list says it is loading until the cache is warm.
@@ -66,6 +77,7 @@ function _rpMount(title) {
           'placeholder="Search name, id, param (lr=0.01), status, script, tag, date">' +
         '<span class="rp-count" id="rp-count"></span>' +
       '</div>' +
+      '<div class="rp-facetbar" id="rp-facets"></div>' +
       '<div class="dc-body rp-body" id="rp-rows"></div>' +
       '<div class="dc-footer">' +
         '<div class="dc-footer-left" id="rp-bulk"></div>' +
@@ -107,14 +119,167 @@ const onRunPickerSearch = debounce(function () {
 // nothing at all. A search box that cannot narrow is worse than no search box,
 // because it looks like it worked. Picks the query hides are reported in the
 // footer instead, and Clear is always one press away.
-function _rpFiltered() {
+//
+// Split into text and facets: the chips' counts are computed over the rows the
+// query alone leaves, so what a chip would leave depends on what is typed.
+// The rows the text box alone leaves.
+function _rpTextRows() {
   if (!_rpQuery) return _cmpExps;
   return _cmpExps.filter(e => e.hay.includes(_rpQuery));
+}
+
+function _rpFiltered() {
+  const rows = _rpTextRows();
+  if (!_rpActiveFacetCount()) return rows;
+  return rows.filter(e => _rpMatchesFacets(e, null));
+}
+
+// Does this run survive the facets in force? `except` skips one group, which is
+// what the counts need: a chip's number must say what turning *it* on would
+// leave, and counting a group against itself makes every unselected value in it
+// read zero.
+function _rpMatchesFacets(entry, except) {
+  for (const def of _rpFacetDefs()) {
+    if (def.key === except) continue;
+    const sel = _rpFacetSel[def.key];
+    if (!sel || !sel.size) continue;
+    const vals = def.get((entry && entry.e) || {});
+    // OR inside the group; a group nothing matches rejects the run, which is
+    // the AND across groups.
+    if (!vals.some(v => sel.has(v))) return false;
+  }
+  return true;
+}
+
+// The groups on offer, derived from the runs in the cache -- so every chip is a
+// value some run actually holds, and clicking one can never produce an empty
+// list. Memoized on the cache size: `_rpMatchesFacets` runs per row, and
+// rebuilding the definitions inside it made narrowing quadratic in the run
+// count, on the surface whose whole point is a project too big to scan.
+let _rpFacetDefsCache = null;
+let _rpFacetDefsFor = -1;
+
+function _rpFacetDefs() {
+  if (_rpFacetDefsCache && _rpFacetDefsFor === _cmpExps.length) return _rpFacetDefsCache;
+  const defs = [
+    {key: 'status', label: 'status',
+     get: e => (e.status ? [String(e.status)] : [])},
+    {key: 'script', label: 'script',
+     get: e => (e.script ? [String(e.script).split(/[/\\]/).pop()] : [])},
+    {key: 'tag', label: 'tag',
+     get: e => (e.tags || []).map(String)},
+  ];
+  // Parameter groups, fewest distinct values first: `model` with two values
+  // splits the list in half, while a per-run `seed` splits nothing and is what
+  // the search box is for. A key every run shares is dropped outright -- it
+  // cannot narrow anything.
+  const seen = {};
+  for (const entry of _cmpExps) {
+    const params = ((entry.e || {}).params) || {};
+    for (const k of Object.keys(params)) {
+      if (!isUserParamKey(k)) continue;
+      (seen[k] = seen[k] || new Set()).add(String(params[k]));
+    }
+  }
+  Object.keys(seen)
+    .filter(k => seen[k].size > 1)
+    .sort((a, b) => seen[a].size - seen[b].size || a.localeCompare(b))
+    .slice(0, RP_FACET_MAX_GROUPS)
+    .forEach(k => defs.push({
+      key: 'p:' + k, label: paramColLabel(k),
+      get: e => {
+        const v = (e.params || {})[k];
+        return v === undefined ? [] : [String(v)];
+      },
+    }));
+  _rpFacetDefsCache = defs;
+  _rpFacetDefsFor = _cmpExps.length;
+  return defs;
+}
+
+// The render model for the bar: per group, its values with the count each would
+// leave, most common first.
+function _rpFacetGroups() {
+  const base = _rpTextRows();
+  return _rpFacetDefs().map(def => {
+    const rows = base.filter(e => _rpMatchesFacets(e, def.key));
+    const counts = {};
+    for (const entry of rows) {
+      for (const v of def.get((entry.e) || {})) counts[v] = (counts[v] || 0) + 1;
+    }
+    const sel = _rpFacetSel[def.key] || new Set();
+    // A value that is on stays listed at zero rather than vanishing: a chip
+    // that hid itself when it matched nothing would leave the list empty with
+    // no visible reason and nothing to click to undo it.
+    const values = [...new Set([...Object.keys(counts), ...sel])]
+      .sort((a, b) => (counts[b] || 0) - (counts[a] || 0) || a.localeCompare(b));
+    return {key: def.key, label: def.label, counts: counts, values: values, sel: sel};
+  }).filter(g => g.values.length > 1 || g.sel.size);
+}
+
+function _rpActiveFacetCount() {
+  return Object.keys(_rpFacetSel)
+    .reduce((n, k) => n + (_rpFacetSel[k] ? _rpFacetSel[k].size : 0), 0);
+}
+
+// A list that is short because of a chip scrolled out of view is
+// indistinguishable from a project with four runs in it, so the count of
+// narrowings in force is stated next to the way to drop them.
+function _rpFacetBarHtml() {
+  const groups = _rpFacetGroups();
+  const active = _rpActiveFacetCount();
+  if (!groups.length && !active) return '';
+  let h = '<div class="rp-facets"><div class="rp-facets-head">'
+    + '<span class="rp-facets-title">Narrow by</span>';
+  if (active) {
+    h += '<span class="rp-facets-active">' + active + ' filter'
+      + (active === 1 ? '' : 's') + ' on</span>'
+      + '<button class="btn-sm" onclick="rpClearFacets()">Clear filters</button>';
+  }
+  h += '</div>';
+  for (const g of groups) {
+    h += '<div class="rp-facet-row"><span class="rp-facet-key">' + esc(g.label) + '</span>';
+    for (const v of g.values.slice(0, RP_FACET_MAX_VALUES)) {
+      const on = g.sel.has(v);
+      const n = g.counts[v] || 0;
+      h += '<button class="rp-facet' + (on ? ' rp-facet-on' : '')
+        + (!n && !on ? ' rp-facet-zero' : '') + '" title="' + esc(v) + '"'
+        + ' onclick="rpToggleFacet(\'' + escJsAttr(g.key) + '\',\'' + escJsAttr(v) + '\')">'
+        + esc(v === '' ? '(none)' : midEllipsis(v, 20))
+        + '<span class="rp-facet-n">' + n + '</span></button>';
+    }
+    const rest = g.values.length - RP_FACET_MAX_VALUES;
+    if (rest > 0) {
+      h += '<span class="rp-facet-rest" title="'
+        + esc(rest + ' more values \u2014 type one into the search box') + '">+'
+        + rest + ' more</span>';
+    }
+    h += '</div>';
+  }
+  return h + '</div>';
+}
+
+function rpToggleFacet(key, value) {
+  const sel = _rpFacetSel[key] || (_rpFacetSel[key] = new Set());
+  if (sel.has(value)) sel.delete(value);
+  else sel.add(value);
+  if (!sel.size) delete _rpFacetSel[key];
+  _rpRenderRows();
+}
+
+function rpClearFacets() {
+  _rpFacetSel = {};
+  _rpRenderRows();
 }
 
 function _rpRenderRows() {
   const host = document.getElementById('rp-rows');
   if (!host) return;
+  const bar = document.getElementById('rp-facets');
+  // Repainted with the rows, not once on open: the counts are relative to the
+  // query and the other chips, so a stale bar would promise rows it cannot
+  // produce.
+  if (bar) bar.innerHTML = _cmpExps.length ? _rpFacetBarHtml() : '';
   if (!_cmpExps.length) {
     host.innerHTML = '<div class="rp-empty">Loading runs…</div>';
     _rpRenderFooter(0, 0);
@@ -206,7 +371,7 @@ function _rpRenderFooter(nShown, nTotal) {
       ? '<button class="dc-button" onclick="rpSelectAllShown()">Select all shown</button>' +
         '<button class="dc-button" onclick="rpClearSelection()">Clear</button>' +
         '<span class="rp-selcount">' + _rpSelected.size + ' selected' +
-        (offscreen ? ' (' + offscreen + ' not matching this search)' : '') + '</span>'
+        (offscreen ? ' (' + offscreen + ' hidden by the search or filters)' : '') + '</span>'
       : '<span class="rp-selcount">Click a run to choose it</span>';
   }
   const go = document.getElementById('rp-confirm');

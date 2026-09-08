@@ -1794,6 +1794,28 @@ document.addEventListener('click', function(e) {
   }
 });
 
+// Hold the page's scroll position across a write that can change the height of
+// what is on screen.
+//
+// `#main-content` is the scroller, and the browser clamps its scrollTop the
+// moment its content becomes shorter than the current offset — so anything that
+// collapses part of the page (a panel emptied, an image grid losing its decoded
+// images) silently moves the reader, usually to the top. `refreshDetail` has
+// carried this by hand since the live-run poll started doing it every five
+// seconds; this is the same three lines, shared.
+//
+// Returns a restore function. Call it after the write, and again on the next
+// frame: layout can settle a frame late (images, fonts, a flex reflow), and a
+// clamp that happens then would otherwise stand.
+function _holdMainScroll() {
+  const el = document.getElementById('main-content');
+  const kept = el ? el.scrollTop : 0;
+  return function () {
+    if (!el || !kept) return;
+    if (el.scrollTop !== kept) el.scrollTop = kept;
+  };
+}
+
 function fmtBytes(b) {
   if (b < 1024) return b + ' B';
   if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
