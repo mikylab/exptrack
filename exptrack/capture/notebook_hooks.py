@@ -756,6 +756,7 @@ def _process_tracked_cell(exp, ip, source, output):
     new_vars, changed_vars = _capture_variables(ip, cell_assignments)
 
     _nb_state["first_run"] = False
+    exp = _maybe_split_on_hp_change(exp, ip.user_ns, changed_vars)
 
     # ── 6-7. Emit timeline events + log params, committed as one batch ────────
     # A single cell emits cell_exec + up to max_vars_per_cell var_set events
@@ -777,6 +778,41 @@ def _process_tracked_cell(exp, ip, source, output):
                         is_rerun=(already_seen and not code_changed
                                   and not new_vars and not changed_vars),
                         is_observational=is_obs)
+
+
+def _maybe_split_on_hp_change(exp, ns, changed_vars):
+    """The run this cell belongs to: *exp*, or a new one when a hyperparameter
+    changed after *exp* logged results (see ``notebook.split_for_hp_change``).
+
+    Not under Session Trees — a branch is how a session records "I changed
+    lr", and its metrics are attributed per node — and not before any result
+    exists, where changing a value is still setting the run up.
+    """
+    try:
+        if not (cfg.load().get("auto_capture") or {}).get(
+                "notebook_new_run_on_hp_change", True):
+            return exp
+        changed = {}
+        for k in changed_vars:
+            v = ns.get(k)
+            if (_HP_RE.match(k) and isinstance(v, _SCALAR) and k in exp._params
+                    and exp._params[k] != v):
+                changed[k] = v
+        if not changed or getattr(exp, "_resumed", False):
+            return exp
+        from ..sessions import get_current_session
+        sm = get_current_session()
+        if sm is not None and getattr(sm, "session_id", None):
+            return exp
+        from ..core import get_db
+        if not get_db().execute("SELECT 1 FROM metrics WHERE exp_id=? LIMIT 1",
+                                (exp.id,)).fetchone():
+            return exp
+        from ..notebook import split_for_hp_change
+        return split_for_hp_change(changed) or exp
+    except Exception as e:
+        debug_log(f"hp-change split check failed: {e}")
+        return exp
 
 
 def _post_run_cell(result=None):

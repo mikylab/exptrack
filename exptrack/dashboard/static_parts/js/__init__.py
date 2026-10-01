@@ -20,6 +20,7 @@ from .manual import JS_MANUAL
 from .matrix import JS_MATRIX
 from .mutations import JS_MUTATIONS
 from .owl import JS_OWL
+from .projects import JS_PROJECTS
 from .run_picker import JS_RUN_PICKER
 from .sessions import JS_SESSIONS
 from .sidebar import JS_SIDEBAR
@@ -38,7 +39,7 @@ def get_all_js() -> str:
             JS_RUN_PICKER + JS_COMPARE + JS_MUTATIONS + JS_TIMELINE +
             JS_IMAGE_COMPARE + JS_STUDIES + JS_STAGE + JS_MANUAL +
             JS_MATRIX + JS_TODOS + JS_COMMANDS + JS_CONFUSION + JS_SESSIONS +
-            JS_TRASH + JS_INIT)
+            JS_TRASH + JS_PROJECTS + JS_INIT)
 
 
 __all__ = [
@@ -57,6 +58,7 @@ __all__ = [
     "JS_MATRIX",
     "JS_MUTATIONS",
     "JS_OWL",
+    "JS_PROJECTS",
     "JS_RUN_PICKER",
     "JS_SESSIONS",
     "JS_SIDEBAR",

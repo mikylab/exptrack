@@ -208,6 +208,10 @@ def cmd_show(args):
                  ("Studies", ", ".join(studies) or "--"),
                  ("Stage", stage_str)]:
         print(f"    {col(k+':', Y):<22} {v}")
+    pkgs = (exp.get("environment") or {}).get("packages") or {}
+    if pkgs:
+        print(f"    {col('Packages:', Y):<22} "
+              + ", ".join(f"{k} {v}" for k, v in pkgs.items()))
     print()
 
     params = exp.get("params", {})
@@ -397,8 +401,28 @@ def cmd_diff(args):
         die(f"Not found: {args.id}")
     from ..core.db import resolve_git_diff
     diff = resolve_git_diff(conn, exp["git_diff"])
-    from ..core.db import DIFF_UNAVAILABLE
+    from ..core.db import DIFF_UNAVAILABLE, is_diff_sentinel
     from ..core.git import CAPTURE_FAILED, NO_COMMITS
+    if getattr(args, "patch", False):
+        # The raw diff and nothing else, so `exptrack diff <id> --patch >
+        # run.patch && git apply run.patch` reproduces the run's working tree
+        # on top of its commit. Anything that is not a diff is an error on
+        # stderr, never text a later `git apply` would choke on.
+        if not diff or is_diff_sentinel(diff) or diff.startswith("[compacted"):
+            die(f"No patch for this run: {diff or 'no uncommitted changes were captured'}")
+        body = (diff.rstrip("\n") + "\n").encode("utf-8")
+        out = getattr(args, "output", None)
+        if out:
+            # Bytes, not text: Windows' text mode would write CRLF, and
+            # PowerShell 5's `>` re-encodes to UTF-16 — either corrupts the
+            # patch for `git apply`. `-o` is the redirect-proof path.
+            Path(out).write_bytes(body)
+            print(dim(f"Wrote {out}. Apply it with: git apply {out}"), file=sys.stderr)
+        else:
+            sys.stdout.flush()
+            sys.stdout.buffer.write(body)
+            sys.stdout.buffer.flush()
+        return
     if diff == NO_COMMITS:
         print(col("  The repository had no commits yet when this run started.", Y))
         print(dim("  (Nothing to diff against — not a capture failure, and not a clean tree.)")); return
@@ -412,7 +436,13 @@ def cmd_diff(args):
     if not diff:
         print(dim("No uncommitted changes were captured for this run."))
         print(dim(f"  (All changes were committed at {exp['git_commit'] or '???'})")); return
-    print(bold(f"\n  Uncommitted changes: {exp['name']}  [{exp['git_branch']}@{exp['git_commit']}]\n"))
+    print(bold(f"\n  Uncommitted changes: {exp['name']}  [{exp['git_branch']}@{exp['git_commit']}]"))
+    from ..core.git import commit_web_url
+    from ..core.queries import _export_git_web
+    url = commit_web_url(_export_git_web(), exp["git_commit"] or "")
+    if url:
+        print(dim(f"  {url}"))
+    print(dim("  exptrack diff <id> --patch -o run.patch  writes a file `git apply` takes") + "\n")
     if diff.startswith("[compacted"):
         print(col(f"  {diff}", Y))
         print(dim(f"  To recover: git diff {exp['git_commit']}~1 {exp['git_commit']}"))
@@ -623,6 +653,38 @@ def cmd_top(args):
     print()
 
 
+def _compare_document(conn, ids, fmt: str, basis: str):
+    """`compare --format markdown|html`: the document the dashboard's Copy makes.
+
+    Same payload (`get_multi_compare` + `varying_param_keys`) and the same
+    renderer as the dashboard's Compare Copy/Export, so a comparison pasted
+    from the terminal and one pasted from the browser are the same tables.
+    """
+    from ..core.export_render import (
+        format_comparison_markdown,
+        html_document,
+        markdown_to_html,
+    )
+    from ..core.queries import get_multi_compare, resolve_experiment_rows, varying_param_keys
+
+    rows = resolve_experiment_rows(conn, ids, "id, name")
+    known = [r["id"] for r in rows]
+    for raw in ids:
+        if not any(rid.startswith(raw) for rid in known):
+            die(f"Not found: {raw}")
+    # In the order asked for, as the dashboard lays its columns out.
+    order = {rid: next(i for i, raw in enumerate(ids) if rid.startswith(raw)) for rid in known}
+    exps = sorted(get_multi_compare(conn, known, rank_by=basis),
+                  key=lambda e: order.get(e["id"], len(ids)))
+    from ..core.queries import compare_run_code
+    code = compare_run_code(conn, exps[0]["id"], exps[1]["id"]) if len(exps) == 2 else None
+    md = format_comparison_markdown(exps, varying_param_keys(exps), basis, code=code)
+    if fmt == "html":
+        print(html_document(f"Comparison of {len(exps)} runs", markdown_to_html(md)), end="")
+    else:
+        print(md, end="")
+
+
 def cmd_compare(args):
     from ..core.queries import get_experiment_detail, get_latest_metrics, get_vars_at_seq
     conn = get_db()
@@ -635,6 +697,13 @@ def cmd_compare(args):
         return
 
     extra = [i for i in (getattr(args, "ids", None) or []) if i]
+    fmt = getattr(args, "format", "table") or "table"
+    if fmt != "table":
+        if not args.id2:
+            die("A comparison needs at least two experiment IDs.")
+        _compare_document(conn, [args.id1, args.id2, *extra], fmt,
+                          "best" if getattr(args, "best", False) else "final")
+        return
     if extra:
         # Three or more runs is the shape a sweep or a model bake-off actually
         # has; the pairwise-only form meant the terminal could never answer
@@ -1014,11 +1083,11 @@ def cmd_watch(args):
 
 
 def cmd_export(args):
-    """Export experiment data: exptrack export <id> [--format json|markdown|csv|tsv|params|params-flags|params-json]"""
+    """Export experiment data: exptrack export <id> [--format json|markdown|text|html|csv|tsv|params|params-flags|params-json]"""
+    from ..core.export_render import READABLE_FORMATS, render_runs
     from ..core.queries import (
         PARAMS_EXPORT_FORMATS,
         format_export_csv,
-        format_export_markdown,
         format_export_params,
         get_export_data,
     )
@@ -1040,8 +1109,8 @@ def cmd_export(args):
     if not data:
         die(f"Not found: {args.id}")
 
-    if fmt == "markdown":
-        print(format_export_markdown(data, _artifact_limit(args)))
+    if fmt in READABLE_FORMATS:
+        print(render_runs([data], fmt, _artifact_limit(args)), end="")
     elif fmt in ("csv", "tsv"):
         delimiter = "\t" if fmt == "tsv" else ","
         print(format_export_csv([data], delimiter=delimiter), end="")
@@ -1054,11 +1123,11 @@ def cmd_export(args):
 def _export_batch(conn, fmt, export_all, exp_id_prefix, artifact_limit=None,
                   full=False):
     """Export one or all experiments in CSV/TSV/JSON/markdown/params batch format."""
+    from ..core.export_render import READABLE_FORMATS, render_runs
     from ..core.queries import (
         ARTIFACT_LIST_LIMIT,
         PARAMS_EXPORT_FORMATS,
         format_export_csv,
-        format_export_markdown,
         format_export_params,
         get_batch_export_data,
     )
@@ -1082,11 +1151,8 @@ def _export_batch(conn, fmt, export_all, exp_id_prefix, artifact_limit=None,
     if fmt in ("csv", "tsv"):
         delimiter = "\t" if fmt == "tsv" else ","
         print(format_export_csv(batch, delimiter=delimiter), end="")
-    elif fmt == "markdown":
-        for i, data in enumerate(batch):
-            if i > 0:
-                print("\n---\n")
-            print(format_export_markdown(data, artifact_limit))
+    elif fmt in READABLE_FORMATS:
+        print(render_runs(batch, fmt, limit), end="")
     elif fmt in PARAMS_EXPORT_FORMATS:
         style = PARAMS_EXPORT_FORMATS[fmt]
         if style == "json":

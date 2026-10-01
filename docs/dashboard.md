@@ -4,6 +4,7 @@
 exptrack ui                  # http://127.0.0.1:7331
 exptrack ui --port 8080      # somewhere else
 exptrack ui --no-auth        # skip the token (local only)
+exptrack ui --no-browser     # don't open a browser tab (ui start takes it too)
 exptrack ui-stop             # kill whatever is holding the port
 ```
 
@@ -12,6 +13,67 @@ CDN and no webfont. Nothing leaves your machine.
 
 The pages below are the ones people ask about. Everything here reads the same
 `.exptrack/experiments.db` the CLI does, so the two can never disagree.
+
+---
+
+## Several projects, one dashboard
+
+One dashboard serves every project it knows about, so three checkouts do not
+mean three servers on three ports with three tokens. Run `exptrack ui start`
+in the second one and it starts nothing: it registers that project, tells you
+which checkout the running dashboard came from, and prints a URL that opens
+*this* project.
+
+The project rides in the page URL (`/?project=<id>`), which makes it a
+property of the **tab**, not of the browser. Two worktrees can sit in two
+windows and neither moves the other. The picker beside the page title
+switches this tab; the sibling links under the sidebar's picker are ordinary
+links, so ctrl/cmd-click opens a worktree in a new tab — that is how you get
+two projects side by side.
+
+Worktrees of one repository are grouped under one heading and labelled by
+branch, because three checkouts of one repo usually share a directory name.
+The grouping is presentation only: each project keeps its own database and
+nothing is merged. Compare is the one view that can hold runs from two
+projects at once.
+
+The switcher lists what discovery can see — the projects you have run
+`exptrack init` or `exptrack ui start` in (remembered in
+`~/.exptrack/projects.json`) plus other worktrees of this repository that
+already have an `.exptrack/`. A project whose database cannot be read stays on
+the list with the reason and is not selectable; one whose directory is gone is
+dropped and forgotten, because it cannot come back on its own. The gear beside
+the picker forgets a project by hand — registry only, nothing on disk.
+
+### More than one dashboard
+
+Usually you want one: the shared dashboard above already reaches every project,
+and a second server buys you a second port and a second token for nothing. When
+you do want a separate one, the rules are:
+
+| You want | Run | What you get |
+|---|---|---|
+| Every checkout on one server (default) | `exptrack ui start` in each checkout | One background server; each checkout gets a `?project=` URL for it |
+| Two projects side by side | Open both `?project=` URLs in two tabs or windows | One server; each tab keeps its own project |
+| A throwaway second server | `exptrack ui --port 8080` (foreground) | An independent server with *that* checkout's token; Ctrl+C stops it |
+| A dashboard on another machine | `exptrack tunnel add gpu --host you@gpu-box --dir ~/proj --local-port 7332`, then `exptrack tunnel gpu` | The remote's dashboard at `http://127.0.0.1:7332`, token included |
+
+- **Only one *background* dashboard is tracked.** `exptrack ui start --port 8000`
+  while one is running on 7331 is refused, naming the running one — the record
+  in `~/.exptrack/dashboard.json` holds one slot, and a second detached server
+  would become untracked (unreachable through `ui status` / `ui stop`, and on
+  Windows unreachable from the CLI at all). Stop the first
+  (`exptrack ui stop`) or use the foreground form.
+- **A foreground dashboard is yours to stop.** `exptrack ui --port 8080` is not
+  recorded, so `ui status` and `ui stop` do not see it; stop it with Ctrl+C in
+  its terminal. It still shows the full project switcher.
+- **Give each tunnel its own local port.** Two remotes both default to local
+  port 7331 — which is also where your local dashboard lives. Set
+  `--local-port` per remote so a local dashboard and several remote ones can
+  be open at once.
+- **Tokens follow the server, not the project.** A shared dashboard uses the
+  token of the checkout that started it; `exptrack ui status` from any
+  checkout prints the URL with the right one.
 
 ---
 

@@ -55,7 +55,7 @@ def test_python_and_js_lower_is_better_lists_match():
     from exptrack.core import primary_metric as pm
 
     js = (Path(__file__).parent.parent / "exptrack" / "dashboard" / "static"
-          / "js" / "core.js").read_text()
+          / "js" / "core.js").read_text(encoding="utf-8")
     m = re.search(r"const LOWER_IS_BETTER_RE\s*=\s*\n?\s*/\^\((.*?)\)\$/",
                   js, re.S)
     assert m, "LOWER_IS_BETTER_RE not found in js/core.js"

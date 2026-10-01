@@ -13,6 +13,9 @@ const DETAIL_TABS = ['overview','timeline','charts','images','logs','compare-wit
 function switchDetailTab(tab, expId) {
   currentDetailTab = tab;
   currentDetailExpId = expId;
+  // The tab is part of the run's address, so a reload lands on the tab the
+  // reader was on. Replaced, never pushed: a tab is not a place Back returns to.
+  if (expId && expId === currentDetailId) _pushViewHash(_runViewHash(expId, tab), true);
   document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
     t.classList.toggle('active', DETAIL_TABS[i] === tab);
   });
@@ -478,14 +481,37 @@ function _scanSuggestionsHtml(suggestions, inputId, addFn, expId) {
 // ── Image gallery ────────────────────────────────────────────────────────────
 
 let imageFilter = '';
+let imageSearch = '';
 let imageSort = 'date';
 let imageLimit = 50;
 let imageSortDir = 'desc';
 
+// The last payload this tab drew, so a change to *how* it is drawn — a search,
+// a folder filter, a sort, entering compare mode — repaints from what is
+// already here instead of refetching.
+let _imgDataCache = {expId: null, data: null};
+
+// Repaint from the cached payload. Every control that only changes the view
+// goes through this: `loadImages` blanked the tab with "Loading..." before its
+// fetch, which destroyed the search box mid-keystroke (focus gone, the next
+// character lost) and collapsed `#main-content`, so the scroller clamped the
+// reader to the top. Typing one letter threw you to the top of the page.
+function repaintImages(expId) {
+  if (_imgDataCache.expId === expId && _imgDataCache.data) {
+    _renderImages(expId, _imgDataCache.data);
+    return Promise.resolve();
+  }
+  return loadImages(expId);
+}
+
 async function loadImages(expId) {
   const container = document.getElementById('detail-tab-images');
   if (!container) return;
-  container.innerHTML = '<p style="color:var(--muted)">Loading...</p>';
+  // Only when there is nothing to look at yet. A refresh keeps the current
+  // contents on screen until the new ones are ready.
+  if (!container.firstChild) {
+    container.innerHTML = '<p style="color:var(--muted)">Loading...</p>';
+  }
 
   const data = await api('/api/images/' + expId);
   if (!data) { container.innerHTML = _apiFailedHtml('images'); return; }
@@ -494,14 +520,36 @@ async function loadImages(expId) {
     return;
   }
 
+  _imgDataCache = {expId: expId, data: data};
+  _renderImages(expId, data);
+}
+
+// Whether the Image folders panel is open: null until the user toggles it,
+// then their choice, so a repaint (search, sort) does not snap it shut.
+let _imgPathsOpen = null;
+
+// Draw the tab from a payload. Split out of `loadImages` so a view change can
+// use it without a request — see repaintImages.
+function _renderImages(expId, data) {
+  const container = document.getElementById('detail-tab-images');
+  if (!container) return;
+
   const paths = data.paths || [];
   const suggestedPaths = data.suggested_paths || [];
-  let images = data.images || [];
+  const images = (data.images || []).slice();
 
   mergeArtifactImages(images, data.artifact_images);
 
-  let html = '<div class="img-paths-section">';
-  html += '<h3 style="font-size:14px;margin-bottom:8px">Image Paths</h3>';
+  // Folded away once there are images to look at: the tab opened on a wall
+  // of folder-suggestion chips with the run's one plot below the fold. With
+  // no images it stays open, since adding a folder is how you get some.
+  const pathsOpen = _imgPathsOpen === null ? !images.length && !(data.artifact_images || []).length
+                                           : _imgPathsOpen;
+  let html = '<details class="img-paths-section"' + (pathsOpen ? ' open' : '')
+    + ' ontoggle="_imgPathsOpen=this.open">';
+  html += '<summary style="font-size:14px;font-weight:600;cursor:pointer;margin-bottom:8px">Image folders'
+    + (paths.length ? ' <span style="color:var(--muted);font-weight:normal">(' + paths.length + ' added)</span>' : '')
+    + '</summary>';
   html += '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">Add folders to scan for images. Paths are relative to project root.</p>';
 
   // Show saved paths
@@ -525,7 +573,7 @@ async function loadImages(expId) {
   // Suggested paths from output_dir or params
   html += _scanSuggestionsHtml(suggestedPaths, 'img-path-input', 'addImagePath', expId);
   html += _scanTruncNotice(data, 'images');
-  html += '</div>';
+  html += '</details>';
 
   // Show images if we have any
   if (images.length) {
@@ -536,6 +584,15 @@ async function loadImages(expId) {
     let filtered = images;
     if (imageFilter) {
       filtered = filtered.filter(img => img.dir === imageFilter);
+    }
+    // A run that writes one image per sample has hundreds of them, and the
+    // folder filter cannot reach a single file. Matching name *and* path keeps
+    // `epoch3/` as usable a query as `ISIC_0042`.
+    if (imageSearch) {
+      const q = imageSearch.toLowerCase();
+      filtered = filtered.filter(img =>
+        (img.name || '').toLowerCase().includes(q)
+        || (img.path || '').toLowerCase().includes(q));
     }
 
     // Apply sort
@@ -573,8 +630,19 @@ async function loadImages(expId) {
     // Refresh button
     html += ' <button class="img-filter-select" onclick="loadImages(\'' + expId + '\')" title="Refresh images" style="cursor:pointer">&#x21bb; Refresh</button>';
 
+    // Search by file name. Debounced, and the box keeps focus and caret
+    // across the repaint -- retyping the query after every keystroke is what
+    // makes a search box useless on 900 files.
+    html += ' <input type="text" class="img-search-input" id="img-search-input"'
+      + ' placeholder="Search file name..." value="' + esc(imageSearch) + '"'
+      + ' oninput="_onImageSearch(this.value,\'' + expId + '\')">';
+    if (imageSearch) {
+      html += ' <button class="img-filter-select" onclick="imageSearch=\'\';repaintImages(\'' + expId + '\')"'
+        + ' title="Clear search" style="cursor:pointer">&times; Clear</button>';
+    }
+
     if (dirs.length > 1) {
-      html += ' <select class="img-filter-select" onchange="imageFilter=this.value;loadImages(\'' + expId + '\')">';
+      html += ' <select class="img-filter-select" onchange="imageFilter=this.value;repaintImages(\'' + expId + '\')">';
       html += '<option value=""' + (imageFilter === '' ? ' selected' : '') + '>All folders</option>';
       for (const d of dirs) {
         html += '<option value="' + esc(d) + '"' + (imageFilter === d ? ' selected' : '') + '>' + esc(d) + '</option>';
@@ -583,16 +651,16 @@ async function loadImages(expId) {
     }
 
     // Sort by
-    html += ' <select class="img-filter-select" onchange="imageSort=this.value;loadImages(\'' + expId + '\')">';
+    html += ' <select class="img-filter-select" onchange="imageSort=this.value;repaintImages(\'' + expId + '\')">';
     html += '<option value="date"' + (imageSort === 'date' ? ' selected' : '') + '>Sort by date</option>';
     html += '<option value="name"' + (imageSort === 'name' ? ' selected' : '') + '>Sort by name</option>';
     html += '</select>';
 
     // Sort direction toggle
-    html += ' <button class="img-filter-select" onclick="imageSortDir=imageSortDir===\'asc\'?\'desc\':\'asc\';loadImages(\'' + expId + '\')" title="Toggle sort direction" style="cursor:pointer">' + (imageSortDir === 'asc' ? '\u25B2 Asc' : '\u25BC Desc') + '</button>';
+    html += ' <button class="img-filter-select" onclick="imageSortDir=imageSortDir===\'asc\'?\'desc\':\'asc\';repaintImages(\'' + expId + '\')" title="Toggle sort direction" style="cursor:pointer">' + (imageSortDir === 'asc' ? '\u25B2 Asc' : '\u25BC Desc') + '</button>';
 
     // Show count
-    html += ' <select class="img-filter-select" onchange="imageLimit=parseInt(this.value);loadImages(\'' + expId + '\')">';
+    html += ' <select class="img-filter-select" onchange="imageLimit=parseInt(this.value);repaintImages(\'' + expId + '\')">';
     const limits = [20, 50, 100, 200, 0];
     const limitLabels = ['Show 20', 'Show 50', 'Show 100', 'Show 200', 'Show all'];
     for (let i = 0; i < limits.length; i++) {
@@ -602,9 +670,19 @@ async function loadImages(expId) {
 
     html += '</div>';
 
+    if (imageSearch && !totalFiltered) {
+      html += '<div style="color:var(--yellow);font-size:12px;margin-bottom:8px">'
+        + 'No file name matches &ldquo;' + esc(imageSearch) + '&rdquo;.</div>';
+    }
     if (totalFiltered > displayLimit) {
       html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Showing ' + displayLimit + ' of ' + totalFiltered + ' images</div>';
     }
+
+    // What the modal steps through: the images this gallery is showing, in the
+    // order it shows them, so a search or a folder filter narrows the flipping
+    // too. `name` is what the modal's jump box matches.
+    _intraImgList = limited.map(img => ({src: fileUrl(img.path), name: img.name}));
+    _intraRunName = data.name || '';
 
     html += '<div class="img-gallery">';
     for (const img of limited) {
@@ -638,9 +716,28 @@ async function loadImages(expId) {
   // The gallery is the tallest thing in the detail view, so emptying it
   // collapses `#main-content` and the browser clamps the scroll to the top.
   const _restoreScroll = _holdMainScroll();
+  const _focused = document.activeElement;
+  const _wasSearch = !!(_focused && _focused.id === 'img-search-input');
+  const _caret = _wasSearch ? _focused.selectionStart : null;
   container.innerHTML = html;
+  if (_wasSearch) {
+    const box = document.getElementById('img-search-input');
+    if (box) {
+      box.focus();
+      if (_caret !== null) box.setSelectionRange(_caret, _caret);
+    }
+  }
   _restoreScroll();
   requestAnimationFrame(_restoreScroll);
+}
+
+let _imgSearchTimer = null;
+
+// Debounced: typing must not rebuild a 200-thumbnail gallery per keystroke.
+function _onImageSearch(value, expId) {
+  imageSearch = value;
+  if (_imgSearchTimer) clearTimeout(_imgSearchTimer);
+  _imgSearchTimer = setTimeout(() => repaintImages(expId), 120);
 }
 
 // Repaint what picking an image changed, and nothing else.
@@ -782,10 +879,17 @@ function openImageModal(src, name) {
 
   const content = document.createElement('div');
   content.className = 'img-modal-content';
-  content.innerHTML = '<div class="img-modal-header"><span class="img-modal-name">' + esc(name) + '</span><button class="img-modal-close" onclick="closeImageModal()">&times;</button></div>' +
+  content.innerHTML = '<div class="img-modal-header"><span class="img-modal-name">' + esc(name) + '</span>'
+    + modalBackdropPickerHtml()
+    + '<button class="img-modal-close" onclick="closeImageModal()">&times;</button></div>' +
     '<img src="' + src + '" alt="' + esc(name) + '" style="max-width:100%;max-height:calc(100vh - 80px);object-fit:contain">';
   overlay.appendChild(content);
   document.body.appendChild(overlay);
+  applyModalBackdrop();
+  // Enlarging has to enlarge: a 128x128 image would otherwise render at 128px
+  // in a full-screen overlay, smaller than the gallery thumb behind it.
+  fitModalImages(content.querySelectorAll('img'),
+                 window.innerWidth * 0.95, window.innerHeight - 80);
 
   // One handler, stored on the overlay, so every close path can take it off
   // again. Inlined `.remove()` on the backdrop and the × left this listener

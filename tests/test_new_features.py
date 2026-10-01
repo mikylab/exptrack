@@ -3,10 +3,10 @@ import io
 import json
 import os
 import sys
-import tempfile
 from types import SimpleNamespace
 
 import pytest
+from _isolation import project_tempdir
 
 
 def _reset_config():
@@ -80,7 +80,7 @@ def test_help_text_present():
 
 def test_ls_filter_by_tag():
     """ls --tag filters experiments."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.inspect_cmds import cmd_ls
 
@@ -95,7 +95,7 @@ def test_ls_filter_by_tag():
 
 def test_ls_filter_by_status():
     """ls --status filters experiments."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.inspect_cmds import cmd_ls
 
@@ -112,7 +112,7 @@ def test_ls_filter_by_status():
 
 def test_ls_json_output():
     """ls --json produces valid JSON."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.inspect_cmds import cmd_ls
 
@@ -129,7 +129,7 @@ def test_ls_json_output():
 
 def test_show_json_output():
     """show --json produces valid JSON."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.inspect_cmds import cmd_show
 
@@ -149,7 +149,7 @@ def test_show_json_output():
 def test_no_color_env():
     """NO_COLOR env var disables ANSI codes."""
     import subprocess
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         exp = _make_experiment(); exp.finish()
 
@@ -168,7 +168,7 @@ def test_no_color_env():
 
 def test_batch_tag():
     """tag command tags multiple experiments at once."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.mutate_cmds import cmd_tag
         from exptrack.core import get_db
@@ -190,7 +190,7 @@ def test_batch_tag():
 
 def test_batch_untag():
     """untag command untags multiple experiments at once."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.mutate_cmds import cmd_untag
         from exptrack.core import get_db
@@ -213,7 +213,7 @@ def test_batch_untag():
 
 def test_tag_output_goes_to_stderr():
     """Tag confirmation message goes to stderr, not stdout."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.mutate_cmds import cmd_tag
 
@@ -226,7 +226,7 @@ def test_tag_output_goes_to_stderr():
 
 def test_note_output_goes_to_stderr():
     """Note confirmation goes to stderr."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.mutate_cmds import cmd_note
 
@@ -239,7 +239,7 @@ def test_note_output_goes_to_stderr():
 
 def test_not_found_goes_to_stderr():
     """Not-found is a hard error: exit 1, message on stderr, nothing on stdout."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.inspect_cmds import cmd_show
         from exptrack.core import get_db
@@ -256,7 +256,7 @@ def test_not_found_goes_to_stderr():
 
 def test_run_start_finish():
     """run-start creates an experiment, run-finish marks it done."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.pipeline_cmds import cmd_run_finish, cmd_run_start
         from exptrack.core import get_db
@@ -286,7 +286,7 @@ def test_run_start_finish():
 
 def test_run_fail():
     """run-fail marks an experiment as failed with a reason."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.pipeline_cmds import cmd_run_fail, cmd_run_start
         from exptrack.core import get_db
@@ -311,7 +311,7 @@ def test_run_fail():
 
 def test_db_integrity_check():
     """get_db runs integrity check without errors on a healthy database."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.core import get_db
         # Should not raise or print warnings for a fresh DB
@@ -323,7 +323,7 @@ def test_db_integrity_check():
 
 def test_export_not_found():
     """export with invalid ID is a hard error (exit 1, stderr)."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.inspect_cmds import cmd_export
         from exptrack.core import get_db
@@ -338,7 +338,7 @@ def test_export_not_found():
 
 def test_diff_not_found():
     """diff with invalid ID is a hard error (exit 1, stderr)."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with project_tempdir() as tmp:
         _setup_project(tmp)
         from exptrack.cli.inspect_cmds import cmd_diff
         from exptrack.core import get_db

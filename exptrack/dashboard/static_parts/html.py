@@ -24,6 +24,11 @@ HTML_BODY = r"""</style>
 <div class="header">
   <h1 onclick="showWelcome()" title="Back to dashboard home"><span class="owl-container" id="header-owl"><span class="owl-speech" id="owl-speech" onclick="event.stopPropagation();dismissOwl()"></span><span class="owl-mascot owl-blink" onclick="event.stopPropagation();owlSpeak('click')"><svg width="28" height="28" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:6px;image-rendering:pixelated"><!-- Pixel owl: ear tufts --><rect x="4" y="1" width="1" height="1" fill="#7c3aed"/><rect x="11" y="1" width="1" height="1" fill="#7c3aed"/><rect x="4" y="2" width="1" height="1" fill="#7c3aed"/><rect x="11" y="2" width="1" height="1" fill="#7c3aed"/><!-- Head --><rect x="5" y="2" width="6" height="1" fill="#2c5aa0"/><rect x="4" y="3" width="8" height="1" fill="#2c5aa0"/><rect x="4" y="4" width="8" height="1" fill="#2c5aa0"/><!-- Eyes (white circles with dark pupils) --><rect class="owl-eye-white" x="5" y="4" width="2" height="1" fill="#fff"/><rect class="owl-eye-white" x="9" y="4" width="2" height="1" fill="#fff"/><rect x="6" y="4" width="1" height="1" fill="#1a1a1a"/><rect x="10" y="4" width="1" height="1" fill="#1a1a1a"/><!-- Beak --><rect x="7" y="5" width="2" height="1" fill="#ffc107"/><!-- Body --><rect x="4" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="9" y="5" width="3" height="1" fill="#2c5aa0"/><rect x="4" y="6" width="8" height="1" fill="#2c5aa0"/><rect x="5" y="7" width="6" height="1" fill="#2c5aa0"/><!-- Belly --><rect x="6" y="7" width="4" height="1" fill="#5c9ce6"/><rect x="5" y="8" width="6" height="1" fill="#2c5aa0"/><rect x="6" y="8" width="4" height="1" fill="#5c9ce6"/><!-- Wings --><rect x="3" y="6" width="1" height="2" fill="#7c3aed"/><rect x="12" y="6" width="1" height="2" fill="#7c3aed"/><!-- Feet --><rect x="6" y="9" width="1" height="1" fill="#ffc107"/><rect x="9" y="9" width="1" height="1" fill="#ffc107"/></svg></span></span>exptrack</h1>
   <div class="header-actions">
+    <!-- The project control lives here as well as in the rail: the rail ships
+         collapsed, so with the switcher only in there, changing project meant
+         opening a panel first. Filled by loadProjects() through the same
+         renderer the rail uses. -->
+    <div id="header-project-switcher" class="header-project"></div>
     <button class="toolbox-btn" onclick="toggleSessionsTab()" title="Session Trees">&#9783; Sessions</button>
     <button class="toolbox-btn" data-tab="todos" onclick="openToolbox('todos')" title="Todo list">&#9745; Todo</button>
     <button class="toolbox-btn" data-tab="commands" onclick="openToolbox('commands')" title="Saved commands">&gt;_ Cmds</button>
@@ -221,6 +226,50 @@ exptrack run-finish $EXP_ID --metrics results.json</div>
   </div>
 
   <div class="help-section">
+    <h3>Access &amp; Projects</h3>
+    <p class="help-intro">This dashboard is reached with a token, and one dashboard serves every project this machine knows about. Both are things you only need to think about once &mdash; but the day you do, this is where they are written down.</p>
+
+    <div class="help-howto">
+      <div class="help-howto-item">
+        <strong>Where the token comes from</strong>
+        <p>The first start generates a token and writes it to <code>.exptrack/dashboard_token</code> in the project you started it from &mdash; mode 600, and gitignored, because it is a bearer credential and <code>config.json</code> is meant to be safe to commit. It is stored rather than kept in memory so that restarting the dashboard does not log your open tab out. An <code>EXPTRACK_DASHBOARD_TOKEN</code> environment variable wins over the file and is never written to disk.</p>
+      </div>
+      <div class="help-howto-item">
+        <strong>Getting the token back</strong>
+        <p>The URL printed at startup has the token in it after <code>?token=</code>; opening it stores the token in this browser and strips it back out of the address bar, so it does not leak through history or a Referer header. Every request after that sends it as an <code>Authorization: Bearer</code> header &mdash; there are no cookies. If you no longer have that URL, ask the dashboard:</p>
+        <div class="help-cmd">exptrack ui status        # prints the URL, token included
+exptrack ui --token my-secret   # or set one yourself
+exptrack ui --clear-token       # forget it; the next start makes a new one</div>
+      </div>
+      <div class="help-howto-item">
+        <strong>If the page asks for a token</strong>
+        <p>A 401 means the token this browser has is not the one the server is using &mdash; usually because someone ran <code>exptrack ui --clear-token</code>, or because the server is reading a different project's token file. Run <code>exptrack ui status</code> and paste the token from that URL into the login prompt. The page stays readable while you do; it is a prompt, not a lockout.</p>
+      </div>
+      <div class="help-howto-item">
+        <strong>Switching project</strong>
+        <p>The picker beside the <strong>exptrack</strong> title chooses which project every request reads. Databases stay separate and nothing is merged. The list is the other worktrees of this repository that already contain an <code>.exptrack/</code> directory, plus every project registered by <code>exptrack init</code> or <code>exptrack ui start</code>. <strong>Compare is the only view that spans projects</strong> &mdash; a comparison can hold one run from each, and the panels that can only read one database at a time say so instead of coming back empty.</p>
+      </div>
+      <div class="help-howto-item">
+        <strong>A project listed but not selectable</strong>
+        <p>A project that cannot be opened is shown with its reason rather than hidden, because a project silently missing from the list looks the same as discovery being broken. <em>stale</em> means no database was found there. <em>needs-upgrade</em> or <em>too-new</em> means its database was written by a different version of exptrack: opening it would migrate it in place, and if that project has its own virtualenv the two installs would then stamp it back and forth on every open. So it is refused, and the option's tooltip names the fix &mdash; run <code>exptrack upgrade</code> inside that project for an older database, or upgrade this install for a newer one. Discovery itself only reads the schema stamp over a read-only connection and never writes.</p>
+      </div>
+      <div class="help-howto-item">
+        <strong>Before you share the URL</strong>
+        <p>One token reaches <em>every</em> project this switcher lists: authentication is a property of the server, not of the project on screen. Anyone you forward the port to can read all of them. If exptrack warns that <code>.exptrack/</code> is readable by other accounts on the machine, <code>exptrack fix-perms</code> makes it private (POSIX only).</p>
+      </div>
+    </div>
+
+    <table class="help-ref-table">
+      <tr><td class="help-ref-key">exptrack ui start</td><td>Run the dashboard in the background and print its URL. Already running counts as success.</td></tr>
+      <tr><td class="help-ref-key">exptrack ui status</td><td>Whether one is running, its pid and version, and the URL with the token in it.</td></tr>
+      <tr><td class="help-ref-key">exptrack ui logs</td><td>The background dashboard's output; <code>-f</code> follows it.</td></tr>
+      <tr><td class="help-ref-key">exptrack ui stop</td><td>Stop it, verifying the port was actually released rather than that a signal was sent.</td></tr>
+      <tr><td class="help-ref-key">exptrack project list</td><td>The same project list this switcher shows, in the terminal.</td></tr>
+      <tr><td class="help-ref-key">exptrack project forget</td><td>Drop a project from the registry. Nothing on disk is touched.</td></tr>
+    </table>
+  </div>
+
+  <div class="help-section">
     <h3>Common Issues</h3>
     <div class="faq-list">
       <div class="faq-item">
@@ -258,7 +307,10 @@ exptrack run-finish $EXP_ID --metrics results.json</div>
       <div class="faq-item">
         <div class="faq-q" onclick="this.parentElement.classList.toggle('open')">Experiments aren't showing up at all</div>
         <div class="faq-a">
-          expTrack stores data relative to the project root (where you ran <code>exptrack init</code>). If you run scripts from a different directory, it may create a separate <code>.exptrack/</code> folder elsewhere. Run <code>exptrack ls</code> from your project directory to verify.
+          expTrack stores data relative to the project root &mdash; the nearest directory above you with an <code>.exptrack/</code> in it. Two different things look the same from here, and they have opposite fixes.<br>
+          <strong>Wrong directory.</strong> Running a script from somewhere outside your project creates a fresh <code>.exptrack/</code> there instead of using yours. Run <code>exptrack ls</code> from that directory to see what landed in it, then re-run the script from the project root.
+          <div class="help-cmd">exptrack ls    # run this where the script ran, then in your project</div>
+          <strong>Another project.</strong> A second <code>.exptrack/</code> that is a real project &mdash; another checkout, another worktree &mdash; is not a problem to clean up. Pick it in the project switcher beside the <strong>exptrack</strong> title. If it is not offered there, it has never been registered: run <code>exptrack project list</code> to see what is known, and <code>exptrack init</code> or <code>exptrack ui start</code> inside it to add it. A project that is listed but greyed out carries its reason on the option itself &mdash; see <strong>Access &amp; Projects</strong> above.
         </div>
       </div>
       <div class="faq-item">
@@ -296,8 +348,13 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
 
 <div id="app-layout">
   <!-- Left: Collapsible experiment list -->
-  <div id="exp-sidebar">
+  <!-- Ships collapsed: restoreSidebarState() opens it again for a reader who
+       left it open. The class is in the markup rather than applied by that
+       call alone so the default state is painted once, not as an open rail
+       that snaps shut when the first script runs. -->
+  <div id="exp-sidebar" class="collapsed">
     <div class="sidebar-content">
+      <div id="project-switcher" class="project-switcher"></div>
       <div class="sidebar-header">
         <input type="text" id="search-input" placeholder="Search name, params, tags…" oninput="onSidebarSearch(this.value)">
         <button class="collapse-btn" id="sidebar-group-btn" onclick="toggleSidebarGroupMenu()" title="Group runs">&#9783;</button>
@@ -305,12 +362,18 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
         <button class="collapse-btn" onclick="toggleSidebar()" title="Collapse sidebar">&#8249;</button>
       </div>
       <div class="status-chips" id="status-chips"></div>
+      <div class="status-chips sidebar-range-chips" id="sidebar-range-chips"></div>
       <div id="exp-list"></div>
       <div id="sidebar-actions-bar"></div>
+      <div id="sidebar-version"></div>
     </div>
-    <div class="collapse-strip" onclick="toggleSidebar()">
-      <span style="font-size:18px;color:var(--muted)">&#8250;</span>
-      <span id="sidebar-count" style="font-size:11px;color:var(--muted);margin-top:8px;writing-mode:vertical-rl"></span>
+    <!-- The only way back into a collapsed rail, so it names itself rather
+         than showing a bare chevron: the whole 44px strip is the click
+         target. -->
+    <div class="collapse-strip" onclick="toggleSidebar()" title="Show the run list">
+      <span class="collapse-strip-icon">&#8250;</span>
+      <span class="collapse-strip-label">Runs</span>
+      <span id="sidebar-count" class="collapse-strip-count"></span>
     </div>
   </div>
 
@@ -353,8 +416,11 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
         </span>
         <span class="gb-sep highlight-toggle">
           <label><input type="checkbox" id="auto-named-toggle" onchange="setAutoNamedOnly(this.checked)"> Needs naming <span class="auto-named-count" id="auto-named-count"></span></label>
-          <label style="margin-left:10px"><input type="checkbox" id="show-failed-toggle" onchange="setShowFailed(this.checked)"> Show failed <span class="auto-named-count" id="failed-count"></span></label>
           <label style="margin-left:10px"><input type="checkbox" id="highlight-toggle" onchange="toggleHighlightMode(this.checked)"> Highlight by study</label>
+        </span>
+        <span class="gb-group gb-sep">
+          <button class="btn-sm" id="show-failed-toggle" onclick="toggleShowFailed()"
+                  title="Hide failed runs from the list">Hide failed</button>
         </span>
         <span class="gb-group gb-sep">
           <span class="gb-label">Sort by metric:</span>
@@ -438,6 +504,12 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
             <option value="final">final value</option>
             <option value="best">best value</option>
           </select>
+          <button onclick="copyComparisonDocument()"
+                  title="Copy the comparison as tables &mdash; pastes as tables in OneNote, Word and Outlook; as markdown elsewhere. The patch is left out: use Export .patch">Copy</button>
+          <button onclick="exportComparisonMarkdown()"
+                  title="Download this comparison as a markdown file">Export .md</button>
+          <button onclick="exportComparisonPatch()"
+                  title="Download the pair's code diff as a .patch file for git apply">Export .patch</button>
           <button onclick="exportComparison()"
                   title="Download this comparison as CSV">Export CSV</button>
           <button onclick="copyComparisonLink()"

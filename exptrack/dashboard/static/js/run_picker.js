@@ -33,12 +33,49 @@ let _rpSelected = new Set();
 let _rpMode = 'multi';
 let _rpOnConfirm = null;
 let _rpConfirmLabel = 'Use selection';
+// The fewest picks the caller can act on (`opts.minPicks`, multi mode). Below
+// it the confirm button is greyed out and says why: Compare's picker used to
+// accept one run, stage it, and then do nothing, which read as a broken button.
+let _rpMinPicks = 0;
+let _rpMinReason = '';
 let _rpQuery = '';
 // Facet selections: {groupKey: Set(values)}. Values inside one group are an OR
 // (status failed *or* running), groups are an AND (and script=train.py) -- the
 // reading every faceted list uses, and the only one that can narrow to a
 // non-empty set.
 let _rpFacetSel = {};
+
+// -- The project this picker is browsing -------------------------------------
+// Compare is the only surface that may span projects, so the selector is
+// opt-in (`opts.crossProject`): the parameter matrix's picker must NOT grow
+// one, because what varies is a property of a set whose members share a
+// parameter space, and a set drawn from two projects does not.
+//
+// '' means the project the page is on. Every id this picker yields for that
+// project therefore stays **bare**, which is what keeps every existing caller,
+// bookmark and saved URL working; only a run from elsewhere is qualified.
+let _rpCross = false;
+let _rpProject = '';
+let _rpProjects = null;          // the /api/projects listing, fetched once
+let _rpPageProject = '';         // the page's own project id, from that listing
+
+// The rows in front of the user, and what the notices say about them. Owned by
+// the picker rather than read from the page's Compare cache, because the
+// picker can be browsing a project the page is not on -- `_loadProjectRuns`
+// keeps one cache entry per project, so both still read the same list whenever
+// they are looking at the same project.
+let _rpRows = [];
+let _rpLoading = false;
+let _rpTotal = 0;
+let _rpHasMore = false;
+
+// The id this picker hands back for a run: bare inside the page's project,
+// `<project-id>:<run-id>` outside it. One place, because a bare id that should
+// have been qualified resolves against the wrong database and still looks like
+// a perfectly good run.
+function _rpQualify(id) {
+  return _rpProject ? _rpProject + ':' + id : id;
+}
 
 // `opts`: {title, mode: 'multi'|'single', preselect, confirmLabel, onConfirm(ids)}.
 // The picks are handed to `onConfirm` as an argument and never written to a
@@ -51,16 +88,91 @@ async function openRunPicker(opts) {
   _rpSelected = new Set(o.preselect ? [...o.preselect] : []);
   _rpOnConfirm = o.onConfirm || null;
   _rpConfirmLabel = o.confirmLabel || 'Use selection';
+  _rpMinPicks = Math.max(0, o.minPicks | 0);
+  _rpMinReason = o.minReason || ('Choose at least ' + _rpMinPicks + ' runs');
   _rpQuery = '';
   _rpFacetSel = {};
+  _rpCross = !!o.crossProject;
+  // Always opens on the page's own project: that is the set the user is
+  // working in, and a picker that reopened on whichever project was browsed
+  // last would hand back qualified ids for runs the user thinks are local.
+  _rpProject = '';
   _rpMount(o.title || 'Choose runs');
   // Painted before the fetch resolves so the dialog never opens as a blank
   // rectangle; the row list says it is loading until the cache is warm.
   _rpRenderRows();
-  await _loadCmpExps();
-  _rpRenderRows();
+  if (_rpCross) await _rpLoadProjects();
+  await _rpLoad();
   const box = document.getElementById('rp-search');
   if (box) box.focus();
+}
+
+// The project listing, fetched once per page. api() returns null on failure
+// and has already told the user why; the picker then simply has no selector
+// and goes on working as the single-project list it has always been, which is
+// a better answer than a dialog that refuses to open.
+async function _rpLoadProjects() {
+  if (_rpProjects) { _rpRenderProjectBar(); return; }
+  const data = await api('/api/projects');
+  if (!data || !Array.isArray(data.projects)) return;
+  _rpProjects = data.projects;
+  _rpPageProject = data.current || '';
+  rememberProjects(data.projects);
+  _rpRenderProjectBar();
+}
+
+function _rpRenderProjectBar() {
+  const host = document.getElementById('rp-project-wrap');
+  if (!host || !_rpProjects) return;
+  // One option per project the server will actually open. A stale or
+  // schema-skewed project is listed disabled with its status, never silently
+  // missing: "my other project isn't there" is indistinguishable from
+  // discovery being broken, and the reason is what tells the user what to do.
+  let h = '<label class="rp-project-label" for="rp-project">Project</label>' +
+    '<select id="rp-project" class="rp-project" onchange="rpSwitchProject(this.value)">';
+  for (const pr of _rpProjects) {
+    const bad = pr.status !== 'ok';
+    // '' for the page's own project, so the ids it yields stay bare.
+    const value = pr.id === _rpPageProject ? '' : pr.id;
+    h += '<option value="' + escJsAttr(value) + '"' +
+         (value === _rpProject ? ' selected' : '') +
+         (bad ? ' disabled' : '') + '>' +
+         esc(pr.name + (bad ? '  (' + pr.status + ')' : '')) + '</option>';
+  }
+  h += '</select>';
+  host.innerHTML = h;
+}
+
+// Switching project replaces the list, never the selection: a set assembled
+// across two projects is the entire point of a cross-project Compare, and
+// clearing the picks on every switch would make one impossible to assemble.
+async function rpSwitchProject(id) {
+  _rpProject = id || '';
+  _rpQuery = '';
+  _rpFacetSel = {};
+  const box = document.getElementById('rp-search');
+  if (box) box.value = '';
+  _rpRows = [];
+  _rpRenderRows();
+  await _rpLoad();
+}
+
+// Load the browsed project's runs through the shared per-project cache, so the
+// picker and the Compare filter box beside it read one list per project.
+async function _rpLoad(force, all) {
+  _rpLoading = true;
+  try {
+    const entry = await _loadProjectRuns(_rpProject, force, all);
+    _rpRows = entry ? entry.exps : [];
+    _rpTotal = entry ? entry.total : 0;
+    _rpHasMore = entry ? entry.hasMore : false;
+  } finally {
+    // In a `finally` so a failed fetch still stops claiming to be loading —
+    // otherwise the one case where nothing arrives is the one case that never
+    // says so.
+    _rpLoading = false;
+  }
+  _rpRenderRows();
 }
 
 function _rpMount(title) {
@@ -73,11 +185,15 @@ function _rpMount(title) {
       '<div class="dc-header"><h3>' + esc(title) + '</h3>' +
         '<button class="dc-close" onclick="closeRunPicker()" title="Close">&times;</button></div>' +
       '<div class="rp-toolbar">' +
+        // Filled by _rpRenderProjectBar, and only for a cross-project picker.
+        '<span class="rp-project-wrap" id="rp-project-wrap"></span>' +
         '<input type="search" id="rp-search" class="rp-search" oninput="onRunPickerSearch()" ' +
           'placeholder="Search name, id, param (lr=0.01), status, script, tag, date">' +
         '<span class="rp-count" id="rp-count"></span>' +
       '</div>' +
       '<div class="rp-facetbar" id="rp-facets"></div>' +
+      // Filled by _rpRenderPicked, multi mode only.
+      '<div class="rp-picked" id="rp-picked"></div>' +
       '<div class="dc-body rp-body" id="rp-rows"></div>' +
       '<div class="dc-footer">' +
         '<div class="dc-footer-left" id="rp-bulk"></div>' +
@@ -124,8 +240,8 @@ const onRunPickerSearch = debounce(function () {
 // query alone leaves, so what a chip would leave depends on what is typed.
 // The rows the text box alone leaves.
 function _rpTextRows() {
-  if (!_rpQuery) return _cmpExps;
-  return _cmpExps.filter(e => e.hay.includes(_rpQuery));
+  if (!_rpQuery) return _rpRows;
+  return _rpRows.filter(e => e.hay.includes(_rpQuery));
 }
 
 function _rpFiltered() {
@@ -158,9 +274,14 @@ function _rpMatchesFacets(entry, except) {
 // count, on the surface whose whole point is a project too big to scan.
 let _rpFacetDefsCache = null;
 let _rpFacetDefsFor = -1;
+// Memoized on the row count, so the project has to be part of the key: two
+// projects holding the same number of runs would otherwise be offered the
+// first one's facet values, and every chip would filter to nothing.
+let _rpFacetDefsProject = null;
 
 function _rpFacetDefs() {
-  if (_rpFacetDefsCache && _rpFacetDefsFor === _cmpExps.length) return _rpFacetDefsCache;
+  if (_rpFacetDefsCache && _rpFacetDefsFor === _rpRows.length &&
+      _rpFacetDefsProject === _rpProject) return _rpFacetDefsCache;
   const defs = [
     {key: 'status', label: 'status',
      get: e => (e.status ? [String(e.status)] : [])},
@@ -174,7 +295,7 @@ function _rpFacetDefs() {
   // the search box is for. A key every run shares is dropped outright -- it
   // cannot narrow anything.
   const seen = {};
-  for (const entry of _cmpExps) {
+  for (const entry of _rpRows) {
     const params = ((entry.e || {}).params) || {};
     for (const k of Object.keys(params)) {
       if (!isUserParamKey(k)) continue;
@@ -193,7 +314,8 @@ function _rpFacetDefs() {
       },
     }));
   _rpFacetDefsCache = defs;
-  _rpFacetDefsFor = _cmpExps.length;
+  _rpFacetDefsFor = _rpRows.length;
+  _rpFacetDefsProject = _rpProject;
   return defs;
 }
 
@@ -279,9 +401,16 @@ function _rpRenderRows() {
   // Repainted with the rows, not once on open: the counts are relative to the
   // query and the other chips, so a stale bar would promise rows it cannot
   // produce.
-  if (bar) bar.innerHTML = _cmpExps.length ? _rpFacetBarHtml() : '';
-  if (!_cmpExps.length) {
-    host.innerHTML = '<div class="rp-empty">Loading runs…</div>';
+  if (bar) bar.innerHTML = _rpRows.length ? _rpFacetBarHtml() : '';
+  if (!_rpRows.length) {
+    // An empty list has two causes and they need different words. Before the
+    // fetch settles it is still loading; afterwards it means this project has
+    // no runs — and with a project selector above it, that is a normal thing
+    // to land on. Saying "Loading runs…" forever there reads as a hung
+    // dialog, and the user waits for a list that is never coming.
+    host.innerHTML = '<div class="rp-empty">' +
+      (_rpLoading ? 'Loading runs…' : 'This project has no runs yet.') +
+      '</div>';
     _rpRenderFooter(0, 0);
     return;
   }
@@ -291,7 +420,7 @@ function _rpRenderRows() {
     ? shown.map(_rpRowHtml).join('') + _rpNoticesHtml(rows.length)
     : '<div class="rp-empty">No run matches <code>' + esc(_rpQuery) + '</code>.' +
       _rpNoticesHtml(0) + '</div>';
-  _rpRenderFooter(rows.length, _cmpExps.length);
+  _rpRenderFooter(rows.length, _rpRows.length);
 }
 
 // Two different reasons the list in front of the user is not every run, and
@@ -303,9 +432,9 @@ function _rpNoticesHtml(nMatched) {
     h += '<div class="rp-notice">Showing the first ' + RP_MAX_ROWS + ' of ' +
       nMatched.toLocaleString() + ' matching runs — narrow the search to see the rest.</div>';
   }
-  if (_cmpHasMore) {
-    const of = _cmpTotal > _cmpExps.length ? ' of ' + _cmpTotal.toLocaleString() : '';
-    h += '<div class="rp-notice">Searching the ' + _cmpExps.length.toLocaleString() +
+  if (_rpHasMore) {
+    const of = _rpTotal > _rpRows.length ? ' of ' + _rpTotal.toLocaleString() : '';
+    h += '<div class="rp-notice">Searching the ' + _rpRows.length.toLocaleString() +
       ' most recent runs' + of + '. ' +
       '<button class="btn-sm" onclick="rpLoadAll()">Load all runs</button></div>';
   }
@@ -315,13 +444,17 @@ function _rpNoticesHtml(nMatched) {
 async function rpLoadAll() {
   const btn = document.querySelector('#rp-rows .rp-notice button');
   if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
-  await _loadCmpExps(true, true);
-  _rpRenderRows();
+  await _rpLoad(true, true);
 }
 
 function _rpRowHtml(entry) {
   const e = entry.e || {};
-  const on = _rpSelected.has(entry.id);
+  // A row is identified by the id it will be handed back as — qualified when
+  // the picker is browsing another project. Keying the selection on the bare
+  // id instead would let a run from project A and a run from project B with
+  // the same id tick and un-tick each other.
+  const qid = _rpQualify(entry.id);
+  const on = _rpSelected.has(qid);
   const params = Object.entries(e.params || {}).filter(([k]) => isUserParamKey(k));
   const chips = params.slice(0, RP_MAX_CHIPS).map(([k, v]) =>
     '<span class="rp-chip">' + esc(paramColLabel(k)) + '=' + esc(String(v)) + '</span>').join('');
@@ -331,8 +464,8 @@ function _rpRowHtml(entry) {
       (params.length - RP_MAX_CHIPS) + '</span>'
     : '';
   return '<div class="rp-row' + (on ? ' rp-on' : '') + '" role="button" tabindex="0" ' +
-    'data-id="' + esc(entry.id) + '" ' +
-    'onclick="rpToggle(\'' + escJsAttr(entry.id) + '\')">' +
+    'data-id="' + esc(qid) + '" ' +
+    'onclick="rpToggle(\'' + escJsAttr(qid) + '\')">' +
     (_rpMode === 'multi'
       ? '<input type="checkbox" class="rp-cb"' + (on ? ' checked' : '') +
         ' tabindex="-1" aria-label="Select ' + esc(e.name || entry.id) + '">'
@@ -365,21 +498,66 @@ function _rpRenderFooter(nShown, nTotal) {
     // Picks the current query hides are counted, not hidden: confirming takes
     // the whole selection, so a footer reading "4 selected" over a list showing
     // one of them has to say where the other three went.
-    const shownIds = new Set(_rpFiltered().map(e => e.id));
-    const offscreen = [..._rpSelected].filter(id => !shownIds.has(id)).length;
+    //
+    // A pick from another project is not hidden by anything the user typed —
+    // it is in a list this picker is not showing. Counting it as "hidden by
+    // the search or filters" sent the reader clearing a search box that was
+    // already empty, looking for a run that was never going to appear.
+    const shownIds = new Set(_rpFiltered().map(e => _rpQualify(e.id)));
+    let elsewhere = 0, filtered = 0;
+    for (const id of _rpSelected) {
+      if (shownIds.has(id)) continue;
+      // '' is the page's project, whose ids stay bare — as `_rpProject` is.
+      if (splitQualifiedRunId(id).project !== _rpProject) elsewhere++;
+      else filtered++;
+    }
+    const notes = [];
+    if (elsewhere) notes.push(elsewhere + ' in ' + (elsewhere === 1 ? 'another project' : 'other projects'));
+    if (filtered) notes.push(filtered + ' hidden by the search or filters');
     bulk.innerHTML = _rpMode === 'multi'
       ? '<button class="dc-button" onclick="rpSelectAllShown()">Select all shown</button>' +
         '<button class="dc-button" onclick="rpClearSelection()">Clear</button>' +
         '<span class="rp-selcount">' + _rpSelected.size + ' selected' +
-        (offscreen ? ' (' + offscreen + ' hidden by the search or filters)' : '') + '</span>'
+        (notes.length ? ' (' + notes.join(', ') + ')' : '') + '</span>' +
+        (_rpShort()
+          ? '<span class="rp-selcount rp-min-note">' + esc(_rpMinReason) + '</span>' : '')
       : '<span class="rp-selcount">Click a run to choose it</span>';
   }
+  _rpRenderPicked();
   const go = document.getElementById('rp-confirm');
   if (go) {
     go.textContent = _rpMode === 'multi'
       ? _rpConfirmLabel + ' (' + _rpSelected.size + ')' : _rpConfirmLabel;
     go.style.display = _rpMode === 'multi' ? '' : 'none';
+    go.disabled = _rpShort();
+    go.title = _rpShort() ? _rpMinReason : '';
   }
+}
+
+// Fewer picks than the caller can act on — the confirm is greyed out.
+function _rpShort() {
+  return _rpMode === 'multi' && _rpSelected.size < _rpMinPicks;
+}
+
+// Chips shown in the Selected strip before the rest fold into "+N more": a
+// select-all over hundreds of runs must not repaint hundreds of chips per click.
+const RP_MAX_PICKED_CHIPS = 40;
+
+// Every pick, whichever project it came from, named and removable in one
+// place. A cross-project selection is assembled by switching the list between
+// projects, and the list only ever shows one of them — so without this the
+// only way to check what was already chosen was to switch back and look, and
+// a pick made two projects ago was just a number in the footer.
+function _rpRenderPicked() {
+  const host = document.getElementById('rp-picked');
+  if (!host) return;
+  if (_rpMode !== 'multi' || !_rpSelected.size) { host.innerHTML = ''; return; }
+  const ids = [..._rpSelected];
+  const more = ids.length - RP_MAX_PICKED_CHIPS;
+  host.innerHTML = '<span class="rp-picked-label">Selected</span>' +
+    ids.slice(0, RP_MAX_PICKED_CHIPS)
+      .map(id => _cmpChipHtml(id, 'rpToggle', 'Remove from the selection')).join('') +
+    (more > 0 ? '<span class="rp-picked-label">+' + more + ' more</span>' : '');
 }
 
 // A click on a row in single mode *is* the answer — an extra Confirm press for
@@ -400,13 +578,14 @@ function rpToggle(id) {
     const cb = row.querySelector('.rp-cb');
     if (cb) cb.checked = _rpSelected.has(id);
   }
-  _rpRenderFooter(_rpFiltered().length, _cmpExps.length);
+  _rpRenderFooter(_rpFiltered().length, _rpRows.length);
 }
 
 // "Shown", not "all": the button acts on the rows in front of the user, which
 // is what a search box narrowing them to nine runs promises it will do.
 function rpSelectAllShown() {
-  _rpFiltered().slice(0, RP_MAX_ROWS).forEach(e => _rpSelected.add(e.id));
+  _rpFiltered().slice(0, RP_MAX_ROWS)
+    .forEach(e => _rpSelected.add(_rpQualify(e.id)));
   _rpRenderRows();
 }
 
@@ -416,6 +595,7 @@ function rpClearSelection() {
 }
 
 function rpConfirm() {
+  if (_rpShort()) return;           // greyed out
   const ids = [..._rpSelected];
   const cb = _rpOnConfirm;
   closeRunPicker();

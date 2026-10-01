@@ -10,11 +10,13 @@
   .img-name { font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .img-dir { font-size: 10px; color: var(--blue); margin-top: 1px; }
   .img-meta { font-size: 10px; color: var(--muted); margin-top: 1px; }
-  .img-modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.85); z-index: 10000; display: flex; align-items: center; justify-content: center; }
+  /* The backdrop presets and their tokens live in image_compare.css, shared
+     by both image modals. */
+  .img-modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: var(--modal-bg); z-index: 10000; display: flex; align-items: center; justify-content: center; }
   .img-modal-content { max-width: 95vw; max-height: 95vh; display: flex; flex-direction: column; align-items: center; }
-  .img-modal-header { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 8px 12px; color: #fff; }
+  .img-modal-header { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 8px 12px; color: var(--modal-fg); }
   .img-modal-name { font-size: 13px; }
-  .img-modal-close { background: none; border: none; color: #fff; font-size: 24px; cursor: pointer; padding: 0 8px; }
+  .img-modal-close { background: none; border: none; color: var(--modal-fg); font-size: 24px; cursor: pointer; padding: 0 8px; }
   .img-paths-section { margin-bottom: 16px; }
   /* Scan-path rows and the add form. Sized to be typed in and clicked at:
      these were 25px tall with 12–13px text and the only way to edit a saved
@@ -117,3 +119,11 @@
   .new-exp-kv-del:hover { color: var(--red); }
   .new-exp-kv-add { font-family: inherit; font-size: 12px; color: var(--blue); cursor: pointer; background: none; border: none; padding: 2px 0; }
   .new-exp-kv-add:hover { text-decoration: underline; }
+
+  /* Same reason as the Compare picker's: a gallery of hundreds needs a name
+     query, not just a folder filter. */
+  .img-search-input {
+    font-family: inherit; font-size: 12px; padding: 4px 8px; min-width: 180px;
+    border: 1px solid var(--border); border-radius: 3px;
+    background: var(--bg); color: var(--text);
+  }

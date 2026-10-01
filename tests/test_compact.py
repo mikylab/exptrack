@@ -2,9 +2,10 @@
 import io
 import os
 import sys
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+
+from _isolation import project_tempdir
 
 
 def _reset_config():
@@ -52,8 +53,7 @@ def _insert_experiment(conn, exp_id, name="test_exp", status="done",
 
 def test_compact_strips_diff():
     """compact should replace git_diff with a summary marker."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "exp001", name="train_run")
 
@@ -71,8 +71,7 @@ def test_compact_strips_diff():
 
 def test_compact_dry_run():
     """--dry-run should not modify the database."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         original_diff = "diff --git a/foo.py b/foo.py\n+hello"
         _insert_experiment(conn, "exp002", git_diff=original_diff)
@@ -89,8 +88,7 @@ def test_compact_dry_run():
 
 def test_compact_skips_already_compacted():
     """compact should not re-compact already-compacted experiments."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "exp003", git_diff="[compacted — already done]")
 
@@ -103,8 +101,7 @@ def test_compact_skips_already_compacted():
 
 def test_compact_skips_running_by_default():
     """compact should only target 'done' experiments by default."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "exp004", status="running")
 
@@ -121,8 +118,7 @@ def test_compact_skips_running_by_default():
 
 def test_compact_all_flag():
     """--all should compact experiments regardless of status."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "exp005", status="running")
         _insert_experiment(conn, "exp006", status="failed")
@@ -140,8 +136,7 @@ def test_compact_all_flag():
 
 def test_compact_by_id_prefix():
     """compact with specific IDs should only target those experiments."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "aaa111", status="done")
         _insert_experiment(conn, "bbb222", status="done")
@@ -160,8 +155,7 @@ def test_compact_by_id_prefix():
 
 def test_compact_export():
     """--export should save diffs as markdown files before stripping."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir() as tmp:
         conn = _setup_project()
         diff_text = "diff --git a/model.py b/model.py\n+new_code\n-old_code"
         _insert_experiment(conn, "exp007", name="lr_sweep", git_diff=diff_text)
@@ -192,8 +186,7 @@ def test_compact_export():
 
 def test_compact_preserves_other_data():
     """compact should only touch git_diff, not params/metrics/other fields."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "exp008", name="important_run", git_commit="def5678")
         conn.execute("INSERT INTO params (exp_id, key, value) VALUES (?,?,?)",
@@ -224,8 +217,7 @@ def test_compact_preserves_other_data():
 
 def test_compact_file_summary_in_marker():
     """The compact marker should include file names from the diff."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         diff_text = (
             "diff --git a/model.py b/model.py\n"
@@ -248,8 +240,7 @@ def test_compact_file_summary_in_marker():
 
 def test_compact_no_diff():
     """Experiments with no git_diff should be skipped."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "exp010", git_diff=None)
         _insert_experiment(conn, "exp011", git_diff="")
@@ -269,8 +260,7 @@ def test_compact_refuses_an_ambiguous_prefix():
     typo'd one report "No matching experiments." with exit 0."""
     import pytest
 
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "exp010", git_diff=None)
         _insert_experiment(conn, "exp011", git_diff=None)
@@ -291,8 +281,7 @@ def test_compact_refuses_an_ambiguous_prefix():
 
 def test_cli_diff_shows_compacted_message():
     """cmd_diff should show a clear message for compacted experiments."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "exp012",
                            git_diff="[compacted — 5.0 KB stripped — see git commit abc1234]")
@@ -307,8 +296,7 @@ def test_cli_diff_shows_compacted_message():
 
 def test_api_compact():
     """The dashboard API compact endpoint should work like the CLI."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         diff_text = "diff --git a/foo.py b/foo.py\n+hello\n-world"
         _insert_experiment(conn, "api001", name="api_test", git_diff=diff_text)
@@ -326,8 +314,7 @@ def test_api_compact():
 
 def test_api_compact_skips_already_compacted():
     """API compact should skip already-compacted experiments."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "api002", git_diff="[compacted — already done]")
 
@@ -340,8 +327,7 @@ def test_api_compact_skips_already_compacted():
 
 def test_api_export_diff():
     """The export-diff endpoint should return markdown with the diff."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         diff_text = "diff --git a/model.py b/model.py\n+new_code"
         _insert_experiment(conn, "api003", name="export_test", git_diff=diff_text,
@@ -359,8 +345,7 @@ def test_api_export_diff():
 
 def test_api_export_diff_compacted():
     """Export-diff should error for already-compacted experiments."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "api004", git_diff="[compacted — stripped]")
 
@@ -373,8 +358,7 @@ def test_api_export_diff_compacted():
 
 def test_stats_include_diff_info():
     """Stats should include diff storage info and config limit."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         conn = _setup_project()
         _insert_experiment(conn, "stat001", git_diff="x" * 1000)
         _insert_experiment(conn, "stat002", git_diff="[compacted — should not count]")
@@ -434,8 +418,7 @@ def _run_with_stored_diff(conn, exp_id, body):
 
 
 def test_compact_reclaims_an_unreferenced_diff_body():
-    with tempfile.TemporaryDirectory() as td:
-        os.chdir(td)
+    with project_tempdir():
         conn = _setup_project()
         body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 400
         _run_with_stored_diff(conn, "solo", body)
@@ -450,8 +433,7 @@ def test_compact_reclaims_an_unreferenced_diff_body():
 
 
 def test_compact_keeps_a_body_another_run_still_shares():
-    with tempfile.TemporaryDirectory() as td:
-        os.chdir(td)
+    with project_tempdir():
         conn = _setup_project()
         body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 400
         ref = _run_with_stored_diff(conn, "first", body)
@@ -471,8 +453,7 @@ def test_compact_keeps_a_body_another_run_still_shares():
 def test_dry_run_estimates_the_body_not_the_pointer():
     """`diff_len` is the length of the column, which for a deduplicated diff is
     a ~45-byte pointer — so the dry-run promised ~1 KB where 1.7 MB would go."""
-    with tempfile.TemporaryDirectory() as td:
-        os.chdir(td)
+    with project_tempdir():
         conn = _setup_project()
         body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 2000
         _run_with_stored_diff(conn, "big", body)
@@ -484,8 +465,7 @@ def test_dry_run_estimates_the_body_not_the_pointer():
 
 
 def test_dry_run_reports_nothing_reclaimable_for_a_shared_body():
-    with tempfile.TemporaryDirectory() as td:
-        os.chdir(td)
+    with project_tempdir():
         conn = _setup_project()
         body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 2000
         ref = _run_with_stored_diff(conn, "first", body)
@@ -500,8 +480,7 @@ def test_dry_run_reports_nothing_reclaimable_for_a_shared_body():
 def test_dashboard_freed_counts_the_body_once_not_once_per_run():
     """Shared bodies used to be counted per run: 30 runs sharing one 34 KB body
     reported ~1 MB freed when 34 KB left the database."""
-    with tempfile.TemporaryDirectory() as td:
-        os.chdir(td)
+    with project_tempdir():
         conn = _setup_project()
         body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 2000
         ref = _run_with_stored_diff(conn, "run0", body)
@@ -519,8 +498,7 @@ def test_dashboard_freed_counts_the_body_once_not_once_per_run():
 
 
 def test_dashboard_dry_run_and_write_agree_on_freed_bytes():
-    with tempfile.TemporaryDirectory() as td:
-        os.chdir(td)
+    with project_tempdir():
         conn = _setup_project()
         body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 2000
         ref = _run_with_stored_diff(conn, "a", body)
@@ -538,8 +516,7 @@ def test_cli_and_dashboard_compact_report_the_same_bytes():
     """The two entry points share one implementation — they had drifted, and
     only the CLI's copy was fixed to sweep the bodies it orphaned."""
     def _freed(fn):
-        with tempfile.TemporaryDirectory() as td:
-            os.chdir(td)
+        with project_tempdir():
             conn = _setup_project()
             body = "diff --git a/a.py b/a.py\n" + "+x = 1\n" * 900
             ref = _run_with_stored_diff(conn, "one", body)

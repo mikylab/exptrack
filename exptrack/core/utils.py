@@ -347,6 +347,34 @@ def summarize_changed_lines(fragments, max_chars: int | None = None) -> str:
         f"; … [truncated — {len(kept)} of {len(fragments)} changed lines shown]"
 
 
+# A fragment boundary: the "; " that `summarize_changed_lines` puts *before* a
+# `+ `/`- ` fragment or its truncation marker. A bare "; " split cuts a changed
+# line that itself contains "; " (`a = 1; b = 2`) into two fake fragments.
+_FRAGMENT_SPLIT_RE = re.compile(r"; (?=[+-] |[+-]$|… \[truncated)")
+
+
+def split_changed_lines(summary: str) -> tuple[list[tuple[str, str]], str]:
+    """Undo `summarize_changed_lines`: ``([(sign, text), ...], truncation_note)``.
+
+    The stored summary is one line of ``+ a; - b; + c`` — fine to store, hard
+    to read once exported, where every changed line of a script ran together
+    in a single paragraph. Readers that lay it out line by line use this, so
+    no fragment is lost and the truncation marker survives as its own note.
+    A summary that is not in fragment form comes back as one ``("", text)``
+    entry rather than being dropped.
+    """
+    lines: list[tuple[str, str]] = []
+    note = ""
+    for part in _FRAGMENT_SPLIT_RE.split(str(summary or "")):
+        if part.startswith("… [truncated"):
+            note = part
+        elif part[:2] in ("+ ", "- ") or part in ("+", "-"):
+            lines.append((part[0], part[2:]))
+        elif part:
+            lines.append(("", part))
+    return lines, note
+
+
 _METRIC_SEP_RE = re.compile(r"[\s\-]+")
 
 
@@ -420,3 +448,37 @@ def resolve_script_identity(script: str) -> str:
         except OSError:
             return script
     return script
+
+
+# ── Python environments are never outputs ───────────────────────────────────
+
+def is_python_env_dir(path) -> bool:
+    """True if *path* is the root of a Python environment: a venv/virtualenv
+    (``pyvenv.cfg``) or a conda env (``conda-meta/``), whatever it is named."""
+    try:
+        from pathlib import Path as _P
+        p = _P(path)
+        return (p / "pyvenv.cfg").is_file() or (p / "conda-meta").is_dir()
+    except OSError:
+        return False
+
+
+def python_env_containing(path):
+    """The Python environment *path* is in or is (a ``Path``), or None.
+
+    Exptrack's only rule for venvs used to be the folder *name* (`.venv`,
+    `venv`), so an environment called `env` or `myenv` inside the project
+    was walked by the finish-time output scan, and anything a run wrote into
+    it (a mid-run `pip install`, a library writing beside itself) could be
+    registered as an artifact and removed by a later delete. The marker files
+    identify an environment by what it is.
+    """
+    from pathlib import Path as _P
+    try:
+        p = _P(path).resolve()
+    except OSError:
+        return None
+    for d in (p, *p.parents):
+        if is_python_env_dir(d):
+            return d
+    return None

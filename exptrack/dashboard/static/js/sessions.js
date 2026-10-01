@@ -9,6 +9,58 @@ let _lastSessionsLoad = 0;
 let _compareMode = false;          // when on, clicking nodes toggles compare set
 let _compareNodes = [];            // ordered list of node ids chosen to compare
 
+// The tree payload arrives compacted (server side: sessions/tree.py
+// `compact_payload`): each distinct git-diff body is sent once in `diffs` and a
+// node carries `git_diff_ref`, and the per-node `lineage` chain is left out
+// entirely. Both were per-node copies of something the tree already contains —
+// four branches off one checkpoint share one working tree, so they shared one
+// diff body, and the ancestor breadcrumb is a walk up `parent_id`. That matters
+// because every mutation here (note, rename, promote, delete, link) refetches
+// the whole tree, so the payload is paid on every click, and over a tunnel it
+// is paid at tunnel speed.
+//
+// Hydration puts both back before anything renders, so every reader below still
+// sees `node.git_diff` and `node.lineage` exactly as before.
+function _hydrateTree(data) {
+  if (!data || !data.root) return data;
+  const bodies = data.diffs || {};
+  const parents = {};
+  const byId = {};
+  (function index(n, parentId) {
+    byId[n.id] = n;
+    parents[n.id] = parentId;
+    if (n.git_diff === undefined) n.git_diff = bodies[n.git_diff_ref] || null;
+    (n.children || []).forEach(c => index(c, n.id));
+  })(data.root, null);
+  Object.keys(byId).forEach(id => {
+    const chain = [];
+    const seen = {};
+    let cur = parents[id];
+    while (cur && byId[cur] && !seen[cur]) {
+      seen[cur] = 1;
+      const p = byId[cur];
+      if (p.node_type !== 'root') {
+        chain.push({id: p.id, label: p.label, node_type: p.node_type});
+      }
+      cur = parents[cur];
+    }
+    chain.reverse();
+    byId[id].lineage = chain;
+  });
+  return data;
+}
+
+// The one way to fetch a session tree: fetch, hydrate, cache. Every mutation
+// path refetches through here so none of them can forget the hydration step.
+async function _fetchTree(sid) {
+  const data = await api('/api/session/' + sid);
+  if (data && !data.error) {
+    _hydrateTree(data);
+    _treeCache[sid] = data;
+  }
+  return data;
+}
+
 // Branch-graph rendering: lane palette (lane 0 / trunk uses --accent), max lanes
 // before clamping, and a per-session collapsed-subtree set persisted to
 // localStorage so big sessions stay scannable across reloads.
@@ -286,13 +338,12 @@ async function renderSessionTree(sid) {
   const view = document.getElementById('session-tree-view');
   if (!view) return;
   view.innerHTML = '<div style="color:var(--muted);padding:12px">Loading...</div>';
-  const data = await api('/api/session/' + sid);
+  const data = await _fetchTree(sid);
   if (!data || data.error) {
     view.innerHTML = '<div style="color:var(--muted);padding:12px">' +
       escapeHtml((data && data.error) || 'Could not load session') + '</div>';
     return;
   }
-  _treeCache[sid] = data;
   const s = data.session || {};
   const root = data.root || null;
   const oc = s.outcomes || {};
@@ -396,6 +447,7 @@ function computeTreeLayout(root, collapsed) {
       collapsed: isCollapsed,
       hiddenCount: isCollapsed ? _countDescendants(node) : 0,
       rowIdx, parentRowIdx,
+      parentNode: parentRowIdx != null && rows[parentRowIdx] ? rows[parentRowIdx].node : null,
       forkChildren: [], hasSpineChild: false,
     };
     rows.push(row);
@@ -535,7 +587,13 @@ function _renderNodeContent(row, isRoot, latestId) {
   const node = row.node;
   const t = node.node_type || 'root';
   const time = node.created_at ? new Date(node.created_at * 1000).toLocaleTimeString() : '';
-  const diffSummary = summarizeDiff(node.git_diff);
+  // A node's diff is the repository's, not the notebook's (the notebook is
+  // not in git's view), so a node whose diff is its parent's changed nothing
+  // in the repo: repeating `+5 −2` and the same `def build…` edit on every
+  // node read as though each one had made it, and hid the cell edit that
+  // actually defined the branch (`dropout = 0.3`).
+  const repoChanged = !row.parentNode || (row.parentNode.git_diff || '') !== (node.git_diff || '');
+  const diffSummary = repoChanged ? summarizeDiff(node.git_diff) : '';
   const cellCount = _cellCount(node.cell_source);
   const expBadge = node.exp_id
     ? `<a class="node-exp-badge" href="#" onclick="event.stopPropagation();showDetail('${node.exp_id}');return false">→ exp ${escapeHtml(node.exp_id.slice(0,8))}</a>`
@@ -587,7 +645,18 @@ function _renderNodeContent(row, isRoot, latestId) {
        onclick="event.stopPropagation();pinCompareNode('${node.id}')">⇄</button>`;
   // Inline code trace: an always-visible "defining change" line + a ⟨⟩ toggle
   // that expands the full cell source right in the row (no detour to the detail).
-  const defining = isRoot ? '' : _definingChange(node);
+  const defining = isRoot ? '' : _definingChange(node, !repoChanged);
+  // What the node measured: the per-node metrics the tree payload already
+  // carries (tagged at write time), so reading a branch's result no longer
+  // means opening its detail or pinning it into a comparison.
+  const mKeys = Object.keys(node.metrics || {}).sort();
+  const metricsMini = mKeys.length
+    ? '<div class="node-metrics-mini">' + mKeys.slice(0, 4).map(k =>
+        '<span class="nmm-k">' + escapeHtml(k) + '</span> '
+        + escapeHtml(fmtMetricVal(node.metrics[k]))).join('<span class="nm-sep">·</span>')
+      + (mKeys.length > 4 ? ' <span class="nmm-more">+' + (mKeys.length - 4) + '</span>' : '')
+      + '</div>'
+    : '';
   const definingHtml = defining
     ? `<div class="node-defining" title="defining change vs parent">✎ ${escapeHtml(defining)}</div>` : '';
   const codePeek = _nodeCodePeek(node);
@@ -620,6 +689,7 @@ function _renderNodeContent(row, isRoot, latestId) {
       ${metaLine}
       ${awaitingLine}
       ${definingHtml}
+      ${metricsMini}
       ${resultMini}
       ${note}
       ${codeBlock}
@@ -653,8 +723,8 @@ function _similarHead(a, b) {
   const ha = (a.split('=')[0] || '').trim(), hb = (b.split('=')[0] || '').trim();
   return !!ha && ha === hb;
 }
-function _definingChange(node) {
-  const diff = node.git_diff || '';
+function _definingChange(node, skipDiff) {
+  const diff = skipDiff ? '' : (node.git_diff || '');
   if (diff) {
     const adds = [], dels = [];
     for (const ln of diff.split('\n')) {
@@ -980,8 +1050,7 @@ async function renderSelectedNodeDetail(nodeId) {
   if (!detail) return;
   let data = _treeCache[_activeSessionId];
   if (!data) {
-    data = await api('/api/session/' + _activeSessionId);
-    if (data && !data.error) _treeCache[_activeSessionId] = data;
+    data = await _fetchTree(_activeSessionId);
   }
   const node = findNodeInTree(data && data.root, nodeId);
   if (!node) { detail.classList.remove('visible'); return; }
@@ -1322,9 +1391,8 @@ async function saveNodeNote(nodeId) {
       status.classList.add('ok');
     }
     // Refresh the tree silently — but keep the detail open with the new value.
-    const data = await api('/api/session/' + _activeSessionId);
+    const data = await _fetchTree(_activeSessionId);
     if (data && !data.error) {
-      _treeCache[_activeSessionId] = data;
       // Re-render just the tree, not the detail (preserves saved indicator).
       const container = document.getElementById('session-tree-container');
       if (container && data.root) {
@@ -1381,8 +1449,7 @@ function startNodeRename(nodeId) {
 // open node detail. Shared by mutations that change a node in place.
 async function _refreshTreeAndDetail(nodeId) {
   delete _treeCache[_activeSessionId];
-  const data = await api('/api/session/' + _activeSessionId);
-  if (data && !data.error) _treeCache[_activeSessionId] = data;
+  await _fetchTree(_activeSessionId);
   _rerenderTreeContainer();
   if (_selectedNodeId === nodeId) renderSelectedNodeDetail(nodeId);
 }

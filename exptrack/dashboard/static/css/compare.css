@@ -96,8 +96,14 @@
      a plot the grid is claiming to pair. */
   .multi-compare-image-cell img {
     width: 100%; aspect-ratio: 4 / 3; object-fit: contain;
-    background: var(--code-bg);
-    border-radius: 4px; border: 1px solid var(--border); cursor: pointer;
+    /* Transparent, not a filled panel. The box is reserved so the grid cannot
+       collapse (see above), but a plot is rarely 4/3 and a filled background
+       turned the leftover space into a visible slab around every image —
+       read, correctly, as "why is there a white box around my plot". The
+       border appears on hover, where it means "this is the thing you are
+       about to open". */
+    background: transparent;
+    border-radius: 4px; border: 1px solid transparent; cursor: pointer;
     transition: transform 0.15s;
   }
   .multi-compare-image-cell img:hover { transform: scale(1.03); border-color: var(--blue); }
@@ -107,6 +113,27 @@
   .multi-compare-image-name {
     font-size: 10px; color: var(--muted); margin-top: 3px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* A numbered series (one image per test sample) is one row whose cell holds
+     that run's strip. The cell widens for it, and the strip wraps into a small
+     grid rather than one tall column, so both runs' first members stay on the
+     same line as each other. Each item reserves its own box for the same
+     reason the single-image cell does. */
+  .multi-compare-image-cell.is-family { min-width: 260px; max-width: 420px; }
+  .cmp-family-strip {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+    gap: 6px;
+  }
+  .cmp-family-item img {
+    width: 100%; aspect-ratio: 4 / 3; object-fit: contain;
+    background: transparent; border-radius: 4px;
+    border: 1px solid transparent; cursor: pointer;
+  }
+  .cmp-family-item img:hover { border-color: var(--blue); }
+  .cmp-family-count {
+    font-weight: 400; font-size: 11px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px;
+    margin-left: 6px;
   }
   .cmp-img-shared-note {
     font-size: 11px; color: var(--yellow); margin: 0 0 4px;
@@ -220,3 +247,10 @@
 }
 .cmp-polarity:hover { text-decoration: underline dotted; }
 .cmp-polarity-arrow { color: var(--text-2); font-size: var(--text-xs); }
+
+.cmp-failure {
+  margin: var(--space-3) 0; padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--red); border-radius: var(--radius-sm);
+  color: var(--text-1); background: var(--surface);
+}
+.cmp-failure strong { color: var(--red); }

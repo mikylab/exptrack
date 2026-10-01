@@ -7,6 +7,8 @@ All functions accept a sqlite3.Connection and return plain dicts/lists.
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 from typing import Any
 
@@ -14,7 +16,13 @@ from . import primary_metric, reference
 from .db import diff_sentinel_kind, is_diff_sentinel, resolve_git_diff
 from .metric_alias import alias_map, canonical_groups, merge_metric_map
 from .param_study import params_differ
-from .utils import chunked, is_user_param_key, like_prefix, placeholders
+from .utils import (
+    chunked,
+    is_user_param_key,
+    like_prefix,
+    placeholders,
+    split_changed_lines,
+)
 
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.tiff', '.webp')
 
@@ -42,11 +50,13 @@ _ARTIFACT_KINDS = (
 
 def artifact_kind(path: str) -> str:
     """Coarse type of an artifact path — the grouping key for summaries."""
-    lower = str(path or "").lower()
-    dot = lower.rfind(".")
-    if dot == -1 or "/" in lower[dot:]:
+    # os.path, not "/": a Windows path separates with backslashes, and a dot in
+    # a *directory* name (`C:\run.v2\ckpt`) is not an extension.
+    name = os.path.basename(str(path or "")).lower()
+    dot = name.rfind(".")
+    if dot == -1:
         return "dir"
-    ext = lower[dot:]
+    ext = name[dot:]
     for kind, exts in _ARTIFACT_KINDS:
         if ext in exts:
             return kind
@@ -67,7 +77,13 @@ def summarize_artifacts(artifacts: list, limit: int = ARTIFACT_LIST_LIMIT) -> di
     for a in items:
         path = a.get("path") if isinstance(a, dict) else a["path"]
         by_kind[artifact_kind(path)] = by_kind.get(artifact_kind(path), 0) + 1
-        parent = str(path or "").rsplit("/", 1)[0] if "/" in str(path or "") else "."
+        # os.path.dirname, not a split on "/": Windows records artifact paths
+        # with backslashes, and splitting on "/" alone put every one of them
+        # under "." — a run with 4000 checkpoints reported one directory
+        # holding everything it wrote. The platform's own rule also keeps a
+        # POSIX filename that happens to contain a backslash in one piece.
+        # Shown with "/" everywhere, so the summary reads the same on both.
+        parent = os.path.dirname(str(path or "")).replace(os.sep, "/") or "."
         by_dir[parent] = by_dir.get(parent, 0) + 1
     shown = items if not limit else items[:limit]
     return {
@@ -283,6 +299,10 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
     # Surface the dataset manifest as its own key (and keep it out of the params
     # table — it's an internal `_`-prefixed bookkeeping param).
     datasets = all_params.pop("_dataset_manifest", {}) or {}
+    # The library versions the run imported (core/environment.py), resolved
+    # from its content-addressed record; the hash itself is bookkeeping.
+    from exptrack.core.environment import ENV_PARAM, load_environment
+    environment = load_environment(conn, all_params.pop(ENV_PARAM, "") or "")
     # Surface the failure traceback (captured by Experiment.fail) as its own
     # `error` key so a failed run shows file+line, not just the short `error`
     # param. Keep it out of the params table.
@@ -338,6 +358,7 @@ def get_experiment_detail(conn, exp_id: str) -> dict | None:
         "params": all_params,
         "param_sources": {p["key"]: p["source"] for p in params},
         "datasets": datasets,
+        "environment": environment,
         "error": error_traceback,
         "metrics": [{
             "key": m["key"], "last": m["last_v"],
@@ -789,7 +810,15 @@ def last_metrics(conn, exp_id: str) -> dict:
 #     hide exactly the comparison the user wants. The baseline's status rides
 #     along on the payload instead, so the UI can flag that its metrics stop
 #     where it crashed.
-_BASELINE_WHERE = "deleted_at IS NULL AND status != 'running'"
+# A run that died parsing its own arguments (`_arg_error`, set by `exptrack
+# run` when argparse exited) is not a baseline either: it ran none of the
+# script, and the delta against it compared real params with a raw-argv guess
+# (`lr notanumber->0.1 · seed None->0 · width None->32`). A crash *inside* the
+# script is still kept — "it broke, I fixed it" is the loop that rule is for.
+ARG_ERROR_KEY = "_arg_error"
+_BASELINE_WHERE = ("deleted_at IS NULL AND status != 'running' AND NOT EXISTS "
+                   "(SELECT 1 FROM params WHERE params.exp_id = experiments.id "
+                   f"AND params.key = '{ARG_ERROR_KEY}')")
 
 
 VARIANT_OF_KEY = "_variant_of"
@@ -1687,16 +1716,24 @@ def get_multi_compare(conn, exp_ids: list[str], rank_by: str = "final",
 
     images: dict[str, list] = {e: [] for e in full_ids}
     path_owners: dict[str, set] = {}
+    art_rows: dict[str, list] = {e: [] for e in full_ids}
     for chunk in chunked(full_ids):
         for r in conn.execute(
-            f"SELECT exp_id, label, path FROM artifacts "
+            f"SELECT exp_id, label, path, content_hash, size_bytes FROM artifacts "
             f"WHERE exp_id IN ({placeholders(chunk)})", chunk
         ).fetchall():
             p = r["path"] or ""
             if p and any(p.lower().endswith(ext) for ext in IMAGE_EXTS):
-                rel = _rel_path(p)
-                images[r["exp_id"]].append({"label": r["label"], "path": rel})
-                path_owners.setdefault(rel, set()).add(r["exp_id"])
+                art_rows[r["exp_id"]].append(
+                    {"label": r["label"], "path": p, "hash": r["content_hash"],
+                     "size": r["size_bytes"]})
+    names_by_id = {r["id"]: (r["name"] or "") for r in rows}
+    for exp_id, rows_for_exp in art_rows.items():
+        for row in drop_protected_copy_duplicates(rows_for_exp,
+                                                  names_by_id.get(exp_id, "")):
+            rel = _rel_path(row["path"])
+            images[exp_id].append({"label": row["label"], "path": rel})
+            path_owners.setdefault(rel, set()).add(exp_id)
     _set_image_keys(images)
     _assign_image_groups(images)
     # Artifacts are tracked by reference, so two runs pointed at one path share
@@ -1734,6 +1771,127 @@ def get_multi_compare(conn, exp_ids: list[str], rank_by: str = "final",
             "images": images[full_id],
         })
     return results
+
+
+def drop_protected_copy_duplicates(rows: list[dict], exp_name: str = "") -> list[dict]:
+    """One row per image where the savefig copy and its original are both held.
+
+    The savefig patch copies each figure into ``outputs/<run name>/`` and
+    registers **the copy**; the finish-time output scan then registers the file
+    the script actually wrote. Two rows, one image — which showed every plot
+    twice in the Images tab and, worse, put two same-named images inside one
+    run, so ``_set_image_keys`` had to key on full paths and Compare paired
+    nothing across runs. The symptom is a grid whose row heading is a full
+    path and whose other column reads *No image*.
+
+    Two rules, because the first one alone missed the common case:
+
+    1. **Same content hash, one side under ``outputs/``**: the copy wins, the
+       other drops.
+    2. **A row sitting at the copy's own address** — ``outputs/<run
+       name>/<file>`` — takes any same-named row elsewhere with it. That
+       address is written by exactly one thing, so a same-named file anywhere
+       else is its original. This is the rule that carries runs recorded
+       before artifacts were hashed (``content_hash`` NULL, so rule 1 sees
+       nothing to compare) and runs whose script writes into ``outputs/`` too,
+       where *both* rows are inside and rule 1 never fires. Where both sizes
+       or both hashes are known they still have to agree, so a genuinely
+       different file that happens to share a name survives.
+
+    What must never collapse: two different plots that merely hold the same
+    bytes (``plots/train/loss.png`` and ``plots/val/loss.png``). Neither sits
+    at the copy address, so neither rule touches them — hiding one of a run's
+    images is worse than showing a duplicate.
+
+    *rows* carry ``path`` (as stored, normally absolute), ``hash`` and
+    optionally ``size``. *exp_name* enables rule 2.
+    """
+    import os
+
+    if len(rows) < 2:
+        return rows
+    try:
+        from ..config import load as _load
+        from ..config import project_root
+        outputs = os.path.normcase(os.path.abspath(
+            os.path.join(str(project_root()), _load().get("outputs_dir", "outputs"))))
+    except Exception:
+        return rows
+    copy_dir = os.path.join(outputs, os.path.normcase(exp_name)) if exp_name else None
+
+    def _norm(path: str) -> str:
+        return os.path.normcase(os.path.abspath(path or ""))
+
+    def _inside(path: str) -> bool:
+        norm = _norm(path)
+        return norm == outputs or norm.startswith(outputs + os.sep)
+
+    def _is_copy(path: str) -> bool:
+        return bool(copy_dir) and os.path.dirname(_norm(path)) == copy_dir
+
+    def _compatible(a: dict, b: dict) -> bool:
+        """Are these two rows the same file, as far as anything can say?
+
+        Recorded hash, then recorded size, then the files on disk. Only a
+        *measured difference* rules the pair out: a rerun overwrites the file
+        the earlier run's copy was made from, so an old run's original may no
+        longer match its own copy, and refusing to pair them there would put
+        the duplicate back.
+        """
+        if a.get("hash") and b.get("hash"):
+            return a["hash"] == b["hash"]
+        if a.get("size") and b.get("size"):
+            return a["size"] == b["size"]
+        try:
+            return os.path.getsize(a["path"]) == os.path.getsize(b["path"])
+        except OSError:
+            return True
+
+    def _in_run_tree(path: str) -> bool:
+        """Under ``outputs/<run>/`` — the run's own output directory.
+
+        Everything the run deliberately organized lives here, including
+        subdirectories (``outputs/<run>/epoch1/pred.png``). Those are not the
+        savefig original: a rule that took them collapsed a run writing one
+        ``pred.png`` per epoch down to a single image.
+        """
+        return bool(copy_dir) and _norm(path).startswith(copy_dir + os.sep)
+
+    dropped = set()
+
+    by_hash: dict[str, list] = {}
+    for row in rows:
+        if row.get("hash"):
+            by_hash.setdefault(row["hash"], []).append(row)
+    for group in by_hash.values():
+        if len(group) > 1 and any(_inside(r["path"]) for r in group):
+            for r in group:
+                if not _inside(r["path"]):
+                    dropped.add(id(r))
+
+    for keeper in rows:
+        if not _inside(keeper["path"]):
+            continue
+        # A row at the copy's own address takes a same-named row from outside
+        # the run's output directory; any other row under `outputs/` takes one
+        # from outside `outputs/` entirely, which is what covers a *renamed*
+        # run whose stored copy path no longer matches its name.
+        at_copy_address = _is_copy(keeper["path"])
+        base = os.path.basename(_norm(keeper["path"]))
+        for other in rows:
+            if other is keeper or id(other) in dropped or id(keeper) in dropped:
+                continue
+            if os.path.basename(_norm(other["path"])) != base:
+                continue
+            if at_copy_address:
+                if _is_copy(other["path"]) or _in_run_tree(other["path"]):
+                    continue
+            elif _inside(other["path"]):
+                continue
+            if _compatible(keeper, other):
+                dropped.add(id(other))
+
+    return [r for r in rows if id(r) not in dropped]
 
 
 def normalized_image_stem(name: str) -> str:
@@ -1782,49 +1940,80 @@ def _set_image_keys(images_by_exp: dict) -> None:
             img["_key"] = base if counts[base] == 1 else norm
 
 
+# How many members of one normalized family a single run must hold before the
+# family becomes one row of its own. Below it, per-file rows are the clearer
+# reading — `loss.png` and `acc.png` are two plots and belong on two rows. At or
+# above it the run is emitting a *series* (one image per test sample, per epoch,
+# per class), and a row per member is a page hundreds of rows long in which
+# nothing can be compared to anything.
+IMAGE_FAMILY_MIN = 4
+
+
 def _assign_image_groups(images_by_exp: dict) -> None:
     """Set ``group`` on every image so Compare can pair them across runs.
 
-    Compare's image grid renders one row per group and one cell per run, so the
-    group *is* the claim "these are the same plot". Three rules, in order:
+    Compare's image grid renders one row per group, so the group *is* the claim
+    "these are the same plot". Four rules, in order:
 
-    1. **An exact filename shared by two or more runs is its own group.** This
-       is the rule that already worked and it must keep winning — a project
-       where both runs write ``loss.png`` must not have that pairing weakened by
-       a fuzzier one, and a run that writes both ``loss.png`` and
+    0. **A numbered family one run holds many members of is one row.** A run
+       that writes ``test_ISIC_0000000_output.png`` for every sample in a test
+       set produces hundreds of images whose names differ only in an index. Per
+       file that is hundreds of rows, and — because two runs scored different
+       samples, or one run's names collided and fell back to full paths — most
+       of those rows hold one run and read *No image* opposite it: the "huge
+       page of images by themselves" report. At ``IMAGE_FAMILY_MIN`` members in
+       any single run the family becomes one row, marked ``family``, and the
+       cell holds that run's members rather than one of them. This is the one
+       rule that outranks an exact filename match, because with a series the
+       exact match produces a page nobody can read.
+    1. **An exact filename shared by two or more runs is its own group.** A
+       project where both runs write ``loss.png`` must not have that pairing
+       weakened by a fuzzier one, and a run that writes both ``loss.png`` and
        ``loss_epoch9.png`` must not have them merged.
-    2. **Otherwise, fall back to ``normalized_image_stem``** — but only where
-       merging cannot hide anything: if any single run has two images that
-       normalize alike (a per-epoch filmstrip), that family keeps its exact
-       filenames, because one cell per (run, group) would show one of them and
-       silently drop the rest.
+    2. **Otherwise ``normalized_image_stem``** — but only where merging cannot
+       hide anything: a family below the series threshold whose members would
+       collide in one cell keeps its exact filenames.
     3. Anything left keeps its own filename, which groups it alone.
     """
     exact_owners: dict[str, set] = {}
+    stems: dict[str, str] = {}
     for exp_id, imgs in images_by_exp.items():
         for img in imgs:
             exact_owners.setdefault(img["_key"], set()).add(exp_id)
+            stems.setdefault(img["_key"], normalized_image_stem(img["_key"]))
 
-    # Which normalized families are safe to merge, and which runs they span.
-    per_run_counts: dict[str, dict] = {}
+    # How many members of each normalized family each run holds. Counted over
+    # *every* image, because rule 0 has to see a series whose file names happen
+    # to match across runs too — that is the case that produces the longest
+    # page.
+    family_counts: dict[str, dict] = {}
     for exp_id, imgs in images_by_exp.items():
         for img in imgs:
-            if len(exact_owners[img["_key"]]) > 1:
-                continue          # rule 1 handles it; not a merge candidate
-            stem = normalized_image_stem(img["_key"])
-            per_run_counts.setdefault(stem, {})
-            per_run_counts[stem][exp_id] = per_run_counts[stem].get(exp_id, 0) + 1
-    mergeable = {stem for stem, by_run in per_run_counts.items()
-                 if len(by_run) > 1 and max(by_run.values()) == 1}
+            by_run = family_counts.setdefault(stems[img["_key"]], {})
+            by_run[exp_id] = by_run.get(exp_id, 0) + 1
+    series = {stem for stem, by_run in family_counts.items()
+              if max(by_run.values()) >= IMAGE_FAMILY_MIN}
+
+    # Families safe to merge below the series threshold: they must span more
+    # than one run and hold at most one member per run, or a cell would show
+    # one image and silently drop the rest.
+    mergeable = {stem for stem, by_run in family_counts.items()
+                 if stem not in series and len(by_run) > 1
+                 and max(by_run.values()) == 1
+                 and not any(len(exact_owners[k]) > 1 for k, st in stems.items()
+                             if st == stem)}
 
     for imgs in images_by_exp.values():
         for img in imgs:
             key = img.pop("_key")
-            if len(exact_owners[key]) > 1:
+            stem = stems[key]
+            if stem in series:
+                img["group"] = stem
+                img["family"] = True
+            elif len(exact_owners[key]) > 1:
                 img["group"] = key
-                continue
-            stem = normalized_image_stem(key)
-            img["group"] = stem if stem in mergeable else key
+            else:
+                img["group"] = stem if stem in mergeable else key
 
 
 def varying_param_keys(runs: list[dict]) -> list[str]:
@@ -2124,6 +2313,36 @@ def _artifact_export_summary(artifacts: list, limit: int) -> dict:
     }
 
 
+def _export_git_diff(conn, stored) -> dict:
+    """``{"git_diff", "git_diff_status"}`` for an export: the diff or its absence.
+
+    ``git_diff`` is the resolved diff text ("" for a clean tree); a sentinel
+    becomes ``git_diff: ""`` plus the sentinel as ``git_diff_status``, so a
+    renderer can say "compacted" rather than "no changes".
+    """
+    try:
+        diff = resolve_git_diff(conn, stored) or ""
+    except Exception:
+        diff = ""
+    if diff and is_diff_sentinel(diff):
+        return {"git_diff": "", "git_diff_status": diff}
+    return {"git_diff": diff, "git_diff_status": ""}
+
+
+def _export_project_root() -> str:
+    try:
+        from .. import config as _cfg
+        return str(_cfg.project_root())
+    except Exception:
+        return ""
+
+
+def _export_git_web() -> dict | None:
+    from .git import repo_web_links
+    root = _export_project_root()
+    return repo_web_links(root) if root else None
+
+
 def get_export_data(conn, exp_id: str, full: bool = False,
                     artifact_limit: int = ARTIFACT_LIST_LIMIT) -> dict | None:
     """Get export data for an experiment.
@@ -2171,6 +2390,8 @@ def get_export_data(conn, exp_id: str, full: bool = False,
     if all_params.get("_code_changes"):
         code_changes["script"] = all_params["_code_changes"]
     datasets = all_params.get("_dataset_manifest") or {}
+    from exptrack.core.environment import ENV_PARAM, load_environment
+    environment = load_environment(conn, all_params.get(ENV_PARAM) or "")
 
     data = {
         "id": exp["id"],
@@ -2194,7 +2415,18 @@ def get_export_data(conn, exp_id: str, full: bool = False,
         "params": user_params,
         "variables": variables,
         "code_changes": code_changes,
+        # The run's full uncommitted diff, which is what an export renders
+        # code changes from: every file, hunk line numbers, context and
+        # indentation. `code_changes` above is a lossy summary of the script
+        # alone. A sentinel (compacted, capture failed, no commits) is not a
+        # diff, so it rides separately as `git_diff_status`.
+        **_export_git_diff(conn, exp["git_diff"]),
+        # Where the paths below are relative to, and the hosted repository's
+        # web base for commit/file links (None when origin is on no known host).
+        "project_root": _export_project_root(),
+        "git_web": _export_git_web(),
         "datasets": datasets,
+        "environment": environment,
         "metrics": {},
         "timeline_summary": {
             "total_events": len(timeline),
@@ -2342,64 +2574,341 @@ def _m(value) -> str:
     return "--" if value is None else str(value)
 
 
-def format_export_markdown(data: dict, artifact_limit: int = ARTIFACT_LIST_LIMIT) -> str:
+def _md_cell(value) -> str:
+    """*value* as the text of one markdown table cell.
+
+    A ``|`` in a value ends the cell and a newline ends the row, so a changed
+    line like ``x = a | b`` or a multi-line note used to shear the table.
+    Only ``|`` is escaped: GFM strips that escape even inside a code span,
+    but a doubled backslash in a Windows path would print doubled.
+    """
+    return str(value).replace("|", "\\|").replace("\n", "<br>")
+
+
+def _md_code(value) -> str:
+    """*value* as inline code, fenced wide enough for backticks it contains."""
+    s = str(value)
+    if not s:
+        return ""
+    run = max((len(m) for m in re.findall(r"`+", s)), default=0)
+    fence = "`" * (run + 1)
+    # Markdown strips one space from each end of a span that starts and ends
+    # with one — `    return ` would lose the space before the next word —
+    # so such text gets a pad space to give back.
+    both_spaces = s.startswith(" ") and s.endswith(" ") and s.strip() != ""
+    pad = " " if run or s.startswith("`") or s.endswith("`") or both_spaces else ""
+    return f"{fence}{pad}{s}{pad}{fence}"
+
+
+def _md_value(value) -> str:
+    """A parameter/variable value, readable and still unambiguous.
+
+    Strings print bare (``adam``, not ``"adam"``) unless the bare form would
+    read as another type — ``"4"``, ``"true"``, ``"null"``, ``""`` keep their
+    quotes, so no value's type is lost. Everything else is its JSON.
+    """
+    if isinstance(value, str):
+        try:
+            json.loads(value)
+            ambiguous = True
+        except ValueError:
+            ambiguous = value == "" or value != value.strip()
+        return json.dumps(value) if ambiguous else value
+    return json.dumps(value, default=str)
+
+
+def _fmt_duration(seconds) -> str:
+    """``1.081 s``, or ``3725.412 s (1 h 2 m 5 s)`` past a minute."""
+    try:
+        s = float(seconds)
+    except (TypeError, ValueError):
+        return str(seconds)
+    text = f"{s:.3f} s"
+    if s >= 60:
+        whole = int(s)
+        h, rem = divmod(whole, 3600)
+        m, sec = divmod(rem, 60)
+        parts = ([f"{h} h"] if h else []) + ([f"{m} m"] if h or m else []) + [f"{sec} s"]
+        text += f" ({' '.join(parts)})"
+    return text
+
+
+def _md_table(header: list[str], rows: list[list], align: str = "") -> list[str]:
+    """Lines of a markdown table. *align* has one ``l``/``r`` per column."""
+    seps = ["---:" if (align[i:i + 1] == "r") else "---" for i in range(len(header))]
+    out = ["| " + " | ".join(header) + " |", "| " + " | ".join(seps) + " |"]
+    out += ["| " + " | ".join(str(c) for c in r) + " |" for r in rows]
+    return out
+
+
+def _md_changed_lines(summary) -> list[str]:
+    """A `_code_changes` summary as a table, one changed line per row.
+
+    Stored as one ``+ a; - b`` string, it exported as a single run-on line
+    inside a diff fence — every changed line of the script in one paragraph.
+    Every fragment keeps its row, and the truncation marker stays stated.
+    """
+    changed, note = split_changed_lines(summary)
+    if not changed:
+        return ["```", str(summary), "```"] if summary else []
+    added = sum(1 for s, _ in changed if s == "+")
+    removed = sum(1 for s, _ in changed if s == "-")
+    out = [f"{added} added, {removed} removed" + (f"; {note}" if note else ""), ""]
+    rows = [[sign, _md_cell(_md_code(text))] for sign, text in changed]
+    return out + _md_table(["", "Line"], rows)
+
+
+def _rel_path_for(path, root: str) -> str:
+    """*path* relative to the project *root* when it lies inside it.
+
+    The same absolute prefix repeated on every script, command, output and
+    artifact line was most of what made an export hard to read. The root is
+    stated once, so nothing is lost.
+    """
+    p = str(path or "")
+    if not p or not root:
+        return p
+    norm_root = os.path.normcase(os.path.normpath(root))
+    norm_p = os.path.normcase(os.path.normpath(p))
+    if norm_p == norm_root:
+        return "."
+    if norm_p.startswith(norm_root + os.sep):
+        return os.path.normpath(p)[len(os.path.normpath(root)) + 1:].replace("\\", "/")
+    return p
+
+
+def _rel_command(command: str, root: str) -> str:
+    """*command* with the project root stripped from its paths — runnable from
+    the root, which the export states."""
+    if not command or not root:
+        return command or ""
+    out = command
+    for prefix in {os.path.normpath(root) + os.sep, str(root).rstrip("/\\") + "/"}:
+        out = out.replace(prefix, "")
+    return out
+
+
+def _md_link(text_md: str, url: str) -> str:
+    return f"[{text_md}]({url})" if url else text_md
+
+
+def _range_text(start: int, length: int) -> str:
+    if length <= 0:
+        return "new file" if start == 0 else f"after line {start}"
+    return f"{start}" if length == 1 else f"{start}-{start + length - 1}"
+
+
+def _diff_where(f: dict, links, sha: str, as_md: bool = True) -> list[str]:
+    """Where each hunk of *f* sits in the committed file — one entry per hunk.
+
+    The *old* range is the one to look up: the committed file at *sha* is what
+    the reader has, and it is where the change goes. Linked to the file at
+    that commit, opened at those lines.
+    """
+    from .git import file_web_url
+    out = []
+    for h in f["hunks"]:
+        text = _range_text(h["old_start"], h["old_len"])
+        url = file_web_url(links, sha, f["old_path"], h["old_start"],
+                           h["old_start"] + max(h["old_len"], 1) - 1)
+        out.append(_md_link(text, url) if as_md else text)
+    return out
+
+
+# Said in place of the patch blocks when a copy leaves them out: the reader
+# of a pasted diff wants the before/after tables, and a patch pasted into a
+# notebook is a wall of +/- lines nobody applies from there.
+PATCH_OMITTED_NOTE = ("The patch is left out of this copy: **Export .patch** "
+                      "downloads it for `git apply`.")
+
+
+def _md_diff_section(diff: str, links, sha: str, heading: str = "##",
+                     intro: str = "", where: str = "",
+                     patch: bool = True) -> list[str]:
+    """A git diff as: a summary table of files, then one patch block per file.
+
+    ``patch=False`` (the dashboard's Copy) ends with a line naming the
+    Export .patch button instead of the patch blocks.
+
+    Each block is that file's section of the diff verbatim — headers, hunks,
+    context and indentation — so it can be pasted into ``git apply`` or read
+    against the committed file the table links to. The old rendering was the
+    `_code_changes` fragments, stripped of indentation, file and line number,
+    for the entry script only.
+    """
+    from .git import commit_web_url, file_web_url, parse_diff_files
+    parsed = parse_diff_files(diff)
+    files = parsed["files"]
+    if not files:
+        return ["```diff", str(diff), "```"] if str(diff).strip() else []
+    added = sum(f["added"] for f in files)
+    removed = sum(f["removed"] for f in files)
+    base = _md_link(_md_code(sha), commit_web_url(links, sha)) if sha else "the last commit"
+    lead = intro or f"Uncommitted changes against {base}"
+    out = [f"{lead}: {len(files)} "
+           f"file{'s' if len(files) != 1 else ''}, {added} added, {removed} removed.", ""]
+    rows = []
+    for f in files:
+        name = _md_code(f["path"]) + ("" if f["status"] == "modified" else f" ({f['status']})")
+        url = "" if f["status"] == "added" else file_web_url(links, sha, f["old_path"])
+        rows.append([_md_cell(_md_link(name, url)), f["added"], f["removed"],
+                     _md_cell(", ".join(_diff_where(f, links, sha)) or "--")])
+    where = where or (f"Lines at {_md_code(sha)}" if sha else "Lines in the committed file")
+    out += _md_table(["File", "Added", "Removed", where], rows, "lrrl")
+    out.append("")
+    # The readable view first: each changed line beside what it replaced, the
+    # words that changed marked (~~removed~~, **added**). A unified diff is
+    # what `git apply` wants and a poor thing to read — the edit to a line is
+    # a `-` and a `+` some distance apart, and spotting the one word that
+    # differs is left to the reader.
+    before, after = ("Older run", "Newer run") if intro else ("Before", "After")
+    for f in files:
+        out += [f"{heading} {f['path']}", ""]
+        rows = _md_changed_rows(f)
+        if rows:
+            out += _md_table(["Line", before, "Line", after], rows, "rlrl")
+        else:
+            out.append("_No line changes (mode or rename only)._")
+        out.append("")
+    # The patch, verbatim, last — for applying, not for reading.
+    if not patch:
+        return [*out, f"_{PATCH_OMITTED_NOTE}_", ""]
+    out += [f"{heading} Patch", "",
+            "The same change as a patch: save it as a `.patch` file and run "
+            "`git apply <file>` from the repository root (or use Export .patch / "
+            "`exptrack diff <id> --patch -o run.patch`).", ""]
+    for f in files:
+        out += ["```diff", f["patch"], "```", ""]
+    if parsed["trailer"]:
+        out += [f"_{parsed['trailer'].strip()}_", ""]
+    return out
+
+
+def _md_segments(segments, mark: str) -> str:
+    """Segments as adjacent code spans, the changed ones wrapped in *mark*
+    (``~~`` removed, ``**`` added) — which GFM renders and the dashboard's
+    HTML converter tints."""
+    parts = []
+    for text, changed in segments:
+        span = _md_code(text)
+        parts.append(f"{mark}{span}{mark}" if changed and span else span)
+    return _md_cell("".join(parts))
+
+
+def _md_changed_rows(f: dict) -> list[list]:
+    from .diff_view import changed_rows, word_segments
+    rows = []
+    for r in changed_rows(f["patch"]):
+        if r["old"] is not None and r["new"] is not None:
+            olds, news = word_segments(r["old"], r["new"])
+            rows.append([r["old_no"], _md_segments(olds, "~~"),
+                         r["new_no"], _md_segments(news, "**")])
+        elif r["old"] is not None:
+            rows.append([r["old_no"], _md_segments([(r["old"], True)], "~~"), "", ""])
+        else:
+            rows.append(["", "", r["new_no"], _md_segments([(r["new"], True)], "**")])
+    return rows
+
+
+def format_diff_markdown(name: str, exp_id: str, branch: str, commit: str,
+                         diff: str, links: dict | None = None,
+                         patch: bool = True) -> str:
+    """One run's git diff as a markdown document — the dashboard's Export/Copy
+    Diff and `exptrack compact --export` both write this, so the two can never
+    disagree about what the file looks like.
+
+    A table of what changed where, then each file's patch, untouched. A
+    sentinel is a status, not a diff — inside a ``diff`` fence it rendered as
+    the literal marker — so it is stated instead.
+    """
+    from .git import commit_web_url
+    lines = [f"# Diff: {name}", ""]
+    lines += _md_table(["Field", "Value"], [
+        ["Experiment ID", _md_code(exp_id)],
+        ["Branch", _md_code(branch or "")],
+        ["Commit", _md_link(_md_code(commit or ""), commit_web_url(links, commit or ""))],
+    ])
+    lines.append("")
+    if is_diff_sentinel(diff):
+        lines += [f"_No diff body is available for this run: `{diff}`_", ""]
+        return "\n".join(lines)
+    lines += _md_diff_section(diff, links, commit or "", patch=patch)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def format_export_markdown(data: dict, artifact_limit: int = ARTIFACT_LIST_LIMIT,
+                           patch: bool = True) -> str:
     """Generate a markdown summary of an experiment from export data.
 
     ``artifact_limit=0`` lists every artifact; the default caps the list and
     summarises the remainder by type and directory.
+
+    Laid out as tables so it reads the same pasted anywhere: the dashboard's
+    Copy puts an HTML rendering of this beside it on the clipboard, so OneNote
+    or Word receive real tables and a markdown editor receives this text.
+    Every value the old line-per-field layout carried is still here, at full
+    precision — only the duration is rounded, to the millisecond. Paths are
+    shown relative to the project root, which is stated.
     """
-    lines = [
-        f"# {data['name']}",
-        "",
-        f"**ID:** {data['id']}  ",
-        f"**Status:** {data['status']}  ",
-        f"**Created:** {data['created_at']}  ",
-    ]
+    from .git import commit_web_url
+    root = data.get("project_root") or ""
+    links = data.get("git_web")
+    sha = data.get("git_commit") or ""
+    fields = [("ID", _md_code(data["id"])), ("Status", data["status"]),
+              ("Created", data["created_at"])]
     if data.get('duration_s'):
-        lines.append(f"**Duration:** {data['duration_s']}s  ")
+        fields.append(("Duration", _fmt_duration(data['duration_s'])))
+    if root:
+        fields.append(("Project root", _md_code(root)))
     if data.get('script'):
-        lines.append(f"**Script:** `{data['script']}`  ")
+        fields.append(("Script", _md_code(_rel_path_for(data['script'], root))))
     if data.get('command'):
-        lines.append(f"**Command:** `{data['command']}`  ")
+        label = "Command (from project root)" if root else "Command"
+        fields.append((label, _md_code(_rel_command(data['command'], root))))
     if data.get('python_ver'):
-        lines.append(f"**Python:** {data['python_ver']}  ")
+        fields.append(("Python", data['python_ver']))
     if data.get('git_branch'):
-        lines.append(f"**Git:** {data['git_branch']} @ {data['git_commit']}  ")
+        commit = _md_link(_md_code(sha), commit_web_url(links, sha)) if sha else ""
+        fields.append(("Git", f"{data['git_branch']} @ {commit}"))
     if data.get('hostname'):
-        lines.append(f"**Hostname:** {data['hostname']}  ")
+        fields.append(("Hostname", data['hostname']))
     if data.get('tags'):
-        lines.append(f"**Tags:** {', '.join(data['tags'])}  ")
+        fields.append(("Tags", ", ".join(data['tags'])))
     if data.get('studies'):
-        lines.append(f"**Studies:** {', '.join(data['studies'])}  ")
+        fields.append(("Studies", ", ".join(data['studies'])))
     if data.get('stage') is not None:
         stage_str = str(data['stage'])
         if data.get('stage_name'):
             stage_str += f" ({data['stage_name']})"
-        lines.append(f"**Stage:** {stage_str}  ")
+        fields.append(("Stage", stage_str))
     if data.get('output_dir'):
-        lines.append(f"**Output Dir:** `{data['output_dir']}`  ")
+        fields.append(("Output dir", _md_code(_rel_path_for(data['output_dir'], root))))
     if data.get('project'):
-        lines.append(f"**Project:** {data['project']}  ")
+        fields.append(("Project", data['project']))
+    lines = [f"# {data['name']}", ""]
+    lines += _md_table(["Field", "Value"], [[k, _md_cell(v)] for k, v in fields])
     lines.append("")
     if data.get("notes"):
         lines += ["## Notes", "", data["notes"], ""]
     if data.get("params"):
-        lines += ["## Parameters", "", "| Key | Value |", "| --- | --- |"]
-        for k, v in data["params"].items():
-            lines.append(f"| {k} | {json.dumps(v)} |")
+        lines += ["## Parameters", ""]
+        lines += _md_table(["Parameter", "Value"],
+                           [[_md_cell(k), _md_cell(_md_value(v))]
+                            for k, v in data["params"].items()])
         lines.append("")
     if data.get("variables"):
-        lines += ["## Variables", "", "| Name | Value |", "| --- | --- |"]
-        for k, v in data["variables"].items():
-            lines.append(f"| {k} | {json.dumps(v)} |")
+        lines += ["## Variables", ""]
+        lines += _md_table(["Name", "Value"],
+                           [[_md_cell(k), _md_cell(_md_value(v))]
+                            for k, v in data["variables"].items()])
         lines.append("")
     summaries = export_metric_summaries(data)
     if summaries:
-        lines += ["## Metrics", "", "| Key | Last | Min | Max | Points |",
-                  "| --- | --- | --- | --- | --- |"]
-        for k, s in summaries.items():
-            lines.append(f"| {k} | {_m(s['last'])} | {_m(s['min'])} | "
-                         f"{_m(s['max'])} | {s['count']} |")
+        lines += ["## Metrics", ""]
+        lines += _md_table(["Metric", "Last", "Min", "Max", "Points"],
+                           [[_md_cell(k), _m(s['last']), _m(s['min']),
+                             _m(s['max']), s['count']]
+                            for k, s in summaries.items()], "lrrrr")
         lines.append("")
     art = data.get("artifacts_summary")
     if art or data.get("artifacts"):
@@ -2414,36 +2923,85 @@ def format_export_markdown(data: dict, artifact_limit: int = ARTIFACT_LIST_LIMIT
             # on its own rather than just an apology for a truncated list.
             types = ", ".join(f"{t['count']} {t['type']}" for t in art["by_type"])
             lines.append(f"{art['total']} files — {types}.")
-            top_dirs = ", ".join(f"`{d['dir']}` ({d['count']})" for d in art["by_dir"][:5])
+            top_dirs = ", ".join(f"`{_rel_path_for(d['dir'], root)}` ({d['count']})"
+                                 for d in art["by_dir"][:5])
             if top_dirs:
                 lines.append("")
                 lines.append(f"Directories: {top_dirs}")
             lines.append("")
-        for a in shown:
-            lines.append(f"- **{a['label']}**: `{a['path']}`")
+        if shown:
+            lines += _md_table(["Artifact", "Path"],
+                               [[_md_cell(a['label']),
+                                 _md_cell(_md_code(_rel_path_for(a['path'], root)))]
+                                for a in shown])
         if art["omitted"]:
-            lines.append(f"- … and {art['omitted']} more "
+            if shown:
+                lines.append("")
+            lines.append(f"… and {art['omitted']} more "
                          f"(`exptrack export --full` for the complete list)")
         lines.append("")
-    if data.get("code_changes"):
-        lines += ["## Code Changes", ""]
-        for name, diff in data["code_changes"].items():
-            lines.append(f"### {name}")
-            lines.append("```diff")
-            lines.append(str(diff))
-            lines.append("```")
-            lines.append("")
+    lines += _md_environment(data.get("environment"))
     ts = data.get("timeline_summary", {})
     if ts.get("total_events"):
-        lines += [
-            "## Timeline Summary",
-            "",
-            f"- Total events: {ts['total_events']}",
-            f"- Cell executions: {ts['cell_executions']}",
-            f"- Variable changes: {ts['variable_sets']}",
-            f"- Artifacts saved: {ts['artifact_events']}",
-        ]
-    return "\n".join(lines)
+        lines += ["## Timeline Summary", ""]
+        lines += _md_table(["Event", "Count"], [
+            ["Total events", ts['total_events']],
+            ["Cell executions", ts['cell_executions']],
+            ["Variable changes", ts['variable_sets']],
+            ["Artifacts saved", ts['artifact_events']],
+        ], "lr")
+        lines.append("")
+    # Last, so the patches run to the end of the document.
+    lines += _md_code_changes(data, links, sha, patch)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _md_environment(env: dict | None) -> list[str]:
+    """The Environment section: interpreter, platform, and the version of
+    every third-party package the run imported — what a reader reproducing
+    a result has to install."""
+    if not env:
+        return []
+    lines = ["## Environment", ""]
+    lines += _md_table(["Field", "Value"], [
+        ["Python", _md_code(f"{env.get('implementation', '')} {env.get('python', '')}".strip())],
+        ["Platform", _md_code(env.get("platform") or "--")],
+    ])
+    pkgs = env.get("packages") or {}
+    lines.append("")
+    if pkgs:
+        lines += _md_table(["Package", "Version"],
+                           [[_md_code(k), _md_code(v)] for k, v in pkgs.items()])
+    else:
+        lines.append("_No third-party package with a version was imported._")
+    lines.append("")
+    return lines
+
+
+def _md_code_changes(data: dict, links, sha: str, patch: bool = True) -> list[str]:
+    """The Code Changes section: the run's git diff when it has one.
+
+    The stored `script` fragments are a lossy summary of the same change, so
+    they are shown only when there is no diff to render (no git, a compacted
+    or failed capture) — and the reason is said. Per-cell notebook fragments
+    have no diff counterpart and are always kept.
+    """
+    diff = data.get("git_diff") or ""
+    changes = dict(data.get("code_changes") or {})
+    out: list[str] = []
+    if diff.strip():
+        changes.pop("script", None)
+        out += ["## Code Changes", "", *_md_diff_section(diff, links, sha, "###", patch=patch)]
+    elif changes or data.get("git_diff_status"):
+        out += ["## Code Changes", ""]
+        status = data.get("git_diff_status")
+        if status:
+            out += [f"_The full diff for this run is not available (`{status}`); "
+                    "showing the changed lines recorded for the script, without "
+                    "line numbers or indentation._", ""]
+    for name, summary in changes.items():
+        out += [f"### {name}", "", *_md_changed_lines(summary), ""]
+    return out
 
 
 PARAMS_EXPORT_FORMATS = {
@@ -2488,6 +3046,28 @@ def format_export_params(data: dict, style: str = "equals") -> str:
     return "\n".join(lines)
 
 
+def _csv_code_changes(diff: str, code_changes: dict) -> str:
+    """One cell saying what code changed: ``model.py +8/-4 @1-10; …``.
+
+    The cell used to hold only the change-set *names* (``script``), which
+    said a change existed and nothing about it. A whole patch does not belong
+    in a spreadsheet cell, so this is the per-file summary the markdown's
+    table carries — file, lines added/removed, and where in the committed
+    file — with the patch itself one `exptrack diff <id> --patch` away.
+    """
+    from .git import parse_diff_files
+    files = parse_diff_files(diff)["files"] if diff.strip() else []
+    if not files:
+        return ";".join(f"{k}" for k in code_changes) if code_changes else ""
+    parts = []
+    for f in files:
+        where = ",".join(_range_text(h["old_start"], h["old_len"]) for h in f["hunks"])
+        status = "" if f["status"] == "modified" else f" ({f['status']})"
+        parts.append(f"{f['path']}{status} +{f['added']}/-{f['removed']}"
+                     + (f" @{where}" if where else ""))
+    return "; ".join(parts)
+
+
 def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
     """Format batch export data as CSV/TSV string.
 
@@ -2515,7 +3095,10 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
     var_keys = sorted(all_var_keys)
 
     output = io.StringIO()
-    writer = csv_mod.writer(output, delimiter=delimiter)
+    # "\n", not csv's default "\r\n": the CLI prints this through a text-mode
+    # stdout, which on Windows turned every row ending into "\r\r\n" — a
+    # blank row between each run in Excel.
+    writer = csv_mod.writer(output, delimiter=delimiter, lineterminator="\n")
 
     # Header — all fields from get_export_data()
     header = ["id", "name", "project", "status", "created_at", "duration_s",
@@ -2568,8 +3151,7 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
         omitted = (data.get("artifacts_summary") or {}).get("omitted") or 0
         if omitted:
             art_str += f";… +{omitted} more"
-        # Code changes as semicolon-separated key:value
-        cc_str = ";".join(f"{k}" for k in code_changes) if code_changes else ""
+        cc_str = _csv_code_changes(data.get("git_diff") or "", code_changes)
         row += [art_str, cc_str,
                 ts.get("total_events", ""), ts.get("cell_executions", ""),
                 ts.get("variable_sets", ""), ts.get("artifact_events", "")]

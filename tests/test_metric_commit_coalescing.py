@@ -291,3 +291,57 @@ def test_non_finite_single_metric_flushes_a_pending_point(tmp_project):
     exp.log_metric("loss", float("nan"), step=2)   # non-finite → must tick/flush
     assert _rows(tmp_project) == 2, "non-finite singular did not tick the window"
     exp.finish()
+
+
+def test_the_tail_of_a_burst_lands_without_another_write(tmp_project):
+    """Four metrics logged together every N epochs must all reach the dashboard
+    before the *next* epoch's logging, not because of it.
+
+    The window used to close only when a later write arrived: the first metric
+    of the burst committed, the other three sat in the open transaction —
+    invisible to any other connection — until the next burst ten epochs later
+    committed them. So the chart showed `loss` alone at epoch 10, and at epoch
+    20 showed the other three at 10. A trailing flush closes the window on its
+    own once the interval has passed.
+    """
+    import time
+
+    from exptrack.core.experiment import Experiment
+
+    _set_interval(tmp_project, 50)
+    exp = Experiment(name="burst-tail")
+    for key in ("loss", "val_loss", "acc", "val_acc"):
+        exp.log_metric(key, 0.5, step=10)
+    assert _rows(tmp_project) == 1, "burst was not coalesced — test premise broken"
+    deadline = time.perf_counter() + 5.0
+    while _rows(tmp_project) < 4 and time.perf_counter() < deadline:
+        time.sleep(0.02)
+    assert _rows(tmp_project) == 4, "the burst's tail waited for the next write"
+    exp.finish()
+
+
+def test_the_trailing_flush_leaves_a_foreign_transaction_alone(tmp_project):
+    """The flush commits only rows it knows are metric rows.
+
+    It runs on another thread against the run's connection; if anything else
+    wrote on that connection after the last metric, the open transaction is no
+    longer only ours, and committing it early would split someone else's unit
+    of work. That writer commits it (and our rows with it).
+    """
+    import time
+
+    from exptrack.core.db import get_db
+    from exptrack.core.experiment import Experiment
+
+    _set_interval(tmp_project, 50)
+    exp = Experiment(name="foreign")
+    exp.log_metric("loss", 1.0, step=1)
+    exp.log_metric("loss", 2.0, step=2)        # deferred
+    conn = get_db()
+    conn.execute("INSERT INTO params (exp_id, key, value) VALUES (?,?,?)",
+                 (exp.id, "held", "1"))         # someone else's pending write
+    time.sleep(0.3)
+    assert _rows(tmp_project) == 1, "the flush committed a transaction it does not own"
+    conn.commit()
+    assert _rows(tmp_project) == 2
+    exp.finish()

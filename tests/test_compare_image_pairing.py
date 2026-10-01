@@ -208,3 +208,294 @@ def test_same_filename_in_two_directories_stays_two_groups(tmp_project):
     runs = get_multi_compare(get_db(), ids)
     for r in runs:
         assert len({img["group"] for img in r["images"]}) == 2, r["images"]
+
+
+# ---------------------------------------------------------------------------
+# The savefig copy and the file the script wrote are one image
+# ---------------------------------------------------------------------------
+
+def _run_with_protected_copy(name, filename, body, tmp_project):
+    """A run holding both the file the script wrote and its outputs/ copy.
+
+    Exactly what the savefig patch plus the finish-time output scan leave
+    behind: the patch copies the figure to ``outputs/<run>/`` and registers the
+    copy, the scan then registers the original.
+    """
+    import shutil
+
+    from exptrack.core.experiment import Experiment
+    orig = tmp_project / "figs" / filename
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_bytes(body)
+    copy = tmp_project / "outputs" / name / filename
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(orig), str(copy))
+
+    exp = Experiment(name=name, script="train.py")
+    exp.log_artifact(str(copy))
+    exp.log_artifact(str(orig))
+    exp.finish()
+    return exp.id
+
+
+def test_a_figure_and_its_outputs_copy_are_one_image(tmp_project):
+    """Two rows for one image put two same-named images inside a single run,
+    which forced the full-path keying and left every run's images in a column
+    of their own — the "nothing lines up" report."""
+    from exptrack.core.db import get_db
+    from exptrack.core.queries import get_multi_compare
+
+    ids = [_run_with_protected_copy(n, "loss.png", b"\x89PNG\r\n" + n.encode(),
+                                    tmp_project)
+           for n in ("a", "b")]
+
+    runs = get_multi_compare(get_db(), ids)
+    for r in runs:
+        assert len(r["images"]) == 1, r["images"]
+        # The copy is what survives: it is the run's own protected file.
+        assert "outputs" in r["images"][0]["path"]
+    groups = _groups(runs)
+    assert list(groups) == ["loss.png"]
+    assert len(groups["loss.png"]) == 2
+
+
+def test_identical_bytes_outside_outputs_are_still_two_images(tmp_project):
+    """Only the copy shape collapses. Two plots that merely hash alike are two
+    images, and hiding one of them is worse than showing a duplicate."""
+    from exptrack.core.db import get_db
+    from exptrack.core.experiment import Experiment
+    from exptrack.core.queries import get_multi_compare
+
+    exp = Experiment(name="a", script="train.py")
+    for sub in ("train", "val"):
+        p = tmp_project / "plots" / sub / "loss.png"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x89PNG\r\n")
+        exp.log_artifact(str(p))
+    exp.finish()
+
+    runs = get_multi_compare(get_db(), [exp.id])
+    assert len(runs[0]["images"]) == 2, runs[0]["images"]
+
+
+def _copy_pair_run(name, orig_rel, tmp_project, hashed=True):
+    """A run holding the savefig copy at outputs/<name>/ and one original."""
+    import shutil
+
+    from exptrack.core.db import get_db
+    from exptrack.core.experiment import Experiment
+    orig = tmp_project / orig_rel
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_bytes(b"\x89PNG " + name.encode())
+    copy = tmp_project / "outputs" / name / orig.name
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(orig), str(copy))
+
+    exp = Experiment(name=name, script="train.py")
+    exp.log_artifact(str(copy))
+    exp.log_artifact(str(orig))
+    exp.finish()
+    if not hashed:
+        # Runs recorded before artifacts were hashed: the content rule has
+        # nothing to compare, so only the copy address can pair them.
+        conn = get_db()
+        conn.execute("UPDATE artifacts SET content_hash=NULL, size_bytes=NULL "
+                     "WHERE exp_id=?", (exp.id,))
+        conn.commit()
+    return exp.id
+
+
+def test_the_copy_pairs_when_the_script_also_wrote_into_outputs(tmp_project):
+    """Both rows under `outputs/` — the shape a script with its own output dir
+    produces. "Some inside, some outside" never fired for it, and the grid
+    headed the row with a full path and said *No image* in the other column."""
+    from exptrack.core.db import get_db
+    from exptrack.core.queries import get_multi_compare
+
+    ids = [_copy_pair_run(n, f"outputs/raw/{n}/pred.png", tmp_project)
+           for n in ("a", "b")]
+
+    runs = get_multi_compare(get_db(), ids)
+    for r in runs:
+        assert len(r["images"]) == 1, r["images"]
+    groups = _groups(runs)
+    assert list(groups) == ["pred.png"], groups
+    assert len(groups["pred.png"]) == 2
+
+
+def test_the_copy_pairs_for_runs_recorded_before_artifacts_were_hashed(tmp_project):
+    """`content_hash` NULL is the normal state of an old run, and the content
+    rule cannot see those at all."""
+    from exptrack.core.db import get_db
+    from exptrack.core.queries import get_multi_compare
+
+    ids = [_copy_pair_run(n, "figs/pred.png", tmp_project, hashed=False)
+           for n in ("a", "b")]
+
+    runs = get_multi_compare(get_db(), ids)
+    for r in runs:
+        assert len(r["images"]) == 1, r["images"]
+    assert list(_groups(runs)) == ["pred.png"]
+
+
+def test_a_same_named_file_of_a_different_size_is_not_the_copy(tmp_project):
+    """The copy address is strong evidence, not a licence: where both sizes
+    are recorded they still have to agree."""
+    from exptrack.core.db import get_db
+    from exptrack.core.experiment import Experiment
+    from exptrack.core.queries import get_multi_compare
+
+    exp = Experiment(name="a", script="train.py")
+    copy = tmp_project / "outputs" / "a" / "pred.png"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    copy.write_bytes(b"\x89PNG one")
+    other = tmp_project / "figs" / "pred.png"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_bytes(b"\x89PNG a different picture entirely")
+    exp.log_artifact(str(copy))
+    exp.log_artifact(str(other))
+    exp.finish()
+
+    runs = get_multi_compare(get_db(), [exp.id])
+    assert len(runs[0]["images"]) == 2, runs[0]["images"]
+
+
+def test_the_copy_still_pairs_after_the_run_is_renamed(tmp_project):
+    """The copy's address is `outputs/<name at the time>/`, and a rename does
+    not move the file — so the address rule alone would stop recognising it."""
+    from exptrack.core.db import get_db
+    from exptrack.core.queries import get_multi_compare
+
+    ids = [_copy_pair_run(n, "figs/pred.png", tmp_project) for n in ("a", "b")]
+    conn = get_db()
+    conn.execute("UPDATE experiments SET name='a-renamed' WHERE id=?", (ids[0],))
+    conn.commit()
+
+    runs = get_multi_compare(get_db(), ids)
+    for r in runs:
+        assert len(r["images"]) == 1, r["images"]
+    assert list(_groups(runs)) == ["pred.png"]
+
+
+# ---------------------------------------------------------------------------
+# A numbered series is one row, not one row per member
+# ---------------------------------------------------------------------------
+
+def _series_run(name, indices, tmp_project, prefix="test_ISIC_", suffix="_output"):
+    from exptrack.core.experiment import Experiment
+    exp = Experiment(name=name, script="train.py")
+    for i in indices:
+        p = tmp_project / "outputs" / name / f"{prefix}{i:07d}{suffix}.png"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x89PNG " + f"{name}{i}".encode())
+        exp.log_artifact(str(p))
+    exp.finish()
+    return exp.id
+
+
+def test_a_per_sample_series_is_one_row_even_when_the_names_differ(tmp_project):
+    """Two runs scoring different samples share no file name, so per-file rows
+    gave a page of singles reading *No image* opposite each one."""
+    from exptrack.core.db import get_db
+    from exptrack.core.queries import get_multi_compare
+
+    ids = [_series_run("a", range(0, 6), tmp_project),
+           _series_run("b", range(100, 106), tmp_project)]
+
+    runs = get_multi_compare(get_db(), ids)
+    groups = _groups(runs)
+    assert len(groups) == 1, list(groups)
+    (only,) = groups.values()
+    assert len(only) == 2, "both runs must be in the row"
+    assert all(len(v) == 6 for v in only.values())
+    assert all(img.get("family") for r in runs for img in r["images"])
+
+
+def test_a_series_stays_one_row_when_both_runs_wrote_the_same_names(tmp_project):
+    """The exact-filename rule would give 200 correctly-paired rows, which is
+    still a page nobody can read."""
+    from exptrack.core.db import get_db
+    from exptrack.core.queries import get_multi_compare
+
+    ids = [_series_run(n, range(0, 5), tmp_project) for n in ("a", "b")]
+
+    runs = get_multi_compare(get_db(), ids)
+    assert len(_groups(runs)) == 1
+
+
+def test_two_plots_are_still_two_rows(tmp_project):
+    """Below the series threshold nothing changes: `loss.png` and `acc.png` are
+    two plots and pair per file."""
+    from exptrack.core.db import get_db
+    from exptrack.core.queries import get_multi_compare
+
+    ids = []
+    for name in ("a", "b"):
+        exp_id = None
+        from exptrack.core.experiment import Experiment
+        exp = Experiment(name=name, script="train.py")
+        for fn in ("loss.png", "acc.png"):
+            p = tmp_project / "outputs" / name / fn
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"\x89PNG " + name.encode())
+            exp.log_artifact(str(p))
+        exp.finish()
+        exp_id = exp.id
+        ids.append(exp_id)
+
+    runs = get_multi_compare(get_db(), ids)
+    groups = _groups(runs)
+    assert set(groups) == {"loss.png", "acc.png"}, list(groups)
+    assert all(len(v) == 2 for v in groups.values())
+
+
+def test_a_short_epoch_filmstrip_still_keeps_its_exact_names(tmp_project):
+    """Three per run is not a series: the old rule (keep exact filenames when a
+    merge would hide a member) still applies below the threshold."""
+    from exptrack.core.db import get_db
+    from exptrack.core.experiment import Experiment
+    from exptrack.core.queries import get_multi_compare
+
+    ids = []
+    for name in ("a", "b"):
+        exp = Experiment(name=name, script="train.py")
+        for ep in (1, 2, 3):
+            p = tmp_project / "outputs" / name / f"loss_epoch{ep}.png"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"\x89PNG " + f"{name}{ep}".encode())
+            exp.log_artifact(str(p))
+        exp.finish()
+        ids.append(exp.id)
+
+    runs = get_multi_compare(get_db(), ids)
+    groups = _groups(runs)
+    assert set(groups) == {"loss_epoch1.png", "loss_epoch2.png", "loss_epoch3.png"}
+
+
+def test_same_named_hashless_files_in_two_directories_both_survive(tmp_project):
+    """A run that writes one `pred.png` per subdirectory, recorded before
+    artifacts were hashed, collapsed to a single image: nothing recorded said
+    they differed, and the dedupe assumed they matched. It measures the files
+    instead, and a pair it cannot measure is left alone."""
+    from exptrack.core.db import get_db
+    from exptrack.core.experiment import Experiment
+    from exptrack.core.queries import get_multi_compare
+
+    exp = Experiment(name="a", script="train.py")
+    for i, sub in enumerate(("epoch1", "epoch2", "epoch3")):
+        p = tmp_project / "outputs" / "a" / sub / "pred.png"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x89PNG" + bytes([i]) * (40 + i))
+        exp.log_artifact(str(p))
+    top = tmp_project / "outputs" / "a" / "pred.png"
+    top.write_bytes(b"\x89PNG top")
+    exp.log_artifact(str(top))
+    exp.finish()
+
+    conn = get_db()
+    conn.execute("UPDATE artifacts SET content_hash=NULL, size_bytes=NULL "
+                 "WHERE exp_id=?", (exp.id,))
+    conn.commit()
+
+    runs = get_multi_compare(get_db(), [exp.id])
+    assert len(runs[0]["images"]) == 4, runs[0]["images"]

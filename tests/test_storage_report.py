@@ -235,3 +235,34 @@ def test_fmt_bytes_is_shared_not_duplicated():
         src = inspect.getsource(mod)
         assert "def fmt_bytes" not in src, f"{mod.__name__} redefines fmt_bytes"
         assert "def _fmt" not in src, f"{mod.__name__} has its own byte formatter"
+
+
+def test_timeline_size_is_not_zero_when_no_row_has_a_source_diff(project_with_data):
+    """The timeline's bytes must be reported even when `source_diff` is all NULL.
+
+    The size was `SUM(LENGTH(value)) + SUM(LENGTH(source_diff))`, and in SQLite
+    a SUM over rows that are all NULL *is* NULL — so `value + NULL` made the
+    whole expression NULL and the report fell back to 0. Every timeline row a
+    materialized session node writes has no `source_diff`, so finalizing a
+    session (the single biggest writer of timeline bytes there is) showed up as
+    "Timeline: N rows (~0 B)": the one report that answers "where did the space
+    go?" denied the space existed.
+    """
+    conn = get_db()
+    exp_id = conn.execute("SELECT id FROM experiments").fetchone()[0]
+    conn.executemany(
+        "INSERT INTO timeline (exp_id, seq, event_type, key, value, ts) "
+        "VALUES (?,?,'cell_exec',?,?, '2025-01-01T00:00:00Z')",
+        [(exp_id, i, f"cell_{i}", '{"source_preview": "' + "x" * 300 + '"}')
+         for i in range(5)],
+    )
+    conn.commit()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM timeline WHERE source_diff IS NOT NULL"
+    ).fetchone()[0] == 0
+
+    s = admin_cmds.collect_storage_stats(conn)
+    assert s["timeline_count"] >= 5
+    assert s["timeline_size"] > 1500, (
+        f"timeline bytes reported as {s['timeline_size']}")
+    assert "(~0 B)" not in _run_storage()

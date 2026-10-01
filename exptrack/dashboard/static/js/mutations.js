@@ -108,12 +108,23 @@ async function exportDiff(id) {
 // the browser just saved is a detour through the filesystem to get it there.
 // Rendered server-side either way, so the two can never disagree about what the
 // run's code change was.
-async function copyDiff(id) {
+// The raw diff as a `.patch` — what `git apply` takes, byte-for-byte the
+// same as `exptrack diff <id> --patch`. The markdown export wraps the same
+// text in fences and tables, which is for reading, not applying.
+async function exportPatch(id) {
   const d = await postApi('/api/experiment/' + id + '/export-diff');
+  if (!d || d.error || !d.patch) { owlSay((d && d.error) || 'No patch for this run.'); return; }
+  await saveOrDownload(d.patch, d.patch_filename || 'run.patch', 'text/x-diff');
+  owlSay('Saved the patch — apply it with git apply from the repository root.');
+}
+
+// Copy leaves the patch out (`patch: false`): pasted into a notebook it is a
+// wall of +/- lines under the before/after tables that already say the same
+// thing. Export .patch is the way to take it.
+async function copyDiff(id) {
+  const d = await postApi('/api/experiment/' + id + '/export-diff', {patch: false});
   if (!d || d.error) { alert((d && d.error) || 'Could not read the diff.'); return; }
-  navigator.clipboard.writeText(d.markdown)
-    .then(() => owlSay('Copied the diff as markdown!'))
-    .catch(err => alert('Clipboard refused the text: ' + (err && err.message || err)));
+  await copyRich(d.markdown, d.html || '', 'the diff');
 }
 
 async function bulkCompact() {

@@ -179,6 +179,7 @@ def main(resume=None):
         # finish twice (Experiment.finish raises on a double-finish).
         if not exp._finished:
             _auto_detect_outputs(exp, start_ts)
+            _capture_results_metrics(exp, start_ts, conf, script_path)
             exp.finish()
         _maybe_trash_phantom_wrapper(exp, resume)
     except SystemExit as e:
@@ -187,6 +188,7 @@ def main(resume=None):
             _restore_streams(log_files)
             if not exp._finished:
                 _auto_detect_outputs(exp, start_ts)
+                _capture_results_metrics(exp, start_ts, conf, script_path)
                 exp.finish()
             _maybe_trash_phantom_wrapper(exp, resume)
             sys.exit(0)
@@ -207,6 +209,9 @@ def main(resume=None):
         # If the script adopted this run and already finished it, leave that
         # outcome in place rather than double-finishing (which would raise).
         if not exp._finished:
+            if _raised_by_argparse(e):
+                from .core.queries import ARG_ERROR_KEY
+                exp.log_param(ARG_ERROR_KEY, True)
             exp.fail(f"SystemExit({e.code})", traceback=tb)
         sys.exit(e.code)
     except KeyboardInterrupt:
@@ -252,8 +257,8 @@ def _find_latest_experiment(script_path: str, run_command: str = ""):
     """
     from .core import Experiment
     from .core.db import get_db
-
-    resolved = str(Path(script_path).resolve())
+    from .core.utils import resolve_script_identity
+    resolved = resolve_script_identity(script_path)
     with get_db() as conn:
         # Trashed runs are excluded: they're gone from every list, so silently
         # continuing one would append metrics to a run the user can't see.
@@ -354,12 +359,137 @@ _AUTO_DETECT_EXTS = {
 _SKIP_DIRS = {'.exptrack', '.git', '__pycache__', 'node_modules', '.venv', 'venv'}
 
 
+def _same_content_already_logged(fp: str, own_content: dict) -> bool:
+    """True if this run already registered a file with *fp*'s exact content.
+
+    The savefig copy and the file the script wrote are the same bytes under two
+    paths and the same name; one artifact row is the honest count. Hashing is
+    gated on the (size, name) map, so a file no registered artifact could be a
+    copy of is never read.
+    """
+    try:
+        size = os.path.getsize(fp)
+    except OSError:
+        return False
+    hashes = own_content.get((size, os.path.basename(fp)))
+    if not hashes:
+        return False
+    try:
+        from . import config as _cfg
+        from .core.hashing import file_hash
+        max_bytes = int(_cfg.load().get("hash_max_mb", 500)) * 1024 * 1024
+        digest, _ = file_hash(fp, max_bytes=max_bytes)
+    except Exception as e:
+        from .core.utils import debug_log
+        debug_log(f"content dedupe hash failed for {fp}: {e}")
+        return False
+    return digest in hashes
+
+
+def _raised_by_argparse(e: SystemExit) -> bool:
+    """True when *e* is argparse rejecting the command line (a usage error),
+    i.e. the innermost frame that raised it is in the argparse module."""
+    import argparse
+    tb, last = e.__traceback__, None
+    while tb is not None:
+        last, tb = tb, tb.tb_next
+    if last is None:
+        return False
+    try:
+        return (Path(last.tb_frame.f_code.co_filename).resolve()
+                == Path(argparse.__file__).resolve())
+    except (OSError, TypeError):
+        return False
+
+
+_DEFAULT_RESULTS_FILES = ("results.json", "metrics.json",
+                          "*_results.json", "*_metrics.json")
+
+
+def _results_file_patterns(conf) -> tuple:
+    """`auto_capture.results_files`, degrading to the default when unusable."""
+    pats = (conf.get("auto_capture") or {}).get("results_files", _DEFAULT_RESULTS_FILES)
+    if not isinstance(pats, (list, tuple)) or not all(isinstance(p, str) for p in pats):
+        return _DEFAULT_RESULTS_FILES
+    return tuple(pats)
+
+
+def _capture_results_metrics(exp, start_ts, conf, script_path):
+    """Log the numbers in a results file the script wrote as the run's metrics.
+
+    A script that ends with `json.dump(results, open("results.json", "w"))`
+    recorded no metrics under `exptrack run`: the file was registered as a data
+    output and its numbers never read, so the table, the vs-previous delta and
+    Compare all showed `--` for a run whose result was sitting on disk. The
+    shell pipeline already had `run-finish --metrics results.json`.
+
+    Only files written during this run, only top-level numbers (nested dicts
+    flatten to `outer/inner`), and never a key the script already logged
+    itself — its own series is the better record. Says which keys it took.
+    """
+    import fnmatch
+    import json
+    pats = _results_file_patterns(conf)
+    if not pats:
+        return
+    try:
+        from .core import get_db
+        # Same connection the run writes on, so points still inside the
+        # commit-coalescing window are visible.
+        logged = {r[0] for r in get_db().execute(
+            "SELECT DISTINCT key FROM metrics WHERE exp_id=?", (exp.id,))}
+    except Exception:
+        logged = set()
+    dirs = []
+    for d in (Path.cwd(), Path(script_path).parent, getattr(exp, "_output_dir", "")):
+        try:
+            d = Path(d).resolve() if d else None
+        except OSError:
+            d = None
+        if d and d.is_dir() and d not in dirs:
+            dirs.append(d)
+    for d in dirs:
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            continue
+        for f in entries:
+            if not any(fnmatch.fnmatch(f.name, p) for p in pats):
+                continue
+            try:
+                if not f.is_file() or f.stat().st_mtime < start_ts:
+                    continue
+                raw = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(raw, dict):
+                continue
+            from .cli.pipeline_cmds import _flatten_dict
+            nums = {k: v for k, v in _flatten_dict(raw).items()
+                    if isinstance(v, (int, float)) and not isinstance(v, bool)
+                    and k not in logged}
+            if not nums:
+                continue
+            exp.log_metrics(nums)
+            logged.update(nums)
+            print(f"[exptrack] metrics from {f.name}: {', '.join(sorted(nums))}",
+                  file=sys.stderr)
+
+
 def _auto_detect_outputs(exp, start_ts):
     """Scan working directory for files created during the run and log them.
 
     Deduplicates against artifacts already registered on this experiment
     (e.g. by the savefig patch) so the same file is never logged twice, and
     **skips files that belong to another run**.
+
+    Deduplication is by *content* as well as by path. The savefig patch copies
+    each figure into the run's own output dir and registers **the copy**, so a
+    path-only check left the original (``figs/loss.png`` next to the copy at
+    ``outputs/<run>/loss.png``) looking unregistered: every plot got two
+    artifact rows, the Images tab showed every image twice, and Compare's
+    grid — which pairs runs by file name — saw two images sharing one name
+    inside a single run, fell back to full paths, and so paired nothing.
 
     The mtime window alone is not ownership. Two runs launched together — a
     SLURM array, two terminals, a sweep — write into the window at the same
@@ -370,12 +500,14 @@ def _auto_detect_outputs(exp, start_ts):
     """
     skip_dirs = _SKIP_DIRS
     from .core.db import _norm_path, path_within_any
+    from .core.utils import is_python_env_dir
 
     # Collect paths already registered so we don't double-log, and the paths
     # other runs own so we never log them at all. All three sets hold
     # `_norm_path` forms so the walk below can compare against them without a
     # `resolve()` syscall per candidate file.
     already_registered: set[str] = set()
+    own_content: dict = {}   # (size, filename) -> hashes this run already has
     foreign_paths: dict[str, str] = {}     # path -> the run still holding it
     foreign_dirs: set[str] = set()
     in_flight: set[str] = set()
@@ -387,7 +519,8 @@ def _auto_detect_outputs(exp, start_ts):
             # else's answer two different questions about the same rows, and
             # asking twice re-read the whole table at the end of every run.
             rows = conn.execute(
-                "SELECT path, exp_id FROM artifacts WHERE path IS NOT NULL AND path != ''"
+                "SELECT path, exp_id, content_hash, size_bytes FROM artifacts "
+                "WHERE path IS NOT NULL AND path != ''"
             ).fetchall()
             foreign_dirs = claimed_output_paths(conn, exclude_id=exp.id)
             # Only a run that could still have been writing owns anything here:
@@ -406,6 +539,16 @@ def _auto_detect_outputs(exp, start_ts):
                 norm = r["path"]
             if r["exp_id"] == exp.id:
                 already_registered.add(norm)
+                # Size-keyed so the walk hashes a candidate only when this run
+                # already holds a file of exactly that size — never every
+                # checkpoint in the tree.
+                if r["content_hash"] and r["size_bytes"]:
+                    # Keyed on the file *name* too: the savefig copy keeps the
+                    # original's name, while two genuinely different plots that
+                    # happen to hold the same bytes usually do not — and
+                    # dropping one of those would hide an output.
+                    key = (int(r["size_bytes"]), os.path.basename(norm))
+                    own_content.setdefault(key, set()).add(r["content_hash"])
             elif r["exp_id"] in in_flight:
                 foreign_paths[norm] = r["exp_id"]
     except Exception as e:
@@ -413,7 +556,10 @@ def _auto_detect_outputs(exp, start_ts):
 
     try:
         for root, dirs, files in os.walk('.'):
-            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            # By marker as well as by name: a venv called `env` or `myenv`
+            # is still an environment, never a run's output.
+            dirs[:] = [d for d in dirs if d not in skip_dirs
+                       and not is_python_env_dir(os.path.join(root, d))]
             for f in files:
                 ext = os.path.splitext(f)[1].lower()
                 if ext not in _AUTO_DETECT_EXTS:
@@ -433,6 +579,9 @@ def _auto_detect_outputs(exp, start_ts):
                         print(f"[exptrack] note: not logging {fp} — run "
                               f"{owner[:6]} is still running and holds it",
                               file=sys.stderr)
+                        continue
+                    if _same_content_already_logged(fp, own_content):
+                        already_registered.add(norm)
                         continue
                     exp.log_file(fp)
                     already_registered.add(norm)

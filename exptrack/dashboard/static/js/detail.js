@@ -45,8 +45,27 @@ function closeCompareView() {
 // The parameter matrix carries its own set of picks, and passing them by
 // assigning the global set (which is what it used to do) silently rewrote the
 // user's table selection as a side effect of comparing.
+// The run-id grammar the server speaks: `<project-id>:<run-id>`, with a bare
+// id meaning the project this dashboard is currently on. Mirrors
+// `projects.split_qualified_id` — ids only, never a path.
+function splitQualifiedRunId(value) {
+  const s = String(value);
+  const at = s.indexOf(':');
+  if (at < 0) return {project: '', id: s};
+  return {project: s.slice(0, at), id: s.slice(at + 1)};
+}
+
 async function compareRuns(ids, origin) {
-  if (!ids || ids.length < 2) return;
+  // Said, not swallowed. The commonest way to get here with one run is a
+  // cross-project attempt through the table: switching project reloads the
+  // page, so the run ticked in the first project is gone by the time the
+  // second is ticked — and a Compare that did nothing at all read as broken.
+  if (!ids || ids.length < 2) {
+    owlSay('Compare needs at least two runs. To compare runs from different ' +
+           'projects, open Compare and use Choose runs… — its Project ' +
+           'selector keeps your picks while you switch.');
+    return;
+  }
   owlSpeak('compare');
   showCompareView();
   // *After* raising the view: showCompareView resets the origin to the
@@ -56,7 +75,14 @@ async function compareRuns(ids, origin) {
   // the right set only when the table is what we were called from. The picker
   // is deliberately not awaited: it pages the whole run list on a cold Compare
   // view, and the comparison the user is waiting for needs none of that.
-  switchCompareTab('multi', new Set(ids));
+  //
+  // Only the runs from *this* project: the picker lists this project's runs
+  // under bare ids, so a run named with another project's id has no row there
+  // to tick — and ticking its bare half would tick whichever local run
+  // happened to carry that id. Every existing caller passes bare ids, so this
+  // is the whole set for them, exactly as before.
+  switchCompareTab('multi',
+                   new Set(ids.filter(i => !splitQualifiedRunId(i).project)));
   doMultiCompare(ids);
 }
 
@@ -89,6 +115,93 @@ let _cmpExps = [];
 let _cmpTotal = 0;
 let _cmpHasMore = false;
 
+// ...but keyed by *project*. One cache served every picker, and a run list is
+// the one thing in this dashboard that is entirely a property of the project
+// it was paged from — so the pickers would go on offering project A's runs
+// while the user browsed project B, and every id in them would resolve against
+// the wrong database. The page reloads on a project switch today, and that is
+// exactly the kind of incidental protection that stops being true the moment a
+// switch becomes in-place; the cache must not be the thing relying on it.
+const _cmpCacheByProject = {};
+
+// `projectId` is '' for the project the page is on, which `_activeProjectId`
+// also spells '' until the user has picked one — so both forms collapse to one
+// slot and the page's project can never end up with two caches under two names.
+function _cmpCacheKey(projectId) {
+  return projectId || _activeProjectId || '_default';
+}
+
+function _cmpCacheUse() {
+  const c = _cmpCacheByProject[_cmpCacheKey()];
+  _cmpExps = c ? c.exps : [];
+  _cmpTotal = c ? c.total : 0;
+  _cmpHasMore = c ? c.hasMore : false;
+}
+
+function _cmpCacheStore() {
+  _cmpCacheByProject[_cmpCacheKey()] =
+    {exps: _cmpExps, total: _cmpTotal, hasMore: _cmpHasMore,
+     byId: new Map(_cmpExps.map(x => [x.id, x]))};
+}
+
+// Drop the *current* project's copy only: a mutation in one project says
+// nothing about what another project's run list holds.
+function _cmpCacheClear() {
+  delete _cmpCacheByProject[_cmpCacheKey()];
+  _cmpCacheUse();
+}
+
+// Page one project's run list into the cache and return its
+// `{exps, total, hasMore}` entry — `null` if nothing could be loaded and there
+// was nothing cached to fall back on.
+//
+// `projectId` falsy means the project the page is on; anything else is fetched
+// with that project named on the *request* rather than by moving the page onto
+// it, which is what lets the run picker browse another project without every
+// other view following it there.
+//
+// This pages with offsets rather than asking for one huge `limit`: the server
+// caps a single request, so an over-large ask comes back short — and a short
+// response is indistinguishable from "that is all of them", which would leave
+// the filter box quietly searching a subset while reporting it had loaded
+// everything. Pages are sequential because each needs the previous offset.
+async function _loadProjectRuns(projectId, force, all) {
+  const key = _cmpCacheKey(projectId);
+  const cached = _cmpCacheByProject[key] || null;
+  if (cached && cached.exps.length && !force) return cached;
+  let rows = [];
+  let lastPageFull = false;
+  let guard = 0;
+  do {
+    const page = await api('/api/experiments?limit=' + EXP_PAGE_SIZE +
+                           '&offset=' + rows.length, projectId);
+    // api() returns null on failure and has already reported it. Keep what we
+    // have rather than replacing a good list with an empty one.
+    if (!Array.isArray(page)) break;
+    rows = rows.concat(page);
+    lastPageFull = page.length >= EXP_PAGE_SIZE;
+  } while (all && lastPageFull && guard++ < 100);
+  if (!rows.length) return cached;
+  // `expTotal` counts the *page's* project, so it is an answer for that one
+  // only — claiming it for a foreign project would print another project's run
+  // count under this one's list.
+  const total = projectId ? rows.length : Math.max(expTotal, rows.length);
+  // `hasMore` is "the last page came back full", nothing more. Adding
+  // `&& total > rows.length` made it *always false* for a foreign project,
+  // because `total` is `rows.length` there — so a truncated foreign list
+  // rendered neither the "searching the N most recent runs" notice nor the
+  // Load-all button, and the picker answered "No run matches" for a run that
+  // exists. A wrong answer with no error is the worst failure this surface
+  // has; the page project's own count is already carried by `total`.
+  const exps = _cmpEntries(rows);
+  // `byId` so a label lookup (`_cmpLabelFor`, called per staged chip) is not a
+  // scan of the whole project's list per chip.
+  const entry = {exps: exps, total: total, hasMore: lastPageFull,
+                 byId: new Map(exps.map(x => [x.id, x]))};
+  _cmpCacheByProject[key] = entry;
+  return entry;
+}
+
 // Auto-named runs differ only in a tail the <option> used to cut off, so a
 // hundred-entry dropdown read as a hundred copies of the same line. Keep the
 // full name and append the run's distinguishing params, so the options are
@@ -114,8 +227,18 @@ function _cmpOptionLabel(e) {
 // have to show something a human recognizes. Falls back to the id prefix rather
 // than rendering nothing for a run the cache has not paged in yet.
 function _cmpLabelFor(id) {
-  const hit = _cmpExps.find(x => x.id === id);
-  return (hit && hit.e && hit.e.name) || String(id).slice(0, 8);
+  // The id may be qualified, so the name is looked up in *that* project's
+  // cache — searching the page's list for a foreign run finds nothing and
+  // falls back to an id prefix, which is the one label that says least.
+  const q = splitQualifiedRunId(id);
+  const entry = _cmpCacheByProject[_cmpCacheKey(q.project)];
+  const hit = entry
+    ? (entry.byId ? entry.byId.get(q.id) : entry.exps.find(x => x.id === q.id))
+    : null;
+  const name = (hit && hit.e && hit.e.name) || String(q.id).slice(0, 8);
+  // Two projects can hold runs with the same name, so a foreign run's label
+  // leads with where it came from.
+  return q.project ? projectName(q.project) + ' / ' + name : name;
 }
 
 function _cmpHaystack(e, lbl) {
@@ -155,22 +278,17 @@ function _renderCmpTruncNotice() {
 // the filter box quietly searching a subset while reporting it had loaded
 // everything. Pages are sequential because each needs the previous offset.
 async function _loadCmpExps(force, all) {
+  // Adopt this project's copy before deciding whether the cache is warm —
+  // otherwise the check reads whatever project was loaded last.
+  _cmpCacheUse();
   if (_cmpExps.length && !force) return true;
-  let rows = [];
-  let lastPageFull = false;
-  let guard = 0;
-  do {
-    const page = await api('/api/experiments?limit=' + EXP_PAGE_SIZE +
-                           '&offset=' + rows.length);
-    if (!Array.isArray(page)) return rows.length > 0;
-    rows = rows.concat(page);
-    lastPageFull = page.length >= EXP_PAGE_SIZE;
-  } while (all && lastPageFull && guard++ < 100);
-  _cmpExps = _cmpEntries(rows);
-  _cmpTotal = Math.max(expTotal, rows.length);
-  _cmpHasMore = lastPageFull && _cmpTotal > rows.length;
+  await _loadProjectRuns('', force, all);
+  // Re-read through the cache rather than from the return value: this keeps
+  // the page-project globals and the cache as one fact, so the Compare filter
+  // box and the picker cannot end up describing different sets.
+  _cmpCacheUse();
   _renderCmpTruncNotice();
-  return true;
+  return _cmpExps.length > 0;
 }
 
 async function loadAllCompareRuns() {
@@ -256,8 +374,8 @@ function _artifactDir(path) {
 }
 
 // Client-side mirror of core/queries.py:summarize_artifacts — one pass giving
-// both the by-directory groups (largest first) and the by-type counts, shared
-// by the Overview's grouped table and the plain-text export.
+// both the by-directory groups (largest first) and the by-type counts, for
+// the Overview's grouped table.
 function _summarizeArtifacts(artifacts) {
   const dirs = new Map(), kinds = {};
   for (const a of artifacts || []) {
@@ -272,20 +390,6 @@ function _summarizeArtifacts(artifacts) {
     byDir: [...dirs.entries()].sort((a, b) => b[1].length - a[1].length),
     byType: Object.entries(kinds).sort((a, b) => b[1] - a[1]),
   };
-}
-
-// Client-side mirror of core/queries.py:summarize_metric_series, for export
-// payloads that carry raw points (a `full` export, or an older server).
-function _summarizeMetricSeries(series) {
-  const out = {};
-  for (const [key, pts] of Object.entries(series || {})) {
-    const vals = (pts || []).map(p => p.value).filter(v => v != null);
-    out[key] = vals.length
-      ? {count: pts.length, first: vals[0], last: vals[vals.length - 1],
-         min: Math.min(...vals), max: Math.max(...vals)}
-      : {count: (pts || []).length, first: null, last: null, min: null, max: null};
-  }
-  return out;
 }
 
 function toggleArtifactGroup(expId, idx) {
@@ -482,12 +586,26 @@ function _diffSentinelBody(d, summary) {
   return '';
 }
 
+// The commit hash, linked to that commit on the hosted repository when the
+// server could build a URL for it (origin on GitHub/GitLab/Bitbucket). Only an
+// https URL is ever made a link.
+function _commitHtml(exp) {
+  const sha = esc((exp.git_commit || '--').slice(0, 7));
+  const url = exp.git_commit_url || '';
+  if (!url || !/^https:\/\//.test(url)) return sha;
+  return '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" '
+    + 'title="Open this commit on ' + esc(url.split('/')[2] || 'the host') + '">'
+    + sha + ' ↗</a>';
+}
+
 function _diffActionsHtml(exp) {
   return '<span style="float:right;font-size:12px;font-weight:normal">'
     + '<button class="action-btn" style="padding:1px 8px" onclick="event.stopPropagation();exportDiff(\''
     + exp.id + '\')">Export</button>'
     + '<button class="action-btn" style="padding:1px 8px;margin-left:4px" onclick="event.stopPropagation();copyDiff(\''
     + exp.id + '\')" title="Copy this diff as markdown">Copy</button>'
+    + '<button class="action-btn" style="padding:1px 8px;margin-left:4px" onclick="event.stopPropagation();exportPatch(\''
+    + exp.id + '\')" title="Download the raw diff as a .patch file for git apply">Export .patch</button>'
     + '<button class="action-btn" style="padding:1px 8px;margin-left:4px" onclick="event.stopPropagation();compactDiff(\''
     + exp.id + '\')">Compact</button></span>';
 }
@@ -499,7 +617,7 @@ function _diffActionsHtml(exp) {
 // changes (`dirty`, which adds where to look) and a wholly clean one — since
 // the three statuses and their wording drift the moment they are written twice.
 function _scriptStatusNote(exp, status, recover, dirty) {
-  const name = esc(String(exp.script || '').split('/').pop()) || 'This script';
+  const name = esc(pathBase(exp.script)) || 'This script';
   if (status === 'untracked') {
     return _codeDiffNote('<code>' + name + '</code> isn\'t tracked by git, so'
       + ' there\'s no committed version to diff against.' + recover);
@@ -593,6 +711,26 @@ function _buildDatasetsSection(datasets) {
   return html + '</table></div>';
 }
 
+// The library versions the run imported (core/environment.py) — what a
+// reader reproducing the number has to install. Copy gives the pip form.
+function _buildEnvironmentSection(env) {
+  if (!env) return '';
+  const pkgs = env.packages || {};
+  const keys = Object.keys(pkgs);
+  const pip = keys.map(k => k + '==' + pkgs[k]).join('\n');
+  let html = '<h2 class="section-toggle collapsed" onclick="this.classList.toggle(\'collapsed\')">Environment ('
+    + keys.length + ' package' + (keys.length === 1 ? '' : 's') + ')'
+    + ' <span class="help-icon" title="The __version__ of each third-party package this run imported, recorded at finish.">?</span>'
+    + (keys.length ? '<span class="section-actions" onclick="event.stopPropagation()"><button class="copy-btn" title="Copy as name==version lines (requirements style). Module names, which usually but not always match the pip package name." onclick="copyRich(this.dataset.pip, \'\', \'the package list\')" data-pip="' + esc(pip) + '">Copy</button></span>' : '')
+    + '</h2><div class="section-body"><table class="params-table">'
+    + '<tr><td>Python</td><td>' + esc(((env.implementation || '') + ' ' + (env.python || '')).trim()) + '</td></tr>'
+    + '<tr><td>Platform</td><td>' + esc(env.platform || '--') + '</td></tr>';
+  for (const k of keys) {
+    html += '<tr><td>' + esc(k) + '</td><td style="font-family:var(--font-mono)">' + esc(pkgs[k]) + '</td></tr>';
+  }
+  return html + '</table></div>';
+}
+
 // The previous-same-script experiment can only change by a *new* run being
 // created for that script — never by editing metrics/params/tags on the run
 // currently being viewed. refreshDetail runs on every such edit and on every
@@ -601,26 +739,30 @@ function _buildDatasetsSection(datasets) {
 let _prevByScriptCache = { id: null, data: null };
 
 async function refreshDetail(id, opts) {
-  // Only auto-expand the sidebar when transitioning to a different experiment
-  // (or entering detail view from welcome/compare). On in-place refreshes from
-  // logging a metric / adding a param / etc, leave the sidebar in whatever
-  // state the user left it. Filmstrip navigation (opts.keepSidebar) is a lateral
-  // move between already-open runs, so it also leaves the sidebar untouched.
-  const keepSidebar = opts && opts.keepSidebar;
+  // `opts.keepSidebar` marks a lateral move between runs (the filmstrip, the
+  // vs-previous links, returning from the matrix) rather than an entry into the
+  // detail view. The name is historical: opening a run no longer touches the
+  // rail at all — it stays however the reader left it — so the flag now only
+  // decides whether the run's address is pushed or replaced.
+  const lateral = opts && opts.keepSidebar;
   const isInitialEntry = currentDetailId !== id ||
     document.getElementById('detail-view').style.display === 'none';
   // The panel HTML below is rebuilt from scratch with Overview active, so an
   // in-place refresh (auto-refresh poll on a running run, logging a metric, a
   // tag edit) would yank the user off whatever tab they opened — it's restored
-  // after the rewrite. A fresh entry into a *different* run starts on Overview,
-  // so reset currentDetailTab here or that restore would put the user on the
-  // previous run's tab.
-  if (isInitialEntry) currentDetailTab = 'overview';
+  // after the rewrite.
+  //
+  // Moving to a *different* run used to reset that to Overview. But comparing
+  // two runs' images means opening one, Images, back, opening the next,
+  // Images — the tab is the question you are asking, and it does not change
+  // because the run did. The tab now survives the move; the restore below
+  // falls back to Overview if the new run has no such tab.
   currentDetailId = id;
   showDetailView();
-  if (isInitialEntry && !keepSidebar) {
-    document.getElementById('exp-sidebar').classList.remove('collapsed');
-  }
+  // An address, so a reload reopens this run instead of the experiments list,
+  // and the browser's Back steps out of it. Lateral moves replace the entry so
+  // Back leaves the run view rather than walking the filmstrip.
+  if (isInitialEntry) _pushViewHash(_runViewHash(id, currentDetailTab), lateral);
   renderExpList();
 
   // Show a loading skeleton only on first entry to this experiment, so an
@@ -860,7 +1002,7 @@ async function refreshDetail(id, opts) {
   // Section blocks (built by dedicated helpers to keep this function readable)
   const codeHtml = _buildCodeSection(codeChanges, exp, diffData);
   const varHtml = _buildVarSection(varChanges);
-  const datasetsHtml = _buildDatasetsSection(exp.datasets);
+  const datasetsHtml = _buildDatasetsSection(exp.datasets) + _buildEnvironmentSection(exp.environment);
 
   // The working-tree diff is rendered by _buildCodeSection above — one panel,
   // not a second copy of the same lines against the same commit. `diffCompacted`
@@ -991,7 +1133,7 @@ async function refreshDetail(id, opts) {
         ${_primaryMetricSummary(exp)}
         <span class="sum-sep">|</span>
         <span class="sum-item">Branch: <strong>${esc(exp.git_branch||'--')}</strong></span>
-        <span class="sum-item">Commit: <strong>${esc((exp.git_commit||'--').slice(0,7))}</strong></span>
+        <span class="sum-item">Commit: <strong>${_commitHtml(exp)}</strong></span>
         <span class="sum-sep">|</span>
         <span class="sum-item">Started: <strong>${fmtDt(exp.created_at)}</strong></span>
         <span class="sum-item">Duration: <strong>${fmtDur(exp.duration_s)}</strong></span>
@@ -1022,6 +1164,7 @@ async function refreshDetail(id, opts) {
               <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','csv')">CSV</button>
               <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','tsv')">TSV</button>
               <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','plain')">Plain Text</button>
+              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','html')" title="A page with real tables — opens in a browser, imports into OneNote or Word">HTML</button>
             </div>
           </span>
           <span style="position:relative;display:inline-block">
@@ -1029,12 +1172,12 @@ async function refreshDetail(id, opts) {
             <div class="export-dropdown-menu" style="display:none">
               <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json')">JSON</button>
               <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json-full')">JSON (full)</button>
-              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','markdown')">Markdown</button>
+              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','markdown')" title="Pastes as tables in OneNote, Word and Outlook; as markdown in GitHub, Obsidian or a text editor">Markdown / tables</button>
               <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','plain')">Plain Text</button>
             </div>
           </span>
           ${_referenceBtnHtml(exp)}
-          ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button><button class="action-btn" onclick="copyDiff('${exp.id}')" title="Copy the diff as markdown">Copy Diff</button>` : ''}
+          ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button><button class="action-btn" onclick="copyDiff('${exp.id}')" title="Copy the diff as markdown (without the patch — use Export .patch for that)">Copy Diff</button><button class="action-btn" onclick="exportPatch('${exp.id}')" title="Download the raw diff as a .patch file for git apply">Export .patch</button>` : ''}
           ${_compactBtnHtml(exp)}
           <button class="action-btn danger" onclick="deleteExp('${exp.id}','${escJsAttr(exp.name)}')">Delete</button>
           <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
@@ -1152,7 +1295,10 @@ async function refreshDetail(id, opts) {
   // Put the user back on the tab they were reading (see the reset above). Runs
   // after _chartsMetricsData is cached so a restored Charts tab renders against
   // this refresh's data, not the previous one's.
-  if (currentDetailTab !== 'overview') switchDetailTab(currentDetailTab, exp.id);
+  if (currentDetailTab !== 'overview') {
+    const tabEl = document.getElementById('detail-tab-' + currentDetailTab);
+    switchDetailTab(tabEl ? currentDetailTab : 'overview', exp.id);
+  }
   _restoreScroll();
 
   // Populate result type dropdown

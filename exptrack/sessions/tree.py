@@ -112,6 +112,51 @@ def render_json(tree: dict[str, Any]) -> dict[str, Any]:
     return tree
 
 
+def compact_payload(tree: dict[str, Any]) -> dict[str, Any]:
+    """Shrink a ``build_tree`` result for the wire. Mutates and returns *tree*.
+
+    Two things in the hydrated tree are per-node copies of information the tree
+    already contains, and both grow with the shape of the session rather than
+    with its content:
+
+    * **Diff bodies.** Sibling branches share one working tree, so they share
+      one content-addressed blob — the server stores it once and resolves it
+      memoized, then serialized a full copy per node. Four branches off one
+      checkpoint put four copies of a diff (up to ``max_git_diff_kb``, i.e. 256
+      KB each by default) on the wire, on **every** tree refresh — and the
+      dashboard refetches the whole tree after every note, rename, promote and
+      delete. Each distinct body is emitted once in ``diffs`` and the node
+      carries ``git_diff_ref``.
+    * **Lineage.** ``root › checkpoint › branch`` ancestor chains are
+      O(nodes × depth) bytes for a breadcrumb the client can walk itself from
+      the ``parent_id`` it already has.
+
+    ``build_tree`` itself stays hydrated: the CLI renderers read
+    ``node["git_diff"]`` directly, and only the HTTP payload pays for the wire.
+    """
+    bodies: dict[str, str] = {}
+    by_body: dict[str, str] = {}
+
+    def visit(n: dict) -> None:
+        n.pop("lineage", None)
+        diff = n.pop("git_diff", None)
+        if diff:
+            key = by_body.get(diff)
+            if key is None:
+                key = f"d{len(bodies)}"
+                by_body[diff] = key
+                bodies[key] = diff
+            n["git_diff_ref"] = key
+        for c in n.get("children") or []:
+            visit(c)
+
+    root = tree.get("root")
+    if isinstance(root, dict) and root:
+        visit(root)
+    tree["diffs"] = bodies
+    return tree
+
+
 def list_sessions() -> list[dict[str, Any]]:
     """List all sessions with summary counts."""
     from ..core.db import get_db

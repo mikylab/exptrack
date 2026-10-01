@@ -240,6 +240,22 @@ def set_session_token(token: str) -> None:
     _session_token = token
 
 
+_auth_disabled: bool = False
+
+
+def set_auth_disabled(disabled: bool) -> None:
+    """Turn request authentication off for this process (``ui --no-auth``).
+
+    A flag rather than an empty token, because ``_get_auth_token`` reads the
+    env var and ``.exptrack/dashboard_token`` on every request: --no-auth used
+    to only skip generating a token, so a project that had ever run with auth
+    kept 401ing every request while the banner said auth was disabled. The
+    saved token is left on disk for the next start with auth.
+    """
+    global _auth_disabled
+    _auth_disabled = bool(disabled)
+
+
 def _read_token_file() -> str:
     """Read the token from ``.exptrack/dashboard_token`` (see config.token_file_path)."""
     try:
@@ -299,6 +315,46 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # clean close (its log_error routes through the suppressed log_message, so
     # a reaped idle socket stays silent).
     timeout = 30
+
+    # The header a client uses to name the project a request is about. A
+    # header rather than a cookie: authentication here is Bearer-only, which
+    # is what makes the dashboard structurally CSRF-immune, and adding a
+    # cookie would quietly undo that (tests/test_dashboard_auth.py asserts no
+    # endpoint sets one).
+    _PROJECT_HEADER = "X-Exptrack-Project"
+
+    # Paths that answer regardless of which project was named. /api/ping is
+    # the liveness and readiness probe — daemon.py polls it to decide whether
+    # a dashboard is up, and the login overlay calls it to validate a token
+    # before any project is known. Neither question is about a project, so an
+    # open tab holding a since-forgotten project id must not be able to make
+    # the server look dead or the token look wrong.
+    #
+    # /api/projects joins it for the same reason, one step further: it is the
+    # switcher's own recovery surface. A stored id that has since been
+    # deregistered (400) or gone stale/schema-skewed (409) would otherwise
+    # take this call down with every other one, and it is the one call that
+    # lets the user pick a different project — so the dashboard would have no
+    # way back short of clearing localStorage by hand. Exempting it is safe:
+    # it carries no project's *data*, only the directory listing and status of
+    # every project discovery can see, so a bad id here never serves the
+    # wrong project's numbers the way it would on any other route. The route
+    # itself (api_projects) still resolves the requested id against that
+    # listing and reports `current` as the default project's id unless the
+    # request named a known, healthy one — so a bad id is reported, not
+    # silently swapped for the default.
+    #
+    # The page itself is exempt for the third form of the same argument. The
+    # project now rides in the *page* URL (`/?project=<id>`), because that is
+    # the only per-tab store a reload survives and it is what lets two
+    # worktrees sit in two windows. A bookmark of that URL outlives the
+    # project it names, and refusing the document would answer with a bare
+    # 400 — the dashboard would not load at all, so nothing could explain it
+    # or offer a way out. The page reads no project data; its boot-time
+    # /api/projects call already detects a dead id, adopts the server's
+    # answer and says why the view moved.
+    _PROJECT_EXEMPT_PATHS = frozenset({"/", "/index.html",
+                                       "/api/ping", "/api/projects"})
 
     def log_message(self, fmt, *args):
         pass  # suppress request logs
@@ -364,6 +420,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.close_connection = True
         except Exception:
             self._server_error()
+        finally:
+            # Unbind the project before this thread goes back in the pool.
+            # ThreadingHTTPServer reuses threads, so a thread that kept a
+            # binding would serve the NEXT request — possibly for a different
+            # project, possibly for none — out of the wrong database, with no
+            # error anywhere. That is confidently wrong data rather than a
+            # visible fault, which is why the reset lives here and not at the
+            # end of a handler: every refusal path above returns early.
+            from .. import config as cfg
+            cfg.reset_project()
 
     def _host_allowed(self) -> bool:
         """Reject requests whose Host header isn't a local name we bound to.
@@ -397,6 +463,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         the credential into browser history, proxy logs and Referer headers,
         and make every mutation reachable by URL alone.
         """
+        if _auth_disabled:
+            return True  # --no-auth: a saved token does not apply
         token = _get_auth_token()
         if not token:
             return True  # no auth configured
@@ -415,6 +483,98 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_error(401, "Unauthorized - set Authorization: Bearer <token> "
                         f"header{hint}")
         return False
+
+    def _activate_requested_project(self) -> bool:
+        """Bind this thread to the requested project.
+
+        Returns True when the request may proceed — including the common case
+        of no header at all, which means "resolve from cwd", the behaviour
+        every single-project install has always had. Returns False when the
+        request has been refused; the error response is already sent, so the
+        caller must return immediately without touching the database.
+
+        The id -> path map is rebuilt from discovery on every request, so a
+        client can only ever name a project the server already knows about. A
+        filesystem path is never accepted: it would turn any authenticated
+        request into "open a database anywhere on this machine", and it would
+        also bypass the schema probe below.
+
+        Authentication deliberately runs *before* this, and that order is not
+        an oversight to be tidied up: `exptrack ui` mints one token per
+        dashboard session, so the token is a property of the server, not of
+        the project being viewed. Checking auth first also means an
+        unauthenticated request never gets to run discovery.
+        """
+        from .. import config as cfg
+        from .. import projects
+
+        if urllib.parse.urlparse(self.path).path in self._PROJECT_EXEMPT_PATHS:
+            return True
+
+        requested = self.headers.get(self._PROJECT_HEADER, "").strip()
+        if not requested:
+            # An `<img src>` carries no headers, which is already why the auth
+            # token rides in the query string for /api/file/. A cross-project
+            # Compare renders images belonging to runs in another project, and
+            # the query is the only channel they have to say so. Resolution
+            # below is identical either way — the id is still matched against
+            # discovery and a path is still never accepted — so this widens
+            # *how* a project is named, not what may be named.
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            requested = (qs.get("project") or [""])[0].strip()
+        if not requested:
+            return True                       # default: resolve from cwd
+
+        entry = self._requested_project_entry(requested)
+        if entry is None:
+            # Deliberately NOT a fallback to the default project: serving data
+            # from a project other than the one asked for looks like success,
+            # and produces a decision made on the wrong numbers. An error is
+            # the smaller failure, because it is visible.
+            self._json_error(400, "Unknown project: this tab names a project "
+                                  "the dashboard does not know. Reload to "
+                                  "switch to the dashboard's own project.")
+            return False
+        if entry["status"] != projects.SCHEMA_OK:
+            # Opening a schema-skewed project migrates and re-stamps it, so it
+            # is refused with the reason rather than opened.
+            self._json_error(409, "Project unavailable: " + entry["message"])
+            return False
+        cfg.activate_project(Path(entry["path"]))
+        return True
+
+    @staticmethod
+    def _requested_project_entry(requested: str) -> dict | None:
+        """The discovery entry *requested* names, or None if it names nothing.
+
+        Cached discovery (a couple of seconds): resolving an id must not cost
+        a git subprocess on a path the UI polls every 5s per live run. The
+        cache invalidates on any registry write made in this process, and
+        /api/projects still reads through to a fresh discovery.
+        """
+        from .. import config as cfg
+        from .. import projects
+        for entry in projects.discover_cached(current_root=cfg.project_root()):
+            if entry["id"] == requested:
+                return entry
+        return None
+
+    def _json_error(self, status: int, message: str) -> None:
+        """An error response the dashboard's api() can read: ``{"error": …}``.
+
+        send_error writes an HTML page, which api() reports as "an unreadable
+        body" — so the banner named a status code instead of the reason. Like
+        send_error this closes the connection: a refused POST's body is never
+        drained, and under keep-alive it would be read as the next request.
+        """
+        body = json_dumps({"error": message}).encode()
+        self.close_connection = True
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
 
     # ── GET routing ──────────────────────────────────────────────────────────
 
@@ -454,10 +614,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._check_auth():
             return
 
+        # Which project this request is about — after auth (an unauthenticated
+        # request must not get to run discovery) and before get_db(), which is
+        # what resolves the binding into a database path.
+        if not self._activate_requested_project():
+            return
+
         # Lightweight auth probe — used by the login overlay to validate a
         # candidate token without touching the DB.
+        #
+        # It also says whether the tab's project resolves. The page awaits this
+        # probe before loading anything, so this is where a dead stored id is
+        # learned: otherwise every boot load 400s, leaving an empty table under
+        # an error banner until /api/projects recovers it. No header, no
+        # discovery — daemon.py polls ping for readiness.
         if path == "/api/ping":
-            self._json({"ok": True})
+            requested = self.headers.get(self._PROJECT_HEADER, "").strip()
+            answer = {"ok": True}
+            if requested:
+                from .. import projects
+                entry = self._requested_project_entry(requested)
+                answer["project"] = (
+                    "unknown" if entry is None
+                    else "ok" if entry["status"] == projects.SCHEMA_OK
+                    else "unavailable")
+            self._json(answer)
+            return
+
+        # Exempt from activation (see _PROJECT_EXEMPT_PATHS), so the requested
+        # id — however stale or unknown — is resolved here rather than by
+        # _activate_requested_project, and handed to the route explicitly.
+        if path == "/api/projects":
+            requested = self.headers.get(self._PROJECT_HEADER, "").strip()
+            self._json(read_routes.api_projects(requested))
             return
 
         qs = dict(urllib.parse.parse_qsl(parsed.query))
@@ -507,6 +696,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(403, "Forbidden: bad Host header")
             return
         if not self._check_auth():
+            return
+        # Same placement as do_GET: after auth, before anything opens a
+        # database. Refusing here leaves the request body undrained, which is
+        # safe because send_error closes the connection.
+        if not self._activate_requested_project():
             return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -561,7 +755,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "edit-script":     lambda: write_routes.api_edit_script(conn, exp_id, body),
                 "save-confusion":  lambda: write_routes.api_save_confusion(conn, exp_id, body),
                 "edit-command":    lambda: write_routes.api_edit_command(conn, exp_id, body),
-                "export-diff":     lambda: write_routes.api_export_diff(conn, exp_id),
+                "export-diff":     lambda: write_routes.api_export_diff(conn, exp_id, body),
             }
             handler = dispatch.get(action)
             if handler:
@@ -640,6 +834,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/propagate-tag-rename": lambda: write_routes.api_propagate_tag_rename(body),
             "/api/propagate-study-rename": lambda: write_routes.api_propagate_study_rename(body),
             "/api/save-export":          lambda: write_routes.api_save_export(body),
+            "/api/project/forget":       lambda: write_routes.api_project_forget(body),
         }
         handler = global_dispatch.get(path)
         if handler:

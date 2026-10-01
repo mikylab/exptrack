@@ -91,7 +91,10 @@ def test_clean_older_than_with_vacuum_still_deletes(tmp_project, monkeypatch):
 
     exp = Experiment(script="train.py")
     exp.fail("boom")
-    old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    # 91, not 90: aged exactly to the boundary, "older than 90d" held only if
+    # the clock moved between here and the cutoff — and on Windows two reads
+    # a moment apart can return the same instant.
+    old = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
     conn = get_db()
     conn.execute("UPDATE experiments SET created_at=? WHERE id=?", (old, exp.id))
     conn.commit()

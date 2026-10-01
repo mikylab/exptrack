@@ -149,3 +149,75 @@ def sample_experiment(tmp_project):
 
     exp.finish()
     return exp
+
+
+@pytest.fixture()
+def live_server_with_token(tmp_project):
+    """Run a real dashboard with a known auth token; yield (base_url, token).
+
+    Mirrors the ``live_server`` fixture in test_dashboard_headers.py, but
+    pre-writes a token via ``config.write_token`` so auth-gated endpoints are
+    reachable and the CSRF invariants (no Set-Cookie, a cookie never
+    authenticates) can be exercised over a real socket.
+    """
+    import threading
+    from http.server import HTTPServer
+
+    from exptrack import config as cfg
+    from exptrack.dashboard.handler import DashboardHandler
+
+    token = "test-token-not-a-secret"
+    cfg.write_token(token)
+    server = HTTPServer(("127.0.0.1", 0), DashboardHandler)
+    server.allowed_host = "127.0.0.1"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", token
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.fixture(autouse=True)
+def _never_the_real_user_dir(tmp_path_factory, monkeypatch):
+    """Point HOME at a temp directory for every test in the suite.
+
+    `config.user_dir()` resolves `~/.exptrack/`, which holds the project
+    registry and the saved remotes — user-global state that belongs to the
+    person running the tests, not to the tests. `exptrack init` and
+    `exptrack ui start` both register the current project, and the tests that
+    exercise them isolate the *project* directory without touching HOME, so
+    every run of the suite appended its temp paths to the developer's real
+    `~/.exptrack/projects.json`. It was found with ~150 dead pytest
+    directories in it, which is enough to make the dashboard's project
+    switcher useless and to bury the one project the user actually has.
+
+    Autouse and suite-wide rather than per-test: the property wanted is that
+    no test *can* write there, and a fixture each new test has to remember to
+    request does not give that. `tmp_home` stays for tests that want a handle
+    on the directory.
+    """
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home
+
+
+@pytest.fixture(autouse=True)
+def _never_a_real_browser(monkeypatch):
+    """`exptrack ui` and `ui start` open a browser tab. A test driving either
+    would open one on the developer's desktop per run; stub it suite-wide."""
+    import webbrowser
+    monkeypatch.setattr(webbrowser, "open", lambda *a, **k: True)
+
+
+@pytest.fixture()
+def tmp_home(tmp_path, monkeypatch):
+    """Point the user-global exptrack directory at a temp path."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home

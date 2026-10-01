@@ -232,8 +232,8 @@ def _resolve_run_start_experiment(args, params, naming_hint, calling_script):
     from ..core import Experiment
     resume_id = getattr(args, "resume", None)
     if resume_id == "latest":
-        resolved_script = (str(Path(calling_script).resolve())
-                           if Path(calling_script).is_file() else calling_script)
+        from ..core.utils import resolve_script_identity
+        resolved_script = resolve_script_identity(calling_script)
         # Trashed runs are skipped (they're gone from every list, so resuming
         # one silently appends to something the user can't see), and the rowid
         # tie-break keeps "latest" deterministic when two runs share a

@@ -70,6 +70,50 @@ jobs:
             exit 1
           fi
 
+  # Process management is the one kind of code that differs per operating
+  # system, and this release runs on three. A release shipped a Critical
+  # Windows bug (os.kill(pid, 0) is not a liveness probe on Windows --
+  # signal.CTRL_C_EVENT == 0, so it routes to GenerateConsoleCtrlEvent --
+  # which made every live detached dashboard read as dead) through code
+  # review and a full unit-test suite, because CI only ever ran Ubuntu.
+  # This job exists to make sure that gap never reopens: it runs the
+  # lifecycle/auth/tunnel/encoding surface on macOS and Windows, where
+  # process and filesystem semantics actually differ from Linux.
+  platforms:
+    name: ${{ matrix.os }} (lifecycle)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Lifecycle, auth, perms, tunnel, encoding and project tests
+        run: >-
+          pytest
+          tests/test_dashboard_daemon.py
+          tests/test_dashboard_auth.py
+          tests/test_dashboard_perms.py
+          tests/test_cli_ui.py
+          tests/test_tunnel.py
+          tests/test_config_encoding.py
+          tests/test_dashboard_routing.py
+          tests/test_project_resolution.py
+          tests/test_projects.py
+          tests/test_cli_project.py
+          tests/test_dashboard_projects.py
+          -v --tb=short
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

@@ -198,7 +198,20 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
     def _split(blob):
         return blob.split(SEP) if blob else []
 
-    for anc in _node_ancestor_chain(conn, node_id):
+    chain = _node_ancestor_chain(conn, node_id)
+    for anc in chain:
+        # Everything above the node itself is *inherited* context: the node did
+        # not run it in this incarnation, and every sibling branch under the
+        # same spine inherits the identical cells. Those events therefore carry
+        # identity only — the `cell_hash` that serves the full body out of
+        # `cell_lineage` (stored once, content-addressed) plus a one-line label
+        # — while the node's own cells keep their full preview and their
+        # result. Copying the 200-char preview *and* the captured output of
+        # every ancestor onto every descendant made finalizing a session
+        # O(nodes × depth) rows of duplicated text: a 12-checkpoint × 4-branch
+        # session wrote 3 072 timeline rows / 800 KB, and outputs (up to 4 KB a
+        # cell) were the largest share of it.
+        inherited = anc["id"] != node_id
         setup_cells = _split(anc["setup_source"])
         setup_outs = _split(anc["setup_outputs"])
         for i, c in enumerate(setup_cells):
@@ -206,12 +219,14 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
             # Setup cells render their full source inline (no view-source
             # button), so they don't need a cell_lineage row — they carry the
             # source on the event, bounded like the live capture path does.
+            body = {"source": c[:_SETUP_EVENT_MAX_BYTES],
+                    "source_preview": c[:200]}
+            if not inherited:
+                body["output_preview"] = (
+                    setup_outs[i] if i < len(setup_outs) else "").strip()
             events.append(
                 (exp_id, seq, "setup", None, None, f"setup_{setup_pos}",
-                 json.dumps({"source": c[:_SETUP_EVENT_MAX_BYTES],
-                             "source_preview": c[:200],
-                             "output_preview": (setup_outs[i] if i < len(setup_outs) else "").strip()}),
-                 now))
+                 json.dumps(body), now))
             seq += 1
         cells = _split(anc["cell_source"])
         outs = _split(anc["cell_outputs"])
@@ -226,11 +241,19 @@ def materialize_experiment(node_id: str) -> dict[str, Any]:
             # too duplicated every shared ancestor cell once per materialized
             # sibling — N branches off one checkpoint meant N copies of the same
             # upstream code in timeline JSON.
+            if inherited:
+                # One line is what every reader of `source_preview` displays
+                # (the Timeline row, `exptrack timeline`, the compare column),
+                # and the view-source button serves the whole cell through
+                # `cell_hash`. The output belongs to the run that produced it.
+                body = {"source_preview": c.strip().split("\n")[0][:200],
+                        "inherited": True}
+            else:
+                body = {"source_preview": c[:200],
+                        "output_preview": (outs[i] if i < len(outs) else "").strip()}
             events.append(
                 (exp_id, seq, "cell_exec", ch, cell_pos, f"cell_{cell_pos}",
-                 json.dumps({"source_preview": c[:200],
-                             "output_preview": (outs[i] if i < len(outs) else "").strip()}),
-                 now))
+                 json.dumps(body), now))
             seq += 1
     if lineage_rows:
         # Content-addressed: cell_hash is the PK, so OR IGNORE dedups a cell that

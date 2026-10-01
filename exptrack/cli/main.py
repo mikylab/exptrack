@@ -26,6 +26,7 @@ from ..core.queries import AmbiguousPrefixError
 from .admin_cmds import (
     cmd_backup,
     cmd_compact,
+    cmd_fix_perms,
     cmd_init,
     cmd_notebook_guard,
     cmd_prune,
@@ -84,7 +85,9 @@ from .pipeline_cmds import (
     cmd_run_start,
     cmd_unlink_artifact,
 )
+from .project_cmds import cmd_project
 from .session_cmds import cmd_session, cmd_sessions
+from .tunnel_cmds import cmd_tunnel
 
 
 def _add_run_start_args(parser):
@@ -287,6 +290,11 @@ def _build_parser():
 
     p_diff = sub.add_parser("diff", help="Print captured git diff for an experiment")
     p_diff.add_argument("id")
+    p_diff.add_argument("--patch", action="store_true",
+                        help="Print the raw diff only, for `git apply`")
+    p_diff.add_argument("-o", "--output", default=None, metavar="FILE",
+                        help="With --patch: write the patch to FILE (safe on "
+                             "Windows, where a shell redirect can re-encode it)")
 
     p_cmp = sub.add_parser("compare",
         help="Compare two experiments, or compare within one experiment at two timeline points")
@@ -300,6 +308,11 @@ def _build_parser():
                        help="Timeline seq point 1 (within-experiment comparison)")
     p_cmp.add_argument("--seq2", type=int, default=None,
                        help="Timeline seq point 2 (within-experiment comparison)")
+    p_cmp.add_argument("--format", choices=["table", "markdown", "html"], default="table",
+                       help="table (default) prints the terminal view; markdown/html "
+                            "print the comparison the dashboard's Copy produces")
+    p_cmp.add_argument("--best", action="store_true",
+                       help="With --format: each metric's best point instead of its final value")
 
     p_tl = sub.add_parser("timeline", help="Show execution timeline for an experiment")
     p_tl.add_argument("id")
@@ -386,7 +399,10 @@ def _build_parser():
 
     p_export = sub.add_parser("export", help="Export experiment data (JSON, markdown, or CSV)")
     p_export.add_argument("id", nargs="?", default=None)
-    p_export.add_argument("--format", choices=["json", "markdown", "csv", "tsv", "params", "params-flags", "params-json", "params-md", "params-tsv"], default="json")
+    p_export.add_argument("--format", choices=["json", "markdown", "text", "html", "csv", "tsv", "params", "params-flags", "params-json", "params-md", "params-tsv"], default="json",
+                          help="markdown/text/html are the readable forms; html "
+                               "is a page that opens in a browser or imports into "
+                               "OneNote/Word with real tables")
     p_export.add_argument("--all", action="store_true", dest="export_all",
                           help="Export all experiments (batch export)")
     p_export.add_argument("--max-artifacts", type=int, default=None, metavar="N",
@@ -449,17 +465,97 @@ def _build_parser():
     p_ui.add_argument("--host", type=str, default="127.0.0.1")
     p_ui.add_argument("--token", type=str, default=None,
                        help="Set a persistent dashboard auth token (saved to "
-                            ".exptrack/config.json). Without this a random "
-                            "per-session token is generated automatically.")
+                            ".exptrack/dashboard_token, gitignored, mode 600). "
+                            "Without this a token is generated on first start "
+                            "and reused afterwards.")
     p_ui.add_argument("--clear-token", action="store_true",
-                       help="Remove the saved dashboard auth token")
+                       help="Remove the saved dashboard auth token; the next "
+                            "start generates a new one, logging out every browser")
     p_ui.add_argument("--no-auth", action="store_true",
                        help="Disable the auto-generated auth token (not "
                             "recommended when binding to a non-local host)")
+    p_ui.add_argument("--no-browser", action="store_true", dest="no_browser",
+                       help="Don't open the dashboard in a browser (skipped "
+                            "automatically over SSH or with no display)")
+
+    # The subparser is optional (dest defaults to None when omitted) so bare
+    # `exptrack ui --port 8000` keeps meaning "serve here, now" — the
+    # foreground behaviour this command has always had. Only an explicit
+    # start/stop/status/logs word switches to background-daemon mode.
+    ui_sub = p_ui.add_subparsers(dest="ui_sub")
+
+    p_ui_start = ui_sub.add_parser("start",
+                                   help="Run the dashboard in the background")
+    p_ui_start.add_argument("--port", type=int, default=7331)
+    p_ui_start.add_argument("--host", type=str, default="127.0.0.1")
+    p_ui_start.add_argument("--no-browser", action="store_true", dest="no_browser",
+                            help="Don't open the dashboard in a browser")
+
+    p_ui_stop_sub = ui_sub.add_parser("stop", help="Stop the background dashboard")
+    p_ui_stop_sub.add_argument("--port", type=int, default=None)
+    p_ui_stop_sub.add_argument("--force", action="store_true",
+                               help="Escalate to SIGKILL if SIGTERM is not enough")
+
+    # `status` deliberately declares no --port/--host of its own: it reports
+    # on whatever is recorded, not on a port the caller names. Leaving them
+    # undeclared (rather than adding default=None copies, as `stop` does for
+    # its own --port) is the deliberate choice here — this subparser has no
+    # legitimate use for either flag, so accepting and silently ignoring them
+    # would be worse than today's "unrecognized arguments" error. The trap
+    # this guards against: args.port/args.host still come back non-None
+    # here — 7331/"127.0.0.1" — because they're inherited from the *parent*
+    # `ui` parser's foreground-mode defaults, not because this subparser
+    # asked for them. cmd_ui_status (admin_cmds.py) must never read
+    # args.port/args.host for this reason; it calls
+    # daemon.running_state("127.0.0.1", 0) directly instead.
+    p_ui_status = ui_sub.add_parser("status",
+                                    help="Show whether the dashboard is running, and its URL")
+    p_ui_status.add_argument("--json", action="store_true",
+                             help="Emit machine-readable JSON (used by `exptrack tunnel`)")
+
+    p_ui_logs = ui_sub.add_parser("logs", help="Show the background dashboard's log")
+    p_ui_logs.add_argument("-n", "--lines", type=int, default=20)
+    p_ui_logs.add_argument("-f", "--follow", action="store_true")
 
     p_ui_stop = sub.add_parser("ui-stop",
-                                help="Kill a dashboard process still holding the port")
+                                help="Deprecated alias for `exptrack ui stop`")
     p_ui_stop.add_argument("--port", type=int, default=7331)
+    p_ui_stop.add_argument("--force", action="store_true",
+                           help="Escalate to SIGKILL if SIGTERM is not enough")
+
+    # No top-level `name` positional here: an optional positional placed
+    # before add_subparsers() competes with the subparser for the first
+    # token, so `tunnel gpu01` was routed to "is 'gpu01' a valid subcommand?"
+    # (SystemExit 2) instead of populating `name`. The bare `tunnel <name>`
+    # form is restored by rewriting argv to insert "connect" in main(), the
+    # same technique `run-start` uses for its own argv quirk.
+    p_tunnel = sub.add_parser("tunnel",
+                              help="Open a dashboard on a remote machine over SSH")
+    tunnel_sub = p_tunnel.add_subparsers(dest="tunnel_sub")
+
+    p_t_add = tunnel_sub.add_parser("add", help="Save a remote")
+    p_t_add.add_argument("name")
+    p_t_add.add_argument("--host", required=True, help="user@hostname")
+    p_t_add.add_argument("--dir", required=True,
+                         help="Project directory on the remote machine")
+    p_t_add.add_argument("--remote-port", type=int, default=7331)
+    p_t_add.add_argument("--local-port", type=int, default=None)
+    p_t_add.add_argument("--exptrack-bin", default=None,
+                         help="Path to exptrack on the remote "
+                              "(default: <dir>/.venv/bin/exptrack)")
+
+    tunnel_sub.add_parser("list", help="List saved remotes")
+
+    p_t_rm = tunnel_sub.add_parser("rm", help="Remove a saved remote")
+    p_t_rm.add_argument("name")
+
+    p_t_stop = tunnel_sub.add_parser("stop", help="Close an open tunnel")
+    p_t_stop.add_argument("name")
+
+    p_t_connect = tunnel_sub.add_parser(
+        "connect", help="Start + forward a saved remote (usually invoked "
+                        "as bare `exptrack tunnel <name>`)")
+    p_t_connect.add_argument("name")
 
     p_storage = sub.add_parser("storage", help="Show data storage breakdown and tips")
     p_storage.add_argument("--checkpoint", action="store_true",
@@ -638,6 +734,10 @@ def _build_parser():
     p_snote.add_argument("node_id")
     p_snote.add_argument("text")
 
+    sub.add_parser("fix-perms",
+        help="Make .exptrack/ private (mode 0700) — only your account can "
+             "read the runs database and the dashboard token")
+
     # ── Notebook helpers ─────────────────────────────────────────────────────
     sub.add_parser("notebook-guard",
         help="Print a paste-able guard cell so a notebook runs with or "
@@ -657,6 +757,15 @@ def _build_parser():
         help="Open the documentation in a browser (omit topic to list topics)")
     p_docs.add_argument("topic", nargs="?",
         help="Doc topic to open (omit to list them)")
+
+    # ── Project registry ─────────────────────────────────────────────────────
+    p_project = sub.add_parser("project",
+                               help="Inspect or prune the known-project list")
+    project_sub = p_project.add_subparsers(dest="project_sub")
+    project_sub.add_parser("list", help="List known projects and their status")
+    p_proj_forget = project_sub.add_parser("forget",
+                                           help="Remove a project from the list")
+    p_proj_forget.add_argument("name", help="Project name or path")
 
     return p
 
@@ -714,15 +823,47 @@ _DISPATCH = {
     "clean":        cmd_clean,
     "ui":           cmd_ui,
     "ui-stop":      cmd_ui_stop,
+    "tunnel":       cmd_tunnel,
     "sessions":     cmd_sessions,
     "session":      cmd_session,
     "notebook-guard": cmd_notebook_guard,
+    "fix-perms":    cmd_fix_perms,
     "examples":     cmd_examples,
     "docs":         cmd_docs,
+    "project":      cmd_project,
 }
 
 
+_TUNNEL_SUBCOMMANDS = ("add", "list", "rm", "stop", "connect")
+
+
+def _rewrite_bare_tunnel_connect():
+    """`exptrack tunnel <name>` -> `exptrack tunnel connect <name>`.
+
+    `tunnel` has no top-level positional (see the parser comment above) because
+    one there collides with add_subparsers(); this restores the documented
+    bare form by inserting the subcommand token before argparse ever sees it,
+    the same trick `run-start` uses below for its own argv quirk.
+    """
+    if "tunnel" not in sys.argv[1:]:
+        return
+    at = sys.argv.index("tunnel")
+    globals_before = sys.argv[1:at]
+    if not all(a.startswith("-") for a in globals_before):
+        return  # "tunnel" was a value passed to some other command
+    rest = sys.argv[at + 1:]
+    if rest and rest[0] not in _TUNNEL_SUBCOMMANDS and rest[0] not in ("-h", "--help"):
+        sys.argv = [*sys.argv[:at + 1], "connect", *rest]
+
+
 def main():
+    # Before anything can print: on a non-UTF-8 console (the Windows default)
+    # an unmappable glyph would otherwise raise UnicodeEncodeError mid-command
+    # — `session show` died on the tree's first `├──`. See harden_stdio.
+    from .formatting import harden_stdio
+    harden_stdio()
+    _rewrite_bare_tunnel_connect()
+
     # run-start accepts arbitrary --key value user params — handle before argparse
     # consumes them as unknown flags. The subcommand does not have to be argv[1]:
     # the documented global flags come first (`exptrack --no-color run-start

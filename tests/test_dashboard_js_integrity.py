@@ -59,6 +59,58 @@ def test_all_inline_handlers_are_defined():
     assert not missing, f"Inline handlers call undefined functions: {missing}"
 
 
+def test_every_private_helper_called_is_defined():
+    """Every ``_helper(`` the bundle calls must be defined somewhere in it.
+
+    ESLint runs per file with ``no-undef`` off (every name is a cross-file
+    global), so a helper deleted in one edit while a caller survived shipped
+    silently: ``_sharedImageNote`` vanished from compare.js while the image
+    rows still called it, and every comparison of runs with images threw a
+    ReferenceError before writing any HTML — the Compare button did nothing.
+    The ``_`` prefix is the codebase's private-helper convention, so this
+    covers the helpers without false positives from callback parameters.
+    """
+    js = get_all_js()
+    called = set(re.findall(r'(?<![\w$.])(_[\w$]+)\s*\(', js))
+    # `let _resolve;` assigned later (a Promise's resolver) is a definition too.
+    declared = set(re.findall(r'\b(?:let|var)\s+([A-Za-z_$][\w$]*)\s*;', js))
+    missing = sorted(called - _defined_names(js) - declared)
+    assert not missing, f"Bundle calls undefined helpers: {missing}"
+
+
+def test_cross_image_thumbs_quote_their_handler_arguments():
+    """The compare image thumb's onclick quotes its string arguments.
+
+    A mangled edit turned each ``\\'`` into ``' + E + '`` — a reference to an
+    identifier that exists nowhere — so building the pair view's image columns
+    threw and the whole comparison rendered nothing.
+    """
+    js = get_all_js()
+    start = js.index("function _cmpImageCol(")
+    body = js[start:js.index("\n}\n", start)]
+    assert "' + E + '" not in body
+    assert "selectCrossImg(\\''" in body
+
+
+def test_boot_recovers_a_dead_project_before_loading_its_data():
+    """A stored id the server does not know 400s every project-scoped load.
+
+    The page used to fire them all anyway and recover afterwards, so a tab
+    reopened after a project went away showed an empty table under a
+    "Couldn't load data … 400 … /api/stats" banner until /api/projects came
+    back. The auth probe carries the project and records what ping said about
+    it; boot waits on loadProjects() when that was not 'ok'.
+    """
+    js = get_all_js()
+    start = js.index("function _ping(")
+    ping = js[start:js.index("\n}\n", start)]
+    assert "X-Exptrack-Project" in ping and "_pingProjectState" in ping
+    start = js.index("function _bootDashboard(")
+    boot = js[start:js.index("\n}\n", start)]
+    assert "_pingProjectState !== 'ok'" in boot
+    assert "loadProjects().then(() => _bootProjectData())" in boot
+
+
 def test_escjs_defined_once():
     """escJs — the JS-string-context escaper — is defined exactly once."""
     js = get_all_js()
@@ -235,12 +287,19 @@ def test_auto_refresh_poll_survives_a_failed_request():
 
 def test_compare_picker_pages_instead_of_asking_for_one_huge_limit():
     """The server caps `limit`, so an over-large ask comes back short — and a
-    short response reads exactly like "that is all of them"."""
+    short response reads exactly like "that is all of them".
+
+    The paging lives in `_loadProjectRuns`, which is where it moved when the
+    cache became per-project: `_loadCmpExps` is now the page-project caller of
+    it, so checking the loader covers both surfaces at once.
+    """
     js = get_all_js()
-    start = js.index("async function _loadCmpExps(")
-    body = js[start:js.index("\n}", start)]
+    body = _js_function_body(js, "async function _loadProjectRuns(")
     assert "offset=' + rows.length" in body
     assert "limit=' + EXP_PAGE_SIZE" in body
+    # The page's project is '' here, so the loader's own cache key is what
+    # keeps the picker and the Compare filter box on one list.
+    assert "_loadProjectRuns('" in _js_function_body(js, "async function _loadCmpExps(")
 
 
 def test_detail_tabs_array_matches_the_button_row():
@@ -526,13 +585,25 @@ def test_every_run_picking_surface_uses_the_shared_picker():
             f"{fn} does not open the shared run picker"
 
 
-def test_the_picker_and_the_compare_filter_share_one_run_cache():
+def test_the_picker_and_the_compare_filter_share_one_run_cache_per_project():
     """Two caches would mean the picker and the filter box beside it could be
     searching different sets of runs, and "no match" would mean different things
-    in each."""
+    in each.
+
+    Now one cache *per project*, for the mirror-image reason: a run list is
+    entirely a property of the project it was paged from, so a single shared
+    list would serve project A's runs — under bare ids that resolve against B —
+    while the user browsed B. Both surfaces still reach it through the one
+    loader, so they cannot end up describing different sets of the same
+    project.
+    """
     js = get_all_js()
-    body = _js_function_body(js, "async function openRunPicker(")
-    assert "_loadCmpExps(" in body
+    for fn in ("async function _rpLoad(", "async function _loadCmpExps("):
+        assert "_loadProjectRuns(" in _js_function_body(js, fn), \
+            f"{fn} does not go through the shared per-project loader"
+    loader = _js_function_body(js, "async function _loadProjectRuns(")
+    assert "_cmpCacheByProject[key]" in loader, "the loader does not cache per project"
+    assert "_cmpCacheKey(projectId)" in loader, "the cache key ignores the project"
     # The picker reads whole runs, so the cache has to carry them.
     entries = _js_function_body(js, "function _cmpEntries(")
     assert "e: e" in entries and "hay:" in entries
@@ -571,7 +642,7 @@ def test_the_picker_states_both_reasons_the_list_is_partial():
     js = get_all_js()
     body = _js_function_body(js, "function _rpNoticesHtml(")
     assert "RP_MAX_ROWS" in body and "narrow the search" in body
-    assert "_cmpHasMore" in body and "rpLoadAll()" in body
+    assert "_rpHasMore" in body and "rpLoadAll()" in body
 
 
 def test_a_matrix_run_choice_is_a_set_not_a_search():
@@ -818,24 +889,61 @@ def test_the_two_addressable_views_push_a_history_entry():
     assert "_pushViewHash('#matrix', opts && opts.replaceHash)" in js
     assert "_pushViewHash('#compare=" in js
     # popstate restores the named view through the one hash parser.
-    body = _js_function_body(js, "async function _onPopView(")
+    assert "_restoreViewFromHash()" in _js_function_body(js, "async function _onPopView(")
+    body = _js_function_body(js, "async function _restoreViewFromHash(")
     assert "restoreCompareFromUrl()" in body and "openParamMatrix()" in body
     assert "window.addEventListener('popstate', _onPopView);" in js
 
 
+def test_a_run_has_an_address_a_reload_reopens():
+    """Run detail had no hash, so reloading while reading a run — or Back out
+    of a comparison opened from one — always landed on the experiments list.
+
+    Entering a run writes `#run=<id>` (pushed, replaced on a lateral move), a
+    tab switch replaces it with the tab, and boot restores through the same
+    parser popstate uses — so a reload and the Back button cannot disagree.
+    """
+    js = get_all_js()
+    detail = _js_function_body(js, "async function refreshDetail(")
+    assert "_pushViewHash(_runViewHash(id, currentDetailTab), lateral)" in detail
+    tabs = _js_function_body(js, "function switchDetailTab(")
+    assert "_pushViewHash(_runViewHash(expId, tab), true)" in tabs
+    restore = _js_function_body(js, "async function _restoreViewFromHash(")
+    assert "_parseRunViewHash(hash)" in restore and "refreshDetail(run.id)" in restore
+    start = js.index("function _bootProjectData(")
+    assert "_restoreViewFromHash()" in js[start:js.index("\n}\n", start)]
+    # Leaving to the list drops the address, or a reload would reopen the run.
+    assert "h.startsWith('#run=')" in _js_function_body(js, "function _clearViewHash(")
+
+
+def test_opening_a_run_leaves_the_rail_as_the_reader_left_it():
+    """Opening a run forced the rail open, and returning to the list forced it
+    shut — so the rail's state was never the reader's. Neither view switch may
+    write the class; the list view re-applies the stored choice."""
+    js = get_all_js()
+    detail = _js_function_body(js, "async function refreshDetail(")
+    assert "classList.remove('collapsed')" not in detail
+    welcome = _js_function_body(js, "function showWelcome(")
+    assert "classList.add('collapsed')" not in welcome
+    assert "restoreSidebarState()" in welcome
+
+
 def test_the_login_overlay_can_always_be_dismissed():
-    """`exptrack ui` mints a random token per session, so restarting it
-    invalidates the one the browser stored and the next background poll 401s.
-    The overlay had no Cancel, no Escape and no click-outside, so a stale token
-    did not degrade the page — it locked it behind a dialog whose only exit was
-    a token the user had to leave and find."""
+    """A 401 arrives on a background poll, not on anything the user just did,
+    so the overlay must be dismissible and must say what to do. It had no
+    Cancel, no Escape and no click-outside, so a stale token did not degrade
+    the page — it locked it behind a dialog whose only exit was a token the
+    user had to leave and find."""
     js = get_all_js()
     body = _js_function_body(js, "function _showLoginOverlay(")
     assert "function dismiss(" in body
     assert "ev.key === 'Escape'" in body
     assert "exptrack-login-dismiss" in body
-    # And it names the reason, which "Invalid token" never did.
-    assert "mints a new token" in body
+    # And it names the way back, which "Invalid token" never did. Asserted on
+    # the command rather than a sentence: this test used to pin the words
+    # "mints a new token", which stopped being true when 1.9.0 persisted the
+    # token, so the test was holding false copy in place.
+    assert "exptrack ui status" in body
     # A dismissal with no token leaves every request failing; say so.
     assert "_showAuthBanner()" in body
     # Logging back in reloads the data the 401'd request never returned.
@@ -1023,7 +1131,49 @@ def test_the_code_diff_can_be_copied_not_only_exported():
     assert "async function copyDiff(" in js
     body = _js_function_body(js, "async function copyDiff(", strip_comments=True)
     assert "export-diff" in body, "same payload as the export, not a second render"
-    assert "clipboard" in body
+    assert "copyRich(d.markdown, d.html" in body
+
+
+def test_every_markdown_copy_carries_its_html_rendering():
+    """OneNote, Word and Outlook do not render markdown — a markdown copy
+    pasted there as pipes and dashes. Every markdown copy goes through
+    copyRich with the server's HTML beside the text, and copyRich writes both
+    flavours to one ClipboardItem."""
+    js = get_all_js()
+    rich = _js_function_body(js, "async function copyRich(")
+    assert "'text/html'" in rich and "'text/plain'" in rich
+    assert "_selectionCopy(" in rich, "plain-http fallback, or a tunnelled Copy fails"
+    assert "copyRich(d.text, d.html" in _js_function_body(js, "async function copyExportFmt(")
+    assert "copyRich(" in _js_function_body(js, "async function sidebarCopyFmt(")
+    assert "copyRich(d.markdown, d.html" in _js_function_body(
+        js, "async function copyComparisonDocument(")
+
+
+def test_plain_text_is_rendered_by_the_server_not_the_browser():
+    """The browser built its own plain-text layout, so the CLI had none and
+    each code change came out JSON-escaped on one line. The server's
+    renderer (core/export_render.py) is now the only one."""
+    js = get_all_js()
+    assert "function _formatExpPlainText(" not in js
+    assert "fmt === 'plain' ? 'text'" in _js_function_body(js, "async function _fetchExportText(")
+
+
+def test_every_diff_panel_offers_the_raw_patch_and_links_the_commit():
+    """The markdown diff is for reading; `git apply` needs the raw patch, and
+    the header's commit hash should open the commit on the hosted repo."""
+    js = get_all_js()
+    assert "exportPatch(" in _js_function_body(js, "function _diffActionsHtml(")
+    body = _js_function_body(js, "async function exportPatch(")
+    assert "d.patch" in body and "saveOrDownload(" in body
+    link = _js_function_body(js, "function _commitHtml(")
+    assert "git_commit_url" in link and "^https:" in link and "noopener" in link
+
+
+def test_compare_has_copy_and_markdown_export_beside_csv():
+    assert 'onclick="copyComparisonDocument()"' in DASHBOARD_HTML
+    assert 'onclick="exportComparisonMarkdown()"' in DASHBOARD_HTML
+    body = _js_function_body(get_all_js(), "async function _comparisonDocument(")
+    assert "document: true" in body and "metricPolarityGoals()" in body
 
 
 def test_every_diff_export_button_has_a_copy_beside_it():
@@ -1112,15 +1262,36 @@ def test_the_gallery_cards_carry_their_source():
     """A surgical repaint has to find the card for an image; matching on the
     inline handler's text would tie the repaint to how the handler is spelled."""
     js = get_all_js()
-    gallery = _js_function_body(js, "async function loadImages(")
+    gallery = _js_function_body(js, "function _renderImages(")
     assert "data-src=" in gallery
 
 
 def test_rebuilding_the_images_tab_holds_the_page_scroll():
     """Entering compare mode and Refresh do legitimately rebuild the tab. That
     still must not move the reader."""
-    body = _js_function_body(get_all_js(), "async function loadImages(", strip_comments=True)
+    body = _js_function_body(get_all_js(), "function _renderImages(", strip_comments=True)
     assert "_holdMainScroll()" in body
+
+
+def test_a_view_change_in_the_images_tab_does_not_refetch_or_blank_the_tab():
+    """`loadImages` blanked the tab with a Loading placeholder before its
+    request. Typing one character into the search box therefore destroyed the
+    box mid-keystroke (focus gone, the character lost) and collapsed
+    `#main-content`, so the scroller clamped the reader to the top — reported
+    as "the page refreshes and I can't type". Search, sort, folder filter,
+    limit and compare mode now repaint from the payload already fetched, and
+    the placeholder only appears when there is nothing on screen yet."""
+    js = get_all_js()
+    load = _js_function_body(js, "async function loadImages(", strip_comments=True)
+    assert "if (!container.firstChild)" in load, (
+        "the Loading placeholder must not wipe a tab that already has content")
+
+    repaint = _js_function_body(js, "function repaintImages(", strip_comments=True)
+    assert "_renderImages(" in repaint and "_imgDataCache" in repaint
+
+    render = _js_function_body(js, "function _renderImages(", strip_comments=True)
+    assert "api(" not in render, "a repaint is not a fetch"
+    assert "img-search-input" in render, "the search box must survive its own repaint"
 
 
 def test_the_scan_path_editor_fills_its_row():
@@ -1193,3 +1364,511 @@ def test_the_artifact_row_offers_unlink_and_says_what_else_holds_the_file():
     assert "not touched" in unlink
     badge = _js_function_body(js, "function _artifactLinkBadge(a)")
     assert "linked_by" in badge and "also in" in badge
+
+
+def test_a_stored_project_id_that_stops_resolving_is_recovered_not_replayed():
+    """A stale/unknown localStorage project id must not leave the switcher —
+    the one recovery surface — permanently failing.
+
+    /api/projects reports `current` as the default project's id whenever the
+    requested id didn't resolve (server-side, see handler.py's exemption and
+    read_routes.api_projects). loadProjects() has to notice that mismatch,
+    drop the dead id from localStorage, and adopt the server's answer, or the
+    dashboard keeps sending the same dead id on every subsequent request.
+    """
+    js = get_all_js()
+    body = _js_function_body(js, "async function loadProjects()")
+    # The null-response path (api() failing outright) also clears the stored
+    # id, so a reload gets a clean shot instead of repeating the same failure.
+    assert "if (!data) {" in body
+    assert "_storageDel(_PROJECT_KEY)" in body
+    # The mismatch-detection path: current from the server disagreeing with
+    # what we stored is the signal the stored id no longer resolves.
+    assert "data.current !== _activeProjectId" in body
+    assert "_storageSet(_PROJECT_KEY, data.current)" in body
+    # The user is told the view moved, not left to discover it silently.
+    assert "project-problem" in body and "no longer available" in body
+
+
+# ── Cross-project Compare (client side) ──────────────────────────────────────
+# Compare is the only surface that may span projects. None of the failures
+# below raises: a bare id that should have been qualified resolves against the
+# wrong database and still looks like a perfectly good run, and a fetch sent
+# with the page's project instead of the run's comes back empty rather than
+# wrong. A structural check is the only thing that notices.
+
+def test_the_picker_qualifies_only_runs_outside_the_pages_project():
+    """A bare id means "the current project", and every existing caller,
+    bookmark and saved URL passes one — so the picker must leave them bare and
+    qualify only what it browsed elsewhere."""
+    js = get_all_js()
+    body = _js_function_body(js, "function _rpQualify(")
+    # '' (the page's project) returns the id untouched; anything else prefixes.
+    assert "_rpProject ?" in body and "':' + id" in body
+    # The row's identity — what gets ticked and what gets handed back — is the
+    # qualified id, not the bare one: two projects can hold the same id and
+    # they must not tick each other.
+    row = _js_function_body(js, "function _rpRowHtml(")
+    assert "_rpQualify(entry.id)" in row
+    assert "escJsAttr(qid)" in row, "the handed-back id must be escaped in the handler"
+    assert "_rpSelected.has(qid)" in row
+    assert "_rpQualify(" in _js_function_body(js, "function rpSelectAllShown(")
+
+
+def test_the_project_selector_is_opt_in_and_only_compare_opts_in():
+    """Every other view reads a *set* whose members must share a parameter
+    space, so a cross-project matrix, leaderboard or merged list is a non-goal.
+    The matrix's picker must not grow a project selector by inheritance."""
+    js = get_all_js()
+    assert "crossProject: true" in _js_function_body(js, "function openMultiRunPicker(")
+    assert "crossProject" not in _js_function_body(js, "function openMatrixRunPicker("), \
+        "the matrix picker must stay single-project"
+    body = _js_function_body(js, "async function openRunPicker(")
+    assert "_rpCross = !!o.crossProject" in body
+    assert "if (_rpCross) await _rpLoadProjects()" in body
+    # A picker that reopened on the project last browsed would hand back
+    # qualified ids for runs the user believes are local.
+    assert "_rpProject = ''" in body
+
+
+def test_a_projects_listing_that_fails_leaves_a_working_picker():
+    """api() returns null on failure and has already reported it; a dialog that
+    refuses to open because the *optional* selector could not be built is worse
+    than one with no selector."""
+    js = get_all_js()
+    body = _js_function_body(js, "async function _rpLoadProjects(")
+    assert "if (!data || !Array.isArray(data.projects)) return;" in body
+
+
+def test_a_run_outside_the_page_is_fetched_against_its_own_project():
+    """The per-run fetches carry the PAGE's project by default, so a foreign
+    run's metrics came back empty — drawn as a run that logged nothing rather
+    than one we asked the wrong database about."""
+    js = get_all_js()
+    curves = _js_function_body(js, "async function _renderMultiCurves(")
+    assert "api('/api/metrics/' + e.id, e.project_id)" in curves
+    # An <img src> carries no headers at all, which is why the token already
+    # rides in the query for /api/file/ — the project travels the same way.
+    fu = _js_function_body(js, "function fileUrl(")
+    assert "project=" in fu and "projectId" in fu
+    cell = _js_function_body(js, "function _imageCellHtml(")
+    assert "fileUrl(img.path, img._project)" in cell
+    # ...and the optional project argument is what makes every existing
+    # one-argument call unchanged.
+    assert "async function api(path, projectId)" in js
+    assert "_projectHeaders(projectId)" in _js_function_body(js, "async function api(")
+
+
+def test_a_cross_project_pair_says_the_pair_panels_are_unavailable():
+    """The pair-only endpoints each read one project's database per request. A
+    cross-project pair silently losing four panels reads as a comparison that
+    half-failed, with no way to tell which half."""
+    js = get_all_js()
+    fetch = _js_function_body(js, "async function doMultiCompare(")
+    assert "_cmpSpansProjects(data.experiments)" in fetch
+    assert "data._pairCrossProject = true" in fetch
+    render = _js_function_body(js, "function _renderMultiComparison(")
+    assert "_pairCrossProjectNoteHtml(" in render
+    note = _js_function_body(js, "function _pairCrossProjectNoteHtml(")
+    assert "different projects" in note and "cmp-missing" in note
+
+
+def test_a_compare_column_names_the_project_only_when_the_set_spans_them():
+    """Two projects can hold runs with the same name — auto-generated names come
+    from one shared vocabulary, so that is the ordinary case. On a
+    single-project comparison the tag would sit on every column saying the same
+    thing on each, which is noise."""
+    js = get_all_js()
+    spans = _js_function_body(js, "function _cmpSpansProjects(")
+    assert "project_id" in spans and "size > 1" in spans
+    label = _js_function_body(js, "function _cmpRunLabel(")
+    # Middle-ellipsis, never a head truncation: auto-named runs differ in the
+    # tail, which is exactly what a head cut would hide.
+    assert "_cmpColName(" in label and "project_name" in label
+    assert "midEllipsis(" in _js_function_body(js, "function _cmpColName(")
+    # The chips naming staged runs resolve a qualified id in its own project's
+    # cache rather than failing to find it in the page's.
+    chip = _js_function_body(js, "function _cmpLabelFor(")
+    assert "splitQualifiedRunId(" in chip and "projectName(" in chip
+
+
+def test_the_switcher_has_a_dismiss_control_reachable_from_a_project_row():
+    """Spec rule: "The switcher's dismiss control calls the same code path as
+    `forget`." forgetProject() is that control — it must POST to the
+    /api/project/forget endpoint, guard postApi()'s possible null, and never
+    silently reload out from under an unrelated selection.
+    """
+    js = get_all_js()
+    forget = _js_function_body(js, "async function forgetProject(id, name)")
+    assert "/api/project/forget" in forget
+    assert "postApi(" in forget
+    assert "if (!res) return;" in forget
+    # Confirmed first: a dismiss must not fire on the same misclick that would
+    # hit the switcher itself.
+    assert "confirm(" in forget
+    # Dismissing the project currently being viewed must not leave the
+    # switcher pointing at an id the server no longer recognizes.
+    assert "_activeProjectId === id" in forget
+    assert "_storageDel(_PROJECT_KEY)" in forget
+
+
+def test_every_project_row_carries_its_own_forget_control():
+    """A <select><option> can't host a button, so the dismiss affordance lives
+    in a rendered row list — one row, one forget button, escaped the same way
+    every other user-controlled value in an inline handler is."""
+    js = get_all_js()
+    body = _js_function_body(js, "async function loadProjects()")
+    assert "forgetProject(" in body
+    assert "escJsAttr(p.id)" in body and "escJsAttr(p.name)" in body
+    # The manage panel is reached through its own toggle, not folded into the
+    # picker itself.
+    assert "toggleProjectManage" in body
+
+
+# ── The final-review fix wave (B1, B2, N1, N2, N4, N6) ───────────────────────
+
+def test_a_foreign_projects_truncated_run_list_says_it_is_truncated():
+    """`hasMore` is "the last page came back full", and nothing else.
+
+    It briefly read `lastPageFull && total > rows.length`. For a foreign
+    project `total` *is* `rows.length` (the page's own `expTotal` counts the
+    page's project, so it cannot be claimed for another one), so that second
+    clause pinned `hasMore` to false there: a foreign project with more than
+    one page of runs rendered neither the "searching the N most recent runs"
+    notice nor the Load-all button, and `_rpFiltered` answered "No run
+    matches" for a run that exists. A wrong answer with no error is the worst
+    failure this surface has.
+    """
+    js = get_all_js()
+    loader = _js_function_body(js, "async function _loadProjectRuns(",
+                               strip_comments=True)
+    assert "hasMore: lastPageFull" in loader
+    assert "total > rows.length" not in loader, (
+        "hasMore is gated on a total that a foreign project cannot have"
+    )
+    # And the notice it feeds is still the one that offers loading the rest.
+    notices = _js_function_body(js, "function _rpNoticesHtml(")
+    assert "_rpHasMore" in notices and "rpLoadAll()" in notices
+
+
+def test_a_cross_project_comparisons_link_carries_qualified_ids():
+    """The hash is the comparison's address: `copyComparisonLink` shares it,
+    and `restoreCompareFromUrl` / `_onPopView` post the ids back. A bare id
+    resolves against the *current* project only, so writing bare ids meant a
+    cross-project comparison reopened from its own link — a reload, a shared
+    URL, or the browser Back button — came back with its foreign runs in
+    `unknown_ids`."""
+    js = get_all_js()
+    assert "_writeCompareHash('multi', exps.map(e => e.qualified_id || e.id))" in js
+    assert "_writeCompareHash('multi', exps.map(e => e.id))" not in js, (
+        "a comparison still writes bare ids into its own link"
+    )
+    # The reader takes the ids as given — qualification is resolved server-side.
+    restore = _js_function_body(js, "async function restoreCompareFromUrl(")
+    assert "doMultiCompare(ids)" in restore
+
+
+def test_boot_reruns_the_project_scoped_loads_after_a_dead_id_is_recovered():
+    """Only /api/projects is exempt from project activation, so with a dead
+    stored id every other boot-time load 400s. loadProjects() recovers the id
+    and the switcher says "switched to X" — over an empty list, empty stats and
+    an empty table, until the user reloaded by hand."""
+    js = get_all_js()
+    boot = _js_function_body(js, "function _bootDashboard(", strip_comments=True)
+    assert "_bootProjectData()" in boot
+    assert "recovered" in boot, "the boot never asks whether the id was recovered"
+    data = _js_function_body(js, "function _bootProjectData(")
+    for fn in ("loadStats()", "loadExperiments()", "loadAllTags()"):
+        assert fn in data, f"{fn} is not in the re-runnable half of the boot"
+    # loadProjects has to report it, not just apply it.
+    loader = _js_function_body(js, "async function loadProjects(")
+    assert "return {recovered: recovered" in loader
+
+
+def test_forgetting_a_worktree_discovered_project_says_what_happened():
+    """`projects.forget` only edits the registry, so it returns ok=false for a
+    project that was discovered as a worktree and never registered — the user
+    confirmed a destructive-sounding dialog and nothing visibly happened. And
+    a *successful* forget of a project that is still a worktree of this
+    repository leaves it in the list, which reads exactly like a failure."""
+    js = get_all_js()
+    forget = _js_function_body(js, "async function forgetProject(id, name)",
+                               strip_comments=True)
+    assert "if (!res.ok)" in forget, "the {'ok': false} outcome is unhandled"
+    assert forget.count("owlSay(") >= 2, "only one of the outcomes is reported"
+    assert "worktree" in forget, "neither message names the reason"
+
+
+def test_a_cross_project_export_names_the_project_each_run_came_from():
+    """Two projects can hold runs with the same auto-generated name, which is
+    the argument `_cmpRunLabel` already makes for the on-screen column. Off the
+    page the CSV has nothing else to go on, so it carries the project too —
+    and only when the set actually spans projects, so a single-project export
+    does not gain a column that says the same thing on every row."""
+    js = get_all_js()
+    body = _js_function_body(js, "function exportComparison(", strip_comments=True)
+    assert "_cmpSpansProjects(exps)" in body
+    assert "'project'" in body and "project_name" in body
+
+
+def test_the_functions_these_checks_read_are_declared_once():
+    """`_js_function_body` resolves to the FIRST definition in the bundle.
+
+    That is fine for every function declared once, and silently wrong for one
+    declared twice: the assertion passes or fails against source the browser
+    never runs. Three of compare.js's functions are in that state, so the
+    cross-project checks over them prove nothing about the live code.
+    """
+    js = get_all_js()
+    dupes = {}
+    for decl in ("function _multiMetricTableHtml(",
+                 "function _renderMultiComparison(",
+                 "async function doMultiCompare("):
+        n = js.count("\n" + decl)
+        if n != 1:
+            dupes[decl] = n
+    assert not dupes, (
+        "declared more than once, so _js_function_body() reads a dead copy: "
+        + ", ".join(f"{d.strip()} x{n}" for d, n in dupes.items())
+    )
+
+
+# ── the collapsed rail and the header project switcher ──────────────────────
+
+def test_the_rail_ships_collapsed_and_reads_its_state_through_the_helpers():
+    """The sidebar's default is collapsed in the *markup*, not only in JS.
+
+    Two failures, both silent. `restoreSidebarState()` is the first call in
+    init.js, and a bare `localStorage.getItem` THROWS in a private window or
+    with site data blocked — taking the whole boot sequence with it, so the
+    page rendered nothing and said nothing. `_storageGet`/`_storageSet`
+    swallow that and return '', which lands on the collapsed default. And
+    without `class="collapsed"` in the markup the rail painted open and
+    snapped shut when the script ran, on every first visit.
+    """
+    assert '<div id="exp-sidebar" class="collapsed">' in DASHBOARD_HTML
+    js = get_all_js()
+    restore = _js_function_body(js, "function restoreSidebarState()",
+                                strip_comments=True)
+    assert "_storageGet(_SIDEBAR_KEY)" in restore
+    assert "localStorage" not in restore, "a raw storage read can throw the boot"
+    toggle = _js_function_body(js, "function toggleSidebar()", strip_comments=True)
+    assert "_storageSet(_SIDEBAR_KEY" in toggle
+    assert "localStorage" not in toggle
+
+
+def test_a_collapsed_rail_still_names_its_own_opener():
+    """Collapsed must not mean unreachable: the 44px strip is the only way
+    back in, so it carries a label and a title rather than a bare chevron —
+    and every class it uses is styled, or it renders as an OS default."""
+    assert 'class="collapse-strip"' in DASHBOARD_HTML
+    assert "Show the run list" in DASHBOARD_HTML
+    assert "collapse-strip-label" in DASHBOARD_HTML
+    from exptrack.dashboard.static_parts.css import get_all_css
+    css = get_all_css()
+    for cls in ("collapse-strip-icon", "collapse-strip-label", "collapse-strip-count",
+                "header-project-label", "header-project-problem"):
+        assert "." + cls in css, f"{cls} is used in markup but styled nowhere"
+
+
+def test_the_header_switcher_shares_one_switch_path_with_the_rail():
+    """Two switchers, one implementation. A second copy of the picker markup
+    is a second place for "stale entries are shown, not hidden" to be
+    forgotten — so both go through `_projectSelectHtml`, which is the only
+    thing that writes `switchProject(` from a picker, keeps a non-`ok`
+    project in the list with its status, and marks it `disabled`."""
+    js = get_all_js()
+    assert '<div id="header-project-switcher"' in DASHBOARD_HTML
+    picker = _js_function_body(js, "function _projectSelectHtml(")
+    assert "switchProject(this.value)" in picker
+    # The <option> itself is rendered by one helper, shared by the grouped
+    # (worktree <optgroup>) and ungrouped paths — the rules below would
+    # otherwise have to hold in two loops instead of one.
+    assert js.count("function _projectOptionHtml(") == 1
+    assert "_projectOptionHtml(p, current" in picker
+    option = _js_function_body(js, "function _projectOptionHtml(")
+    assert "escJsAttr(p.id)" in option, "a project id is user-controlled"
+    assert "' disabled'" in option and "p.status !== 'ok'" in option
+    # The rail and the header both render through it, and neither writes its
+    # own <option> loop.
+    loader = _js_function_body(js, "async function loadProjects()")
+    assert "_projectSelectHtml(data.projects, current, 'project-select')" in loader
+    assert "renderHeaderProjectSwitcher(data.projects, current, note)" in loader
+    header = _js_function_body(js, "function renderHeaderProjectSwitcher(")
+    assert "_projectSelectHtml(projects, current, 'header-project-select')" in header
+    assert js.count("onchange=\"switchProject(this.value)\"") == 1, (
+        "a second picker writes its own switch handler"
+    )
+    # The dismiss/forget control is not duplicated into the header.
+    assert "forgetProject(" not in header
+
+
+def test_the_header_switcher_states_a_dead_or_unreadable_project():
+    """The reason is computed once and given to both switchers, so the header
+    can never be quieter than the rail about a project it cannot read — and
+    the rail is the one that ships collapsed."""
+    js = get_all_js()
+    loader = _js_function_body(js, "async function loadProjects()")
+    assert "renderHeaderProjectSwitcher(data.projects, current, note)" in loader
+    header = _js_function_body(js, "function renderHeaderProjectSwitcher(")
+    assert "header-project-problem" in header and "esc(note)" in header
+
+
+def test_failed_runs_are_listed_by_default():
+    """A failed run is a result, not noise — the same rule `_BASELINE_WHERE`
+    applies server-side — so the list shows them unless the reader says
+    otherwise, and the group bar's control reads "Hide failed" at rest.
+
+    The state also reads a *new* storage key: `exptrack-show-failed` was
+    written under the opposite default, so a stored value there says nothing
+    about what the reader wants under this one."""
+    js = get_all_js()
+    assert "let showFailed = _storageGet('exptrack-hide-failed') !== '1';" in js
+    assert "localStorage.getItem('exptrack-show-failed')" not in js, (
+        "the old key's values were written under the old default"
+    )
+    assert "localStorage.removeItem('exptrack-show-failed')" in js
+    assert '>Hide failed</button>' in DASHBOARD_HTML
+    assert 'id="show-failed-toggle"' in DASHBOARD_HTML
+    assert 'onclick="toggleShowFailed()"' in DASHBOARD_HTML
+
+
+def test_the_hidden_state_says_how_many_runs_it_is_withholding():
+    """A filter withholding rows has to say how many, counted against the view
+    as it actually stands — so the count comes from the same
+    `getFilteredExperiments` the table renders, with only this filter lifted,
+    never from a raw scan of `allExperiments` (which would ignore the search,
+    the date range and every other filter in effect)."""
+    js = get_all_js()
+    body = _js_function_body(js, "function updateFailedCount(")
+    assert "getFilteredExperiments({includeFailed: true})" in body
+    assert "e.status === 'failed'" in body
+    assert "'Show failed (' + n + ')'" in body
+    assert "'Hide failed'" in body
+
+
+def test_the_failed_control_defers_to_the_failed_status_chip():
+    """`getFilteredExperiments` lifts this filter while the Failed status chip
+    is on (else the chip would show nothing), so the button cannot be true
+    there — it is disabled and names the control that won, rather than
+    offering an action that does nothing or a count that is a lie."""
+    js = get_all_js()
+    body = _js_function_body(js, "function updateFailedCount(")
+    assert "currentFilter === 'failed'" in body
+    assert "btn.disabled = true" in body
+    tbl = _js_function_body(js, "function getFilteredExperiments(")
+    assert "!showFailed && currentFilter !== 'failed'" in tbl
+
+
+def test_the_withheld_count_tracks_every_other_filter():
+    """The number depends on the rest of the view, so it is recomputed on the
+    shared re-render — not only when the list is re-fetched. Without this, a
+    search or a date-range change left a stale count on screen."""
+    js = get_all_js()
+    body = _js_function_body(js, "function rerender(")
+    assert "updateFailedCount()" in body
+
+
+def test_compare_picker_cannot_confirm_fewer_than_two_runs():
+    """Compare's picker greys out its confirm below two picks and says why.
+
+    It used to accept one run, stage it, and then do nothing — the cross-project
+    case most of all, where the first pick is out of sight in another project's
+    list — which read as a Compare button that was broken.
+    """
+    js = get_all_js()
+    footer = _js_function_body(js, "function _rpRenderFooter(")
+    assert "go.disabled = _rpShort()" in footer
+    assert "_rpMinReason" in footer
+    assert "_rpSelected.size < _rpMinPicks" in _js_function_body(js, "function _rpShort(")
+    assert "if (_rpShort()) return" in _js_function_body(js, "function rpConfirm(")
+    assert "minPicks: 2" in _js_function_body(js, "function openMultiRunPicker(")
+
+
+def test_a_failed_comparison_says_so_and_why():
+    """Every way doMultiCompare can give up renders a reason in the result area."""
+    js = get_all_js()
+    body = _js_function_body(js, "async function doMultiCompare(", strip_comments=True)
+    assert body.count("_showCompareFailure(") == 2
+    assert "Couldn" in _js_function_body(js, "function _showCompareFailure(")
+
+
+# ── Charts: overlay view ────────────────────────────────────────────────────
+
+def _run_js(src: str):
+    """Evaluate *src* with node and return its JSON output, or skip without node.
+
+    The overlay's pair matcher and axis rule are pure functions, and a static
+    string check cannot say whether `val_loss` is actually paired with `loss`.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    out = subprocess.run([node, "-e", src], capture_output=True, text=True,
+                         timeout=30, encoding="utf-8")
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def _overlay_helpers() -> str:
+    js = get_all_js()
+    return "\n".join(_js_function_body(js, decl) + "\n}" for decl in (
+        "function _overlayBaseName(",
+        "function _overlayDefaultKeys(",
+        "function _overlaySpan(",
+        "function _overlayAxisGroups(",
+    ))
+
+
+def test_overlay_defaults_to_the_train_val_pair_of_the_primary_metric():
+    got = _run_js(_overlay_helpers() + """
+      const keys = ['acc', 'loss', 'lr', 'val_acc', 'val_loss'];
+      console.log(JSON.stringify([
+        _overlayDefaultKeys(keys, 'loss'),
+        _overlayDefaultKeys(keys, 'val_acc'),
+        _overlayDefaultKeys(['train_loss', 'lr', 'valid_loss'], null),
+        _overlayDefaultKeys(['train/loss', 'eval/loss', 'x'], null),
+        _overlayDefaultKeys(['a', 'b', 'c'], 'b'),
+        _overlayDefaultKeys(['only'], null),
+      ]));""")
+    assert got[0] == ["loss", "val_loss"]
+    assert got[1] == ["acc", "val_acc"]
+    assert got[2] == ["train_loss", "valid_loss"]
+    assert got[3] == ["train/loss", "eval/loss"]
+    assert got[4] == ["b", "a"]          # no pair: primary plus the next one
+    assert got[5] == ["only"]
+
+
+def test_overlay_shares_an_axis_unless_the_scales_differ_tenfold():
+    got = _run_js(_overlay_helpers() + """
+      const p = vs => vs.map((v, i) => ({step: i, value: v}));
+      const data = {
+        loss: p([2.0, 1.0, 0.4]), val_loss: p([2.2, 1.3, 0.6]),
+        acc: p([0.1, 0.5, 0.9]), lr: p([0.001, 0.0005, 0.0001]),
+        steps: p([10, 5000, 90000]),
+      };
+      console.log(JSON.stringify([
+        _overlayAxisGroups(['loss', 'val_loss'], data),
+        _overlayAxisGroups(['loss', 'acc'], data),
+        _overlayAxisGroups(['loss', 'lr'], data),
+        _overlayAxisGroups(['loss', 'val_loss', 'steps'], data),
+      ]));""")
+    assert got[0] == {"left": ["loss", "val_loss"], "right": []}
+    assert got[1] == {"left": ["loss", "acc"], "right": []}   # 2.2 vs 0.9: shared
+    assert got[2] == {"left": ["loss"], "right": ["lr"]}
+    assert got[3] == {"left": ["loss", "val_loss"], "right": ["steps"]}
+
+
+def test_overlay_keeps_its_picks_across_a_live_refresh():
+    """The 5s poll must update the overlay in place, never re-pick its series."""
+    js = get_all_js()
+    body = _js_function_body(js, "function updateChartsInPlace(")
+    assert "mode === 'overlay'" in body
+    assert "_applyOverlayPoints(" in body
+    assert "_overlayPicks" in _js_function_body(js, "function _overlayInitialPicks(")

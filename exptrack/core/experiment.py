@@ -15,6 +15,7 @@ import platform
 import re as _re
 import socket
 import sys
+import threading
 import time
 import traceback as _tb
 import uuid
@@ -90,6 +91,58 @@ def _flush_live_runs() -> None:
 
 
 atexit.register(_flush_live_runs)
+
+
+# Serialises the metric write path against the trailing flusher, which commits a
+# run's connection from its own thread. One lock for every run rather than one
+# each: uncontended it costs the same, and it needs no per-instance setup on the
+# resume path, which skips __init__. The flusher's condition shares it, so a
+# wait releases exactly the lock the write path takes.
+_metric_commit_lock = threading.RLock()
+_flush_cv = threading.Condition(_metric_commit_lock)
+# Runs with an open coalescing window -> the moment it closes. Weak keys: this
+# must never be what keeps a run alive.
+_flush_due: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_flusher: threading.Thread | None = None
+
+
+def _ensure_flusher() -> None:
+    """Start the one trailing-flush thread, once per process. Caller holds the lock."""
+    global _flusher
+    if _flusher is not None and _flusher.is_alive():
+        return      # (a forked child inherits the variable, not the thread)
+    t = threading.Thread(target=_flusher_loop, name="exptrack-metric-flush",
+                         daemon=True)
+    try:
+        t.start()
+    except RuntimeError as e:       # interpreter shutting down: atexit flushes
+        debug_log(f"metrics: could not start trailing flush: {e}")
+        return
+    _flusher = t
+
+
+def _flusher_loop() -> None:
+    """Close every coalescing window that no later write closed.
+
+    One long-lived daemon thread rather than a timer per window: a tight loop
+    opens about four windows a second, and a thread spawned for each was ~14k
+    threads an hour. A window an inline commit already closed is removed from
+    `_flush_due` there, so this never commits a second time behind it.
+    """
+    with _flush_cv:
+        while True:
+            if not _flush_due:
+                _flush_cv.wait()
+                continue
+            exp, due = min(_flush_due.items(), key=lambda kv: kv[1])
+            wait = due - time.perf_counter()
+            if wait > 0:
+                del exp     # not held across the wait: the run may be collected
+                _flush_cv.wait(wait)
+                continue
+            del _flush_due[exp]
+            exp._commit_pending_window()
+            del exp
 
 
 def mark_wrapper_foreign_child(exp: Experiment) -> None:
@@ -198,6 +251,10 @@ class Experiment:
     _metric_commit_interval_s = 0.25
     _last_metric_commit = float("-inf")
     _metrics_uncommitted = False
+    # (connection, total_changes) the last deferred metric write left behind,
+    # while a window is open — what the trailing flush checks before it
+    # commits (see _commit_pending_window). None once the window is closed.
+    _pending = None
     # Path of the script whose source this run has already captured, so a
     # repeat capture is a no-op. Class default for the resume path
     # (object.__new__, skips __init__) and any early reader.
@@ -299,7 +356,9 @@ class Experiment:
         # the shell pipeline generates a name from a `--script` hint that is not
         # the run's `script` field, and passing that generated name in as `name`
         # made every pipeline run look user-named.
-        self.name = name or make_run_name(naming_hint or script, self._params)
+        self.id = uuid.uuid4().hex[:12]
+        self.name = name or make_run_name(naming_hint or script, self._params,
+                                          uid=self.id[:8])
 
         # Snapshot git state at run time — this is the key traceability link
         ginfo = git_info()
@@ -314,7 +373,6 @@ class Experiment:
 
         self.hostname   = socket.gethostname()
         self.python_ver = platform.python_version()
-        self.id         = uuid.uuid4().hex[:12]
 
         # Capture GPU/CUDA state so the experiment records device info
         try:
@@ -736,7 +794,8 @@ class Experiment:
         if getattr(self, "_resumed", False) or not getattr(self, "name_is_auto", True):
             return
         from .naming import make_run_name
-        self._rename(make_run_name(self.script, self._params), quiet=quiet)
+        self._rename(make_run_name(self.script, self._params, uid=self.id[:8]),
+                     quiet=quiet)
 
     def _rename(self, new_name: str, quiet: bool = False):
         """Update name in memory and DB (called after auto-capture fills params).
@@ -749,8 +808,10 @@ class Experiment:
         self.name = new_name
         with get_db() as conn:
             conn.execute("UPDATE experiments SET name=? WHERE id=?", (new_name, self.id))
-            rename_output_folder(conn, self.id, old_name, new_name)
+            moved = rename_output_folder(conn, self.id, old_name, new_name)
             conn.commit()
+        if moved:
+            self._output_dir = moved
         if not quiet:
             print(f"[exptrack] -> {self.name}", file=sys.stderr)
 
@@ -911,13 +972,61 @@ class Experiment:
         if interval <= 0:
             conn.commit()
             return
-        now = time.monotonic()
+        # perf_counter, not monotonic: on Windows monotonic advances in ~15.6ms
+        # ticks, so two writes a few ms apart read as zero elapsed and a window
+        # shorter than a tick never closed on time.
+        now = time.perf_counter()
         if now - self._last_metric_commit >= interval:
             conn.commit()
-            self._last_metric_commit = now
-            self._metrics_uncommitted = False
+            self._window_closed(now)
         else:
             self._metrics_uncommitted = True
+            self._pending = (conn, conn.total_changes)
+            self._arm_trailing_flush()
+
+    def _arm_trailing_flush(self):
+        """Make sure a deferred write is committed once its window has passed.
+
+        Without this the window closed only when a *later* write arrived. A
+        loop logging four metrics together every ten epochs committed the
+        first and left the other three invisible to the dashboard until the
+        next burst — so the chart showed ``loss`` alone at epoch 10, and at
+        epoch 20 the other three at 10. Caller holds `_metric_commit_lock`.
+        """
+        if self in _flush_due:
+            return
+        _flush_due[self] = self._last_metric_commit + self._metric_commit_interval_s
+        _ensure_flusher()
+        _flush_cv.notify()
+
+    def _window_closed(self, now: float) -> None:
+        """Book-keeping for a commit that closed this run's window. Holds the lock."""
+        self._metrics_uncommitted = False
+        self._last_metric_commit = now
+        self._pending = None
+        _flush_due.pop(self, None)
+
+    def _commit_pending_window(self) -> None:
+        """The flusher's commit. Runs on its thread, under the lock.
+
+        Commits the connection only if the transaction still holds exactly the
+        rows this run's metric writes left there: ``total_changes`` unchanged
+        since the last deferred insert. Anything else written on that
+        connection since means the open transaction is no longer only ours —
+        committing it here would split another writer's unit of work — and
+        that writer's own commit lands our rows with it.
+        """
+        if not self._metrics_uncommitted or self._pending is None:
+            return
+        conn, changes = self._pending
+        try:
+            if not conn.in_transaction or conn.total_changes != changes:
+                return
+            conn.commit()
+        except Exception as e:      # closed or switched under us: not ours now
+            debug_log(f"metrics: trailing flush skipped: {e}")
+            return
+        self._window_closed(time.perf_counter())
 
     def _tick_commit_window(self):
         """Flush a pending coalescing window from a call that stored nothing.
@@ -936,16 +1045,16 @@ class Experiment:
         """
         if not self._metrics_uncommitted or self._metric_commit_interval_s <= 0:
             return
-        if time.monotonic() - self._last_metric_commit >= self._metric_commit_interval_s:
+        if time.perf_counter() - self._last_metric_commit >= self._metric_commit_interval_s:
             self.flush_metrics()
 
     def flush_metrics(self):
         """Commit any metric rows still held by the coalescing window above."""
-        if not self._metrics_uncommitted:
-            return
-        self._metrics_uncommitted = False
-        self._last_metric_commit = time.monotonic()
-        flush_pending()
+        with _metric_commit_lock:
+            if not self._metrics_uncommitted:
+                return
+            self._window_closed(time.perf_counter())
+            flush_pending()
 
     def log_metric(self, key: str, value: float, step: int | None = None):
         if self._finished:
@@ -968,12 +1077,13 @@ class Experiment:
         # the coalescing below and batched_writes(). Same reason log_params
         # takes the connection directly.
         conn = get_db()
-        conn.execute(
-            "INSERT INTO metrics (exp_id, key, value, step, ts, session_node_id) "
-            "VALUES (?,?,?,?,?,?)",
-            (self.id, key, fval, step, ts, node_id)
-        )
-        self._commit_metrics(conn)
+        with _metric_commit_lock:   # the trailing flush must not split these
+            conn.execute(
+                "INSERT INTO metrics (exp_id, key, value, step, ts, session_node_id) "
+                "VALUES (?,?,?,?,?,?)",
+                (self.id, key, fval, step, ts, node_id)
+            )
+            self._commit_metrics(conn)
         plugins.on_metric(self, key, value, step)
 
     def log_metrics(self, metrics: dict[str, float], step: int | None = None):
@@ -1000,13 +1110,14 @@ class Experiment:
             self._tick_commit_window()      # see the note on _tick_commit_window
             return
         conn = get_db()   # not `with` — see the note in log_metric
-        conn.executemany(
-            "INSERT INTO metrics (exp_id, key, value, step, ts, session_node_id) "
-            "VALUES (?,?,?,?,?,?)",
-            [(self.id, k, v, step, ts, node_id)
-             for k, v in finite_metrics.items()]
-        )
-        self._commit_metrics(conn)
+        with _metric_commit_lock:
+            conn.executemany(
+                "INSERT INTO metrics (exp_id, key, value, step, ts, session_node_id) "
+                "VALUES (?,?,?,?,?,?)",
+                [(self.id, k, v, step, ts, node_id)
+                 for k, v in finite_metrics.items()]
+            )
+            self._commit_metrics(conn)
         for k, v in finite_metrics.items():
             plugins.on_metric(self, k, v, step)
 
@@ -1024,12 +1135,22 @@ class Experiment:
         Get a namespaced output path for this run.
         outputs/<run_name>/<filename>
         Does NOT register as artifact — use save_output() for that.
+
+        The run's *recorded* output dir wins over its name: a rename that could
+        not move the folder (Windows refuses while the tee'd stdout/stderr logs
+        are open in it) leaves the run on its first folder, and writing to
+        `outputs/<new name>/` split one run's files across two directories.
         """
+        recorded = getattr(self, "_output_dir", "")
+        if recorded:
+            d = Path(recorded)
+            d.mkdir(parents=True, exist_ok=True)
+            return d / filename
         return output_path(filename, self.name)
 
     def save_output(self, filename: str) -> Path:
         """Get namespaced path AND register as artifact. Use this for model files, CSVs, etc."""
-        p = output_path(filename, self.name)
+        p = self.output_path(filename)
         self.log_artifact(p, label=filename)
         return p
 
@@ -1088,6 +1209,15 @@ class Experiment:
         except Exception as e:
             from .utils import debug_log
             debug_log(f"module capture failed: {e}")
+        # The library versions it ran with, for the same reason and at the same
+        # point: `sys.modules` now holds everything the run imported.
+        if (cfg.load().get("auto_capture") or {}).get("environment", True):
+            try:
+                from .environment import capture_environment
+                capture_environment(self)
+            except Exception as e:
+                from .utils import debug_log
+                debug_log(f"environment capture failed: {e}")
         # Fingerprint any dataset-shaped params before locking the run, so it
         # runs for every finish path (scripts, notebooks, programmatic), not just
         # `exptrack run`. Must precede `_finished` since it calls log_params.
@@ -1183,7 +1313,9 @@ class Experiment:
     def _print_delta_vs_previous(self):
         """Print a one-line 'what changed vs the previous run of this script'
         summary to stderr. Silent when there's no previous run or no change."""
-        from .queries import diff_runs, format_run_delta, get_previous_run
+        from .queries import ARG_ERROR_KEY, diff_runs, format_run_delta, get_previous_run
+        if self._params.get(ARG_ERROR_KEY):
+            return  # never ran: its params are a raw-argv guess, not a config
         conn = get_db()
         prev = get_previous_run(conn, self.id)
         if not prev:

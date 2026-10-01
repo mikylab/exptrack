@@ -3,19 +3,31 @@
 // ── Sidebar ──────────────────────────────────────────────────────────────────
 // Honour the collapsed/open state toggleSidebar() persists. Without this the
 // write was dead: the sidebar always booted collapsed regardless of how the
-// user last left it. Absent/unknown value keeps the collapsed default.
+// user last left it. Absent/unknown value keeps the collapsed default, which
+// is also what the markup ships with (`#exp-sidebar.collapsed`) so a first
+// visit never flashes an open rail before this runs.
+//
+// Storage goes through `_storageGet`/`_storageSet` rather than `localStorage`
+// directly: in a private window, with site data blocked, or during a
+// thumbnail capture, the accessor itself *throws*. This is the first call in
+// init.js, so a raw read took the whole boot sequence down with it — no
+// table, no rail, no error. The helpers swallow that and return '', which
+// lands on the collapsed default.
+const _SIDEBAR_KEY = 'exptrack-sidebar';
+
 function restoreSidebarState() {
   const sb = document.getElementById('exp-sidebar');
   if (!sb) return;
-  sb.classList.toggle('collapsed', localStorage.getItem('exptrack-sidebar') !== 'open');
+  sb.classList.toggle('collapsed', _storageGet(_SIDEBAR_KEY) !== 'open');
 }
 
 function toggleSidebar() {
   const sb = document.getElementById('exp-sidebar');
+  if (!sb) return;
   sb.classList.toggle('collapsed');
-  localStorage.setItem('exptrack-sidebar', sb.classList.contains('collapsed') ? 'collapsed' : 'open');
+  _storageSet(_SIDEBAR_KEY, sb.classList.contains('collapsed') ? 'collapsed' : 'open');
   const countEl = document.getElementById('sidebar-count');
-  if (countEl) countEl.textContent = allExperiments.length + ' experiments';
+  if (countEl) countEl.textContent = allExperiments.length + ' exp';
 }
 
 function renderStatusChips() {
@@ -29,6 +41,26 @@ function renderStatusChips() {
   ];
   el.innerHTML = chips.map(c =>
     '<button class="' + (currentFilter===c.val?'active':'') + '" onclick="filterExps(\'' + c.val + '\')">' + c.label + '</button>'
+  ).join('');
+}
+
+// The rail lists the *same* set as the table, date range included — so a
+// project filtered to 7d on the main page showed only 7d of runs in the rail,
+// with the control that did it two views away. One filter, reachable from
+// either surface: these chips drive the same `setDateRange`, and the group bar
+// and the rail stay in step because both re-render from it.
+function renderRangeChips() {
+  const el = document.getElementById('sidebar-range-chips');
+  if (!el) return;
+  const chips = [
+    {label: 'All time', val: ''},
+    {label: 'Today', val: 'today'},
+    {label: '7d', val: '7d'},
+    {label: '30d', val: '30d'},
+  ];
+  el.innerHTML = chips.map(c =>
+    '<button class="' + (dateRange === c.val ? 'active' : '') + '" data-range="'
+    + c.val + '" onclick="setDateRange(\'' + c.val + '\')">' + c.label + '</button>'
   ).join('');
 }
 
@@ -81,6 +113,7 @@ function _sidebarGroupMode(mode) {
 }
 
 function renderExpList() {
+  renderRangeChips();
   // Scoped to the list this render owns — see renderExperiments().
   const restoreRename = _preserveActiveRename('exp-list');
   const list = document.getElementById('exp-list');
@@ -262,19 +295,50 @@ function _pushViewHash(hash, replace) {
 function _clearViewHash() {
   try {
     const h = String(window.location.hash || '');
-    if (h.startsWith('#compare=') || h === '#matrix') {
+    if (h.startsWith('#compare=') || h === '#matrix' || h.startsWith('#run=')) {
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
     }
   } catch (e) { void e; }
 }
 
-async function _onPopView() {
+// A run's detail view: `#run=<id>&tab=<tab>`. Run detail had no address, so a
+// reload — or the browser's Back out of a comparison opened from it — always
+// landed on the experiments list, however deep the reader had gone.
+function _runViewHash(id, tab) {
+  let h = '#run=' + encodeURIComponent(id);
+  if (tab && tab !== 'overview') h += '&tab=' + encodeURIComponent(tab);
+  return h;
+}
+
+function _parseRunViewHash(hash) {
+  const m = /^#run=([^&]+)(?:&tab=([^&]+))?$/.exec(hash);
+  if (!m) return null;
+  try {
+    return {id: decodeURIComponent(m[1]), tab: m[2] ? decodeURIComponent(m[2]) : ''};
+  } catch (e) { return null; }
+}
+
+// Put up the view the address names. The one parser for every view hash, so
+// a reload, a shared link and the Back button cannot disagree about what one
+// means. Returns true when a view was restored.
+async function _restoreViewFromHash() {
   const hash = String(window.location.hash || '');
-  // `restoreCompareFromUrl` owns the `#compare=` vocabulary — one parser, so a
-  // shared link and the Back button can't disagree about what a hash means.
-  if (hash.startsWith('#compare=')) { await restoreCompareFromUrl(); return; }
-  if (hash === '#matrix') { openParamMatrix(); return; }
-  showWelcome();
+  // `restoreCompareFromUrl` owns the `#compare=` vocabulary.
+  if (hash.startsWith('#compare=')) return restoreCompareFromUrl();
+  if (hash === '#matrix') { openParamMatrix(); return true; }
+  const run = _parseRunViewHash(hash);
+  if (run) {
+    // The tab is restored *before* the render, which reopens whatever tab
+    // `currentDetailTab` names and falls back to Overview if this run has none.
+    if (run.tab && DETAIL_TABS.includes(run.tab)) currentDetailTab = run.tab;
+    await refreshDetail(run.id);
+    return true;
+  }
+  return false;
+}
+
+async function _onPopView() {
+  if (!(await _restoreViewFromHash())) showWelcome();
 }
 
 window.addEventListener('popstate', _onPopView);
@@ -285,7 +349,9 @@ function showWelcome() {
   releaseCanvas();
   _clearViewHash();
   document.getElementById('welcome-state').style.display = '';
-  document.getElementById('exp-sidebar').classList.add('collapsed');
+  // However the reader left the rail — this used to force it shut on every
+  // return to the list, undoing an explicit open.
+  restoreSidebarState();
   renderExpList();
   if (allExperiments.length === 0) owlSpeak('empty');
 }

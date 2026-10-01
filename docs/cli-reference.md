@@ -42,10 +42,14 @@ Inspect
   exptrack show <id> [--timeline]   Full details (params, metrics, artifacts, diff)
   exptrack timeline <id> [-c]       Execution timeline (--type to filter events)
   exptrack diff <id>                Colorized git diff from run time
+    --patch [-o FILE]                 The raw diff only, for `git apply`
   exptrack compare <id1> <id2>      Side-by-side params + metrics
   exptrack compare <id1> <id2> <id3>...
                                     N-way table: one column per run, a script
                                       row when they differ, varying params only
+    --format markdown|html            Print the comparison as tables instead —
+                                      the document the dashboard's Compare Copy
+                                      makes (--best: best point, not final)
   exptrack vs-reference             Every run measured against the pinned
                                       reference (--script, --study, -n)
   exptrack top [-l 10]              Rank runs by the primary metric
@@ -56,7 +60,8 @@ Inspect
   exptrack history <nb> [id]        Notebook cell snapshot history
   exptrack watch <id> [--interval]  Live-refresh a running experiment in the terminal
   exptrack studies                  List studies with run counts
-  exptrack export <id> [--format]   Export as JSON, Markdown, CSV/TSV or params
+  exptrack export <id> [--format]   Export as JSON, Markdown, text, HTML,
+                                      CSV/TSV or params
                      [--full]       Every metric point + every artifact
                      [--max-artifacts N] Artifact list cap (0 = all)
   exptrack verify [id] [--backfill] Check artifact file integrity
@@ -134,17 +139,147 @@ Admin
                    [--checkpoint]   Truncate the WAL and exit
   exptrack backup [path]            Copy the database to a backup file
   exptrack restore <path>           Restore the database from a backup
-  exptrack ui [--port 7331]         Launch web dashboard (auto-generates an
-                                      auth token and prints a URL with it
-                                      embedded — Jupyter-style)
-    --token <value>                   Persist an auth token to config
-                                      (survives restarts)
-    --clear-token                     Remove the persisted auth token
+  exptrack ui [--port 7331]         Launch web dashboard in the foreground
+                                      (auto-generates an auth token, prints a
+                                      URL with it embedded and opens it in
+                                      your browser — Jupyter-style)
+    --token <value>                   Persist an auth token to
+                                      .exptrack/dashboard_token (gitignored,
+                                      mode 600; survives restarts). Without
+                                      this a token is generated on first start
+                                      and reused afterwards
+    --clear-token                     Remove the persisted auth token; the
+                                      next start generates a new one, logging
+                                      out every browser
     --no-auth                         Disable the auto-generated token
                                       (trusted-local only)
     --host <addr>                     Bind address (default 127.0.0.1)
-  exptrack ui-stop [--port 7331]    Kill a stale dashboard still holding
-                                      the port (uses fuser / lsof)
+    --no-browser                      Don't open the dashboard in a browser.
+                                      Skipped anyway over SSH, or on Linux
+                                      with no display
+
+  exptrack ui start [--port 7331]   Run the dashboard detached in the
+                     [--host addr]    background and open it in a browser
+                     [--no-browser]   (as `ui` does). Polls until the port
+                                      accepts connections; if the child dies
+                                      first (e.g. EADDRINUSE) this reports the
+                                      tail of the log and exits non-zero
+                                      instead of a false "started". Running it
+                                      against an already-running dashboard is
+                                      success — `exptrack tunnel` chains it on
+                                      every invocation. One dashboard serves
+                                      every project, so run in a second
+                                      worktree it starts nothing: it registers
+                                      this project, names the checkout the
+                                      dashboard was started from, and prints
+                                      the URL that opens *this* project
+                                      (`?project=<id>`) with the serving
+                                      project's token. An explicit --port that
+                                      differs from the running dashboard's is
+                                      still refused, since that asks for a
+                                      second server on a stated port
+  exptrack ui stop [--port]         Stop the background dashboard. Verifies
+                   [--force]          the port was actually released, not
+                                      merely that a signal was sent; tries
+                                      every PID-lookup tool before concluding
+                                      nothing is listening. --force escalates
+                                      to SIGKILL
+  exptrack ui status [--json]       Show whether the background dashboard is
+                                      running, its URL (with token) and
+                                      version. --json emits machine-readable
+                                      output (used by `exptrack tunnel`). Reads
+                                      the user-global record
+                                      (~/.exptrack/dashboard.json) as well as
+                                      this project's, so it answers about the
+                                      shared dashboard from a checkout that did
+                                      not start it, and the URL names the
+                                      project you ran it in. `ui stop` reads
+                                      the same record, which is how the shared
+                                      dashboard is stopped from anywhere
+  exptrack ui logs [-n N] [-f]      Show (or follow, -f) the background
+                                      dashboard's log
+  exptrack ui-stop [--port 7331]    Deprecated alias for `exptrack ui stop`
+                   [--force]
+
+Remote access
+  exptrack tunnel add <name>        Save a remote dashboard (stored in
+                     --host user@host  ~/.exptrack/remotes.json)
+                     --dir DIR         Project directory on the remote
+                     [--remote-port]   Remote dashboard port (default 7331)
+                     [--local-port]    Local forwarded port (default:
+                                      remote-port)
+                     [--exptrack-bin]  Path to exptrack on the remote
+                                      (default: <dir>/.venv/bin/exptrack)
+  exptrack tunnel list              List saved remotes
+  exptrack tunnel rm <name>         Remove a saved remote
+  exptrack tunnel stop <name>       Close an open tunnel (stops the local SSH
+                                      forward; does not stop the remote
+                                      dashboard). On Windows, pid lookup
+                                      (fuser/lsof) isn't available, so a
+                                      running tunnel can't be told apart from
+                                      a free local port — close the ssh
+                                      process by hand instead
+  exptrack tunnel connect <name>    Start the dashboard on the remote (via
+                                      `ui start`), forward its port over SSH
+                                      in the background, and print a local
+                                      URL with the token already in it. Warns
+                                      on a version mismatch between the two
+                                      machines
+  exptrack tunnel <name>            Shorthand for `exptrack tunnel connect
+                                      <name>` — but if a remote is ever named
+                                      "add", "list", "rm", "stop" or
+                                      "connect", it must be reached with the
+                                      explicit `exptrack tunnel connect
+                                      <name>` form, since the bare form can't
+                                      tell a remote name from a subcommand
+
+Projects (the dashboard's switcher reads the same list)
+  exptrack project list             List every project this machine knows
+                                      about — the user-global registry
+                                      (~/.exptrack/projects.json, written by
+                                      `exptrack init` and `exptrack ui start`)
+                                      plus those other worktrees of the current
+                                      repository that already contain an
+                                      .exptrack/ directory. A worktree nobody
+                                      ever ran exptrack in is not offered as a
+                                      project. Each line is a name and a path;
+                                      a project that is not healthy also
+                                      carries its status and, below it, what to
+                                      do about it — `stale` when its .exptrack/
+                                      is there but no database was found,
+                                      `needs-upgrade` or `too-new` when its
+                                      database was written by a different
+                                      version of exptrack. Listing those beats
+                                      dropping them, which looks like discovery
+                                      is broken. A registered project whose
+                                      .exptrack/ is gone entirely is the one
+                                      case that *is* dropped — and pruned from
+                                      the registry, since it cannot come back
+                                      on its own. An absence that cannot be
+                                      confirmed (an unplugged disk, an
+                                      unmounted share) is left alone
+  exptrack project forget <name>    Remove a project from the registry by its
+                                      name or its path. Registry only: nothing
+                                      on disk is touched, and a project that is
+                                      still a worktree of the current
+                                      repository (and still has its .exptrack/)
+                                      keeps being discovered
+
+Permissions
+  exptrack fix-perms                Make .exptrack/ private (mode 0700), so
+                                      only your account can read the runs
+                                      database and the dashboard token. This
+                                      is what the "accessible to other users"
+                                      warning tells you to run. POSIX only —
+                                      on Windows it says so and does nothing,
+                                      because access there is governed by NTFS
+                                      permissions inherited from your user
+                                      profile. exptrack creates the directory
+                                      0700 and deliberately never tightens an
+                                      existing one on its own, since a
+                                      directory you chose to share is yours to
+                                      decide about; this command is how you
+                                      say otherwise
 
 Notebook
   exptrack notebook-guard           Print a paste-able guard cell so a notebook
@@ -177,6 +312,51 @@ Session Trees (see docs/session-trees.md)
 `exptrack export <id> --format <fmt>` supports `json` (default), `markdown`,
 `csv`, `tsv`, and the params-only forms `params`, `params-flags`, `params-json`,
 `params-md`, `params-tsv`. `--all` exports every run as a batch.
+
+The three readable forms carry the same content, laid out as tables:
+
+- `markdown` — tables for the run's fields, parameters, metrics, artifacts and
+  timeline, then the code changes.
+- `text` — the same, aligned into columns for a terminal or a plain-text note.
+- `html` — a standalone page with real tables. Open it in a browser, or import
+  it into OneNote or Word. `exptrack export <id> --format html > run.html`.
+
+**Code changes** come from the run's stored `git diff`, and come last so they
+copy in one go. A table lists each changed file, how many lines were added and
+removed, and which lines of the *committed* file each change replaces — the
+place it goes. Then **What changed**: each changed line beside the line it
+replaced, with both line numbers and the words that changed marked (struck
+through / bold in markdown, red / green when pasted into OneNote or Word,
+`^` under them in plain text). Last, each file's patch, verbatim: context,
+indentation and all, so it applies with `git apply`. When the repository's `origin` is on GitHub,
+GitLab or Bitbucket, the commit and each changed range link to that file at
+that commit (read from `.git/config`; credentials in the remote URL are never
+copied into a link). A run with no stored diff (no git, a compacted or failed
+capture) still shows the changed lines it recorded, and says why that is all
+there is.
+
+Paths are shown relative to the project root, which the export states once,
+and the command is shown as run from that root.
+
+The same file table and patches appear wherever code changes are exported:
+the diff document (**Export Diff** / **Copy Diff**, `exptrack compact
+--export`), and a two-run comparison (**Compare → Copy / Export .md**,
+`exptrack compare <a> <b> --format markdown|html`), where they show the code
+change from the older run to the newer one. In CSV/TSV the `code_changes`
+cell summarises the same thing per file — `model.py +8/-4 @1-10; train.py
++4/-2 @4-13` — and JSON carries the raw diff as `git_diff`.
+
+For the patch alone, `exptrack diff <id> --patch -o run.patch` writes the raw
+diff for `git apply` (the dashboard's **Patch** button downloads the same file).
+Prefer `-o` to a shell redirect on Windows, where PowerShell 5's `>` re-encodes
+the file and `git apply` then rejects it.
+
+Nothing the old one-line-per-field layout carried was dropped; metric values
+keep full precision (only the duration is rounded, to the millisecond). The
+dashboard's **Copy → Markdown / tables** puts the markdown and its HTML on the
+clipboard together, so a paste into OneNote/Word is tables and a paste into a
+markdown editor is markdown. `exptrack compare <a> <b> --format markdown|html`
+prints a comparison the same way.
 
 ### Summary by default
 
