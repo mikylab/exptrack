@@ -39,3 +39,12 @@ node_modules/
 !docs/**/*.md
 !examples/**/*.md
 !exptrack/**/*.md
+
+# exptrack — local only (db + snapshots); config.json is safe to commit
+.exptrack/dashboard_token
+.exptrack/dashboard.json
+.exptrack/dashboard.log
+.exptrack/trash/
+
+# Superpowers planning notes (brainstorm specs + plans) — local only
+docs/superpowers/

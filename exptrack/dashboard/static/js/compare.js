@@ -29,9 +29,11 @@ function closeDetailExport(btn) {
   btn.closest('.export-dropdown-menu').style.display = 'none';
 }
 
-async function _fetchExportText(id, fmt) {
+// `opts.patch === false` (Copy) leaves the run's patch out of markdown and
+// plain text; Export .patch downloads it on its own.
+async function _fetchExportText(id, fmt, opts) {
   const ext = {json:'.json', 'json-full':'.full.json', markdown:'.md', csv:'.csv',
-               tsv:'.tsv', plain:'.txt',
+               tsv:'.tsv', plain:'.txt', html:'.html',
                params:'.params.txt', 'params-flags':'.params.txt', 'params-json':'.params.json',
                'params-md':'.params.md', 'params-tsv':'.params.tsv'};
   // 'json-full' is the same endpoint asked for the complete (round-trippable)
@@ -39,7 +41,7 @@ async function _fetchExportText(id, fmt) {
   const full = fmt === 'json-full';
   const fileExt = ext[fmt] || '.txt';
   if (full) fmt = 'json';
-  let text;
+  let text, html = '';
   if (fmt === 'csv' || fmt === 'tsv') {
     const data = await postApi('/api/bulk-export', {ids: [id], format: fmt});
     // api()/postApi() report the failure themselves; returning null lets the
@@ -47,20 +49,29 @@ async function _fetchExportText(id, fmt) {
     if (!data || data.error) return null;
     text = data.content || JSON.stringify(data, null, 2);
   } else {
-    const data = await api('/api/export/' + id + '?format=' + (fmt === 'plain' ? 'json' : fmt) +
-                           (full ? '&full=1' : ''));
+    // Plain text and HTML are rendered server-side (core/export_render.py),
+    // the same code `exptrack export --format text|html` prints.
+    const serverFmt = fmt === 'plain' ? 'text' : fmt;
+    const data = await api('/api/export/' + id + '?format=' + serverFmt +
+                           (full ? '&full=1' : '') +
+                           (opts && opts.patch === false ? '&patch=0' : ''));
     if (!data || data.error) return null;
-    if (fmt === 'markdown') text = data.markdown || JSON.stringify(data, null, 2);
-    else if (fmt === 'plain') text = _formatExpPlainText(data.data || data);
+    if (fmt === 'markdown') {
+      text = data.markdown || JSON.stringify(data, null, 2);
+      html = data.html || '';
+    }
+    else if (fmt === 'plain' || fmt === 'html') text = data.content || '';
     else if (fmt.startsWith('params')) {
       text = data.params_text != null ? data.params_text : JSON.stringify(data, null, 2);
+      html = data.html || '';
     }
     else text = JSON.stringify(data, null, 2);
   }
   const exp = allExperiments.find(e => e.id.startsWith(id));
   const name = exp ? exp.name.replace(/[^a-zA-Z0-9_-]/g, '_') : id.slice(0,8);
-  const mime = (fmt === 'json' || fmt === 'params-json') ? 'application/json' : 'text/plain';
-  return {text, filename: name + fileExt, mime};
+  const mime = (fmt === 'json' || fmt === 'params-json') ? 'application/json'
+    : fmt === 'html' ? 'text/html' : 'text/plain';
+  return {text, html, filename: name + fileExt, mime};
 }
 
 async function downloadExportFmt(id, fmt) {
@@ -72,9 +83,10 @@ async function downloadExportFmt(id, fmt) {
 
 async function copyExportFmt(id, fmt) {
   owlSpeak('export');
-  const d = await _fetchExportText(id, fmt);
+  const d = await _fetchExportText(id, fmt, {patch: false});
   if (!d) return;
-  navigator.clipboard.writeText(d.text).then(() => owlSay('Copied ' + fmt.toUpperCase() + ' to clipboard!'));
+  // Markdown carries its HTML rendering, so a paste into OneNote is tables.
+  await copyRich(d.text, d.html, fmt === 'plain' ? 'plain text' : fmt);
 }
 
 // Legacy compat — used by bulk export sidebar
@@ -122,18 +134,23 @@ async function populateMultiCompareSelector(preselect) {
   if (await _loadCmpExps()) renderMultiPicked();
 }
 
+// One removable run chip, labelled the same way wherever runs are staged.
+// Middle-ellipsis, not a CSS overflow clip: clipping cuts the tail, which is
+// the only part of an auto-generated name that differs — six chips all reading
+// `Aug12_train__lr0.05_epochs20_modelcnn…` name one run six times.
+function _cmpChipHtml(id, removeFn, removeTitle) {
+  const label = _cmpLabelFor(id);
+  return '<span class="cmp-chip" title="' + esc(label) + '">' + esc(midEllipsis(label, 30)) +
+    '<button class="cmp-chip-x" title="' + esc(removeTitle) + '" ' +
+    'onclick="' + removeFn + '(\'' + escJsAttr(id) + '\')">&times;</button></span>';
+}
+
 function renderMultiPicked() {
   const host = document.getElementById('cmp-multi-picked');
   if (!host) return;
   const ids = [..._multiPicked];
   host.innerHTML = ids.length
-    // Middle-ellipsis, not a CSS overflow clip: clipping cuts the tail, which
-    // is the only part of an auto-generated name that differs — six chips all
-    // reading `Aug12_train__lr0.05_epochs20_modelcnn…` name one run six times.
-    ? ids.map(id => '<span class="cmp-chip" title="' + esc(_cmpLabelFor(id)) + '">' +
-        esc(midEllipsis(_cmpLabelFor(id), 30)) +
-        '<button class="cmp-chip-x" title="Remove from this comparison" ' +
-        'onclick="unpickMultiRun(\'' + escJsAttr(id) + '\')">&times;</button></span>').join('')
+    ? ids.map(id => _cmpChipHtml(id, 'unpickMultiRun', 'Remove from this comparison')).join('')
     : '<span class="cmp-picked-empty">No runs chosen yet — <strong>Choose runs…</strong> ' +
       'opens a searchable list of every run with its parameters.</span>';
   const go = document.getElementById('cmp-multi-go');
@@ -146,10 +163,17 @@ function renderMultiPicked() {
 
 function openMultiRunPicker() {
   openRunPicker({
+    // The ONLY picker that gets a project selector. Compare reads an
+    // explicitly chosen handful of runs; every other surface reads a set whose
+    // members must share a parameter space, so the matrix's picker stays
+    // single-project by not passing this.
+    crossProject: true,
     title: 'Choose runs to compare',
     mode: 'multi',
     preselect: _multiPicked,
     confirmLabel: 'Compare these runs',
+    minPicks: 2,
+    minReason: 'Pick at least 2 runs to compare',
     onConfirm: ids => {
       _multiPicked = new Set(ids);
       renderMultiPicked();
@@ -335,13 +359,18 @@ function _renderCompareCodeDiff(cd, expA, expB) {
 // Fetched alongside the comparison rather than inside the renderer: repainting
 // (a polarity flip, the differences toggle) must not re-request, so the payload
 // is attached to `data._pair` and every render reads it from there.
-async function _fetchPairExtras(id1, id2) {
+//
+// `projectId` is the project both runs live in. A pair picked entirely from
+// another project is still a pair, and these endpoints read one database per
+// request — fetched without it, they asked the *page's* project about two runs
+// it does not hold, got "not found", and every pair panel quietly vanished.
+async function _fetchPairExtras(id1, id2, projectId) {
   const [cmp, vars1, vars2, img1, img2] = await Promise.all([
-    api('/api/compare?id1=' + id1 + '&id2=' + id2),
-    api('/api/vars-at/' + id1 + '?seq=999999'),
-    api('/api/vars-at/' + id2 + '?seq=999999'),
-    api('/api/images/' + id1),
-    api('/api/images/' + id2),
+    api('/api/compare?id1=' + id1 + '&id2=' + id2, projectId),
+    api('/api/vars-at/' + id1 + '?seq=999999', projectId),
+    api('/api/vars-at/' + id2 + '?seq=999999', projectId),
+    api('/api/images/' + id1, projectId),
+    api('/api/images/' + id2, projectId),
   ]);
   // api() returns null on failure and reports it itself; the pair panels are an
   // addition to the comparison, so a failure here must not take the whole view
@@ -351,6 +380,8 @@ async function _fetchPairExtras(id1, id2) {
   const imgs2 = ((img2 || {}).images || []).slice();
   mergeArtifactImages(imgs1, (img1 || {}).artifact_images);
   mergeArtifactImages(imgs2, (img2 || {}).artifact_images);
+  // Served out of that same project: an <img src> carries no header.
+  for (const img of imgs1.concat(imgs2)) img._project = projectId || '';
   return {cmp: cmp, vars1: vars1 || {}, vars2: vars2 || {}, imgs1: imgs1, imgs2: imgs2};
 }
 
@@ -424,6 +455,23 @@ function _pairImagesHtml(pair) {
     + '</div></div></details>';
 }
 
+// Two runs, one from each project. Every panel that exists only for a pair —
+// the full parameter table with its differences toggle, the code diff, the
+// notebook variables and the A/B image overlay — is served by an endpoint that
+// reads one project's database per request, so there is nothing to render them
+// from. Stated, not silently omitted: four panels quietly missing reads as a
+// comparison that half-failed, and the reader has no way to tell which half.
+function _pairCrossProjectNoteHtml(exps) {
+  const names = [...new Set((exps || []).map(e => e.project_name)
+                                        .filter(Boolean))];
+  return '<p class="cmp-missing">These two runs are in different projects' +
+    (names.length ? ' (' + esc(names.join(' and ')) + ')' : '') +
+    ', so the pair-only panels \u2014 all parameters, the code diff, the ' +
+    'notebook variables and the A/B image overlay \u2014 are not available: ' +
+    'each is served from a single project. The comparison table, the curves ' +
+    'and the images above cover both runs.</p>';
+}
+
 function _pairExtrasHtml(pair) {
   if (!pair) return '';
   crossCmpA = null; crossCmpB = null;
@@ -454,17 +502,36 @@ const CMP_IMG_LIMIT = 60;
 // added to each copy, and a change to one column silently applied to half the
 // comparison.
 function _cmpImageCol(name, imgs, side) {
-  let h = '<div class="compare-images-col"><h4>' + esc(name) + ' (' + imgs.length + ')</h4>';
+  const q = (_cmpImgQuery[side] || '').toLowerCase();
+  const shown = q
+    ? imgs.filter(i => ((i.name || '') + ' ' + (i.path || '')).toLowerCase().includes(q))
+    : imgs;
+  // What the overlay modal steps through for this side: the filtered list, in
+  // the order shown, so narrowing the column narrows the flipping too.
+  _crossImgLists[side] = shown.slice(0, CMP_IMG_LIMIT).map(
+    i => ({src: fileUrl(i.path, i._project), name: i.name, run: name}));
+
+  let h = '<div class="compare-images-col"><h4>' + esc(name) + ' ('
+    + (q ? shown.length + ' of ' + imgs.length : imgs.length) + ')</h4>';
   if (!imgs.length) {
     return h + '<p style="color:var(--muted);font-size:12px">No image paths '
       + 'configured. Set them in the experiment\'s Images tab.</p></div>';
   }
+  // A run with 900 images cannot be picked from by scrolling.
+  h += '<input type="text" class="cmp-img-search" id="cmp-img-search-' + side + '"'
+    + ' placeholder="Search file name..." value="' + esc(_cmpImgQuery[side] || '') + '"'
+    + ' oninput="_onCmpImgSearch(' + side + ',this.value)">';
+  if (!shown.length) {
+    return h + '<p style="color:var(--yellow);font-size:12px">No file name matches '
+      + '&ldquo;' + esc(_cmpImgQuery[side]) + '&rdquo;.</p></div>';
+  }
   h += '<div class="cmp-img-grid">';
-  for (const img of imgs.slice(0, CMP_IMG_LIMIT)) {
-    const src = fileUrl(img.path);
+  for (const img of shown.slice(0, CMP_IMG_LIMIT)) {
+    const src = fileUrl(img.path, img._project);
     h += '<div class="cmp-img-thumb" data-side="' + side + '" data-src="' + esc(src)
-      + '" onclick="selectCrossImg(\'' + escJsAttr(src) + '\',\''
-      + escJsAttr(img.name) + '\',' + side + ')">';
+      + '" title="' + esc(img.path) + '"'
+      + ' onclick="selectCrossImg(\'' + escJsAttr(src) + '\',\''
+      + escJsAttr(img.name) + '\',' + side + ',\'' + escJsAttr(name) + '\')">';
     h += '<img src="' + src + '" loading="lazy" alt="' + esc(img.name) + '">';
     h += '<div class="cmp-thumb-name">' + esc(img.name) + '</div>';
     h += '</div>';
@@ -472,12 +539,13 @@ function _cmpImageCol(name, imgs, side) {
   h += '</div>';
   // The header counts every image; the grid renders at most CMP_IMG_LIMIT.
   // Say which, rather than showing 60 under a heading that reads (200).
-  if (imgs.length > CMP_IMG_LIMIT) {
+  if (shown.length > CMP_IMG_LIMIT) {
     h += '<p class="cmp-trunc-note">showing ' + CMP_IMG_LIMIT + ' of '
-      + imgs.length + '</p>';
+      + shown.length + ' &mdash; search to narrow</p>';
   }
   return h + '</div>';
 }
+
 // Two runs pointing at one path is one file, and a file has one content: what
 // the grid shows in both cells is whatever the later run wrote. Unmarked, that
 // row is a picture of two runs agreeing perfectly — the most misleading thing
@@ -492,6 +560,85 @@ function _sharedImageNote(imgs) {
   return '<div class="cmp-img-shared-note">Same file on disk — these runs wrote'
     + ' to one path, so this is whichever ran last, not each run\'s own output.'
     + '</div>';
+}
+
+// One query per column, kept across the repaint the search triggers.
+const _cmpImgQuery = {1: '', 2: ''};
+let _cmpImgSearchTimer = null;
+
+function _onCmpImgSearch(side, value) {
+  _cmpImgQuery[side] = value;
+  if (_cmpImgSearchTimer) clearTimeout(_cmpImgSearchTimer);
+  _cmpImgSearchTimer = setTimeout(() => _repaintCmpImageCols(side), 180);
+}
+
+// Repaint just the two columns — the comparison itself has not changed, and
+// rebuilding the whole result would drop the reader's scroll position.
+function _repaintCmpImageCols(focusSide) {
+  const wrap = document.querySelector('.compare-images-cols');
+  if (!wrap || !_lastComparison || !_lastComparison.data
+      || !_lastComparison.data._pair) return;
+  const pair = _lastComparison.data._pair;
+  const e1 = pair.cmp.exp1, e2 = pair.cmp.exp2;
+  const caret = (() => {
+    const el = document.getElementById('cmp-img-search-' + focusSide);
+    return el ? el.selectionStart : null;
+  })();
+  wrap.innerHTML = _cmpImageCol(_cmpColName(e1.name), pair.imgs1, 1)
+    + _cmpImageCol(_cmpColName(e2.name), pair.imgs2, 2);
+  const box = document.getElementById('cmp-img-search-' + focusSide);
+  if (box) {
+    box.focus();
+    if (caret !== null) box.setSelectionRange(caret, caret);
+  }
+  // The picks survive a repaint: re-mark whichever thumbnails are still shown.
+  for (const [side, pick] of [[1, crossCmpA], [2, crossCmpB]]) {
+    if (!pick) continue;
+    document.querySelectorAll('.cmp-img-thumb[data-side="' + side + '"]').forEach(el => {
+      el.classList.toggle('selected', el.dataset.src === pick.src);
+    });
+  }
+}
+
+// How many members of a numbered series one cell shows before it says how many
+// more there are. The row exists to make two runs' series comparable at a
+// glance; rendering 200 thumbnails per cell rebuilds the unreadable page the
+// grouping was introduced to replace.
+const CMP_FAMILY_CELL_LIMIT = 6;
+
+// Natural order, so `x_2.png` precedes `x_10.png` and the same index sits at
+// the same position in both runs' strips — which is the whole basis on which a
+// reader compares two series side by side.
+function _sortImageStrip(imgs) {
+  const keyOf = (i) => pathBase(i.path).toLowerCase();
+  return [...imgs].sort((a, b) => keyOf(a).localeCompare(keyOf(b),
+    undefined, {numeric: true, sensitivity: 'base'}));
+}
+
+// One run's contribution to a group: a single image, a strip of them, or the
+// stated absence of either.
+function _imageCellHtml(imgs) {
+  if (!imgs.length) {
+    return '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">No image</div>';
+  }
+  const shown = imgs.slice(0, CMP_FAMILY_CELL_LIMIT);
+  let h = imgs.length > 1 ? '<div class="cmp-family-strip">' : '';
+  for (const img of shown) {
+    const label = img.label || pathBase(img.path);
+    h += '<div class="cmp-family-item">'
+      + '<img src="' + fileUrl(img.path, img._project) + '" alt="' + esc(label)
+      + '" onclick="openImageModal(this.src,\'' + escJsAttr(label) + '\')">'
+      + '<div class="multi-compare-image-name" title="' + esc(img.path) + '">'
+      + esc(label) + '</div></div>';
+  }
+  h += imgs.length > 1 ? '</div>' : '';
+  // Never a silent truncation: the count above says the total, this says what
+  // this cell left out.
+  if (imgs.length > shown.length) {
+    h += '<div class="cmp-trunc-note">+' + (imgs.length - shown.length)
+      + ' more in this run</div>';
+  }
+  return h;
 }
 
 function multiChartId(i) { return 'multi-chart-' + i; }
@@ -552,16 +699,18 @@ function _multiConfigTable(exps, varyingKeys) {
 // baseline: cells that differ from it are marked, so a twelve-column row can be
 // scanned for *where* it changed instead of read value by value.
 function _multiConfigRowsHtml(exps, varying, scripts, showScript) {
+  const spans = _cmpSpansProjects(exps);
   let h = '<div style="overflow-x:auto"><table class="params-table"><tr><th>Key</th>';
   for (const e of exps) {
-    h += '<th title="' + esc(e.name) + '">' + esc(_cmpColName(e.name)) + '</th>';
+    h += '<th title="' + esc(_cmpRunTitle(e, spans)) + '">'
+          + esc(_cmpRunLabel(e, spans)) + '</th>';
   }
   h += '</tr>';
   if (showScript) {
     h += '<tr><td class="var-name">script</td>';
     for (const sc of scripts) {
       const cls = sc === scripts[0] ? '' : ' class="differs"';
-      h += '<td' + cls + '>' + esc(sc ? sc.split('/').pop() : '--') + '</td>';
+      h += '<td' + cls + '>' + esc(sc ? pathBase(sc) : '--') + '</td>';
     }
     h += '</tr>';
   }
@@ -679,10 +828,23 @@ function exportComparison() {
   }
   const {exps, keys, basis} = _lastComparison;
   const paramKeys = [...new Set(exps.flatMap(e => Object.keys(e.params || {})))].sort();
-  const rows = [['run', 'id', 'script', ...paramKeys.map(k => 'param:' + k),
+  // The project column is the same argument `_cmpRunLabel` makes on screen: a
+  // cross-project comparison can put two runs with the same auto-generated
+  // name side by side, and without the project they are unidentifiable once
+  // the CSV has left the page.
+  // Carried only when the set actually spans projects — the same condition
+  // `_cmpRunLabel` uses on screen, so a single-project export is byte-for-byte
+  // what it always was and does not gain a column saying the same thing on
+  // every row.
+  const spans = _cmpSpansProjects(exps);
+  const head = spans ? ['run', 'project', 'id'] : ['run', 'id'];
+  const rows = [[...head, 'script', ...paramKeys.map(k => 'param:' + k),
                  ...keys.map(k => 'metric:' + k + ' (' + basis + ')')]];
   for (const e of exps) {
-    rows.push([e.name, e.id, e.script || '',
+    const lead = spans
+      ? [e.name, e.project_name || projectName(e.project_id || ''), e.id]
+      : [e.name, e.id];
+    rows.push([...lead, e.script || '',
                ...paramKeys.map(k => (e.params || {})[k]),
                ...keys.map(k => (e.metrics || {})[k])]);
   }
@@ -692,6 +854,56 @@ function exportComparison() {
   // hand-rolling the anchor silently opted it out.
   saveOrDownload(csv, 'exptrack_comparison_' + exps.length + '_runs.csv', 'text/csv');
   owlSay('Comparison exported.');
+}
+
+// The comparison as tables, rendered server-side by the code
+// `exptrack compare --format markdown` prints — so the terminal and the
+// browser paste the same document. Re-posts the comparison on screen (same
+// ids, basis and polarity overrides) with `document: true`, because the
+// markdown needs the server's varying-param and best-value answers, not a
+// second copy of them built here.
+async function _comparisonDocument(opts) {
+  if (!_lastComparison) { owlSay('Run a comparison first.'); return null; }
+  const c = _lastComparison;
+  const d = await postApi('/api/multi-compare',
+                          {ids: c.ids, rank_by: c.basis,
+                           metric_goals: metricPolarityGoals(), document: true,
+                           patch: !(opts && opts.patch === false)});
+  if (!d || d.error || !d.markdown) {
+    owlSay('Could not build the comparison' + (d && d.error ? ': ' + d.error : '.'));
+    return null;
+  }
+  return d;
+}
+
+// Copy leaves the pair's patch out; Export .patch downloads it.
+async function copyComparisonDocument() {
+  const d = await _comparisonDocument({patch: false});
+  if (d) await copyRich(d.markdown, d.html || '', 'the comparison');
+}
+
+async function exportComparisonMarkdown() {
+  const d = await _comparisonDocument();
+  if (!d) return;
+  const n = (d.experiments || []).length;
+  await saveOrDownload(d.markdown, 'exptrack_comparison_' + n + '_runs.md', 'text/markdown');
+  owlSay('Comparison exported.');
+}
+
+// The pair's code diff as a `.patch`, applicable with `git apply` to the older
+// run's code — the patch the markdown export ends with, on its own.
+async function exportComparisonPatch() {
+  const d = await _comparisonDocument();
+  if (!d) return;
+  if (!d.patch) {
+    owlSay((d.experiments || []).length === 2
+      ? 'No code diff for this pair (no code change, or the runs are in two projects).'
+      : 'A patch is between two runs — compare a pair to export one.');
+    return;
+  }
+  const names = (d.experiments || []).map(e => String(e.name || e.id).replace(/[^a-zA-Z0-9_-]/g, '_'));
+  await saveOrDownload(d.patch, names.join('__vs__') + '.patch', 'text/x-diff');
+  owlSay('Saved the patch — apply it with git apply to the older run\'s code.');
 }
 
 async function copyComparisonLink() {
@@ -711,6 +923,34 @@ async function copyComparisonLink() {
 // apart by the thing being compared. `midEllipsis` keeps both ends, and the
 // full name is on the title.
 function _cmpColName(name) { return midEllipsis(name, 24); }
+
+// Compare is the one surface that may span projects, and two projects can hold
+// runs with the same name — auto-generated names come from one shared
+// vocabulary, so that is the ordinary case, not the unlucky one. A column
+// headed by the name alone would then identify nothing.
+//
+// Tagged only when the set *actually* spans projects: on every single-project
+// comparison the tag would sit on every column and say the same thing on each,
+// which is noise. The server stamps `project_id` only in that same case, so
+// this reads as false for every request the dashboard has always made.
+function _cmpSpansProjects(exps) {
+  return new Set((exps || []).map(e => e.project_id || '')).size > 1;
+}
+
+// Middle-ellipsis on the name, never a head truncation: auto-generated names
+// differ in their *tail*, so cutting the end hides the difference the column
+// exists to show. The project name leads, because that is what disambiguates.
+function _cmpRunLabel(e, spans) {
+  const name = _cmpColName(e.name);
+  return spans && e.project_name ? e.project_name + ' / ' + name : name;
+}
+
+// The hover title, which is where the *untruncated* name lives — so it has to
+// carry the project too, or hovering a cross-project column still leaves two
+// identically named runs indistinguishable.
+function _cmpRunTitle(e, spans) {
+  return spans && e.project_name ? e.project_name + ' / ' + e.name : e.name;
+}
 
 // ── The colour key ───────────────────────────────────────────────────────────
 // Chart.js draws its own legend from each series' label, which means the legend
@@ -869,7 +1109,12 @@ async function _renderMultiCurves(exps, keys, token, cachedSeries, labelKeys) {
   // metric's polarity — must not re-fetch them: one request per run, for data
   // that cannot have changed.
   const series = cachedSeries || await Promise.all(
-    exps.map(e => api('/api/metrics/' + e.id).then(d => d || {}).catch(() => ({}))));
+    // Per run, in that run's project: with the page's project on the request
+    // a foreign run's metrics come back empty, and an empty series is drawn as
+    // a run that logged nothing rather than one we asked the wrong database
+    // about. api() still returns null on failure, so the guard stays.
+    exps.map(e => api('/api/metrics/' + e.id, e.project_id)
+                    .then(d => d || {}).catch(() => ({}))));
   if (token !== _multiCmpToken) return;
   if (_lastComparison) _lastComparison.series = series;
 
@@ -923,7 +1168,10 @@ async function doMultiCompare(ids) {
   if (!ids || ids.length < 2) {
     ids = [...selectedIds];
   }
-  if (ids.length < 2) return;
+  if (ids.length < 2) {
+    _showCompareFailure('fewer than two runs are chosen.');
+    return;
+  }
 
   // POST, not a query string: the id set *is* the request, and ~5000 selected
   // runs exceeded http.server's 64 KiB request line and came back as a bare 414.
@@ -937,21 +1185,48 @@ async function doMultiCompare(ids) {
   const data = await postApi('/api/multi-compare',
                              {ids: ids, rank_by: basis,
                               metric_goals: metricPolarityGoals()});
+  if (token !== _multiCmpToken) return;   // a newer request superseded this one
   if (!data || data.error || !data.experiments || !data.experiments.length) {
-    document.getElementById('multi-compare-result').innerHTML =
-      '<p>Could not load experiments' +
-      (data && data.error ? ' \u2014 ' + esc(String(data.error)) : '') + '.</p>';
+    _showCompareFailure(_compareFailureReason(data));
     return;
   }
-  if (token !== _multiCmpToken) return;   // a newer request superseded this one
   // Exactly two runs gets the pair-only panels: the code diff between the two
   // attempts, the notebook variable table and the A/B image overlay. Fetched
   // here rather than in the renderer so a repaint never re-requests.
   if (data.experiments.length === 2) {
-    data._pair = await _fetchPairExtras(data.experiments[0].id, data.experiments[1].id);
+    // The pair-only endpoints (/api/compare, /api/vars-at/, /api/images/)
+    // each read ONE project's database per request, so a pair drawn from two
+    // projects has nothing to build them from. Skipped rather than fetched
+    // against the wrong project, and said out loud in the render.
+    if (_cmpSpansProjects(data.experiments)) data._pairCrossProject = true;
+    else data._pair = await _fetchPairExtras(data.experiments[0].id,
+                                             data.experiments[1].id,
+                                             data.experiments[0].project_id);
     if (token !== _multiCmpToken) return;
   }
   _renderMultiComparison(data, ids, token);
+}
+
+// Why a comparison could not be made, in words the reader can act on. The
+// server's own error leads; the ids it could not find are named, because
+// "only 1 of the chosen runs was found" alone does not say which pick was
+// the unknown one (a run deleted since, or one from a project that is gone).
+function _compareFailureReason(data) {
+  if (!data) return 'the server did not answer.';
+  const bits = [];
+  if (data.error) bits.push(String(data.error));
+  const unknown = data.unknown_ids || [];
+  if (unknown.length) bits.push('not found: ' + unknown.map(_cmpLabelFor).join(', '));
+  return bits.join(' — ') || 'no runs came back.';
+}
+
+// The failure is the comparison's answer, so it takes the comparison's place
+// — never a blank area under a Compare button that seems to have done nothing.
+function _showCompareFailure(reason) {
+  const host = document.getElementById('multi-compare-result');
+  if (!host) return;
+  host.innerHTML = '<div class="cmp-failure" role="alert"><strong>Couldn’t compare</strong> — ' +
+    esc(reason) + '</div>';
 }
 
 // The metric table: one row per metric, one column per run, best tinted green
@@ -969,9 +1244,11 @@ function _multiMetricTableHtml(exps, keys) {
   // which?" — so the column exists exactly when the set is a pair. It is the
   // one thing the old pair tab's metric table had that this one did not.
   const pair = exps.length === 2;
+  const spans = _cmpSpansProjects(exps);
   let html = '<div style="overflow-x:auto"><table class="metrics-table"><tr><th>Key</th>';
   for (const e of exps) {
-    html += '<th title="' + esc(e.name) + '">' + esc(_cmpColName(e.name)) + '</th>';
+    html += '<th title="' + esc(_cmpRunTitle(e, spans)) + '">'
+          + esc(_cmpRunLabel(e, spans)) + '</th>';
   }
   if (pair) html += '<th>Delta</th>';
   html += '</tr>';
@@ -1031,6 +1308,9 @@ function _multiMetricRowHtml(exps, k, pair) {
 // metric series per run.
 function _renderMultiComparison(data, ids, token, cachedSeries) {
   const exps = data.experiments;
+  // Whether this comparison spans projects, decided once: the image cells
+  // below label every run in every group.
+  const spans = _cmpSpansProjects(exps);
   // Picking four runs and rendering three, with nothing saying so, is the
   // dishonesty the matrix and branch-compare surfaces already refuse.
   let missingNote = '';
@@ -1065,7 +1345,8 @@ function _renderMultiComparison(data, ids, token, cachedSeries) {
   html += _multiMetricTableHtml(exps, keys) + '</details>';
   html = missingNote + _multiSeriesKeyHtml(exps, labelKeys)
        + _multiConfigTable(exps, data.varying_params) + html
-       + _pairExtrasHtml(data._pair);
+       + (data._pairCrossProject ? _pairCrossProjectNoteHtml(exps)
+                                 : _pairExtrasHtml(data._pair));
 
   // Training-curve overlay across every selected run — the question a sweep is
   // actually asking ("how do these five learn?"), which had no answer anywhere:
@@ -1105,7 +1386,11 @@ function _renderMultiComparison(data, ids, token, cachedSeries) {
   const imgGroups = new Map();
   for (const e of exps) {
     for (const img of (e.images || [])) {
-      const key = img.group || img.label || img.path.split('/').pop();
+      // The file is served out of the run's OWN project, and an <img src>
+      // cannot carry a header — so the project travels on the image itself,
+      // down to whichever cell renderer draws it.
+      img._project = e.project_id || '';
+      const key = img.group || img.label || pathBase(img.path);
       if (!imgGroups.has(key)) imgGroups.set(key, new Map());
       const byExp = imgGroups.get(key);
       if (!byExp.has(e.id)) byExp.set(e.id, img);
@@ -1120,12 +1405,12 @@ function _renderMultiComparison(data, ids, token, cachedSeries) {
       html += '<div class="multi-compare-image-row">';
       for (const e of exps) {
         const img = byExp.get(e.id);
-        const name = _cmpColName(e.name);
+        const name = _cmpRunLabel(e, spans);
         html += '<div class="multi-compare-image-cell">';
         html += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + esc(name) + '</div>';
         if (img) {
-          const label = img.label || img.path.split('/').pop();
-          html += '<img src="' + fileUrl(img.path) + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + escJsAttr(label) + '\')">';
+          const label = img.label || pathBase(img.path);
+          html += '<img src="' + fileUrl(img.path, img._project) + '" alt="' + esc(label) + '" onclick="openImageModal(this.src,\'' + escJsAttr(label) + '\')">';
           html += '<div class="multi-compare-image-name">' + esc(label) + '</div>';
         } else {
           html += '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">No image</div>';
@@ -1140,7 +1425,12 @@ function _renderMultiComparison(data, ids, token, cachedSeries) {
   if (token !== _multiCmpToken) return;
   _lastComparison = {exps: exps, keys: keys, basis: data.rank_by || 'final',
                      data: data, ids: ids};
-  _writeCompareHash('multi', exps.map(e => e.id));
+  // Qualified where the run came from another project: the hash is what
+  // `copyComparisonLink` shares and what `restoreCompareFromUrl`/`_onPopView`
+  // post back, and a bare id resolves against the *current* project only — so
+  // writing bare ids meant a cross-project comparison came back from a reload,
+  // a shared link or the Back button with its foreign runs in `unknown_ids`.
+  _writeCompareHash('multi', exps.map(e => e.qualified_id || e.id));
   document.getElementById('multi-compare-result').innerHTML = html;
 
   // Create bar charts

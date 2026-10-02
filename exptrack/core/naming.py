@@ -46,7 +46,7 @@ def safe_filename(s: str, max_len: int = 80, default: str = "unnamed") -> str:
     return _FILENAME_UNSAFE_RE.sub("_", str(s or ""))[:max_len] or default
 
 
-def make_run_name(script: str = "", params: dict | None = None) -> str:
+def make_run_name(script: str = "", params: dict | None = None, uid: str = "") -> str:
     """
     Produces (readable, default):   May22_train__lr0.01_bs32__a3f25b1c
     Or (date_style="numeric"):      train__lr0.01_bs32__0312_a3f25b1c
@@ -58,6 +58,12 @@ def make_run_name(script: str = "", params: dict | None = None) -> str:
     (default, e.g. ``May22``) front-loads a friendly month/day so un-renamed
     runs read chronologically; ``"numeric"`` keeps the terse legacy ``MMDD``
     in the middle.
+
+    *uid* is the run's id prefix when the caller has one, so the suffix a user
+    reads in the name is the id `exptrack show` takes — and stays the same
+    across the renames capture makes as params arrive. A random suffix meant
+    `..._a45f2001` named a run whose id was `418a3b`, and every rename printed
+    a new one.
     """
     ncfg       = cfg.load().get("naming", {})
     max_keys   = ncfg.get("max_param_keys", 4)
@@ -83,7 +89,7 @@ def make_run_name(script: str = "", params: dict | None = None) -> str:
                 val = str(v)[:12]
             parts.append(_path_safe(f"{short_k}{val}"))
 
-    uid = uuid.uuid4().hex[:8]
+    uid = uid or uuid.uuid4().hex[:8]
     now = datetime.now()
 
     if date_style == "numeric":

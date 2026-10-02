@@ -7,6 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _isolation import isolate_home
+
 
 def main():
     tests_dir = Path(__file__).parent
@@ -17,6 +20,13 @@ def main():
         sys.exit(1)
 
     results = []
+
+    # Every child runs against a throwaway HOME. These files are executed as
+    # scripts, so pytest's autouse isolation fixture never loads — without
+    # this, any test that runs `exptrack init` or `exptrack ui start` appends
+    # its temp directory to the developer's real ~/.exptrack/projects.json.
+    # Set on this process, so every child inherits it without a per-call env=.
+    home = isolate_home("exptrack-tests-home-")
 
     for tf in test_files:
         print(f"\n{'=' * 60}")
@@ -41,6 +51,7 @@ def main():
         icon = "PASS" if status == "PASS" else "FAIL"
         print(f"  [{icon}] {name}")
 
+    home.cleanup()
     passed = sum(1 for _, s in results if s == "PASS")
     failed = sum(1 for _, s in results if s == "FAIL")
     print(f"\n{passed} files passed, {failed} files failed (out of {len(results)} total)")

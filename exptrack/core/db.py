@@ -77,6 +77,31 @@ def _set_wal_mode(conn: sqlite3.Connection) -> None:
               "continuing in the existing journal mode")
 
 
+def _ensure_db_dir(parent: Path, root: Path) -> None:
+    """Create the database's directory, 0700 when it is the project's own.
+
+    A bare ``parent.mkdir()`` here took the process umask, which is 022 on a
+    normal POSIX account — so whenever the database was the first thing
+    written to a fresh project (a plain ``python train.py``, before anything
+    called ``config.exptrack_dir()``), ``.exptrack/`` was created 755 and
+    every account on the machine could read the runs database and the
+    dashboard token. That is exactly the exposure
+    ``config.warn_if_world_readable`` exists to report, produced by exptrack
+    itself; the warning then told the user to chmod a directory they never
+    knowingly created.
+
+    Routed through ``cfg.exptrack_dir()`` for the project's own directory so
+    there is ONE rule for how it comes into being (create 0700, never tighten
+    an existing one — a directory the user deliberately shared is theirs to
+    decide about). A ``db`` setting pointing somewhere else is the user's own
+    path and is created as before, without a mode this function invented.
+    """
+    if parent == root / ".exptrack":
+        cfg.exptrack_dir()
+        return
+    parent.mkdir(parents=True, exist_ok=True)
+
+
 def get_db() -> sqlite3.Connection:
     """Return a cached per-thread database connection.
 
@@ -90,7 +115,7 @@ def get_db() -> sqlite3.Connection:
     root = cfg.project_root()
     conf = cfg.load()
     p = root / conf.get("db", ".exptrack/experiments.db")
-    p.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_db_dir(p.parent, root)
     p_str = str(p)
 
     if conn is not None and db_path == p_str:
@@ -106,6 +131,17 @@ def get_db() -> sqlite3.Connection:
             safe_call(conn.close, context="db: closing stale connection")
             _local.conn = None
 
+    # The path changed — almost always a project switch in the dashboard.
+    # Close the connection we are about to stop tracking. Without this,
+    # `_local.conn` is simply overwritten below and the old sqlite handle
+    # and its file descriptors stay open for the life of the process, one
+    # per switch. Unreachable before multi-project, because a process's
+    # root never changed.
+    if conn is not None:
+        safe_call(conn.close, context="db: closing connection for prior project")
+        _local.conn = None
+        _local.db_path = None
+
     # Warn if WAL/SHM files are missing when DB exists (potential corruption)
     if p.exists():
         wal = Path(str(p) + "-wal")
@@ -114,7 +150,12 @@ def get_db() -> sqlite3.Connection:
             print("[exptrack] warning: WAL file exists without SHM file — "
                   "database may be in an inconsistent state", file=sys.stderr)
 
-    conn = sqlite3.connect(p_str, timeout=10)
+    # check_same_thread=False: the connection is still cached per thread and
+    # used by that thread alone, with one exception — the metric trailing
+    # flush (experiment._trailing_flush) commits it from a timer thread, under
+    # the metric lock, so a burst's last rows reach the dashboard without
+    # waiting for the next write.
+    conn = sqlite3.connect(p_str, timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     # busy_timeout first: every statement below benefits from it, and unlike the
     # journal_mode switch it takes no lock of its own.
@@ -296,7 +337,9 @@ _SNAPSHOT_HASH_RE = re.compile(r"\b[0-9a-f]{16}\b")
 
 
 def _referenced_snapshot_hashes(conn: sqlite3.Connection) -> set[str]:
-    """Every ``code_snapshots.hash`` still referenced by a ``_code_snapshot`` param.
+    """Every ``code_snapshots.hash`` still referenced by a ``_code_snapshot``
+    or ``_environment`` param (the environment record shares the table: one
+    content-addressed store, one reclaim rule).
 
     Scans the raw param text for hash-shaped tokens rather than decoding it: the
     value has had three shapes (a JSON list of ``{hash, kind, path}``, a
@@ -307,7 +350,8 @@ def _referenced_snapshot_hashes(conn: sqlite3.Connection) -> set[str]:
     """
     refs: set[str] = set()
     for (value,) in conn.execute(
-        "SELECT value FROM params WHERE key='_code_snapshot' AND value IS NOT NULL"
+        "SELECT value FROM params WHERE key IN ('_code_snapshot', '_environment') "
+        "AND value IS NOT NULL"
     ):
         refs.update(_SNAPSHOT_HASH_RE.findall(value))
     return refs
@@ -1412,10 +1456,30 @@ def _trash_or_local(path: Path, label: str = "file") -> str:
 
     Never falls through to a destructive ``unlink``/``rmtree`` — if both
     OS-trash and local-fallback fail, the file is left alone with a warning.
-    Returns one of ``'os_trash'``, ``'local_trash'``, ``'missing'``, ``'failed'``.
+    Returns one of ``'os_trash'``, ``'local_trash'``, ``'missing'``,
+    ``'failed'`` or ``'protected'``.
+
+    A path inside a Python environment (venv, virtualenv, conda env — found
+    by its marker files, not its name) is never removed, and neither is a
+    folder holding one: deleting a run must not be able to break the
+    interpreter the next run needs. Every removal goes through here, so this
+    is the one place the rule has to live.
     """
     if not path.exists():
         return "missing"
+    from .utils import is_python_env_dir, python_env_containing
+    env = python_env_containing(path)
+    held = None
+    if env is None and path.is_dir():
+        try:
+            held = next((c for c in path.iterdir() if c.is_dir() and is_python_env_dir(c)), None)
+        except OSError:
+            held = None
+    if env is not None or held is not None:
+        print(f"[exptrack] note: leaving {label} {path} in place — it "
+              f"{'is inside' if env is not None else 'contains'} the Python "
+              f"environment {env or held}", file=sys.stderr)
+        return "protected"
     if _send_to_os_trash(path):
         return "os_trash"
     try:
@@ -2215,12 +2279,18 @@ def _safe_output_dir(outputs_base: Path, name: str) -> Path | None:
 
 
 def rename_output_folder(conn: sqlite3.Connection, exp_id: str,
-                         old_name: str, new_name: str) -> None:
+                         old_name: str, new_name: str) -> str | None:
     """Rename the output folder on disk and update artifact paths + output_dir.
 
     Called when an experiment is renamed so the output directory stays in sync.
-    If the folder can't be renamed (e.g. doesn't exist), falls back to
-    tracking by experiment ID.
+    If the folder can't be renamed, falls back to tracking by experiment ID.
+
+    A folder that does not exist *yet* follows the name: capture renames a run
+    as its params arrive, before anything is written, and leaving the stored
+    path on the first name sent the tee'd logs to `outputs/<first name>/`
+    while savefig wrote to `outputs/<final name>/` — two folders per run.
+
+    Returns the output dir the run now has, or None when it did not change.
     """
     conf = cfg.load()
     outputs_base = cfg.project_root() / conf.get("outputs_dir", "outputs")
@@ -2229,16 +2299,22 @@ def rename_output_folder(conn: sqlite3.Connection, exp_id: str,
     if old_dir is None or new_dir is None:
         print(f"[exptrack] warning: refusing to rename output dir "
               f"{old_name!r} → {new_name!r} (unsafe path)", file=sys.stderr)
-        return
+        return None
 
     renamed = False
-    if old_dir.is_dir() and not new_dir.exists():
+    if not old_dir.exists():
+        # Nothing on disk yet: move the bookkeeping only.
+        renamed = True
+    elif old_dir.is_dir() and not new_dir.exists():
         try:
             old_dir.rename(new_dir)
             renamed = True
         except OSError as e:
-            print(f"[exptrack] warning: could not rename output dir "
-                  f"{old_dir} → {new_dir}: {e}", file=sys.stderr)
+            # Expected on Windows while the run's own logs are open in the
+            # folder; the run stays on the old folder (below), which every
+            # writer now follows, so this is not the user's problem to read.
+            from .utils import debug_log
+            debug_log(f"could not rename output dir {old_dir} -> {new_dir}: {e}")
 
     # Update output_dir in experiments table
     if renamed:
@@ -2268,6 +2344,7 @@ def rename_output_folder(conn: sqlite3.Connection, exp_id: str,
                 new_path = str(new_dir) + path[len(old_prefix):]
                 conn.execute("UPDATE artifacts SET path=? WHERE id=?",
                              (new_path, r["id"]))
+    return str(new_dir) if renamed else None
 
 
 def finish_experiment(exp_id: str) -> bool:

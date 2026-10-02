@@ -159,9 +159,9 @@ def api_bulk_delete_preview(conn, body: dict) -> dict:
 
 
 def api_bulk_export(conn, body: dict) -> dict | list:
+    from exptrack.core.export_render import markdown_to_html, render_runs
     from exptrack.core.queries import (
         format_export_csv,
-        format_export_markdown,
         get_batch_export_data,
     )
     ids = body.get("ids", [])
@@ -174,9 +174,13 @@ def api_bulk_export(conn, body: dict) -> dict | list:
     if fmt in ("csv", "tsv"):
         delimiter = "\t" if fmt == "tsv" else ","
         return {"format": fmt, "content": format_export_csv(batch, delimiter=delimiter)}
-    elif fmt == "markdown":
-        md_parts = [format_export_markdown(d) for d in batch]
-        return {"format": "markdown", "content": "\n\n---\n\n".join(md_parts)}
+    # `patch: false` is Copy — each run's patch is left to Export .patch.
+    patch = body.get("patch", True) is not False
+    if fmt == "markdown":
+        md = render_runs(batch, "markdown", patch=patch)
+        return {"format": "markdown", "content": md, "html": markdown_to_html(md)}
+    elif fmt in ("text", "html"):
+        return {"format": fmt, "content": render_runs(batch, fmt, patch=patch)}
     else:
         return batch
 
@@ -207,7 +211,9 @@ def api_save_export(body: dict) -> dict:
     for name in candidates:
         target = out_dir / name
         try:
-            with target.open("x", encoding="utf-8") as f:
+            # newline="": the text as sent. Text mode on Windows rewrote every
+            # \n as \r\n, which is what corrupts a saved .patch for git apply.
+            with target.open("x", encoding="utf-8", newline="") as f:
                 f.write(content)
             return {
                 "ok": True,

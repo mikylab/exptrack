@@ -17,6 +17,7 @@ from typing import Any
 from ..core.db import get_db
 from ..core.git import _git as git_run
 from ..core.git import git_diff as _git_diff
+from ..core.git import git_memo
 from ..core.utils import debug_log
 from . import _shared
 
@@ -78,6 +79,11 @@ _git = git_run  # local alias for terseness inside this module
 # `manager._CELL_SEPARATOR`. Bound via the module rather than imported by
 # name so the class attr of the same name isn't read as a redefinition.
 _CELL_SEPARATOR = _shared._CELL_SEPARATOR
+
+
+def _max_image_seq(imgs: list) -> int:
+    """Highest `seq` among a node's image entries (0 for none, or legacy ones)."""
+    return max((im.get("seq") or 0 for im in imgs), default=0)
 
 
 class SessionManager:
@@ -515,16 +521,12 @@ class SessionManager:
         try:
             abs_path = str(Path(path).resolve())
             conn = get_db()
-            row = self._get_node(self._current_node_id, "images")
-            try:
-                imgs = json.loads(row["images"]) if row and row["images"] else []
-            except Exception:
-                imgs = []
-            imgs = [im for im in imgs
-                    if isinstance(im, dict) and im.get("path") != abs_path]
+            imgs = self._node_images(self._current_node_id)
+            seq = _max_image_seq(imgs) + 1
+            imgs = [im for im in imgs if im.get("path") != abs_path]
             imgs.append({"path": abs_path,
                          "label": (label or "").strip() or None,
-                         "ts": time.time()})
+                         "ts": time.time(), "seq": seq})
             if len(imgs) > _NODE_IMAGES_MAX:
                 imgs = imgs[-_NODE_IMAGES_MAX:]
             # `deleted_at IS NULL` + the re-anchor recovery every other per-cell
@@ -927,6 +929,13 @@ class SessionManager:
         # purged from the dashboard/CLI since the last magic ran.
         if not self._ensure_live_anchor():
             return None
+        # One git memo for the whole magic: the branch we are leaving and the
+        # checkpoint we are writing read the same HEAD, and often the same diff.
+        with git_memo():
+            return self._checkpoint_inner(label)
+
+    def _checkpoint_inner(self, label: str) -> str | None:
+        """:meth:`checkpoint`'s body, run inside one ``git_memo()``."""
         # Leaving a branch — freeze its diff before we move off it. A no-op when
         # the current node isn't a branch, which includes the re-declare case.
         self._refresh_branch_diff()
@@ -979,6 +988,15 @@ class SessionManager:
             return None
         if not self._last_checkpoint_id:
             return None
+        # One git memo for the whole magic: the branch we leave and the sibling
+        # we enter diff the same working tree against the same checkpoint, so
+        # the second `git diff` would spawn a process to recompute the first
+        # one's bytes.
+        with git_memo():
+            return self._branch_inner(label)
+
+    def _branch_inner(self, label: str) -> str | None:
+        """:meth:`branch`'s body, run inside one ``git_memo()``."""
         # Moving off whatever branch we were on — freeze its diff first.
         self._refresh_branch_diff()
         # "checkpoint" is in the lookup because `promote_to_checkpoint` changes
@@ -1016,7 +1034,12 @@ class SessionManager:
                 "baseline_first": first,
                 "baseline_setup_first": setup_first,
                 "metric_mark": metric_mark,
-                "image_mark": time.time(),
+                # A sequence number, as `metric_mark` is a row id — not a
+                # timestamp: on Windows `time.time()` advances in ~15.6ms
+                # steps, so a plot saved within a tick of this switch carried
+                # the mark's own `ts`, failed `ts > mark`, and stayed on the
+                # pre-fork node.
+                "image_mark": _max_image_seq(self._node_images(existing)),
             }
             return existing
 
@@ -1154,7 +1177,7 @@ class SessionManager:
         error that write-time tagging exists to prevent, reintroduced through the
         fork path. The marks captured when `branch()` armed the collision bound
         "logged during this cell": metric rows with `id` past `metric_mark`, node
-        images with a `ts` past `image_mark`. The identical-re-run merge path
+        images not among the entries `image_mark` saw on the node. The identical-re-run merge path
         never calls this — those records already sit on the right node."""
         conn = get_db()
         conn.execute(
@@ -1164,31 +1187,33 @@ class SessionManager:
         conn.commit()
         self._move_recent_images(old_id, new_id, pc.get("image_mark", 0))
 
-    def _move_recent_images(self, old_id: str, new_id: str, mark: float) -> None:
-        """Move node images logged after `mark` (this cell) from old to new node.
-
-        Images live in `session_nodes.images` as a JSON list with a per-entry
-        `ts`; there is no row id to key on, so the timestamp mark is the bound.
-        Deduped by path and capped on the destination, matching record_image."""
-        conn = get_db()
-        old_row = self._get_node(old_id, "images")
+    def _node_images(self, node_id: str) -> list:
+        """The node's image entries; an unreadable `images` column is empty."""
+        row = self._get_node(node_id, "images")
         try:
-            old_imgs = json.loads(old_row["images"]) if old_row and old_row["images"] else []
+            imgs = json.loads(row["images"]) if row and row["images"] else []
         except Exception:
-            return
-        moving = [im for im in old_imgs
-                  if isinstance(im, dict) and im.get("ts", 0) > mark]
+            return []
+        return [im for im in imgs if isinstance(im, dict)] if isinstance(imgs, list) else []
+
+    def _move_recent_images(self, old_id: str, new_id: str, mark: int) -> None:
+        """Move node images logged during this cell from old to new node.
+
+        Images live in `session_nodes.images` as a JSON list; there is no row id
+        to key on, so `record_image` stamps each entry with a per-node `seq`
+        and *mark* is the highest one the node held when the collision was
+        armed. An entry from before `seq` existed has none and counts as at or
+        below the mark. Deduped by path and capped on the destination,
+        matching record_image."""
+        conn = get_db()
+        old_imgs = self._node_images(old_id)
+        moving = [im for im in old_imgs if (im.get("seq") or 0) > (mark or 0)]
         if not moving:
             return
         keep = [im for im in old_imgs if im not in moving]
-        new_row = self._get_node(new_id, "images")
-        try:
-            new_imgs = json.loads(new_row["images"]) if new_row and new_row["images"] else []
-        except Exception:
-            new_imgs = []
         moving_paths = {im.get("path") for im in moving}
-        new_imgs = [im for im in new_imgs
-                    if isinstance(im, dict) and im.get("path") not in moving_paths]
+        new_imgs = [im for im in self._node_images(new_id)
+                    if im.get("path") not in moving_paths]
         new_imgs.extend(moving)
         if len(new_imgs) > _NODE_IMAGES_MAX:
             new_imgs = new_imgs[-_NODE_IMAGES_MAX:]

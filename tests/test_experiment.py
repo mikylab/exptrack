@@ -167,16 +167,15 @@ def test_batched_writes_single_commit(tmp_project, monkeypatch):
     conn = get_db()
 
     proxy = CommitCountingProxy(conn)
-    monkeypatch.setattr(expmod, "get_db", lambda: proxy)
+    with monkeypatch.context() as mp:
+        mp.setattr(expmod, "get_db", lambda: proxy)
 
-    with exp.batched_writes():
-        exp.log_event(event_type="cell_exec", key="cell_1", value={"a": 1})
-        exp.log_event(event_type="var_set", key="x", value="1")
-        exp.log_params({"_var/x": "1"})
-        assert proxy.commits == 0  # nothing committed mid-batch
-    assert proxy.commits == 1  # exactly one commit on exit
-
-    monkeypatch.undo()
+        with exp.batched_writes():
+            exp.log_event(event_type="cell_exec", key="cell_1", value={"a": 1})
+            exp.log_event(event_type="var_set", key="x", value="1")
+            exp.log_params({"_var/x": "1"})
+            assert proxy.commits == 0  # nothing committed mid-batch
+        assert proxy.commits == 1  # exactly one commit on exit
 
     rows = conn.execute(
         "SELECT COUNT(*) AS c FROM timeline WHERE exp_id=?", (exp.id,)
@@ -199,18 +198,17 @@ def test_batched_writes_defers_tags_and_notes(tmp_project, monkeypatch):
     conn = get_db()
 
     proxy = CommitCountingProxy(conn)
-    monkeypatch.setattr(expmod, "get_db", lambda: proxy)
+    with monkeypatch.context() as mp:
+        mp.setattr(expmod, "get_db", lambda: proxy)
 
-    with exp.batched_writes():
-        exp.add_tag("baseline")
-        exp.add_tag("v2")
-        exp.remove_tag("baseline")
-        exp.set_note("first")
-        exp.add_note("second")
-        assert proxy.commits == 0  # nothing committed mid-batch
-    assert proxy.commits == 1  # exactly one commit on exit
-
-    monkeypatch.undo()
+        with exp.batched_writes():
+            exp.add_tag("baseline")
+            exp.add_tag("v2")
+            exp.remove_tag("baseline")
+            exp.set_note("first")
+            exp.add_note("second")
+            assert proxy.commits == 0  # nothing committed mid-batch
+        assert proxy.commits == 1  # exactly one commit on exit
 
     row = conn.execute(
         "SELECT tags, notes FROM experiments WHERE id=?", (exp.id,)

@@ -78,6 +78,10 @@ async function loadStats() {
         + '</div>';
     }
   }
+  // Several checkouts and a remote box can each be running a different
+  // exptrack; state which one this dashboard is so that's never a guess.
+  const versionEl = document.getElementById('sidebar-version');
+  if (versionEl) versionEl.textContent = s.version ? ('exptrack ' + s.version) : '';
   renderStatusChips();
 }
 
@@ -163,7 +167,7 @@ async function loadExperiments() {
   allExperiments = page;
   // The Compare pickers cache their own copy; a mutation that reloads the list
   // must invalidate it or Compare keeps offering a stale set.
-  _cmpExps = [];
+  _cmpCacheClear();
   expPageLoaded = page.length;
   expHasMore = page.length >= EXP_PAGE_SIZE;
   _renderExpViews();
@@ -256,7 +260,7 @@ function renderExpRow(e) {
     // Middle-ellipsis, not head-truncation: an auto name's distinguishing part
     // (`…__lr0.01__2aac1081`) is its tail, so cutting the tail made every row
     // in a rerun burst read identically.
-    name: '<td class="truncate-cell">' + (e.name_is_auto ? '<span class="auto-name-badge" title="Auto-generated name — double-click to rename">auto</span>' : '') + _refBadgeHtml(e.id) + '<span class="editable-cell" data-rename-slot="' + e.id + '" title="' + esc(e.name) + '"' + editOn('startInlineRename', false) + '>' + esc(midEllipsis(e.name, nameCellMaxChars(e.name_is_auto))) + editIcon('startInlineRename') + '</span></td>',
+    name: '<td class="truncate-cell">' + (e.name_is_auto ? '<span class="auto-name-badge" title="Auto-generated name — double-click to rename">auto</span>' : '') + _refBadgeHtml(e.id) + '<span class="editable-cell" data-rename-slot="' + e.id + '" title="' + esc(e.name) + '"' + editOn('startInlineRename', false) + '>' + tableNameHtml(e, nameCellMaxChars(e.name_is_auto)) + editIcon('startInlineRename') + '</span></td>',
     status: '<td class="truncate-cell status-' + e.status + '">' + e.status + '</td>',
     tags: '<td class="tags-cell wrap-cell editable-cell"' + editOn('startInlineTag') + '>' + chipCell(e.tags, 'startInlineTag', '#', '') + editIcon('startInlineTag') + '</td>',
     studies: '<td class="tags-cell wrap-cell editable-cell"' + editOn('startInlineStudy') + '>' + chipCell(e.studies, 'startInlineStudy', '', 'background:rgba(44,90,160,0.1);color:var(--blue)') + editIcon('startInlineStudy') + '</td>',
@@ -365,16 +369,16 @@ function _emptyStateHtml() {
   }
   const hasFilters = !!(currentFilter || searchQuery || tagFilter || studyFilter ||
     autoNamedOnly || (dateRange && dateRange !== 'all' && dateRange !== ''));
-  // Failed runs are hidden by a toggle, not by any of the filter controls — so
-  // when every loaded run failed, "no match" plus a Clear-filters button that
-  // changes nothing is a dead end. Name the toggle that's actually hiding them.
+  // Failed runs are hidden by their own control, not by any of the filter
+  // controls — so when every loaded run failed, "no match" plus a Clear-filters
+  // button that changes nothing is a dead end. Name the control hiding them.
   const failedHidden = (allExperiments || []).filter(e => e.status === 'failed').length;
   if (!showFailed && currentFilter !== 'failed' && failedHidden === total) {
     return '<div class="empty-state">' +
       '<div class="empty-state-icon">✕</div>' +
       '<div class="empty-state-title">Every run here failed</div>' +
       '<div class="empty-state-msg">' + total + ' failed run' + (total > 1 ? 's are' : ' is') +
-      ' hidden by the <strong>Show failed</strong> toggle.' +
+      ' hidden by the <strong>Hide failed</strong> control.' +
       ' <button class="action-btn" onclick="setShowFailed(true)">Show failed runs</button>' +
       (hasFilters ? ' <button class="action-btn" onclick="clearAllFilters()">Clear filters</button>' : '') +
       '</div></div>';
@@ -385,7 +389,7 @@ function _emptyStateHtml() {
     '<div class="empty-state-msg">' + total + ' run' + (total > 1 ? 's' : '') +
     ' hidden by the current filters' +
     (failedHidden ? ' (including ' + failedHidden + ' failed run' + (failedHidden > 1 ? 's' : '') +
-      ' behind the <strong>Show failed</strong> toggle)' : '') + '.' +
+      ' hidden by the <strong>Hide failed</strong> control)' : '') + '.' +
     (failedHidden ? ' <button class="action-btn" onclick="setShowFailed(true)">Show failed</button>' : '') +
     (hasFilters ? ' <button class="action-btn" onclick="clearAllFilters()">Clear filters</button>' : '') +
     '</div></div>';
@@ -410,6 +414,7 @@ function renderExperiments() {
   const exps = getFilteredExperiments();
   const tbody = document.getElementById('exp-body');
   if (!tbody) { restoreRename(); return; }
+  syncAutoParamColumns();
   renderFilterBar();
   // Re-run the header so empty-column collapsing tracks the rows now in view
   // (a filter change can empty or re-populate Tags/Studies/Stage/Notes).

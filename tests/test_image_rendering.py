@@ -445,19 +445,38 @@ def test_compare_js_generates_img_tags():
 
     assert "cmp-img-grid" in JS_COMPARE, "Compare should render image grid"
     assert "cmp-img-thumb" in JS_COMPARE, "Compare should render thumbnails"
-    assert "fileUrl(img.path)" in JS_COMPARE, "Compare should use fileUrl() helper"
+    # With the image's own project: an <img src> sends no header, so a run
+    # from another project names it in the URL or is served the wrong file.
+    assert "fileUrl(img.path, img._project)" in JS_COMPARE,         "Compare should use fileUrl() with the image's project"
 
 
 # ── Auth token forwarding for image URLs ─────────────────────────────────────
 
 def test_fileurl_helper_exists():
-    """fileUrl() helper is defined in core JS and handles auth + encoding."""
+    """fileUrl() is defined in core JS and handles encoding, auth and project.
+
+    An <img src> carries no request headers at all, which is why the auth
+    token rides in the query string — and, since one dashboard started
+    serving several projects, why the project id has to travel the same way.
+    The helper grew a second parameter for that, so this asserts the current
+    signature; pinning the old `fileUrl(path)` spelling made the test fail on
+    a change that was correct.
+    """
     from exptrack.dashboard.static_parts.js.core import JS_CORE
 
-    assert "function fileUrl(path)" in JS_CORE, "Core JS should define fileUrl() helper"
+    assert "function fileUrl(path, projectId)" in JS_CORE, (
+        "Core JS should define fileUrl(path, projectId)"
+    )
     body = JS_CORE.split("function fileUrl")[1].split("\n}\n", 1)[0]
+    assert "encodeURIComponent(path)" in body, (
+        "fileUrl() should percent-encode the path it is given"
+    )
     assert "_authToken" in body and "token=" in body, (
         "fileUrl() should forward the auth token as a query param"
+    )
+    assert "projectId" in body and "project=" in body, (
+        "fileUrl() should forward the project id as a query param — an <img> "
+        "for a run in another project has no header to say so with"
     )
 
 
@@ -599,3 +618,107 @@ def test_non_image_artifacts_excluded_from_images_api(tmp_project):
     names = [ai["name"] for ai in art_imgs]
     assert "chart.png" in names
     assert "model.pt" not in names
+
+
+# ── One row per image, not per path ──────────────────────────────────────────
+
+def test_images_api_collapses_a_figure_and_its_outputs_copy(tmp_project):
+    """The savefig patch registers its copy under outputs/ and the finish-time
+    scan registers the file the script wrote. Both reaching the gallery showed
+    every plot twice."""
+    import shutil
+
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+    from exptrack.dashboard.routes.read_routes import api_list_images
+
+    exp = Experiment(script="train.py")
+    orig = tmp_project / "figs" / "loss.png"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_bytes(b"\x89PNG fake chart")
+    copy = tmp_project / "outputs" / exp.name / "loss.png"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(orig), str(copy))
+    exp.log_artifact(str(copy), label="loss")
+    exp.log_artifact(str(orig), label="[image] loss.png")
+    exp.finish()
+
+    result = api_list_images(get_db(), exp.id)
+    paths = [i["path"] for i in result["artifact_images"]]
+    assert len(paths) == 1, paths
+    assert paths[0].replace("\\", "/").startswith("outputs/")
+
+
+def test_images_api_does_not_list_a_scanned_file_twice(tmp_project):
+    """A configured scan folder is often where the run wrote its figures, so
+    the walk and the artifact row describe the same image."""
+    import json
+
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+    from exptrack.dashboard.routes.read_routes import api_list_images
+
+    exp = Experiment(script="train.py")
+    fig = tmp_project / "figs" / "acc.png"
+    fig.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_bytes(b"\x89PNG fake chart")
+    exp.log_artifact(str(fig), label="acc")
+    exp.finish()
+
+    conn = get_db()
+    conn.execute("UPDATE experiments SET image_paths=? WHERE id=?",
+                 (json.dumps(["figs"]), exp.id))
+    conn.commit()
+
+    result = api_list_images(conn, exp.id)
+    names = [i["name"] for i in result["images"]] + \
+            [i["name"] for i in result["artifact_images"]]
+    assert names.count("acc.png") == 1, names
+
+
+def test_scan_lists_a_file_once_when_two_saved_paths_nest(tmp_project):
+    """`outputs` and `outputs/figs` both saved walked the same file twice."""
+    import json
+
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+    from exptrack.dashboard.routes.read_routes import api_list_images
+
+    exp = Experiment(script="train.py")
+    fig = tmp_project / "outputs" / "figs" / "loss.png"
+    fig.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_bytes(b"\x89PNG fake chart")
+    exp.finish()
+
+    conn = get_db()
+    conn.execute("UPDATE experiments SET image_paths=? WHERE id=?",
+                 (json.dumps(["outputs", "outputs/figs"]), exp.id))
+    conn.commit()
+
+    result = api_list_images(conn, exp.id)
+    paths = [i["path"] for i in result["images"]]
+    assert len(paths) == len(set(paths)) == 1, paths
+
+
+def test_images_api_keeps_same_named_files_from_different_folders(tmp_project):
+    """The copy rule must not reach inside the run's own output directory: a
+    run writing one `pred.png` per epoch folder showed a single image."""
+    from exptrack.core import Experiment
+    from exptrack.core.db import get_db
+    from exptrack.dashboard.routes.read_routes import api_list_images
+
+    exp = Experiment(script="train.py")
+    for i, sub in enumerate(("epoch1", "epoch2", "epoch3", "epoch4")):
+        p = tmp_project / "outputs" / exp.name / sub / "pred.png"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x89PNG" + bytes([i]) * (30 + i))
+        exp.log_artifact(str(p))
+    exp.finish()
+
+    conn = get_db()
+    conn.execute("UPDATE artifacts SET content_hash=NULL, size_bytes=NULL "
+                 "WHERE exp_id=?", (exp.id,))
+    conn.commit()
+
+    result = api_list_images(conn, exp.id)
+    assert len(result["artifact_images"]) == 4, result["artifact_images"]

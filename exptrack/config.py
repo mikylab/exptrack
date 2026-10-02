@@ -6,8 +6,11 @@ Project root = nearest ancestor directory containing .git or .exptrack/
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import sys
+import threading
 from pathlib import Path
 
 DEFAULTS: dict = {
@@ -25,6 +28,16 @@ DEFAULTS: dict = {
         "argv":        True,
         "notebook":    True,
         "tensorboard": True,   # mirror SummaryWriter scalars/histograms into metrics
+        # Results files `exptrack run` reads metrics from at finish: written
+        # during the run, top-level numbers (nested dicts flatten to `a/b`).
+        # [] turns it off.
+        "results_files": ["results.json", "metrics.json",
+                          "*_results.json", "*_metrics.json"],
+        # A notebook hyperparameter changed after the run logged results
+        # starts a new run instead of overwriting the old one's value.
+        "notebook_new_run_on_hp_change": True,
+        # Record `__version__` of the third-party packages a run imported.
+        "environment": True,
     },
     "naming": {
         "max_param_keys": 4,
@@ -93,9 +106,63 @@ DEFAULTS: dict = {
 _cache: dict | None = None
 _root_cache: Path | None = None
 
+# Per-thread project override. The dashboard serves many projects from one
+# process, so resolution has to answer differently per thread.
+#
+# This is a layer ABOVE the module globals, not a replacement for them. 28
+# test files patch `_root_cache` directly; converting it to thread-local
+# storage would make every one of those patches set an attribute nothing
+# reads — the tests would not fail, they would silently resolve against the
+# real cwd. Resolution order is: thread override, then the module global,
+# then the cwd walk. The two never collide: tests never activate, and the
+# dashboard never sets the module global.
+_tls = threading.local()
+
+
+def activate_project(root: Path) -> None:
+    """Bind this thread to *root* until ``reset_project``."""
+    _tls.root = Path(root)
+    _tls.conf = None          # config is per-project; drop the last one
+
+
+def active_project() -> Path | None:
+    """The project this thread is bound to, or None."""
+    return getattr(_tls, "root", None)
+
+
+def reset_project() -> None:
+    """Unbind this thread, restoring cwd-derived resolution."""
+    _tls.root = None
+    _tls.conf = None
+
+
+@contextlib.contextmanager
+def project_scope(root: Path):
+    """Activate *root* for the duration of the block, then restore.
+
+    Restores the *previous* override rather than clearing, so nesting works —
+    Compare resolves one run under another project and must come back to the
+    request's own project, not to no project at all.
+    """
+    previous_root = getattr(_tls, "root", None)
+    previous_conf = getattr(_tls, "conf", None)
+    activate_project(root)
+    try:
+        yield
+    finally:
+        _tls.root = previous_root
+        _tls.conf = previous_conf
+
 
 def project_root() -> Path:
-    """Walk up from cwd to find .git or .exptrack — that's the project root."""
+    """Walk up from cwd to find .git or .exptrack — that's the project root.
+
+    A thread bound by ``activate_project`` short-circuits the walk; see the
+    comment on ``_tls``.
+    """
+    override = getattr(_tls, "root", None)
+    if override is not None:
+        return override
     global _root_cache
     if _root_cache:
         return _root_cache
@@ -109,30 +176,135 @@ def project_root() -> Path:
 
 
 def exptrack_dir() -> Path:
+    """The project's ``.exptrack/`` directory, created 0700 if absent.
+
+    0700 rather than the umask default because this directory holds the runs
+    database, and on a shared workstation directory permissions are the only
+    thing protecting it. An *existing* directory is left exactly as the user
+    set it — silently tightening permissions on something they may have
+    deliberately shared is not this function's call. ``warn_if_world_readable``
+    is how that case is surfaced instead.
+    """
     d = project_root() / ".exptrack"
-    d.mkdir(parents=True, exist_ok=True)
+    if not d.exists():
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.chmod(0o700)
+        except OSError:
+            pass  # best-effort: Windows and some network filesystems
     return d
+
+
+def user_dir() -> Path:
+    """``~/.exptrack`` — user-global state, created 0700 if absent.
+
+    Shared by everything that is a *machine* fact rather than a *checkout*
+    fact: saved remotes, and — added for the multi-project registry — the set
+    of projects this machine knows about. The dashboard token is per-project
+    and does NOT live here; it stays under that project's ``exptrack_dir()``.
+    This directory is deliberately outside any project's ``exptrack_dir()``
+    and outside any virtualenv, so whichever install's `exptrack` runs still
+    finds the same user-global files.
+    """
+    d = Path(os.path.expanduser("~")) / ".exptrack"
+    if not d.exists():
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.chmod(0o700)
+        except OSError:
+            pass  # best-effort: Windows and some network filesystems
+    return d
+
+
+def remotes_file_path() -> Path:
+    """``~/.exptrack/remotes.json`` — user-global, not project-local.
+
+    A saved remote (host, directory, ports) describes a *machine pair* — this
+    laptop and that GPU box — not a checkout, so it does not live under the
+    project's ``exptrack_dir()``.
+    """
+    return user_dir() / "remotes.json"
+
+
+def warn_if_world_readable() -> str:
+    """A warning if ``.exptrack/`` is group- or world-accessible, else "".
+
+    This matters more than any question about the dashboard token: on a
+    shared workstation, directory permissions are the *only* thing standing
+    between a colleague's account and ``.exptrack/experiments.db`` — every
+    run, param and metric, regardless of whether the dashboard is even
+    running. Returns the message rather than printing it so callers decide
+    where it goes and tests can assert on it.
+    """
+    if os.name == "nt":
+        return ""  # POSIX modes do not map to a meaningful ACL here
+    d = project_root() / ".exptrack"
+    try:
+        mode = d.stat().st_mode & 0o777
+    except OSError:
+        return ""
+    if not mode & 0o077:
+        return ""
+    return (f"{d} is accessible to other users on this machine (mode "
+            f"{oct(mode)[-3:]}). Anyone with an account here can read your "
+            f"runs database.\n  Fix it with:  exptrack fix-perms")
 
 
 def config_path() -> Path:
     return exptrack_dir() / "config.json"
 
 
+def _read_config(p: Path) -> dict:
+    """*p* merged over DEFAULTS, or a copy of DEFAULTS if it can't be read.
+
+    Split out of ``load()`` so the per-thread and module-global caches share
+    one reader — including the UTF-8-then-locale fallback below. Two copies
+    of that would drift.
+    """
+    if p.exists():
+        try:
+            try:
+                raw = p.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # save() always writes UTF-8 (json.dumps defaults to
+                # ensure_ascii=True, so anything exptrack itself wrote is
+                # plain ASCII and can't hit this branch) — but a hand-edited
+                # config.json with non-ASCII saved in the OS locale encoding
+                # used to read back fine under the old locale-default
+                # read_text(). Falling straight to the outer except here
+                # would silently drop every setting (primary_metric,
+                # metric_aliases, reference_run, ...) to defaults, which is
+                # a worse outcome than the mojibake bug the UTF-8 switch
+                # fixed. Try the locale encoding before giving up; the file
+                # self-heals to UTF-8 the next time anything calls save().
+                import locale
+                fallback = locale.getpreferredencoding(False)
+                raw = p.read_text(encoding=fallback)
+                print(f"[exptrack] Config warning: {p} is not UTF-8 (read "
+                      f"as {fallback}); it will be rewritten as UTF-8 on "
+                      f"next save.", file=sys.stderr)
+            user = json.loads(raw)
+            merged = _deep_merge(DEFAULTS, user)
+            _coerce_numeric(DEFAULTS, merged)
+            return merged
+        except Exception as e:
+            print(f"[exptrack] Config error: {e} — using defaults", file=sys.stderr)
+    return dict(DEFAULTS)
+
+
 def load() -> dict:
+    # A thread bound to a project caches that project's config on the thread,
+    # never in the module global — otherwise a thread on project B would be
+    # served project A's settings.
+    if getattr(_tls, "root", None) is not None:
+        if getattr(_tls, "conf", None) is not None:
+            return _tls.conf
+        _tls.conf = _read_config(config_path())
+        return _tls.conf
     global _cache
     if _cache is not None:
         return _cache
-    p = config_path()
-    if p.exists():
-        try:
-            user = json.loads(p.read_text())
-            merged = _deep_merge(DEFAULTS, user)
-            _coerce_numeric(DEFAULTS, merged)
-            _cache = merged
-            return _cache
-        except Exception as e:
-            print(f"[exptrack] Config error: {e} — using defaults", file=sys.stderr)
-    _cache = dict(DEFAULTS)
+    _cache = _read_config(config_path())
     return _cache
 
 
@@ -169,13 +341,25 @@ def save(cfg: dict) -> None:
     leaving them out.
     """
     p = config_path()
-    p.write_text(json.dumps(_overrides_only(cfg, DEFAULTS), indent=2))
+    p.write_text(json.dumps(_overrides_only(cfg, DEFAULTS), indent=2),
+                 encoding="utf-8")
+    # The cache that gets the new value is the one `load()` would read on this
+    # thread. A bound thread writing the module global would hand *cfg* to
+    # every unbound caller — the dashboard saving project B's settings would
+    # serve them to a CLI resolving from cwd — while its own per-thread copy
+    # stayed stale.
+    if getattr(_tls, "root", None) is not None:
+        _tls.conf = cfg
+        return
     global _cache
     _cache = cfg
 
 
 def reload() -> dict:
     """Force reload config from disk (used after upgrade)."""
+    if getattr(_tls, "root", None) is not None:
+        _tls.conf = None
+        return load()
     global _cache
     _cache = None
     return load()
@@ -211,7 +395,6 @@ def readable_project_path(rel_path: str | Path) -> Path | None:
     inline in the HTTP handler, and the scan routes carried a weaker copy of
     only the first rule, which is exactly the drift a shared predicate ends.
     """
-    import os
     root = project_root()
     if not root:
         return None
@@ -227,6 +410,29 @@ def readable_project_path(rel_path: str | Path) -> Path | None:
     return Path(abs_path)
 
 
+def open_private(path: Path, flags: int) -> int:
+    """Open *path* with mode 0600, refusing to follow a symlink.
+
+    Lives here rather than in dashboard/daemon.py (which used to own it)
+    because config.py is the lower layer — daemon already imports config, and
+    write_token (below) needs the exact same guarantee: the mode is set *at
+    creation*, not chmod-ed on afterwards. Creating world-readable and
+    tightening permissions later leaves a window in which the file — a
+    security-relevant secret, in write_token's case the dashboard auth token
+    itself — is readable by anyone else on the box, and on a shared
+    workstation a window is all it takes. O_NOFOLLOW means a symlink planted
+    at this path is an error rather than a write to wherever it points.
+
+    Deliberately not O_EXCL: callers (write_token, daemon.write_state,
+    daemon.spawn_detached's log) must be able to rewrite an existing file of
+    theirs — token rotation, state updates, log appends — so O_TRUNC/O_APPEND
+    is the caller's choice, not a one-time-only create.
+    """
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    return os.open(str(path), flags, 0o600)
+
+
 def write_token(token: str) -> Path:
     """Persist the dashboard token 0600 and guarantee it is gitignored.
 
@@ -234,14 +440,19 @@ def write_token(token: str) -> Path:
     rule list, so a project initialized before the token moved out of
     config.json would otherwise have no rule for it — the write path must not
     claim a protection it didn't put in place.
+
+    Routed through open_private rather than write_text()+chmod(): the token is
+    the most security-relevant of the three lifecycle files (it's the bearer
+    credential for the dashboard), so it gets the same create-time-0600 +
+    O_NOFOLLOW guarantee dashboard.json/dashboard.log already had — a
+    write-then-chmod window and a followable symlink are both bugs the other
+    two files don't have.
     """
     ensure_gitignore_rules()
     p = token_file_path()
-    p.write_text(token + "\n")
-    try:
-        p.chmod(0o600)
-    except OSError:
-        pass  # best-effort on filesystems without POSIX modes
+    fd = open_private(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(token + "\n")
     return p
 
 
@@ -256,6 +467,8 @@ GITIGNORE_RULES = (
     ".exptrack/experiments.db-shm",
     ".exptrack/notebook_history/",
     ".exptrack/dashboard_token",
+    ".exptrack/dashboard.json",
+    ".exptrack/dashboard.log",
     ".exptrack/trash/",
     "outputs/",
 )
@@ -268,11 +481,26 @@ def ensure_gitignore_rules() -> bool:
     Returns True if anything was added.
     """
     gitignore = project_root() / ".gitignore"
-    existing = gitignore.read_text() if gitignore.exists() else ""
+    # errors="replace": this is the *reader* half of the mojibake bug whose
+    # writer half is fixed below (encoding="utf-8" on the append). A
+    # .gitignore written by a pre-fix Windows install (or by any other tool,
+    # in any legacy encoding) can contain bytes that are not valid UTF-8 —
+    # strict decoding raised UnicodeDecodeError here uncaught, so `exptrack
+    # init`, `write_token` (and therefore `ui --token` / first dashboard
+    # start) and daemon.write_state/spawn_detached (both call
+    # ensure_gitignore_rules) all crashed on a file this function only reads
+    # for substring membership. Lossy decoding can't corrupt anything here —
+    # the result is used solely to check which rules are already present —
+    # and it never raises.
+    existing = (gitignore.read_text(encoding="utf-8", errors="replace")
+                if gitignore.exists() else "")
     to_add = [r for r in GITIGNORE_RULES if r not in existing]
     if not to_add:
         return False
-    with gitignore.open("a") as f:
+    # encoding="utf-8" is load-bearing: GITIGNORE_RULES[0] has an em-dash, and
+    # without it Windows opens this in the system ANSI codepage and writes
+    # mojibake into the project's .gitignore.
+    with gitignore.open("a", encoding="utf-8") as f:
         f.write("\n" + "\n".join(to_add) + "\n")
     return True
 
@@ -320,6 +548,13 @@ def init(project_name: str = "", here: bool = False) -> None:
     print("  DB           : .exptrack/experiments.db  (local, gitignored)")
     print("  Config       : .exptrack/config.json     (commit this)")
     print("  Outputs      : outputs/                  (gitignored)")
+
+    # Function-local: projects.py imports config at module level (for
+    # database_path/_SCHEMA_VERSION plumbing), so a module-level import here
+    # would be a cycle. Registering on init is what lets a fresh venv-local
+    # `exptrack ui` still discover a project it was never told about directly.
+    from . import projects
+    projects.register(project_root())
 
 
 def _find_git_root(start: Path) -> Path | None:

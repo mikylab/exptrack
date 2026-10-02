@@ -48,3 +48,20 @@ Detail for patterns indexed in `CLAUDE.md`. Each entry states the rule and the f
 
 - **A capture buffered on one path must be buffered on the others**: the savefig patch has always held figures saved before an experiment exists and flushed them at creation, while the TensorBoard patch dropped pre-experiment scalars on the floor — so the same "log first, start tracking a moment later" shape (a notebook, a writer built at import time) lost metrics but kept plots. `_pending_metrics` closes the asymmetry, bounded at 2000 points because this can also legitimately *never* flush: a script that uses TensorBoard and never creates a run must not accumulate its whole training history in memory. Any truncation is stated on flush
 
+
+- **A results file is a metrics source**: at finish, `exptrack run` reads the files named by `auto_capture.results_files` (default `results.json`, `metrics.json`, `*_results.json`, `*_metrics.json`) via `__main__._capture_results_metrics`.
+  - **Which files**: only files written during the run, and only in the cwd, the script's directory or the run's output dir (the top level of each, no walk).
+  - **Which values**: top-level numbers become metrics, and nested dicts flatten to `outer/inner` (the same flattener as `run-finish --metrics`). Bools and strings are skipped.
+  - **What it won't touch**: a key the script already logged, because the script's own series is the better record. The keys it takes are printed.
+  - **Why**: a script ending in `json.dump(results, open("results.json", "w"))` recorded no metrics at all. The file was registered as a data output and its numbers were never read, so the table, the vs-previous delta and Compare all showed `--` for a result sitting on disk, while the shell pipeline had had `run-finish --metrics` all along.
+  - **Config**: an unusable setting degrades to the default (`_results_file_patterns`), and `[]` turns the feature off.
+
+- **`%exp_log` takes a variable**: when given the notebook namespace (`_parse_metric_assignments(line, ns)`, `_namespace_number`), a bare name logs that variable under its own name (`%exp_log final_loss`), and `key=var` reads the value from `var`. Bools and strings are refused; numpy scalars and 0-d tensors go through `float()`. The obvious spelling, `%exp_log final_loss`, used to be rejected with "expected key=number". The spelling that worked, `final_loss={final_loss}`, is IPython brace expansion that nobody guesses.
+
+- **Which library versions a run used**: `core/environment.py` records, at finish, the `__version__` of each non-stdlib top-level module in `sys.modules`.
+  - **What counts as third-party**: anything outside the interpreter's stdlib dirs (`sysconfig` `stdlib`/`platstdlib`). That covers a venv's or conda env's site-packages and an editable `pip install -e` whose `__file__` is a source checkout. The first version required a `site-packages` path, which silently dropped the user's own editable library, the version a paper most needs pinned. Stdlib modules that carry a `__version__` (`json`, `argparse`, `csv`, …) are excluded by path.
+  - **Storage**: content-addressed in `code_snapshots` (`kind='environment'`), referenced from the `_environment` param, so one environment costs one row however many runs share it. `db._referenced_snapshot_hashes` counts `_environment` alongside `_code_snapshot`, so the blob sweep keeps the record exactly as long as a run points at it.
+  - **Where it shows**: as `environment` on the detail and export payloads, as an **Environment** section in the run view (Copy gives `name==version` lines), in the markdown/text exports, and in `exptrack show`.
+  - **Why imported, not installed**: a full `importlib.metadata.distributions()` scan measured ~2.3 s cold for 135 packages on Windows. Every run would pay that for a list mostly irrelevant to its numbers.
+  - **Caveat**: module names usually, but not always, match pip names (`PIL` is Pillow), and the Copy tooltip says so.
+  - **Config**: `auto_capture.environment` turns it off.

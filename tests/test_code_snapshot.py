@@ -58,7 +58,9 @@ def test_ipynb_never_snapshotted(tmp_project):
     capture_script_snapshot(exp, str(nb))
     exp.finish()
     conn = get_db()
-    n = conn.execute("SELECT COUNT(*) FROM code_snapshots").fetchone()[0]
+    # The run's environment record shares the table; it is not source.
+    n = conn.execute("SELECT COUNT(*) FROM code_snapshots "
+                     "WHERE kind != 'environment'").fetchone()[0]
     assert n == 0
 
 

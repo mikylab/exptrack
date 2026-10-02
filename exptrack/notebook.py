@@ -234,8 +234,30 @@ def current() -> Experiment | None:
     return _active
 
 
-def _parse_metric_assignments(line: str) -> tuple[dict[str, float], list[str]]:
+def _namespace_number(ns: dict | None, name: str):
+    """The number a notebook variable holds, or None. Bools and strings are
+    not metrics; a numpy scalar or 0-d tensor is, through ``float()``."""
+    if not ns or not name.isidentifier() or name not in ns:
+        return None
+    v = ns[name]
+    if isinstance(v, (bool, str, bytes)):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_metric_assignments(line: str, ns: dict | None = None
+                              ) -> tuple[dict[str, float], list[str]]:
     """Parse ``key=value [key=value ...]`` into floats.
+
+    With the notebook's namespace *ns*, a bare variable name logs that
+    variable under its own name (``%exp_log final_loss``) and ``key=var``
+    reads the value from it. ``%exp_log final_loss`` used to be rejected as
+    "expected key=number" — the obvious spelling for a number you just
+    computed — and the working form, ``final_loss={final_loss}``, is IPython
+    brace expansion nobody guesses.
 
     Returns ``(values, rejected_tokens)`` — a token that isn't ``key=number``
     is reported rather than dropped, so a typo can't look like a logged metric.
@@ -249,12 +271,18 @@ def _parse_metric_assignments(line: str) -> tuple[dict[str, float], list[str]]:
     for token in line.replace(",", " ").split():
         key, sep, raw = token.partition("=")
         key = key.strip()
-        if not sep or not key:
+        if not sep:
+            key, raw = token, token
+        if not key:
             bad.append(token)
             continue
         try:
-            num = float(raw)
+            num = float(raw) if sep else None
         except ValueError:
+            num = None
+        if num is None:
+            num = _namespace_number(ns, raw.strip())
+        if num is None:
             bad.append(token)
             continue
         if not math.isfinite(num):
@@ -449,17 +477,20 @@ def load_ipython_extension(ip: Any) -> None:
     def exp_log(line):
         """Log metrics onto this notebook's latest run: %exp_log test_acc=0.93 f1=0.88
 
+        A bare variable name logs that variable: ``%exp_log test_acc``.
+
         Works after the run has finished — the usual case, since you often only
         have the test numbers once the run is over.
         """
-        vals, bad = _parse_metric_assignments(line)
+        vals, bad = _parse_metric_assignments(line, getattr(ip, "user_ns", None))
         for token in bad:
-            print(f"[exptrack] skipping '{token}' — expected key=number", file=sys.stderr)
+            print(f"[exptrack] skipping '{token}' — expected key=number or the "
+                  "name of a variable holding a number", file=sys.stderr)
         if vals:
             log_last(**vals)
         elif not bad:
-            print("[exptrack] usage: %exp_log test_acc=0.93 [train_acc=0.98]",
-                  file=sys.stderr)
+            print("[exptrack] usage: %exp_log test_acc=0.93 [train_acc=0.98] "
+                  "or %exp_log test_acc (a variable)", file=sys.stderr)
 
     def exp_tag(line):
         """Add tags: %exp_tag baseline resnet"""
@@ -498,6 +529,43 @@ def load_ipython_extension(ip: Any) -> None:
 
     print("[exptrack] Loaded. Use %exp_new, %exp_status, %exp_done, %exp_tag, "
           "%exp_note, %exp_log")
+
+
+def split_for_hp_change(changed: dict) -> Experiment | None:
+    """Close the active run and open a new one because a hyperparameter changed
+    after the run already had results. Returns the new run, or None.
+
+    A notebook is one run until `%exp_new`, so `lr = 0.1` in a cell after the
+    `lr = 0.05` run had logged its loss overwrote `lr` on that run — the 0.05
+    result was left attached to a run that now said 0.1, and the attempt you
+    were comparing against was gone. The new run carries every other
+    hyperparameter (they were not re-assigned, but they are still in effect)
+    and the variable/cell baselines, so the next cell diffs as it would have.
+    """
+    old = _active
+    if old is None:
+        return None
+    from .capture.notebook_hooks import _nb_state
+    keep = {k: _nb_state.get(k) for k in ("cell_history", "var_snapshot",
+                                          "exec_count", "hash_to_last_exec_hash",
+                                          "last_cell_hash")}
+    # In the old run's order, with the changed values in place, so the new
+    # run's generated name lists its params the way the last one did.
+    carry = {k: changed.get(k, v) for k, v in old._params.items()
+             if not k.startswith("_") and k != "error"}
+    old_name = old.name
+    nb_file = old.script if old.script and old.script != "notebook" else ""
+    _auto_start(nb_file, ip=_nb_state.get("ip"))
+    _nb_state.update({k: v for k, v in keep.items() if v is not None})
+    new = _active
+    if carry:
+        new.log_params(carry)
+    what = ", ".join(f"{k} {old._params.get(k)!r} -> {v!r}" for k, v in changed.items())
+    print(f"[exptrack] {what} after {old_name} logged results: finished it and "
+          f"started a new run ({new.id[:6]}). Set "
+          "auto_capture.notebook_new_run_on_hp_change to false to keep one run.",
+          file=sys.stderr)
+    return new
 
 
 def _auto_start(nb_file: str = "", name: str = "", ip: Any = None) -> None:

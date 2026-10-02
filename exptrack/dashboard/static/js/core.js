@@ -68,10 +68,21 @@ let autoRefreshTimer = null;
 // to the sidebar and the main table via getFilteredExperiments.
 let dateRange = localStorage.getItem('exptrack-date-range') || '';
 let autoNamedOnly = localStorage.getItem('exptrack-auto-named-only') === 'true';
-// Failed runs are hidden from the list by default (a broken run is noise the
-// user shouldn't have to manually delete). The "Show failed" toggle reveals
-// them. Persisted so the choice sticks across reloads.
-let showFailed = localStorage.getItem('exptrack-show-failed') === 'true';
+// Failed runs are listed by default: a failed run is a result, not noise —
+// "it broke" is information about the change you just made, which is why
+// `_BASELINE_WHERE` keeps failed runs as valid baselines (trashed and running
+// are the excluded ones). Hiding them also let the table disagree with the
+// FAILED stat tile directly above it, which counts them. The group bar's
+// control is therefore "Hide failed", flipping to "Show failed (N)" once they
+// are hidden — a filter withholding rows has to say how many.
+//
+// The state is persisted under a *new* key. `exptrack-show-failed` was written
+// under the opposite default, so a stored 'false' there cannot be told apart
+// from "toggled twice back to the default" — reading it would hand every
+// existing reader the old behaviour forever, which is exactly the flip's
+// purpose. The old key is dropped rather than left as a value nothing reads.
+let showFailed = _storageGet('exptrack-hide-failed') !== '1';
+try { localStorage.removeItem('exptrack-show-failed'); } catch (e) { /* private window */ }
 // Rows the user just renamed in this session. While the "Needs naming" filter
 // is on, these stay visible so the rename is visible to the user (the row's
 // `name_is_auto` flag flips to false on commit, which would otherwise drop it
@@ -488,12 +499,46 @@ function emptyCollapsedCols(exps) {
 // Truncate keeping BOTH ends. Auto-generated run names
 // (`Jul28_ablate__lr0.01__2aac1081`) differ only in their tail, so a plain
 // head-truncation renders a whole screen of identical `Jul28_abl…` rows.
+// The last component of a path, whichever separator it was recorded with — a
+// run started on Windows stores `C:\proj\train.py`, and splitting on '/'
+// alone made the script group header the whole absolute path.
+function pathBase(p) { return String(p == null ? '' : p).split(/[\\/]/).pop(); }
+
 function midEllipsis(text, max) {
   const s = String(text == null ? '' : text);
   if (s.length <= max || max < 8) return s;
   const head = Math.ceil((max - 1) * 0.55);
   const tail = max - 1 - head;
   return s.slice(0, head) + '…' + s.slice(s.length - tail);
+}
+
+// An auto-generated name, split so the table can lead with the part that
+// differs. `Sep24_train__lr0.1_width32_epochs10_seed0__6aba210a` is a date
+// (the Started column), a script (the group header), the params and the id.
+// Middle-ellipsizing the whole string kept the date and the id and cut the
+// params, so a sweep rendered as a screen of `Sep24_train..._6aba210a` rows
+// that differed only in a hex suffix.
+// `_{2}` rather than two literal underscores before a group: the bundle's
+// helper check (test_dashboard_js_integrity) reads that as a function call.
+const _AUTO_NAME_RE = /^([A-Z][a-z]{2}\d{1,2})_(.+?)(?:_{2}(.+))?_{2}([0-9a-f]{8})$/;
+function autoNameParts(name) {
+  const m = _AUTO_NAME_RE.exec(String(name || ''));
+  return m ? {date: m[1], script: m[2], params: m[3] || '', uid: m[4]} : null;
+}
+
+// The Name cell's text for a run: a user's own name as written; an auto name
+// as its params (plus the script when the table is not grouped by script), the
+// id in a dim suffix. The full name is always the cell's title.
+function tableNameHtml(e, budget) {
+  const parts = e.name_is_auto ? autoNameParts(e.name) : null;
+  if (!parts) return esc(midEllipsis(e.name, budget));
+  const lead = [];
+  if (groupBy !== 'script' || !parts.params) lead.push(parts.script);
+  if (parts.params) lead.push(parts.params);
+  const text = lead.join(' · ');
+  // The id renders in the smaller mono face: ~0.8 of a name character each.
+  return esc(midEllipsis(text, Math.max(8, budget - Math.ceil(parts.uid.length * 0.8) - 1)))
+    + ' <span class="name-uid">' + esc(parts.uid) + '</span>';
 }
 
 // How many characters of a run name actually fit the Name column. This has to
@@ -503,7 +548,12 @@ function midEllipsis(text, max) {
 // the cell padding, the "auto" badge and the pencil icon, then divide by an
 // approximate advance width for the 14px table font.
 function nameCellMaxChars(hasAutoBadge) {
-  const px = getColWidth('name') - 18 - (hasAutoBadge ? 42 : 0) - 16;
+  // The width the column actually rendered at, when the header is on screen:
+  // a fixed-layout table stretches its columns to fill the page, so the
+  // configured width undercounted a 329px column as 250 and cut names early.
+  const th = document.querySelector('#exp-thead th[data-col="name"]');
+  const rendered = th ? th.getBoundingClientRect().width : 0;
+  const px = (rendered || getColWidth('name')) - 18 - (hasAutoBadge ? 42 : 0) - 16;
   return Math.max(10, Math.floor(px / 8.2));
 }
 
@@ -570,6 +620,8 @@ function _dismissOnOutsideClick(panel, anchorSelector, onClose) {
 function resetColumnDefaults() {
   visibleCols = ALL_COLUMNS.filter(c => c.defaultOn).map(c => c.id);
   colWidths = {};
+  _setAutoParamCols(true);
+  syncAutoParamColumns();
   saveColPrefs();
   renderExperiments();  // re-renders the header itself
   document.getElementById('col-settings-panel').style.display = 'none';
@@ -592,6 +644,7 @@ function _sortVisibleCols() {
 }
 
 function toggleColumn(colId, on) {
+  _setAutoParamCols(false);
   if (on && !visibleCols.includes(colId)) {
     visibleCols.push(colId);
     _sortVisibleCols();
@@ -602,9 +655,28 @@ function toggleColumn(colId, on) {
   renderExperiments();  // re-renders the header itself
 }
 
+// Until the user picks columns themselves, the params that vary are columns.
+// A sweep's rows differ in exactly those values, and the one-click "Show the
+// N varying params" sat behind ⚙ Columns, where nobody opening the table for
+// the first time looks. Any toggle in that panel hands the choice to the user
+// (`exptrack-cols-auto` = '0'); Reset to defaults hands it back.
+const AUTO_PARAM_COLS_MAX = 4;
+function _autoParamColsOn() { return _storageGet('exptrack-cols-auto') !== '0'; }
+function _setAutoParamCols(on) { _storageSet('exptrack-cols-auto', on ? '1' : '0'); }
+function syncAutoParamColumns() {
+  if (!_autoParamColsOn()) return;
+  const want = paramColCandidates().filter(c => c.varies).slice(0, AUTO_PARAM_COLS_MAX)
+    .map(c => PARAM_COL_PREFIX + c.key);
+  const next = visibleCols.filter(id => !isParamCol(id)).concat(want);
+  if (next.length === visibleCols.length && next.every(id => visibleCols.includes(id))) return;
+  visibleCols = next;
+  _sortVisibleCols();
+}
+
 // One click to surface every param that differs across the loaded runs — the
 // fast path from "140 near-identical rows" to "what did I actually change?".
 function addVaryingParamColumns() {
+  _setAutoParamCols(false);
   for (const c of paramColCandidates()) {
     if (!c.varies) continue;
     const colId = PARAM_COL_PREFIX + c.key;
@@ -647,7 +719,7 @@ function renderTableHeader(exps) {
         + ' onclick="toggleSort(\'' + escJsAttr(colId) + '\')">' + esc(col.label)
         + '<span class="sort-arrow"></span>' + resizer + '</th>';
     } else if (col.sortable) {
-      html += '<th class="sortable' + emptyCls + '" style="width:' + w + 'px;position:relative"' + emptyTitle + ' onclick="toggleSort(\'' + (colId === 'started' ? 'created_at' : colId) + '\')">' + col.label + '<span class="sort-arrow"></span>' + resizer + '</th>';
+      html += '<th class="sortable' + emptyCls + '" data-col="' + colId + '" style="width:' + w + 'px;position:relative"' + emptyTitle + ' onclick="toggleSort(\'' + (colId === 'started' ? 'created_at' : colId) + '\')">' + col.label + '<span class="sort-arrow"></span>' + resizer + '</th>';
     } else {
       html += '<th class="' + emptyCls.trim() + '" style="width:' + w + 'px;position:relative"' + emptyTitle + '>' + col.label + resizer + '</th>';
     }
@@ -860,7 +932,12 @@ function applyFilterFromDropdown(type, name) {
   rerender();
 }
 
-function rerender() { renderExperiments(); renderExpList(); renderFilterBar(); }
+// `updateFailedCount` belongs here, not only on the load path: the number of
+// failed runs being withheld depends on every other filter in effect, so a
+// search or a date-range change that narrows the set has to move it too.
+function rerender() {
+  renderExperiments(); renderExpList(); renderFilterBar(); updateFailedCount();
+}
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 // Tokens live in localStorage (not the URL) so they don't leak via browser
@@ -905,6 +982,72 @@ async function saveOrDownload(text, filename, mime) {
   downloadBlob(text, filename, mime);
 }
 
+// Copy a document in two flavours at once: `html` for the paste targets that
+// render it (OneNote, Word, Outlook, Google Docs — none of them render
+// markdown, so a markdown copy landed there as pipes and dashes) and `text`
+// for everything that reads plain text (a markdown editor, GitHub, a
+// terminal). The paste target picks the one it understands.
+//
+// Over plain http to a non-loopback host the async clipboard API is absent,
+// which used to fail every Copy on a tunnelled dashboard. The fallback is the
+// older selection copy: a rendered, off-screen copy of the HTML is selected
+// and copied, which still carries both flavours.
+async function copyRich(text, html, what) {
+  const label = what || 'it';
+  if (html && navigator.clipboard && window.ClipboardItem && window.isSecureContext) {
+    try {
+      await navigator.clipboard.write([new window.ClipboardItem({
+        'text/html': new Blob([html], {type: 'text/html'}),
+        'text/plain': new Blob([text], {type: 'text/plain'}),
+      })]);
+      owlSay('Copied ' + label + ' — pastes as tables in OneNote/Word, as markdown elsewhere.');
+      return true;
+    } catch (e) { /* fall through to the selection copy */ }
+  } else if (!html && navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      owlSay('Copied ' + label + '!');
+      return true;
+    } catch (e) { /* fall through */ }
+  }
+  if (_selectionCopy(text, html)) {
+    owlSay('Copied ' + label + '!');
+    return true;
+  }
+  owlSay('The browser refused the clipboard — use Export to save a file instead.');
+  return false;
+}
+
+function _selectionCopy(text, html) {
+  const host = document.createElement(html ? 'div' : 'textarea');
+  host.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+  if (html) {
+    host.contentEditable = 'true';
+    host.innerHTML = html;
+  } else {
+    host.value = text;
+  }
+  document.body.appendChild(host);
+  let ok = false;
+  try {
+    if (html) {
+      const range = document.createRange();
+      range.selectNodeContents(host);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } else {
+      host.select();
+    }
+    ok = document.execCommand('copy');
+  } catch (e) {
+    ok = false;
+  }
+  window.getSelection().removeAllRanges();
+  host.remove();
+  return ok;
+}
+
 function setExportToFolder(checked) {
   _storageSet('exptrack-export-to-folder', checked ? 'true' : 'false');
 }
@@ -925,26 +1068,85 @@ function setWordDiff(checked) {
   if (wd) wd.checked = _storageGet('exptrack-word-diff') !== 'false';
 }
 
+// Rewrite one query param in this tab's address without reloading. An empty
+// value removes it. The two callers below want opposite things from the same
+// mechanism — the token is consumed and stripped, the project is kept because
+// it IS the tab's binding — so the shared piece is the rewrite, not the
+// policy. A URL the browser will not let us rewrite is never a reason to fail
+// the caller: the token and the project both also travel on the request.
+function _setUrlParam(key, value) {
+  try {
+    const url = new URL(window.location);
+    if (value) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
+    window.history.replaceState({}, '', url.toString());
+  } catch (e) { /* opaque or unwritable URL — nothing to do */ }
+}
+
 let _authToken = (function() {
   const urlToken = new URLSearchParams(window.location.search).get('token');
   if (urlToken) {
     _storageSet(_TOKEN_KEY, urlToken);
-    const url = new URL(window.location);
-    url.searchParams.delete('token');
-    window.history.replaceState({}, '', url.toString());
+    _setUrlParam('token', '');
     return urlToken;
   }
   return _storageGet(_TOKEN_KEY);
 })();
 
-function _authHeaders() {
-  return _authToken ? {'Authorization': 'Bearer ' + _authToken} : {};
+const _PROJECT_KEY = 'exptrack_project';
+
+// The project is per TAB, not per browser. It used to live only in
+// localStorage, which is shared by every tab of the origin: opening a second
+// worktree in a second window moved the first one under the reader on its
+// next reload, so three checkouts still meant three dashboards. The URL is
+// the only per-tab store a reload survives, so `?project=` wins when present
+// and localStorage is demoted to the default for a tab opened without one.
+//
+// Unlike `?token=`, this param is deliberately NOT stripped from the address
+// bar: stripping it is what would lose the binding on reload.
+const _urlProjectId = new URLSearchParams(window.location.search).get('project') || '';
+let _activeProjectId = _urlProjectId || _storageGet(_PROJECT_KEY) || '';
+if (_urlProjectId) _storageSet(_PROJECT_KEY, _urlProjectId);
+
+// Put `id` in this tab's address without reloading. Every caller reloads
+// straight afterwards (every view is project-scoped), but the two are
+// separate so the recovery path can correct a dead id in the URL without
+// looping through another reload.
+function _setUrlProject(id) {
+  _setUrlParam('project', id);
 }
 
-function fileUrl(path) {
+function _authHeaders() {
+  const h = _authToken ? {'Authorization': 'Bearer ' + _authToken} : {};
+  // The active project rides with the credentials rather than in a cookie:
+  // auth here is Bearer-only, which is what makes the dashboard immune to
+  // cross-site request forgery, and a cookie would give that away.
+  if (_activeProjectId) h['X-Exptrack-Project'] = _activeProjectId;
+  return h;
+}
+
+// Headers for a request about a run in a *specific* project, which may not be
+// the one the page is on. Compare is the only surface that can hold such a
+// run, and the project rides on the request rather than on the page: switching
+// the page's project to fetch one panel would move every other view under the
+// reader. Falsy `projectId` means "wherever the page is", which is every
+// caller that existed before Compare could span projects.
+function _projectHeaders(projectId) {
+  const h = _authHeaders();
+  if (projectId) h['X-Exptrack-Project'] = projectId;
+  return h;
+}
+
+function fileUrl(path, projectId) {
   const base = '/api/file/' + encodeURIComponent(path).replace(/%2F/g, '/');
-  if (!_authToken) return base;
-  return base + '?token=' + encodeURIComponent(_authToken);
+  const q = [];
+  if (_authToken) q.push('token=' + encodeURIComponent(_authToken));
+  // An <img src> can carry no headers at all — which is exactly why the token
+  // already rides in the query here. The project travels the same way, for the
+  // same reason: an image belonging to a run in another project has no other
+  // way to say so.
+  if (projectId) q.push('project=' + encodeURIComponent(projectId));
+  return q.length ? base + '?' + q.join('&') : base;
 }
 
 function mergeArtifactImages(images, artifactImages) {
@@ -1036,8 +1238,13 @@ async function _request(path, opts) {
   return {r: r, data: data};
 }
 
-async function api(path) {
-  const res = await _request(path, {headers: _authHeaders()});
+// `projectId` is optional and trailing, so every existing one-argument call is
+// unchanged. It names the project this one request is about — used by Compare,
+// the only surface that can be showing a run from somewhere else. The return
+// contract is identical, `null` on failure included, so every existing guard
+// applies to a cross-project fetch too.
+async function api(path, projectId) {
+  const res = await _request(path, {headers: _projectHeaders(projectId)});
   if (res.auth === false) return {};
   if (res.failed) return null;
   if (!res.r.ok) {
@@ -1048,10 +1255,10 @@ async function api(path) {
   return res.data;
 }
 
-async function postApi(path, body = {}) {
+async function postApi(path, body = {}, projectId) {
   const res = await _request(path, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json', ..._authHeaders()},
+    headers: {'Content-Type': 'application/json', ..._projectHeaders(projectId)},
     body: JSON.stringify(body)
   });
   if (res.auth === false) return {};
@@ -1107,11 +1314,23 @@ function onSidebarSearch(v) { searchQuery = v; _debouncedSidebarRender(); }
 const _debouncedMainRender = debounce(() => { renderExperiments(); renderExpList(); }, 150);
 function onMainSearch(v) { searchQuery = v; _debouncedMainRender(); }
 
-async function _validateToken(tok) {
+// What the last /api/ping said about this tab's project: 'ok', 'unknown',
+// 'unavailable', or '' when no project was named. Boot reads it to decide
+// whether the stored id has to be recovered *before* anything loads.
+let _pingProjectState = '';
+
+async function _ping(headers) {
+  if (_activeProjectId) headers['X-Exptrack-Project'] = _activeProjectId;
   try {
-    const r = await fetch('/api/ping', {headers: {'Authorization': 'Bearer ' + tok}});
-    return r.ok;
+    const r = await fetch('/api/ping', {headers: headers});
+    if (!r.ok) return false;
+    try { _pingProjectState = (await r.json()).project || ''; } catch (e) { /* older server */ }
+    return true;
   } catch (e) { return false; }
+}
+
+async function _validateToken(tok) {
+  return _ping({'Authorization': 'Bearer ' + tok});
 }
 
 // True when the server accepts an unauthenticated request — i.e. it was started
@@ -1119,10 +1338,7 @@ async function _validateToken(tok) {
 // through to the login overlay, which asked for a token that does not exist and
 // could never be satisfied, making --no-auth unusable.
 async function _authDisabledOnServer() {
-  try {
-    const r = await fetch('/api/ping');
-    return r.ok;
-  } catch (e) { return false; }
+  return _ping({});
 }
 
 // Resolves true once we have a token the server accepts. Called from init
@@ -1156,8 +1372,8 @@ function _showAuthBanner() {
   el.id = 'exptrack-auth-banner';
   el.className = 'auth-banner';
   el.innerHTML = '<span>Not logged in \u2014 requests will keep failing. '
-    + 'Restarting <code>exptrack ui</code> mints a new token; opening the URL it '
-    + 'printed logs you back in.</span>'
+    + 'Run <code>exptrack ui status</code> to print the URL with the token, or '
+    + 'paste the token here.</span>'
     + '<button class="btn-sm" onclick="openLoginPrompt()">Enter token</button>';
   document.body.appendChild(el);
 }
@@ -1170,9 +1386,11 @@ function _hideAuthBanner() {
 function openLoginPrompt() { _showLoginOverlay(true); }
 
 // The token prompt. Shown at boot when there is no usable token, and again
-// whenever any request comes back 401 — which is not a rare event: `exptrack
-// ui` mints a *random token per session*, so restarting the dashboard
-// invalidates the one this browser stored, and the next background poll 401s.
+// whenever any request comes back 401. The token is persisted to
+// .exptrack/dashboard_token, so a restart no longer invalidates the one this
+// browser stored — that was the 1.9.0 fix. A 401 now means something else: a
+// token cleared or replaced (`exptrack ui --clear-token`, `--token`), a
+// different dashboard, or browser storage that was dropped.
 //
 // It used to have no way out: no Cancel, no Escape, no click-outside, over the
 // whole viewport at z-index 10000. So a stale token did not degrade the page,
@@ -1202,11 +1420,11 @@ function _showLoginOverlay(force) {
     + 'box-shadow:0 12px 40px rgba(0,0,0,.4);font-family:system-ui,sans-serif">'
     +   '<div style="font-size:18px;font-weight:600;margin-bottom:6px">exptrack dashboard</div>'
     +   '<div style="color:var(--muted,#666);font-size:13px;margin-bottom:16px;line-height:1.5">'
-    +     'This dashboard needs the token printed by <code>exptrack ui</code> — '
+    +     'This dashboard needs the token printed when it started — '
     +     'it is in that URL after <code>?token=</code>. '
-    +     '<strong>Restarting <code>exptrack ui</code> mints a new token</strong>, so an '
-    +     'older tab will ask for it again; opening the freshly printed URL logs you '
-    +     'straight back in.'
+    +     '<strong>Run <code>exptrack ui status</code></strong> to print it again; '
+    +     'opening that URL logs you straight back in. The token survives a '
+    +     'restart, so if it stopped working it was cleared or replaced.'
     +   '</div>'
     +   '<input id="exptrack-token-input" type="password" autocomplete="off" '
     +          'placeholder="token" '
@@ -1503,7 +1721,7 @@ const GROUP_MODES = {
     keyOf: e => e.git_commit ? e.git_commit.slice(0, 7) : NO_GROUP },
   git_branch: { empty: '(no branch)', keyOf: e => e.git_branch || NO_GROUP },
   script: { empty: '(no script)',
-    keyOf: e => e.script ? e.script.split('/').pop() : NO_GROUP },
+    keyOf: e => e.script ? pathBase(e.script) : NO_GROUP },
   status: { empty: '(no status)', keyOf: e => e.status || NO_GROUP },
   day: { empty: '(no date)',
     keyOf: e => dayKeyOf(e.created_at) || NO_GROUP,
@@ -1526,8 +1744,10 @@ function groupLabelHtml(modeId, key, items) {
 function setDateRange(r) {
   dateRange = r;
   localStorage.setItem('exptrack-date-range', r);
-  document.querySelectorAll('#group-bar [data-range]').forEach(b =>
-    b.classList.toggle('active', b.getAttribute('data-range') === r));
+  // Both surfaces carry the control now (group bar and sidebar rail), so both
+  // have to show which range is on.
+  document.querySelectorAll('#group-bar [data-range], #sidebar-range-chips [data-range]')
+    .forEach(b => b.classList.toggle('active', b.getAttribute('data-range') === r));
   rerender();
 }
 
@@ -1540,13 +1760,18 @@ function setAutoNamedOnly(on) {
   rerender();
 }
 
+// Kept as the named setter because the empty-state buttons ("Show failed runs")
+// call it with an explicit value — they are not toggles.
 function setShowFailed(on) {
   showFailed = !!on;
-  localStorage.setItem('exptrack-show-failed', showFailed ? 'true' : 'false');
-  const cb = document.getElementById('show-failed-toggle');
-  if (cb) cb.checked = showFailed;
+  _storageSet('exptrack-hide-failed', showFailed ? '0' : '1');
+  // This changes what is *listed*, not what is selected, so the full re-render
+  // is the right call (and it is a re-render, not a reload — the rows are
+  // already in `allExperiments`).
   rerender();
 }
+
+function toggleShowFailed() { setShowFailed(!showFailed); }
 
 // Sort the main table by a metric value ('' clears back to created_at).
 function setMetricSort(key) {
@@ -1580,13 +1805,39 @@ function updateMetricSortOptions() {
   sel.value = active;
 }
 
-// Live count of hidden failed runs next to the "Show failed" toggle.
+// Renders the failed-runs control: one button that states the action it
+// offers, and — while it is hiding rows — how many it is withholding.
+//
+// The count is what makes the hidden state honest, so it is counted against
+// the view as it actually stands: the same `getFilteredExperiments` the table
+// renders, with this one filter lifted, so search, tag/study, "needs naming"
+// and the date range are all already applied. (It covers the runs loaded so
+// far, like every other count here; `renderTruncNotice` states that.)
 function updateFailedCount() {
-  const el = document.getElementById('failed-count');
-  if (!el) return;
-  const n = (allExperiments || []).filter(e => e.status === 'failed').length;
-  el.textContent = n > 0 ? '(' + n + ')' : '';
-  el.style.display = n > 0 ? '' : 'none';
+  const btn = document.getElementById('show-failed-toggle');
+  if (!btn) return;
+  // The sidebar's Failed status chip asks the server for exactly these runs,
+  // and `getFilteredExperiments` lifts this filter while it is on — otherwise
+  // the chip would show nothing. So the button cannot be truthful here: it is
+  // disabled and names the control that won, rather than offering an action
+  // that does nothing or a count that is a lie.
+  if (currentFilter === 'failed') {
+    btn.textContent = 'Hide failed';
+    btn.disabled = true;
+    btn.title = 'The Failed status filter is showing only failed runs';
+    return;
+  }
+  btn.disabled = false;
+  if (showFailed) {
+    btn.textContent = 'Hide failed';
+    btn.title = 'Hide failed runs from the list';
+    return;
+  }
+  const n = getFilteredExperiments({includeFailed: true}).filter(e => e.status === 'failed').length;
+  btn.textContent = n > 0 ? 'Show failed (' + n + ')' : 'Show failed';
+  btn.title = n > 0
+    ? n + ' failed run' + (n > 1 ? 's are' : ' is') + ' hidden from this view'
+    : 'No failed runs in the current view';
 }
 
 // Reflect persisted date-range / needs-naming state in the controls on boot.
@@ -1598,8 +1849,6 @@ function syncFilterControls() {
   if (gs && gs.value !== groupBy) gs.value = groupBy;
   const cb = document.getElementById('auto-named-toggle');
   if (cb) cb.checked = autoNamedOnly;
-  const sf = document.getElementById('show-failed-toggle');
-  if (sf) sf.checked = showFailed;
   updateAutoNamedCount();
   updateFailedCount();
   updateMetricSortOptions();
@@ -1814,6 +2063,108 @@ function _holdMainScroll() {
     if (!el || !kept) return;
     if (el.scrollTop !== kept) el.scrollTop = kept;
   };
+}
+
+// The backdrop an image modal is viewed against. Dark is right for a
+// matplotlib plot and wrong for a dark segmentation mask or a light-on-white
+// sample, so it is a choice rather than a constant — kept in localStorage
+// because it is a per-reader viewing preference, not project state, and it is
+// answered once and then wanted on every image after that.
+const MODAL_BACKDROPS = [
+  {id: 'dark', label: 'Dark backdrop (default)'},
+  {id: 'light', label: 'Light backdrop'},
+  {id: 'grey', label: 'Mid-grey backdrop'},
+  {id: 'checker', label: 'Checkerboard — shows what is transparent'},
+];
+
+let _modalBackdrop = 'dark';
+try {
+  const saved = localStorage.getItem('exptrack-modal-backdrop');
+  if (saved && MODAL_BACKDROPS.some(b => b.id === saved)) _modalBackdrop = saved;
+} catch (e) { /* storage can throw outright; the default stands */ }
+
+// The swatch row both modal headers render.
+function modalBackdropPickerHtml() {
+  let h = '<div class="modal-backdrop-pick" title="Backdrop">';
+  for (const b of MODAL_BACKDROPS) {
+    h += '<button type="button" data-bd="' + b.id + '"'
+      + (b.id === _modalBackdrop ? ' class="active"' : '')
+      + ' title="' + esc(b.label) + '" aria-label="' + esc(b.label) + '"'
+      + ' onclick="setModalBackdrop(\'' + escJsAttr(b.id) + '\')"></button>';
+  }
+  return h + '</div>';
+}
+
+// Applied to whichever image modal is open. Only one of them is ever open at
+// a time, but writing to both keeps this the single place that knows the
+// attribute name and which swatch is marked.
+function applyModalBackdrop() {
+  document.querySelectorAll('.img-cmp-overlay, .img-modal-overlay').forEach(el => {
+    el.setAttribute('data-backdrop', _modalBackdrop);
+    el.querySelectorAll('.modal-backdrop-pick button').forEach(b => {
+      b.classList.toggle('active', b.getAttribute('data-bd') === _modalBackdrop);
+    });
+  });
+}
+
+function setModalBackdrop(id) {
+  if (!MODAL_BACKDROPS.some(b => b.id === id)) return;
+  _modalBackdrop = id;
+  try { localStorage.setItem('exptrack-modal-backdrop', id); } catch (e) {}
+  applyModalBackdrop();
+}
+
+// A modal opened to look closer must not show the image smaller than the grid
+// it was opened from. `max-width`/`max-height` only ever shrink, so a 128x128
+// sample rendered at 128px in a full-screen overlay while the gallery thumb
+// upscaled it to ~180px — clicking to enlarge made it smaller. This scales a
+// small image up to the space the modal actually has, capped at
+// MODAL_IMAGE_MAX_UPSCALE so a tiny icon does not become a wall of blur, and
+// switches to nearest-neighbour past 2x because a 128px raster upscaled
+// smoothly reads as out of focus rather than as pixels.
+//
+// Every image in one modal gets the SAME scale, computed from the largest of
+// them: an overlay or swipe compare aligns two images on top of each other,
+// and independently fitted images would not line up.
+// Below MIN the image is already near the size of the window and stretching
+// it buys nothing but a softer picture; a 1200px figure in a 1296px slot is
+// not the problem this solves.
+const MODAL_IMAGE_MIN_UPSCALE = 1.25;
+const MODAL_IMAGE_MAX_UPSCALE = 4;
+
+function fitModalImages(imgs, availW, availH) {
+  const list = Array.from(imgs || []).filter(Boolean);
+  if (!list.length) return;
+  let pending = list.length;
+  const apply = function () {
+    let nw = 0, nh = 0;
+    for (const img of list) {
+      nw = Math.max(nw, img.naturalWidth || 0);
+      nh = Math.max(nh, img.naturalHeight || 0);
+    }
+    if (!nw || !nh) return;
+    const scale = Math.min(availW / nw, availH / nh, MODAL_IMAGE_MAX_UPSCALE);
+    if (scale < MODAL_IMAGE_MIN_UPSCALE) return;  // near-size images stay as they are
+    for (const img of list) {
+      const w = img.naturalWidth || nw, h = img.naturalHeight || nh;
+      img.style.width = Math.round(w * scale) + 'px';
+      img.style.height = Math.round(h * scale) + 'px';
+      if (scale >= 2) img.style.imageRendering = 'pixelated';
+    }
+  };
+  // Natural size is only known once each image has decoded, and the scale is
+  // shared, so it waits for all of them.
+  const ready = function () { if (--pending === 0) apply(); };
+  for (const img of list) {
+    // `complete` covers a decoded image and a failed one alike; a broken image
+    // fires no further event, so it must count itself in or the scale never
+    // gets applied to the images beside it.
+    if (img.complete) ready();
+    else {
+      img.addEventListener('load', ready, {once: true});
+      img.addEventListener('error', ready, {once: true});
+    }
+  }
 }
 
 function fmtBytes(b) {

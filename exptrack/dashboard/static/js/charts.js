@@ -16,6 +16,10 @@ let _overviewPreviewKey = null;
 // updated in place or the tab HTML has to be rebuilt.
 let _chartsExpId = null;
 let _chartsRenderedKeys = [];
+// The metrics ticked in the overlay view. Per browser rather than per run, like
+// smoothing: "train vs val loss" is a way of reading every run, and a run that
+// lacks a remembered key simply falls back to its own default pair.
+let _overlayPicks = _overlayLoadPicks();
 
 // The metrics worth charting: every key that has at least one point. Computed
 // identically by the HTML builder, the initializer and the overview preview, so
@@ -59,8 +63,7 @@ function _pointLabels(points) {
 function _clampSmoothing(v) {
   return Math.min(0.95, Math.max(0, parseFloat(v) || 0));
 }
-let _chartSmoothing = _clampSmoothing(
-  localStorage.getItem('exptrack-chart-smoothing') || '0');
+let _chartSmoothing = _clampSmoothing(_storageGet('exptrack-chart-smoothing') || '0');
 
 // Exponential moving average with bias correction — the same weighting
 // TensorBoard uses. The debias divisor matters: without it every curve is
@@ -105,13 +108,68 @@ function _applyChartPoints(chart, points) {
 // axis inputs keep focus and the metric dropdown stays open.
 function setChartSmoothing(value) {
   _chartSmoothing = _clampSmoothing(value);
-  try { localStorage.setItem('exptrack-chart-smoothing', String(_chartSmoothing)); } catch (e) {}
+  _storageSet('exptrack-chart-smoothing', String(_chartSmoothing));
   const label = document.getElementById('chart-smoothing-val');
   if (label) label.textContent = _chartSmoothing ? _chartSmoothing.toFixed(2) : 'off';
   for (const c of Object.values(charts)) {
+    if (c && c.$overlay) {
+      // Same data, so the axis split cannot change; only the smoothing does.
+      _applyOverlayPoints(c, _chartsMetricsData);
+      c.update('none');
+      continue;
+    }
     if (!c || !c.$points) continue;
     _applyChartPoints(c, c.$points);
     c.update('none');
+  }
+}
+
+// A metric's colour: its position in the run's `chartMetricKeys` list, the one
+// list every view colours from, so a metric keeps its colour across Single,
+// Show All, Overlay and the overlay's own chips.
+function _metricColor(metricKeys, key) {
+  return CHART_COLORS[Math.max(0, metricKeys.indexOf(key)) % CHART_COLORS.length];
+}
+
+// The line and its raw ghost — the two datasets every chart draws per metric.
+// The ghost is the unsmoothed series, kept visible behind the smoothed line so
+// the real spread is never hidden by the smoothing: a smoothed curve on its
+// own reads as far less noisy data than was actually recorded.
+function _seriesDatasets(key, color, line, raw, extra) {
+  const x = extra || {};
+  return [Object.assign({
+    label: key, data: line, borderColor: color, backgroundColor: color + '1a',
+    fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 7, pointHitRadius: 10,
+  }, x.line), Object.assign({
+    label: key + ' (raw)', data: raw, borderColor: color + '59', borderWidth: 1,
+    fill: false, tension: 0, pointRadius: 0, pointHitRadius: 0,
+    hidden: !_chartSmoothing, $ghost: true,
+  }, x.raw)];
+}
+
+function _hasStep(pt) {
+  return !!pt && pt.step !== null && pt.step !== undefined;
+}
+
+function _pointTooltip(pt) {
+  return _hasStep(pt)
+    ? 'Click to delete this point'
+    : 'This series logs no step — points can\'t be deleted from the chart';
+}
+
+// Delete is by *stored* step. A step-less series has no stored identity to
+// name here — the array index is an index into the *downsampled* display
+// points, so on any series over metric_max_points the confirm would name one
+// point and the server would delete another. Refuse rather than delete the
+// wrong row.
+function _confirmDeletePoint(key, pt) {
+  if (!pt) return;
+  if (!_hasStep(pt)) {
+    owlSay('This metric was logged without a step, so a chart click can\'t identify the point to delete. Use the Metrics table.');
+    return;
+  }
+  if (confirm('Delete point: ' + key + ' = ' + pt.value + ' (step ' + pt.step + ')?')) {
+    deleteMetricPoint(currentDetailId, key, pt.step);
   }
 }
 
@@ -122,63 +180,38 @@ function createChart(canvas, key, points, colorIdx, scaleOpts) {
     type: 'line',
     data: {
       labels: _pointLabels(points),
-      datasets: [{
-        label: key,
-        data: _smoothValues(raw, _chartSmoothing),
-        borderColor: color,
-        backgroundColor: color + '1a',
-        fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 7,
-        pointHitRadius: 10,
-      }, {
-        // The unsmoothed series, kept visible behind the smoothed line so the
-        // real spread is never hidden by the smoothing — a smoothed curve on
-        // its own reads as far less noisy data than was actually recorded.
-        label: key + ' (raw)',
-        data: raw,
-        borderColor: color + '59',
-        borderWidth: 1,
-        fill: false, tension: 0, pointRadius: 0, pointHitRadius: 0,
-        hidden: !_chartSmoothing,
-      }]
+      datasets: _seriesDatasets(key, color, _smoothValues(raw, _chartSmoothing), raw),
     },
     options: {
       responsive: true,
       plugins: {
         legend: { display: true, labels: { font: { family: "'IBM Plex Mono'" } } },
-        tooltip: { callbacks: { afterLabel: (ctx) => {
-          const pt = (ctx.chart.$points || [])[ctx.dataIndex];
-          return (pt && pt.step !== null && pt.step !== undefined)
-            ? 'Click to delete this point'
-            : 'This series logs no step — points can\'t be deleted from the chart';
-        } } }
+        tooltip: { callbacks: { afterLabel: (ctx) => _pointTooltip((ctx.chart.$points || [])[ctx.dataIndex]) } }
       },
       scales: {
         x: buildChartScaleConfig('Step', scaleOpts, 'x'),
         y: buildChartScaleConfig(key, scaleOpts, 'y'),
       },
       onClick: (evt, elements, self) => {
-        if (!elements.length) return;
-        const idx = elements[0].index;
-        const pt = self.$points[idx];
-        const step = pt.step;
-        const val = pt.value;
-        // Delete is by *stored* step. A step-less series has no stored identity
-        // to name here — the array index is an index into the *downsampled*
-        // display points, so on any series over metric_max_points the confirm
-        // would name one point and the server would delete another. Refuse
-        // rather than delete the wrong row.
-        if (step === null || step === undefined) {
-          owlSay('This metric was logged without a step, so a chart click can\'t identify the point to delete. Use the Metrics table.');
-          return;
-        }
-        if (confirm('Delete point: ' + key + ' = ' + val + ' (step ' + step + ')?')) {
-          deleteMetricPoint(currentDetailId, key, step);
-        }
+        if (elements.length) _confirmDeletePoint(key, self.$points[elements[0].index]);
       }
     }
   });
   chart.$points = points;
+  chart.$title = key;
   return chart;
+}
+
+// A fresh canvas in the tab's `.chart-container`, the previous `_active` chart
+// released first. Null when the container is not on the page.
+function _freshChartCanvas(container) {
+  if (charts._active) { charts._active.destroy(); delete charts._active; }
+  const chartDiv = container.querySelector('.chart-container');
+  if (!chartDiv) return null;
+  chartDiv.innerHTML = '';
+  const canvas = document.createElement('canvas');
+  chartDiv.appendChild(canvas);
+  return canvas;
 }
 
 function destroyTabCharts() {
@@ -222,12 +255,8 @@ function resetChartScaleInputs() {
 // ── Single chart view ────────────────────────────────────────────────────────
 
 function renderSingleChart(container, selectedKey, metricsData, scaleOpts) {
-  if (charts._active) { charts._active.destroy(); delete charts._active; }
-  const chartDiv = container.querySelector('.chart-container');
-  if (!chartDiv) return;
-  chartDiv.innerHTML = '';
-  const canvas = document.createElement('canvas');
-  chartDiv.appendChild(canvas);
+  const canvas = _freshChartCanvas(container);
+  if (!canvas) return;
 
   const points = metricsData[selectedKey];
   if (!points || points.length < 1) return;
@@ -258,6 +287,209 @@ function renderAllCharts(container, metricsData, scaleOpts) {
   }
 }
 
+// ── Overlay view ─────────────────────────────────────────────────────────────
+//
+// Several of one run's metrics on one chart — the reading "Show All" cannot
+// give, because two metrics in two grid cells have two y-axes and two widths,
+// so where train and validation loss part company has to be eyeballed across
+// the gap. The x-axis is the logged *step* on a linear scale rather than a
+// label per point: train loss logged every epoch and validation every tenth
+// still line up, which one shared label list could not do.
+
+function _overlayLoadPicks() {
+  try {
+    const v = JSON.parse(_storageGet('exptrack-chart-overlay') || '[]');
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch (e) { return []; }      // a hand-edited value is not a list
+}
+
+function _overlaySavePicks(picks) {
+  _overlayPicks = picks.slice();
+  _storageSet('exptrack-chart-overlay', JSON.stringify(_overlayPicks));
+}
+
+// A metric name with its split marker removed, so `loss`, `train_loss`,
+// `val_loss`, `valid/loss` and `loss_val` all read as the one measurement
+// `loss`. Only the split words are stripped — `val_acc` and `val_loss` must
+// stay two different bases.
+function _overlayBaseName(key) {
+  const split = '(train|training|tr|val|valid|validation|dev|test|eval)';
+  const k = String(key).toLowerCase();
+  const pre = k.match(new RegExp('^' + split + '[_./-](.+)$'));
+  if (pre) return pre[2];
+  const post = k.match(new RegExp('^(.+?)[_./-]' + split + '$'));
+  return post ? post[1] : k;
+}
+
+// What the overlay opens on when nothing remembered applies: the train/val
+// pair of the run's primary metric, else the first family that has a pair at
+// all, else the primary metric and the key after it.
+function _overlayDefaultKeys(keys, primary) {
+  const list = (keys || []).slice();
+  if (list.length < 2) return list;
+  const families = {};
+  for (const k of list) {
+    const base = _overlayBaseName(k);
+    (families[base] = families[base] || []).push(k);
+  }
+  const lead = primary && list.includes(primary) ? primary : list[0];
+  const own = families[_overlayBaseName(lead)];
+  if (own.length >= 2) return own;
+  for (const k of list) {
+    const fam = families[_overlayBaseName(k)];
+    if (fam.length >= 2) return fam;
+  }
+  return [lead, list.find(k => k !== lead)];
+}
+
+// A metric's scale: its largest magnitude. A zero-only series gets a floor so
+// the ratio below never divides by zero.
+function _overlaySpan(points) {
+  let m = 0;
+  for (const p of points || []) {
+    const v = Math.abs(p.value);
+    if (isFinite(v) && v > m) m = v;
+  }
+  return m || 1e-12;
+}
+
+// Which picks share the left axis and which need the right one. The first
+// pick sets the left axis; anything within 10x of it shares it, because two
+// curves on one axis are the point, and loss (~2) against accuracy (~0.9)
+// reads fine together. Past 10x — loss against a 1e-4 learning rate — the
+// smaller series would be a flat line on the floor, so it gets its own axis.
+// Two axes at most: a third would be unreadable.
+function _overlayAxisGroups(picks, metricsData) {
+  const out = {left: [], right: []};
+  if (!picks.length) return out;
+  const ref = _overlaySpan(metricsData[picks[0]]);
+  for (const k of picks) {
+    const r = _overlaySpan(metricsData[k]) / ref;
+    (r > 10 || r < 0.1 ? out.right : out.left).push(k);
+  }
+  return out;
+}
+
+// One metric's overlay points: {x: step (index when step-less), y}, as the
+// line (smoothed when smoothing is on) and the raw ghost.
+function _overlaySeries(points) {
+  const raw = points.map((p, i) => ({x: _hasStep(p) ? p.step : i, y: p.value}));
+  const sm = _smoothValues(points.map(p => p.value), _chartSmoothing);
+  return {line: raw.map((d, i) => ({x: d.x, y: sm[i]})), raw: raw};
+}
+
+// Every picked metric draws the same two datasets a single chart does.
+function _overlayDatasets(picks, metricsData, groups) {
+  const allKeys = chartMetricKeys(metricsData);
+  const sets = [];
+  for (const k of picks) {
+    const axis = groups.right.includes(k) ? 'y1' : 'y';
+    const pts = metricsData[k] || [];
+    const s = _overlaySeries(pts);
+    sets.push(..._seriesDatasets(k, _metricColor(allKeys, k), s.line, s.raw, {
+      line: {label: k + (axis === 'y1' ? ' (right axis)' : ''), yAxisID: axis,
+             fill: false, pointRadius: 3, pointHoverRadius: 6, pointHitRadius: 8,
+             $key: k, $points: pts},
+      raw: {yAxisID: axis},
+    }));
+  }
+  return sets;
+}
+
+function _overlayAxisSig(groups) {
+  return groups.left.join('\n') + '|' + groups.right.join('\n');
+}
+
+function _createOverlayChart(canvas, picks, metricsData, scaleOpts) {
+  const groups = _overlayAxisGroups(picks, metricsData);
+  const scales = {
+    x: Object.assign({type: 'linear'}, buildChartScaleConfig('Step', scaleOpts, 'x')),
+    y: Object.assign({position: 'left'},
+      buildChartScaleConfig(groups.left.join(', '), scaleOpts, 'y')),
+  };
+  // The axis-range inputs bound the left axis only: the right one exists
+  // because its series lives on another scale, so a shared bound would flatten
+  // one of them.
+  if (groups.right.length) {
+    scales.y1 = {position: 'right', grid: {drawOnChartArea: false},
+      title: {display: true, text: groups.right.join(', '),
+              font: {family: "'IBM Plex Mono'"}}};
+  }
+  const chart = new Chart(canvas, {
+    type: 'line',
+    data: {datasets: _overlayDatasets(picks, metricsData, groups)},
+    options: {
+      responsive: true,
+      interaction: {mode: 'nearest', intersect: true},
+      plugins: {
+        legend: {display: true, labels: {font: {family: "'IBM Plex Mono'"},
+          filter: (item, data) => !data.datasets[item.datasetIndex].$ghost}},
+        tooltip: {callbacks: {afterLabel: (ctx) => _pointTooltip((ctx.dataset.$points || [])[ctx.dataIndex])}},
+      },
+      scales: scales,
+      // Same rule as a single chart, resolved against the series that was hit.
+      onClick: (evt, elements, self) => {
+        if (!elements.length) return;
+        const ds = self.data.datasets[elements[0].datasetIndex];
+        if (ds && ds.$points) _confirmDeletePoint(ds.$key, ds.$points[elements[0].index]);
+      },
+    },
+  });
+  chart.$overlay = {picks: picks.slice(), axisSig: _overlayAxisSig(groups)};
+  chart.$title = 'overlay: ' + picks.join(' + ');
+  return chart;
+}
+
+// Fresh points into the overlay on screen. Returns false when the new data
+// would move a series to the other axis — that is a different chart, and the
+// caller rebuilds it rather than letting a line jump scales under the reader.
+function _applyOverlayPoints(chart, metricsData) {
+  const picks = chart.$overlay.picks;
+  if (_overlayAxisSig(_overlayAxisGroups(picks, metricsData)) !== chart.$overlay.axisSig) {
+    return false;
+  }
+  // Datasets come in (line, ghost) pairs, one pair per pick, in pick order.
+  picks.forEach((k, i) => {
+    const pts = metricsData[k] || [];
+    const s = _overlaySeries(pts);
+    const line = chart.data.datasets[2 * i], ghost = chart.data.datasets[2 * i + 1];
+    line.data = s.line;
+    line.$points = pts;
+    ghost.data = s.raw;
+    ghost.hidden = !_chartSmoothing;
+  });
+  return true;
+}
+
+// Remembered picks that exist in this run, if at least two do; otherwise the
+// run's default pair.
+function _overlayInitialPicks(metricKeys) {
+  const kept = _overlayPicks.filter(k => metricKeys.includes(k));
+  if (kept.length >= 2) return kept;
+  return _overlayDefaultKeys(metricKeys, _defaultChartKey(metricKeys, null));
+}
+
+function _overlayChipsHtml(metricKeys, picks) {
+  return '<span class="scale-label">Overlay</span>' + metricKeys.map(k => {
+    const on = picks.includes(k);
+    const color = _metricColor(metricKeys, k);
+    return '<button type="button" class="chart-overlay-chip' + (on ? ' on' : '') + '" '
+      + 'aria-pressed="' + on + '" data-key="' + esc(k) + '" '
+      + 'style="--chip-color:' + color + '">' + esc(k) + '</button>';
+  }).join('');
+}
+
+function renderOverlayChart(container, metricsData, scaleOpts) {
+  const canvas = _freshChartCanvas(container);
+  if (!canvas) return;
+  const picks = _overlayPicks.filter(k => metricsData[k] && metricsData[k].length);
+  if (!picks.length) {
+    canvas.parentNode.innerHTML = '<div class="chart-empty">Tick two or more metrics above to draw them on one chart.</div>';
+    return;
+  }
+  charts._active = _createOverlayChart(canvas, picks, metricsData, scaleOpts);
+}
+
 // Push fresh metric data into the charts already on screen instead of rebuilding
 // the tab. A running experiment reloads this tab every 5 seconds, and a rebuild
 // throws the DOM away each time — which takes focus out of an axis input
@@ -280,6 +512,18 @@ function updateChartsInPlace(container, metricsData, expId, mode) {
       _applyChartPoints(chart, metricsData[key]);
       chart.update('none');
     }
+    return true;
+  }
+
+  if (mode === 'overlay') {
+    const chart = charts._active;
+    // No chart means nothing is ticked: the empty prompt stays as it is.
+    if (!chart) return !_overlayPicks.some(k => keys.includes(k));
+    if (!chart.$overlay || !_applyOverlayPoints(chart, metricsData)) {
+      renderOverlayChart(container, metricsData, getChartScaleOpts());
+      return true;
+    }
+    chart.update('none');
     return true;
   }
 
@@ -308,7 +552,9 @@ function buildChartsTabContent(metricsData, viewMode) {
   html += '<div class="chart-toolbar">';
   html += '<div class="chart-view-toggle">'
     + '<button class="' + (isSingle ? 'active' : '') + '" id="chart-view-single">Single</button>'
-    + '<button class="' + (!isSingle ? 'active' : '') + '" id="chart-view-all">Show All</button>'
+    + '<button class="' + (viewMode === 'all' ? 'active' : '') + '" id="chart-view-all">Show All</button>'
+    + '<button class="' + (viewMode === 'overlay' ? 'active' : '') + '" id="chart-view-overlay" '
+    +   'title="Draw several of this run\'s metrics on one chart">Overlay</button>'
     + '</div>';
   if (isSingle) {
     html += '<label for="chart-metric-select">Metric</label>'
@@ -316,17 +562,17 @@ function buildChartsTabContent(metricsData, viewMode) {
   }
   html += '<button class="action-btn" id="chart-download-png" style="margin-left:auto" '
     + 'title="Download the visible chart(s) as PNG'
-    + (isSingle ? '' : ' — one file per metric')
+    + (viewMode === 'all' ? ' — one file per metric' : '')
     + '">⬇ PNG</button>';
   // "Show All" answers "how did every metric move", and the only way to take
   // that answer anywhere was one file per canvas, to be reassembled by hand in
   // something else. The sheet is the view itself, as one image.
-  if (!isSingle) {
+  if (viewMode === 'all') {
     html += '<button class="action-btn" id="chart-download-sheet" '
       + 'title="Download every visible chart as one image">⬇ Sheet</button>';
   }
   html += '<button class="action-btn" id="chart-copy-png" '
-    + 'title="Copy ' + (isSingle ? 'this chart' : 'the charts as one image')
+    + 'title="Copy ' + (viewMode === 'all' ? 'the charts as one image' : 'this chart')
     + ' to the clipboard">⧉ Copy</button>';
   html += '</div>';
 
@@ -357,7 +603,10 @@ function buildChartsTabContent(metricsData, viewMode) {
     +   'shrink the stored series</span>'
     + '</div>';
 
-  if (isSingle) {
+  if (viewMode === 'overlay') {
+    html += '<div class="chart-overlay-bar" id="chart-overlay-picks"></div>';
+  }
+  if (viewMode !== 'all') {
     html += '<div class="chart-container"></div>';
   } else {
     html += '<div class="charts-all-grid"></div>';
@@ -383,32 +632,30 @@ function initChartsTab(container, metricsData, viewMode, initScale) {
   const allBtn = container.querySelector('#chart-view-all');
   if (singleBtn) singleBtn.addEventListener('click', () => loadChartsTab(currentDetailId, 'single'));
   if (allBtn) allBtn.addEventListener('click', () => loadChartsTab(currentDetailId, 'all'));
+  const overlayBtn = container.querySelector('#chart-view-overlay');
+  if (overlayBtn) overlayBtn.addEventListener('click', () => loadChartsTab(currentDetailId, 'overlay'));
 
   // Scale controls (shared by both modes)
   const applyBtn = container.querySelector('#chart-scale-apply');
   const resetBtn = container.querySelector('#chart-scale-reset');
 
-  function handleApply() {
-    if (viewMode === 'all') {
-      renderAllCharts(container, metricsData, getChartScaleOpts());
+  // Redraw at a new scale from `_chartsMetricsData` — the live poll keeps it
+  // current, where the `metricsData` this tab was built from goes stale after
+  // the first in-place update.
+  function rerender(scale) {
+    const data = _chartsMetricsData;
+    if (viewMode === 'overlay') {
+      renderOverlayChart(container, data, scale);
+    } else if (viewMode === 'all') {
+      renderAllCharts(container, data, scale);
     } else {
       const sel = container.querySelector('#chart-metric-select');
-      if (sel) renderSingleChart(container, sel.value, metricsData, getChartScaleOpts());
+      if (sel) renderSingleChart(container, sel.value, data, scale);
     }
   }
 
-  function handleReset() {
-    resetChartScaleInputs();
-    if (viewMode === 'all') {
-      renderAllCharts(container, metricsData, null);
-    } else {
-      const sel = container.querySelector('#chart-metric-select');
-      if (sel) renderSingleChart(container, sel.value, metricsData, null);
-    }
-  }
-
-  if (applyBtn) applyBtn.addEventListener('click', handleApply);
-  if (resetBtn) resetBtn.addEventListener('click', handleReset);
+  if (applyBtn) applyBtn.addEventListener('click', () => rerender(getChartScaleOpts()));
+  if (resetBtn) resetBtn.addEventListener('click', () => { resetChartScaleInputs(); rerender(null); });
 
   const dlBtn = container.querySelector('#chart-download-png');
   if (dlBtn) dlBtn.addEventListener('click', downloadChartsPng);
@@ -422,6 +669,33 @@ function initChartsTab(container, metricsData, viewMode, initScale) {
 
   if (viewMode === 'all') {
     renderAllCharts(container, metricsData, initScale);
+    return;
+  }
+
+  if (viewMode === 'overlay') {
+    _overlaySavePicks(_overlayInitialPicks(metricKeys));
+    const bar = container.querySelector('#chart-overlay-picks');
+    const paint = () => { if (bar) bar.innerHTML = _overlayChipsHtml(metricKeys, _overlayPicks); };
+    paint();
+    // A tick redraws the chart, never the tab: the axis inputs and the
+    // smoothing slider keep their state. Reads `_chartsMetricsData`, which the
+    // live poll keeps current, so a tick mid-run draws the newest points.
+    if (bar) bar.addEventListener('click', ev => {
+      const chip = ev.target.closest('.chart-overlay-chip');
+      if (!chip) return;
+      const k = chip.dataset.key;
+      const next = _overlayPicks.includes(k)
+        ? _overlayPicks.filter(x => x !== k) : _overlayPicks.concat([k]);
+      // The first pick anchors the left axis and stays where the reader put
+      // it; the rest follow metric order, so the legend and the axis titles do
+      // not reshuffle with the order things were clicked.
+      const first = next.includes(_overlayPicks[0]) ? _overlayPicks[0] : null;
+      const rest = metricKeys.filter(x => next.includes(x) && x !== first);
+      _overlaySavePicks(first ? [first].concat(rest) : rest);
+      paint();
+      renderOverlayChart(container, _chartsMetricsData, getChartScaleOpts());
+    });
+    renderOverlayChart(container, metricsData, initScale);
     return;
   }
 
@@ -511,7 +785,7 @@ function _visibleCharts() {
   }
   const c = charts._active;
   if (!c || !c.canvas) return [];
-  return [{name: (c.data.datasets[0] || {}).label || 'chart', canvas: c.canvas}];
+  return [{name: c.$title || 'chart', canvas: c.canvas}];
 }
 
 function _chartsInk() {
@@ -610,7 +884,7 @@ function downloadChartsPng() {
   } else {
     const c = charts._active;
     if (c && c.canvas) {
-      _downloadCanvasPng(c.canvas, safe(c.data.datasets[0].label) + '.png');
+      _downloadCanvasPng(c.canvas, safe(c.$title) + '.png');
       owlSay('Chart downloaded');
     } else {
       owlSay('No chart to download');

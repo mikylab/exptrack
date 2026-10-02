@@ -50,7 +50,9 @@ instead of rejecting it. A text-defaulted key also accepts a dict, since a few
   "snapshot_max_kb": 512,
   "snapshot_max_files": 50,
   "code_change_max_chars": 20000,
-  "auto_capture": { "argparse": true, "argv": true, "notebook": true, "tensorboard": true },
+  "auto_capture": { "argparse": true, "argv": true, "notebook": true, "tensorboard": true,
+                    "results_files": ["results.json", "metrics.json", "*_results.json", "*_metrics.json"],
+                    "notebook_new_run_on_hp_change": true, "environment": true },
   "naming": { "max_param_keys": 4, "key_max_len": 8, "date_style": "readable" },
   "plugins": { "enabled": [] }
 }
@@ -59,6 +61,24 @@ instead of rejecting it. A text-defaulted key also accepts a dict, since a few
 `metric_commit_interval_ms` (default 250): how long a metric write may sit
 uncommitted, see the **Metric write cost at loop scale** pattern. `0` restores a
 commit (one fsync) per `log_metric` call.
+
+`auto_capture.results_files` (default `results.json`, `metrics.json`,
+`*_results.json`, `*_metrics.json`): results files `exptrack run` reads metrics
+from at finish — only files written during the run, in the cwd, the script's
+directory or the run's output dir; top-level numbers, nested dicts flattened to
+`outer/inner`; never a key the script already logged. `[]` turns it off; a
+value that is not a list of strings degrades to the default
+(`__main__._results_file_patterns`).
+
+`auto_capture.notebook_new_run_on_hp_change` (default true): a notebook
+hyperparameter changed after the active run logged a metric finishes that run
+and starts a new one carrying the other hyperparameters
+(`notebook.split_for_hp_change`). Never under Session Trees, never before a
+result exists. See the **A notebook run ends where its result does** pattern.
+
+`auto_capture.environment` (default true): record the `__version__` of each
+third-party package the run imported (`core/environment.py`), stored once per
+distinct environment in `code_snapshots` (`kind='environment'`).
 
 `code_change_max_chars` (default 20000): cap on the `_code_changes` /
 `_code_change/cell_N` summary string, applied by
@@ -164,3 +184,61 @@ parameter's *name*; a match stores `***REDACTED***` as the value. Setting this
 key **replaces** the list rather than extending it, so a project adding one
 pattern of its own must repeat the entries it still wants — worth stating,
 because the failure is silent and un-redacts secrets.
+
+## User-global state: `~/.exptrack/projects.json`
+
+Everything above is per-project and lives in that project's
+`.exptrack/config.json`. The project *registry* is the other kind of fact — a
+property of the machine and the user rather than of any one checkout — so it
+lives in `config.user_dir()`, which is `~/.exptrack/` (created 0700), beside
+`remotes.json`. Being outside every project **and outside every virtualenv** is
+the point: a machine with a venv-local exptrack per checkout still has one set
+of known projects, because whichever install's `exptrack` you run reads the same
+file.
+
+The file is a single JSON object keyed by the project's resolved absolute path:
+
+```json
+{
+  "/work/proj": { "name": "proj" },
+  "/work/proj-featureX": { "name": "proj-featureX" }
+}
+```
+
+`name` defaults to the directory's own name and is what `exptrack project list`
+and the dashboard's switcher display. The path is the key because it is the
+identity; the id the dashboard uses (`projects.project_id`) is derived from it
+and is never stored.
+
+**Mode 0600, written atomically.** The file is created through
+`config.open_private`, so the mode is set at creation rather than after it, and
+a write lands on a temp file beside the target which `os.replace` then swaps in.
+An in-place truncating write that is interrupted would leave unparseable JSON;
+that degrades to "nothing registered" on the next read, and the *next*
+`register()` would then write only its own entry over the empty file, silently
+losing every other project the user had.
+
+**Who writes it.** `exptrack init` and `exptrack ui start`, and nothing else.
+Registering from arbitrary commands would mean a user-global file write from
+every CLI invocation, including ones inside a training loop. Discovery does not
+depend on the registry alone: the other worktrees of the current repository are
+found through `git worktree list` and need no registration, though a worktree is
+only offered as a project once it actually has an `.exptrack/` directory —
+otherwise every worktree of the repository, including ones nobody ever ran
+exptrack in, would be listed as a project with no data.
+
+Entries are removed with `exptrack project forget <name|path>`, or from the
+dashboard's switcher, whose dismiss control posts to `/api/project/forget` and
+calls the same `projects.forget` function rather than reimplementing it. The
+browser names the project by its **server-issued id**, never by a path — the id
+is resolved against the same discovery listing the switcher was drawn from, and
+an id that listing does not contain is refused rather than guessed at. Either
+way, forgetting edits this file and nothing else: the project's database and
+every file under its root are left exactly as they were, and the in-process
+discovery cache is invalidated, so the next listing already shows the removal.
+
+An unreadable or hand-mangled registry degrades to "no projects registered"
+rather than raising — the same rule `config.json` holds for per-project
+settings. A *registered* project whose directory or database has gone is still
+listed, marked `stale`: an entry that silently disappears is indistinguishable
+from discovery being broken.

@@ -95,8 +95,18 @@ exptrack stores config in `.exptrack/config.json`. Safe to commit — no secrets
     "argv":        true,   // fallback: parse raw sys.argv flags
     "notebook":    true,   // capture notebook cell changes (false = Session Trees standalone,
                            // runs started explicitly with %exp_start / start())
-    "tensorboard": true    // mirror SummaryWriter.add_scalar/add_scalars/add_histogram
+    "tensorboard": true,   // mirror SummaryWriter.add_scalar/add_scalars/add_histogram
                            // into exptrack's metrics table
+    "results_files": ["results.json", "metrics.json", "*_results.json", "*_metrics.json"],
+                           // `exptrack run` reads the numbers in these files as metrics
+                           // at finish (written during the run; nested dicts -> a/b);
+                           // never a key the script logged itself. [] turns it off
+    "notebook_new_run_on_hp_change": true,
+                           // a notebook hyperparameter changed after the run logged
+                           // results finishes that run and starts a new one, instead
+                           // of overwriting the value (not under Session Trees)
+    "environment": true    // record __version__ of the third-party packages a run
+                           // imported (stored once per distinct environment)
   },
 
   // --- Run naming ---

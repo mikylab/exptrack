@@ -322,3 +322,54 @@ def test_naive_timestamps_are_read_as_utc(tmp_project):
 
     now = datetime.now(timezone.utc).timestamp()
     assert old.id not in runs_in_flight_since(conn, now)
+
+
+def test_the_output_scan_does_not_relog_the_file_savefig_copied(tmp_project):
+    """The savefig patch registers its copy under `outputs/<run>/`, so the
+    original the script wrote looked unregistered to a path-only check: every
+    figure got two artifact rows, the Images tab showed each plot twice, and
+    Compare — pairing runs by file name — saw two same-named images inside one
+    run and paired nothing across runs."""
+    import shutil
+
+    from exptrack.__main__ import _auto_detect_outputs
+    from exptrack.core import Experiment, get_db
+
+    exp = Experiment(script="train.py")
+    orig = Path("figs") / "loss.png"
+    orig.parent.mkdir(exist_ok=True)
+    orig.write_bytes(b"\x89PNG plot")
+    copy = Path("outputs") / exp.name / "loss.png"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(orig), str(copy))
+    exp.log_artifact(str(copy), label="loss (loss.png)")   # what savefig does
+
+    _auto_detect_outputs(exp, exp._start - 60)
+    exp.finish()
+
+    paths = [r["path"] for r in get_db().execute(
+        "SELECT path FROM artifacts WHERE exp_id=?", (exp.id,)).fetchall()]
+    assert sum(p.endswith("loss.png") for p in paths) == 1, paths
+
+
+def test_the_output_scan_still_logs_a_second_plot_with_the_same_bytes(tmp_project):
+    """Dedupe is on (size, name, content) — a different plot that happens to
+    hold the same bytes is still the run's output, and dropping it would hide
+    a file the run produced."""
+    from exptrack.__main__ import _auto_detect_outputs
+    from exptrack.core import Experiment, get_db
+
+    exp = Experiment(script="train.py")
+    first = Path("figs") / "loss.png"
+    first.parent.mkdir(exist_ok=True)
+    first.write_bytes(b"\x89PNG plot")
+    exp.log_artifact(str(first))
+    second = Path("figs") / "acc.png"
+    second.write_bytes(b"\x89PNG plot")          # identical content
+
+    _auto_detect_outputs(exp, exp._start - 60)
+    exp.finish()
+
+    paths = [r["path"] for r in get_db().execute(
+        "SELECT path FROM artifacts WHERE exp_id=?", (exp.id,)).fetchall()]
+    assert any(p.endswith("acc.png") for p in paths), paths

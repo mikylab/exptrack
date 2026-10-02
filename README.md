@@ -26,6 +26,8 @@ exptrack ui        # open the web dashboard
 
 Filter, compare, tag, and explore experiments from a local web UI. Runs on localhost with no accounts or internet needed. Runs group by script by default, so a burst of near-identical attempts reads as one block instead of a flat list.
 
+Start it in the background with `exptrack ui start` (it prints a URL with an auth token already in it), or in the foreground with plain `exptrack ui`. One dashboard serves every project this machine knows about — the switcher beside the page title moves between them without a second server on a second port. See [Dashboard Features](#dashboard-features) for the access and multi-project details.
+
 Every run's detail view opens with **what changed** since the last run of the same script — the params you edited, the metric deltas they produced, and the code diff behind them — plus a filmstrip for stepping between runs without going back to the list.
 
 <img alt="Run detail — the What Changed card diffing params and metrics against the previous run of the same script" src="https://raw.githubusercontent.com/mikylab/exptrack/main/docs/images/dashboard-detail.png" />
@@ -307,11 +309,20 @@ Add `--full` (or `?full=1` on the dashboard's export endpoint, **Export → JSON
 ## Dashboard Features
 
 ```bash
-exptrack ui                  # auto-generates a per-session token, prints URL
-exptrack ui --token secret   # set a persistent token (saved to .exptrack/dashboard_token)
-exptrack ui --no-auth        # disable auth (local-only, trusted environments)
-exptrack ui-stop             # kill a stale dashboard still holding port 7331
+exptrack ui start            # run it in the background; prints the URL with its token
+exptrack ui status           # is one running? prints the pid, version, and URL again
+exptrack ui logs -n 50 -f    # show (or follow) the background dashboard's log
+exptrack ui stop             # stop it, verifying the port was actually released
+
+exptrack ui                  # or run it in the foreground; Ctrl-C to stop
+exptrack ui --token secret   # store your own token instead of the generated one
+exptrack ui --clear-token    # forget the stored token (the next start mints a new one)
+exptrack ui --no-auth        # no token at all — local, trusted machines only
 ```
+
+`exptrack ui start` detaches the server, so it does not cost you a terminal and it
+survives an SSH disconnect. Starting it when one is already running is success, not
+an error. `exptrack ui-stop` still works as a deprecated alias for `exptrack ui stop`.
 
 - **Experiment list** grouped by script (or study, branch, commit, day), with status filters, search, sparkline charts, and customizable columns — including any captured parameter as a sortable column, one click to add the ones that actually vary between runs
 - **Detail view** with a "what changed vs the previous run" strip, parameters, metrics, interactive charts, code changes, git diff, datasets, a **Run failed** traceback panel, and a reproducible command with one-click copy
@@ -330,6 +341,77 @@ exptrack ui-stop             # kill a stale dashboard still holding port 7331
 - **Inline editing** for names, tags, notes, studies, and stages (double-click to edit)
 - **Studies and stages** to organize multi-step pipelines, with highlight mode and filtering
 - Tag autocomplete, searchable filter dropdowns, "needs naming" filter, timezone selector, dark mode, bulk operations, and export (JSON summary, JSON full, Markdown, CSV, TSV, Text)
+
+### Access and the dashboard token
+
+The dashboard is authenticated by a bearer token, and the token **persists across
+restarts**. The first start generates one and writes it to
+`.exptrack/dashboard_token` — mode 0600, and `exptrack init` (and the write itself)
+put a rule for it in `.gitignore`, because unlike `config.json` it is a secret and
+must never be committed. Restarting the server therefore does not log an open tab
+out, which is the whole reason it is stored rather than kept in memory. The token
+deliberately does not live in `config.json`, which is documented as safe to commit.
+
+Where the token comes from, in order: the `EXPTRACK_DASHBOARD_TOKEN` environment
+variable, then `.exptrack/dashboard_token`, then a legacy `dashboard_token` key in
+`config.json` (still read so older setups keep working, and warned about on start).
+A token supplied through the environment is never written to disk — it is yours to
+manage. `exptrack ui --token <value>` stores one explicitly, `--clear-token` removes
+the stored one so the next start mints a fresh one and logs every browser out, and
+`--no-auth` disables authentication entirely, which is only reasonable on a machine
+you trust with loopback access.
+
+The URL printed by `exptrack ui start` carries `?token=…`, and
+`exptrack ui status` reprints it for a dashboard running in the background, which is
+how you get the token back after the terminal that started it is gone. Opening it stores the
+token in the browser and strips it back out of the address bar, so it does not leak
+through history, bookmarks or `Referer` headers; every request afterwards sends it as
+an `Authorization: Bearer` header. There are no cookies, which is also what makes the
+dashboard immune to cross-site request forgery. The one exception is image and file
+URLs (`/api/file/…`), where a `<img src>` can carry no headers at all and the token
+has to ride in the query string. If a tab starts returning 401s, the page shows a
+dismissible login overlay rather than locking up — paste the token from
+`exptrack ui status` into it.
+
+If exptrack warns that `.exptrack/` is readable by other accounts on the machine,
+`exptrack fix-perms` tightens it to 0700. That matters more than the token does: on a
+shared workstation, directory permissions are the only thing between a colleague's
+account and your runs database, whether or not the dashboard is running. It is POSIX
+only; on Windows it says so and changes nothing.
+
+### More than one project
+
+One dashboard serves every project this machine knows about. The switcher beside the
+page title (and a second copy in the run rail) chooses which project every request
+reads; the databases stay separate and nothing is merged.
+
+The list of projects is the union of two sources: the other worktrees of the current
+repository that already contain an `.exptrack/` directory (`git worktree list` — a
+worktree nobody ever ran exptrack in is not offered), and a user-global registry at
+`~/.exptrack/projects.json`, which is written by `exptrack init` and
+`exptrack ui start` and by nothing else. From the terminal, `exptrack project list`
+shows the same list the switcher does and `exptrack project forget <name-or-path>`
+drops an entry — registry only, nothing on disk is touched, and a project that is
+still a worktree of this repository keeps being discovered afterwards.
+
+A project that cannot be opened is **listed with the reason rather than hidden**,
+because a project silently missing from the list is indistinguishable from discovery
+being broken. A project whose directory or database has gone reads as `stale`. A
+project whose database carries a different schema stamp than this install is
+**refused**, not opened: opening it would migrate it in place, and if that project
+has its own virtualenv the two installs would then stamp it back and forth on every
+open. The switcher names the fix instead — `exptrack upgrade` inside that project for
+an older database, or upgrading this install for a newer one. Discovery only ever
+reads the schema stamp over a read-only connection, so it can never migrate anything
+by looking.
+
+**One token reaches every project the switcher lists.** Authentication is a property
+of the server, not of the project on screen, so anyone you hand the dashboard URL to
+— through an SSH tunnel, say — can read every project it discovered, not just the one
+you were looking at. Compare is the only surface that spans projects: a comparison can
+hold one run from one project and one from another, and the panels that can only read
+a single database at a time say so rather than coming back empty. Every other view is
+scoped to the one project you have selected.
 
 ---
 

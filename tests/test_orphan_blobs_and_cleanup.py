@@ -466,6 +466,7 @@ def test_token_file_is_gitignored_and_private(tmp_path, monkeypatch):
     """init's .gitignore covers the token file and the local trash dir."""
     import os
     import stat
+    import sys
 
     from exptrack import config as cfg
     from exptrack.config import token_file_path
@@ -487,8 +488,11 @@ def test_token_file_is_gitignored_and_private(tmp_path, monkeypatch):
     finally:
         app.main = orig
 
-    mode = stat.S_IMODE(os.stat(token_file_path()).st_mode)
-    assert mode == 0o600, f"token file mode is {oct(mode)}, expected 0o600"
+    # POSIX modes are inert on Windows (chmod can only toggle read-only), so
+    # the gitignore half above is the whole of what this can check there.
+    if sys.platform != "win32":
+        mode = stat.S_IMODE(os.stat(token_file_path()).st_mode)
+        assert mode == 0o600, f"token file mode is {oct(mode)}, expected 0o600"
 
 
 def test_legacy_config_token_still_honored_and_flagged(tmp_project, capsys):
@@ -611,7 +615,8 @@ def test_batched_delete_reclaims_blobs_once(tmp_project, db_conn):
     for eid in ids:
         delete_experiment(conn, eid, delete_files=False, reclaim_blobs=False)
     # Deferred: still present until the batch sweep runs.
-    assert conn.execute("SELECT COUNT(*) FROM code_snapshots").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM code_snapshots "
+                        "WHERE kind != 'environment'").fetchone()[0] == 2
     _sweep_blobs(conn)
     conn.commit()
 

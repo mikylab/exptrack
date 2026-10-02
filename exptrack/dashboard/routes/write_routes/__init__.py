@@ -86,6 +86,9 @@ from .params import (
     api_edit_param,
     api_rename_param,
 )
+from .projects import (
+    api_project_forget,
+)
 from .sessions import (
     _validate_session_node,  # noqa: F401
     api_session_delete,
@@ -191,6 +194,7 @@ __all__ = [
     "api_param_matrix",
     "api_param_study",
     "api_pareto",
+    "api_project_forget",
     "api_propagate_study_rename",
     "api_propagate_tag_rename",
     "api_prune_metrics",

@@ -61,7 +61,57 @@ def api_stats(conn) -> dict:
 
     stats = get_stats(conn)
     stats["references"] = configured_ids()
+    # Several checkouts and a remote box can each run a different exptrack —
+    # the sidebar renders this so "which version is this dashboard" is never
+    # a guess. Rides along here since /api/stats already runs on boot and
+    # after every mutation, so this costs no extra request.
+    from ... import __version__
+
+    stats["version"] = __version__
     return stats
+
+
+def api_projects(requested: str = "") -> dict:
+    """Every project the switcher can offer, and which one is active.
+
+    Takes no connection: the active project's database holds nothing about any
+    *other* project, so this answer is built from discovery, which probes each
+    candidate read-only (see projects.probe_status — opening a skewed project
+    migrates it). The dispatcher still opens the active project's database
+    before calling this, as it does for every GET row; the point of the empty
+    signature is that no other project is opened, not that none is.
+
+    `path` rides along for display only and is never accepted back as input.
+    The client names a project by `id`, and the handler rebuilds the id ->
+    path map from discovery on every request, so a path in this payload can
+    never become a path the server opens.
+
+    `requested` is the id from the `X-Exptrack-Project` header, passed in
+    because this route is exempt from the normal per-request activation (see
+    handler.py's `_PROJECT_EXEMPT_PATHS`) — it is the dashboard's recovery
+    surface, so it must answer even when the stored id names a project that
+    is unknown, stale or schema-skewed, none of which the normal path lets
+    through. `current` mirrors what activation *would* have done: the
+    requested id when it names a known, healthy entry, and the default
+    project's id otherwise — so the switcher still highlights the right
+    option on every request, including the ones a stale header can't resolve.
+    """
+    from ... import config as cfg
+    from ... import projects
+
+    root = cfg.project_root()
+    entries = projects.discover(current_root=root)
+    # Worktrees of one repository are grouped for display only — they stay
+    # separate projects with separate databases, and `group` never decides
+    # which one a request reads. Annotated here rather than in `discover`
+    # because it costs a git subprocess per project, and `discover` also runs
+    # on the request path that resolves an id (see projects.discover_cached).
+    projects.annotate_worktree_groups(entries)
+    current = projects.project_id(root)
+    if requested and any(e["id"] == requested and e["status"] == projects.SCHEMA_OK
+                          for e in entries):
+        current = requested
+    return {"projects": entries, "current": current}
 
 
 # Ceiling on rows one /api/experiments request may return. The client pages in
@@ -81,7 +131,15 @@ def api_experiments(conn, qs: dict) -> list:
 
 def api_experiment(conn, exp_id: str) -> dict:
     result = get_experiment_detail(conn, exp_id)
-    return result if result else {"error": "not found"}
+    if not result:
+        return {"error": "not found"}
+    # The commit on the hosted repository, so the header's hash is a link.
+    # Read from .git/config, never a git spawn: this route is polled.
+    from ...core.git import commit_web_url
+    from ...core.queries import _export_git_web
+    result["git_commit_url"] = commit_web_url(_export_git_web(),
+                                              result.get("git_commit") or "")
+    return result
 
 
 def api_prev_by_script(conn, exp_id: str) -> dict:
@@ -259,12 +317,26 @@ def api_export(conn, exp_id: str, qs: dict) -> dict:
     if not data:
         return {"error": "not found"}
     fmt = qs.get("format", "json")
+    # `patch=0` is Copy: the patch goes out through Export .patch instead of
+    # riding along in the pasted document.
+    patch = str(qs.get("patch", "1")).lower() not in ("0", "false", "no")
     if fmt == "markdown":
-        md = format_export_markdown(data)
-        return {"markdown": md, "data": data}
+        # `html` rides along so Copy can put real tables on the clipboard for
+        # OneNote/Word while a markdown editor still receives the text.
+        from ...core.export_render import export_bundle
+        return {**export_bundle(format_export_markdown(data, patch=patch)), "data": data}
+    if fmt in ("text", "html"):
+        # Rendered here, not in the browser, so `exptrack export --format
+        # text|html` and the dashboard print the same thing.
+        from ...core.export_render import render_runs
+        return {"content": render_runs([data], fmt, patch=patch), "format": fmt, "data": data}
     if fmt in PARAMS_EXPORT_FORMATS:
-        return {"params_text": format_export_params(data, style=PARAMS_EXPORT_FORMATS[fmt]),
-                "data": data}
+        text = format_export_params(data, style=PARAMS_EXPORT_FORMATS[fmt])
+        out = {"params_text": text, "data": data}
+        if fmt == "params-md":
+            from ...core.export_render import markdown_to_html
+            out["html"] = markdown_to_html(text)
+        return out
     return data
 
 
@@ -402,6 +474,7 @@ def _collect_scan_files(root: str, paths: list, exts: set) -> tuple[list, bool]:
 
     from ...config import readable_project_path
     files: list = []
+    seen_paths: set = set()
     walked_dirs = 0
     truncated = False
 
@@ -428,7 +501,8 @@ def _collect_scan_files(root: str, paths: list, exts: set) -> tuple[list, bool]:
         if not os.path.isdir(abs_dir):
             if os.path.isfile(abs_dir) and os.path.splitext(abs_dir)[1].lower() in exts:
                 entry = _entry(abs_dir, os.path.dirname(abs_dir))
-                if entry:
+                if entry and entry["path"] not in seen_paths:
+                    seen_paths.add(entry["path"])
                     files.append(entry)
             continue
         for dirpath, dirnames, filenames in os.walk(abs_dir):
@@ -446,7 +520,11 @@ def _collect_scan_files(root: str, paths: list, exts: set) -> tuple[list, bool]:
                     truncated = True
                     break
                 entry = _entry(os.path.join(dirpath, fn), abs_dir)
-                if entry:
+                # Two saved scan paths can nest (``outputs`` and
+                # ``outputs/figs``); the same file walked twice listed the
+                # image twice.
+                if entry and entry["path"] not in seen_paths:
+                    seen_paths.add(entry["path"])
                     files.append(entry)
             if truncated:
                 break
@@ -592,15 +670,60 @@ def api_get_commands() -> dict:
     return {"commands": conf.get("commands", [])}
 
 
+def _drop_scanned_duplicates(root: str, images: list, artifact_images: list) -> list:
+    """Artifact images that are not already in the scanned list, by content.
+
+    A configured scan folder often *is* where the run wrote its figures, so the
+    same image arrived twice — once from the walk, once from its artifact row —
+    and the gallery showed every plot twice. Path equality does not catch it:
+    the artifact row can point at the savefig copy under ``outputs/<run>/``.
+    Hashing is gated on an exact size match, so files the scan cannot possibly
+    duplicate are never read.
+    """
+    import os
+
+    from ...core.hashing import file_hash
+
+    by_size: dict = {}
+    for img in images:
+        by_size.setdefault(img.get("size"), []).append(img)
+    if not by_size:
+        return artifact_images
+
+    cache: dict = {}
+
+    def _digest(rel: str):
+        if rel not in cache:
+            try:
+                cache[rel] = file_hash(os.path.normpath(os.path.join(root, rel)))[0]
+            except OSError:
+                cache[rel] = None
+        return cache[rel]
+
+    kept = []
+    for art in artifact_images:
+        peers = by_size.get(art.get("size")) or []
+        art_digest = _digest(art["path"]) if peers else None
+        if art_digest is not None and any(_digest(p["path"]) == art_digest for p in peers):
+            continue
+        kept.append(art)
+    return kept
+
+
 def api_list_images(conn, exp_id: str) -> dict:
     """List images from user-configured paths for this experiment."""
     import json
     import os
 
     from ...config import project_root
-    from ...core.queries import IMAGE_EXTS, _rel_path, find_experiment
+    from ...core.queries import (
+        IMAGE_EXTS,
+        _rel_path,
+        drop_protected_copy_duplicates,
+        find_experiment,
+    )
 
-    exp = find_experiment(conn, exp_id, "id, output_dir, image_paths")
+    exp = find_experiment(conn, exp_id, "id, name, output_dir, image_paths")
     if not exp:
         return {"error": "not found"}
 
@@ -618,12 +741,19 @@ def api_list_images(conn, exp_id: str) -> dict:
     # Also include image artifacts from the artifacts table
     artifact_images = []
     art_rows = conn.execute(
-        "SELECT label, path, created_at FROM artifacts WHERE exp_id=?",
-        (exp["id"],)
+        "SELECT label, path, created_at, content_hash, size_bytes FROM artifacts "
+        "WHERE exp_id=?", (exp["id"],)
     ).fetchall()
-    for r in art_rows:
-        if not r["path"] or not any(r["path"].lower().endswith(ext) for ext in IMAGE_EXTS):
-            continue
+    # The savefig patch registers its copy under `outputs/` and the finish-time
+    # scan registers the file the script wrote: two rows, one image, and this
+    # tab showed every plot twice. See drop_protected_copy_duplicates.
+    img_rows = drop_protected_copy_duplicates([
+        {"label": r["label"], "path": r["path"], "hash": r["content_hash"],
+         "size": r["size_bytes"]}
+        for r in art_rows
+        if r["path"] and any(r["path"].lower().endswith(ext) for ext in IMAGE_EXTS)
+    ], exp["name"] or "")
+    for r in img_rows:
         art_path = _rel_path(r["path"])
         abs_path = os.path.normpath(os.path.join(root, art_path))
         try:
@@ -639,8 +769,13 @@ def api_list_images(conn, exp_id: str) -> dict:
             "dir": "artifacts",
             "label": r["label"],
         })
+    artifact_images = _drop_scanned_duplicates(root, images, artifact_images)
 
     return {
+        # The run's name travels with its images: the compare modal labels each
+        # side with the run it came from, and the Images tab is the one caller
+        # that would otherwise have only an id.
+        "name": exp["name"] or "",
         "images": images, "paths": paths,
         "suggested_paths": suggested, "artifact_images": artifact_images,
         "truncated": truncated, "max_files": _SCAN_MAX_FILES,
@@ -660,10 +795,13 @@ def api_sessions(conn) -> dict:
 def api_session_tree(conn, session_id: str) -> dict:
     """Return a session's full tree."""
     from ...sessions.manager import build_tree
+    from ...sessions.tree import compact_payload
     tree = build_tree(session_id)
     if not tree:
         return {"error": "not found"}
-    return tree
+    # Shared diff bodies once, no per-node lineage chain — the client hydrates
+    # both back (js/sessions.js `_hydrateTree`). See compact_payload.
+    return compact_payload(tree)
 
 
 def api_session_nodes(conn, session_id: str) -> dict:

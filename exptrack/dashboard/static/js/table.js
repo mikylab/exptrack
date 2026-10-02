@@ -9,6 +9,7 @@ function _buildExportDropdown(n) {
   h += '<button class="action-btn" onclick="sidebarExportFmt(\'tsv\')">TSV</button>';
   h += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
   h += '<button class="action-btn" onclick="sidebarExportFmt(\'plain\')">Plain Text</button>';
+  h += '<button class="action-btn" onclick="sidebarExportFmt(\'html\')" title="A page with real tables — opens in a browser, imports into OneNote or Word">HTML</button>';
   h += '</div></span>';
   return h;
 }
@@ -20,7 +21,7 @@ function _buildCopyDropdown(n) {
   h += '<button class="action-btn" onclick="sidebarCopyFmt(\'json\')">JSON</button>';
   h += '<button class="action-btn" onclick="sidebarCopyFmt(\'csv\')">CSV</button>';
   h += '<button class="action-btn" onclick="sidebarCopyFmt(\'tsv\')">TSV</button>';
-  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'markdown\')">Markdown</button>';
+  h += '<button class="action-btn" onclick="sidebarCopyFmt(\'markdown\')" title="Pastes as tables in OneNote, Word and Outlook; as markdown elsewhere">Markdown / tables</button>';
   h += '<button class="action-btn" onclick="sidebarCopyFmt(\'plain\')">Plain Text</button>';
   h += '</div></span>';
   return h;
@@ -97,29 +98,31 @@ function renderTableActionsBar() {
 // {"error": ...} — neither is export content, and writing them into a blob
 // produced a downloaded `.csv` containing `{"error":...}` under a success
 // toast.
+//
+// Plain text and HTML are rendered by the server (core/export_render.py): the
+// plain-text layout used to be built here, so the terminal had no equivalent
+// and every code change came out JSON-escaped on a single line.
 function _exportText(data, fmt) {
   if (!data || data.error) return null;
-  if (fmt === 'plain') {
-    const exps = Array.isArray(data) ? data : [data];
-    return exps.map(d => _formatExpPlainText(d)).join('\n' + '='.repeat(60) + '\n\n');
-  }
-  if (data.content) return data.content;
+  if (data.content != null) return data.content;
   return JSON.stringify(data, null, 2);
 }
+
+// The /api/bulk-export format for a menu entry: 'plain' is the server's 'text'.
+function _bulkFormat(fmt) { return fmt === 'plain' ? 'text' : fmt; }
 
 async function sidebarExportFmt(fmt) {
   owlSpeak('export');
   const ids = [...selectedIds];
-  const data = await postApi('/api/bulk-export',
-                             {ids, format: fmt === 'plain' ? 'json' : fmt});
+  const data = await postApi('/api/bulk-export', {ids, format: _bulkFormat(fmt)});
   const text = _exportText(data, fmt);
   if (text === null) {
     owlSay('Export failed' + (data && data.error ? ': ' + data.error : '.'));
     return;
   }
-  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt'};
+  const ext = {json:'.json', markdown:'.md', csv:'.csv', tsv:'.tsv', plain:'.txt', html:'.html'};
   const filename = 'exptrack_export_' + ids.length + '_experiments' + (ext[fmt] || '.txt');
-  const mime = fmt === 'json' ? 'application/json' : 'text/plain';
+  const mime = fmt === 'json' ? 'application/json' : fmt === 'html' ? 'text/html' : 'text/plain';
   const blob = new Blob([text], {type: mime});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -134,107 +137,18 @@ async function sidebarExportFmt(fmt) {
   owlSay('Downloaded ' + filename);
 }
 
-function _formatExpPlainText(d) {
-  // Shared plain-text formatter — same format used by the detail view export
-  let lines = [];
-  lines.push('Experiment: ' + (d.name || ''));
-  lines.push('ID: ' + (d.id || ''));
-  lines.push('Status: ' + (d.status || ''));
-  if (d.created_at) lines.push('Created: ' + d.created_at);
-  if (d.duration_s) lines.push('Duration: ' + fmtDur(d.duration_s));
-  if (d.script) lines.push('Script: ' + d.script);
-  if (d.command) lines.push('Command: ' + d.command);
-  if (d.python_ver) lines.push('Python: ' + d.python_ver);
-  if (d.git_branch) lines.push('Branch: ' + d.git_branch);
-  if (d.git_commit) lines.push('Commit: ' + d.git_commit);
-  if (d.hostname) lines.push('Hostname: ' + d.hostname);
-  if (d.tags && d.tags.length) lines.push('Tags: ' + d.tags.join(', '));
-  if (d.studies && d.studies.length) lines.push('Studies: ' + d.studies.join(', '));
-  if (d.stage != null) lines.push('Stage: ' + d.stage + (d.stage_name ? ' (' + d.stage_name + ')' : ''));
-  if (d.output_dir) lines.push('Output Dir: ' + d.output_dir);
-  if (d.notes) lines.push('Notes: ' + d.notes);
-  lines.push('');
-  const params = d.params || {};
-  if (Object.keys(params).length) {
-    lines.push('Parameters:');
-    Object.entries(params).forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
-    lines.push('');
-  }
-  const vars = d.variables || {};
-  if (Object.keys(vars).length) {
-    lines.push('Variables:');
-    Object.entries(vars).forEach(([k,v]) => lines.push('  ' + k + ' = ' + JSON.stringify(v)));
-    lines.push('');
-  }
-  // The export payload carries a per-key summary (`metrics`); a full export
-  // adds the raw points, which we summarise the same way rather than dumping.
-  const ms = d.metrics || _summarizeMetricSeries(d.metrics_series);
-  if (Object.keys(ms).length) {
-    lines.push('Metrics:');
-    Object.entries(ms).forEach(([k,s]) => {
-      const last = s.last == null ? '--' : s.last;
-      lines.push('  ' + k + ' = ' + last + ' (' + s.count + ' points' +
-        (s.min == null ? '' : ', min ' + s.min + ', max ' + s.max) + ')');
-    });
-    lines.push('');
-  }
-  const artSum = d.artifacts_summary;
-  if (artSum ? artSum.total : (d.artifacts || []).length) {
-    // Capped server-side for the same reason the markdown export is: a
-    // checkpoint-per-epoch run has thousands, and listing them all buries
-    // everything above. The summary states the shape of what is not listed.
-    const shown = d.artifacts || [];
-    const total = artSum ? artSum.total : shown.length;
-    const omitted = artSum ? artSum.omitted : Math.max(0, total - ARTIFACT_LIST_LIMIT);
-    lines.push('Artifacts (' + total + '):');
-    if (omitted) {
-      if (artSum) {
-        lines.push('  ' + artSum.by_type.map(t => t.count + ' ' + t.type).join(', '));
-        artSum.by_dir.slice(0, 5).forEach(g =>
-          lines.push('  ' + String(g.count).padStart(6) + ' in ' + g.dir));
-      } else {
-        const s = _summarizeArtifacts(shown);
-        lines.push('  ' + s.byType.map(([k, n]) => n + ' ' + k).join(', '));
-        s.byDir.slice(0, 5).forEach(([dir, items]) =>
-          lines.push('  ' + String(items.length).padStart(6) + ' in ' + dir));
-      }
-      lines.push('');
-    }
-    shown.slice(0, ARTIFACT_LIST_LIMIT)
-      .forEach(a => lines.push('  ' + a.label + ': ' + a.path));
-    if (omitted) {
-      lines.push('  … and ' + omitted + ' more (export as JSON (full) for the complete list)');
-    }
-    lines.push('');
-  }
-  const changes = d.code_changes || {};
-  if (Object.keys(changes).length) {
-    lines.push('Code Changes:');
-    Object.entries(changes).forEach(([k,v]) => lines.push('  ' + k + ': ' + JSON.stringify(v)));
-    lines.push('');
-  }
-  const ts = d.timeline_summary || {};
-  if (ts.total_events) {
-    lines.push('Timeline: ' + ts.total_events + ' events (' +
-      (ts.cell_executions || 0) + ' cells, ' +
-      (ts.variable_sets || 0) + ' vars, ' +
-      (ts.artifact_events || 0) + ' artifacts)');
-  }
-  return lines.join('\n');
-}
-
 async function sidebarCopyFmt(fmt) {
   const ids = [...selectedIds];
-  const data = await postApi('/api/bulk-export',
-                             {ids, format: fmt === 'plain' ? 'json' : fmt});
+  const data = await postApi('/api/bulk-export', {ids, format: _bulkFormat(fmt), patch: false});
   const text = _exportText(data, fmt);
   if (text === null) {
     owlSay('Copy failed' + (data && data.error ? ': ' + data.error : '.'));
     return;
   }
-  await navigator.clipboard.writeText(text);
   document.querySelectorAll('.export-dropdown-menu').forEach(d => d.style.display = 'none');
-  owlSay('Copied ' + ids.length + ' experiment(s) as ' + fmt.toUpperCase() + ' to clipboard!');
+  // Markdown carries its HTML rendering, so a paste into OneNote is tables.
+  await copyRich(text, (data && data.html) || '',
+                 ids.length + ' experiment(s) as ' + (fmt === 'plain' ? 'plain text' : fmt));
 }
 
 async function sidebarCopyText() {
@@ -305,11 +219,13 @@ function _cmpMissingLast(va, vb, aMiss, bMiss, dir) {
   return desc ? -cmp : cmp;
 }
 
-// `opts.includeFailed` forces failed runs through regardless of the `showFailed`
-// toggle. The parameter matrix needs that: it carries its own "Show failed"
-// control, and the list's toggle would otherwise strip those runs out before
-// the matrix ever saw them — leaving its own checkbox visibly checked and
-// doing nothing, and silently under-reporting the search.
+// `opts.includeFailed` forces failed runs through regardless of the list's own
+// filter. The parameter matrix needs that: it carries its own include-failed
+// control, and the list's filter would otherwise strip those runs out before
+// the matrix ever saw them — leaving its own control visibly on and doing
+// nothing, and silently under-reporting the search. The "Show failed (N)"
+// button counts with this flag set, which is how it knows what it is
+// withholding.
 function getFilteredExperiments(opts) {
   // Defensive: every render path funnels through here, so a non-array payload
   // (failed fetch, unexpected error object) must degrade to "no rows" rather
@@ -328,10 +244,12 @@ function getFilteredExperiments(opts) {
     exps = exps.filter(e => e.name_is_auto || recentlyRenamedIds.has(e.id));
   }
   if (!showFailed && currentFilter !== 'failed' && !(opts && opts.includeFailed)) {
-    // Broken runs are hidden by default so the user never has to remember to
-    // delete them; the "Show failed" toggle brings them back. But when the user
-    // has explicitly filtered to the "Failed" status chip, honor that — else the
-    // sidebar/table would show nothing.
+    // Failed runs are listed by default — "it broke" is a result of the change
+    // you just made, and hiding them let the table disagree with the FAILED
+    // stat tile counting them above it. The "Hide failed" button is how the
+    // user opts out, and it then reads "Show failed (N)" so the count is never
+    // silent. When the user has explicitly filtered to the "Failed" status
+    // chip, that wins — else the sidebar/table would show nothing.
     exps = exps.filter(e => e.status !== 'failed');
   }
   if (dateRange) {

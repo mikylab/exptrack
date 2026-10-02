@@ -322,7 +322,10 @@ def test_large_log_is_served_as_a_tail_window(live_server, tmp_project):
     big = outputs / "stdout.log"
     line = "x" * 99 + "\n"
     n = (h._TEXT_PREVIEW_MAX_BYTES // len(line)) + 500
-    big.write_text("".join(f"{i:06d}" + line[6:] for i in range(n)))
+    # Bytes, not write_text: text mode writes "\r\n" on Windows, and the route
+    # serves the file's bytes as they are — so every byte-level assertion in
+    # these tests failed there while the server behaved correctly.
+    big.write_bytes("".join(f"{i:06d}" + line[6:] for i in range(n)).encode())
     total = big.stat().st_size
 
     status, headers, body = _get(live_server + "/api/file/outputs/stdout.log")
@@ -348,7 +351,7 @@ def test_large_csv_is_served_from_the_head(live_server, tmp_project):
     big = outputs / "metrics.csv"
     rows = ["step,loss,acc\n"]
     rows += [f"{i},0.5,0.9\n" for i in range(h._TEXT_PREVIEW_MAX_BYTES // 12 + 500)]
-    big.write_text("".join(rows))
+    big.write_bytes("".join(rows).encode())
 
     status, headers, body = _get(live_server + "/api/file/outputs/metrics.csv")
 
@@ -362,7 +365,7 @@ def test_large_csv_is_served_from_the_head(live_server, tmp_project):
 def test_small_text_file_is_served_whole_and_unflagged(live_server, tmp_project):
     outputs = tmp_project / "outputs"
     outputs.mkdir(exist_ok=True)
-    (outputs / "notes.txt").write_text("all of it\n")
+    (outputs / "notes.txt").write_bytes(b"all of it\n")
 
     status, headers, body = _get(live_server + "/api/file/outputs/notes.txt")
 

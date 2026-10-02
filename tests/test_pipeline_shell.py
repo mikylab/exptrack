@@ -434,11 +434,11 @@ class TestRunFinish:
             def __getattr__(self, name):
                 return getattr(self._real, name)
 
-        monkeypatch.setattr(pcmds, "get_db", lambda: CrashOnFinishProxy(conn))
-        with pytest.raises(RuntimeError):
-            _finish_exp(exp_id, metrics=str(metrics_file),
-                        params=["best_epoch=42"])
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(pcmds, "get_db", lambda: CrashOnFinishProxy(conn))
+            with pytest.raises(RuntimeError):
+                _finish_exp(exp_id, metrics=str(metrics_file),
+                            params=["best_epoch=42"])
 
         row = conn.execute(
             "SELECT status FROM experiments WHERE id=?", (exp_id,)

@@ -227,6 +227,12 @@ gets the session out of your way:
 - Each un-promoted node you select is **materialized** into a standalone
   experiment (full cell code, `%%setup` prep, and by-reference plots), so the
   code travels with the run and survives the session being deleted.
+- A materialized run replays its **whole ancestor chain**, so it is
+  re-runnable on its own. Inherited ancestor cells carry identity only — their
+  `cell_hash` (the full body is served once from `cell_lineage`) plus a one-line
+  preview — while the node's *own* cells keep their full preview and captured
+  output. N branches under a deep spine therefore no longer store N copies of
+  the same upstream text.
 - **Every** run tied to the session (the freshly materialized ones *and* any
   already-promoted runs) is added to a **study named after the session**, so
   they stay grouped in the sidebar/table.
@@ -268,6 +274,11 @@ deleted**.
   linked experiments.
 
 Session ids accept prefix matches (e.g. `1a2b`); names accept exact match.
+
+`session show` draws the tree with box-drawing glyphs. On a console whose
+encoding cannot spell them (a Windows cp1252 console, say) the output degrades
+to ASCII (`+--` for a rail, `->` for an arrow) instead of failing with
+`UnicodeEncodeError`; a UTF-8 console is untouched.
 
 ## Dashboard
 
@@ -468,7 +479,11 @@ exptrack notebook-guard
 ```
 
 ```python
-# ── exptrack guard ──────────────────────────────────────────────────────────
+# --- exptrack guard --------------------------------------------------------
+# Makes this notebook run with OR without exptrack installed. Paste at the top.
+# Installed: loads normally (full tracking).
+# Not there: %%scratch / %%setup / %%pin and %exptrack lines become no-ops;
+#            the cell bodies still run, so the notebook stays portable.
 try:
     get_ipython().run_line_magic("load_ext", "exptrack")
 except Exception:
@@ -482,14 +497,15 @@ except Exception:
             _exptrack_passthrough, magic_kind="cell", magic_name=_name)
     _ip.register_magic_function(
         _exptrack_noop, magic_kind="line", magic_name="exptrack")
-    print("[exptrack-guard] exptrack not loaded — session magics are no-ops, "
+    print("[exptrack-guard] exptrack not loaded - session magics are no-ops, "
           "cells still run.")
 ```
 
 When exptrack is installed it loads normally (full tracking). When it isn't, the
 four magics degrade to no-ops that **still run the cell body**, so the notebook
 runs end-to-end for a collaborator who doesn't have exptrack. You never have to
-strip the magics again.
+strip the magics again. The cell is pure ASCII on purpose: it is code that lands
+in your file, so it must print identically on any console encoding.
 
 **2. Keep exptrack loaded, but turn auto-tracking off.** If exptrack *is*
 installed but you don't want it creating runs, set in `.exptrack/config.json`:
@@ -518,10 +534,15 @@ Session Trees are cheap. Per session, you spend roughly:
 | `session_nodes` row (no cells, no diff) | ~150 bytes |
 | `cell_source` per node | sum of cell source bytes between nodes (a few KB for typical exploration) |
 | `cell_outputs` per node | sum of each cell's result `repr` (usually small — a dict or number; large frames/arrays repr-truncate) |
-| `git_diff` per checkpoint | size of `git diff` output (zero if nothing's committed/changed) |
+| `git_diff` per checkpoint | size of `git diff` output (zero if nothing's committed/changed); content-addressed, so sibling branches off one checkpoint share one stored body |
 
 A whole afternoon of exploration with ~10 checkpoints typically sits well
-under 100 KB. Run `exptrack storage` to see the breakdown — there's a
+under 100 KB. The dashboard's tree payload is sized the same way: each distinct
+diff body is sent once per refresh, not once per node that shares it, and the
+client rebuilds the ancestor breadcrumbs itself. Finalizing is the biggest
+single writer — materialized runs add timeline rows — but because inherited
+cells carry identity rather than copies, a 12-checkpoint x 4-branch finalize
+writes roughly 200 KB of timeline, not 800 KB. Run `exptrack storage` to see the breakdown — there's a
 **Sessions** row in the database breakdown plus per-column sizes
 (`session_nodes.cell_source`, `session_nodes.git_diff`) under storage
 hotspots.

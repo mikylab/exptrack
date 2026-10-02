@@ -89,12 +89,19 @@ exptrack/
   __main__.py               `python -m exptrack` / `exptrack run` — wraps scripts via
                               runpy, publishes the adoptable run wrapper, auto-resume
   config.py                 .exptrack/config.json, project-root detection, gitignore
-                              rules, dashboard-token location + writer
+                              rules, dashboard-token location + writer, `user_dir()`,
+                              and the thread-scoped project override
+                              (activate/active/reset_project, project_scope)
+  projects.py               The set of known projects: registry, git-worktree
+                              discovery, and the read-only schema probe
   notebook.py               %load_ext exptrack magics + explicit API
   core/
     experiment.py           Experiment class: lifecycle, param/metric/artifact logging
     db.py                   SQLite schema (10 tables), migrations, WAL, blob refcounting
     queries.py              Read-side query layer for CLI + dashboard
+    export_render.py        Readable exports shared by CLI + dashboard: aligned
+                              text, the comparison document, markdown -> HTML
+    diff_view.py            A diff as before/after rows with changed words marked
     utils.py                Shared safety helpers, param-namespace primitives, json_dumps
     reference.py            The run everything else is measured against
     param_study.py          Reading a set of runs as a parameter search + duplicates
@@ -104,6 +111,7 @@ exptrack/
     naming.py               Run-name generation + looks_auto_named
     hashing.py              File integrity hashing (SHA-256, partial for large files)
     dataset.py              Dataset/input versioning -> _dataset_manifest param
+    environment.py          Imported package versions -> _environment param (code_snapshots)
     script_snapshot.py      Content-addressed script source + git diff (memoized)
     storage.py              Storage measurement, metric prune, diff compaction
     trash.py                Unified-trash aggregation (experiments + sessions + nodes)
@@ -125,6 +133,9 @@ exptrack/
                               history, timeline, export, verify, source, watch
     mutate_cmds.py          tag, note, rm, trash, restore-run, finish, clean
     admin_cmds.py           stale, upgrade, storage, prune, compact, notebook-guard
+    tunnel_cmds.py          exptrack tunnel: remote config + SSH forward to a
+                              remote dashboard
+    project_cmds.py         exptrack project list|forget
     session_cmds.py         sessions, session show|nodes|rm|finalize|...
     help_cmds.py            examples (bundled, listable/printable/copyable), docs (open in browser)
     formatting.py           ANSI colour helpers + die(msg, code) — the exit-code contract
@@ -140,19 +151,21 @@ exptrack/
     github_sync.py          Sync run metadata to a GitHub repo as JSONL
   dashboard/
     app.py                  DashboardServer (ThreadingHTTPServer), port 7331
+    daemon.py               Detached lifecycle: spawn, runtime state file, readiness,
+                              liveness, stop-and-verify
     handler.py              Request handler, table-driven GET dispatch, security headers
     static.py               Assembles DASHBOARD_HTML + the JS/CSS bundles
     static/{js,css}/        THE ACTUAL JS/CSS CONTENT — edit these files
     static_parts/           Loader shims (~3 lines each) + html.py; see below
     vendor/                 Vendored Chart.js (no CDN)
     routes/read_routes.py   GET endpoints
-    routes/write_routes/    POST endpoints, 11 submodules + _shared.py
+    routes/write_routes/    POST endpoints, 12 submodules + _shared.py
 ```
 
 ### Dashboard JS/CSS — where to edit
 
 The JS/CSS lives in **real files** under `exptrack/dashboard/static/{js,css}/`
-(24 JS, 18 CSS) so it works with JS tooling. The `static_parts/{js,css}/*.py`
+(25 JS, 18 CSS) so it works with JS tooling. The `static_parts/{js,css}/*.py`
 modules are thin loader shims that bind each file to its `JS_*`/`CSS_*`
 constant. **Edit the `.js`/`.css` file, never the `.py` shim.**
 
@@ -186,22 +199,26 @@ one Read usually covers a task.
 | `js/sidebar.js` view switching, anything feeding Compare | `dashboard-views.md` |
 | `js/table.js`, `experiments.js`, `detail.js`, `inline_edit.js` | `dashboard-ui.md` |
 | `css/reset.css`, `js/highlight.js`, `js/timeline.js` | `dashboard-render.md` |
-| `dashboard/handler.py`, `app.py`, `routes/*` | `server.md` |
+| `dashboard/handler.py`, `app.py`, `routes/*`, `dashboard/daemon.py`, `cli/tunnel_cmds.py` | `server.md` |
+| `projects.py`, `cli/project_cmds.py`, `config.py` project-override helpers | `server.md` |
 | `core/db.py` schema changes | `docs/design/schema.md` + bump `_SCHEMA_VERSION` |
 | `core/metric_alias.py`, anything matching metric keys | `analysis.md` |
 
 (All under `docs/design/patterns/` unless a full path is given.)
 
 ### `docs/design/patterns/run-loop.md` — the change-one-line-and-rerun loop
-- **Run-vs-run loop**: broken runs self-identify; every run reports its delta vs the previous run of the same script; every run stays re-runnable. `_BASELINE_WHERE` is the one rule for what can be a baseline (trashed and `running` excluded, `failed` **kept**).
+- **Run-vs-run loop**: broken runs self-identify; every run reports its delta vs the previous run of the same script; every run stays re-runnable. `_BASELINE_WHERE` is the one rule for what can be a baseline (trashed, `running` and argparse failures (`_arg_error`) excluded, other `failed` **kept**). A generated name's suffix is the run's id.
 - **A code-change summary must not hide the change**: `summarize_changed_lines` is the one implementation; truncation is always *stated*; one merged "Uncommitted changes" panel, and its three empty states are not interchangeable.
 - **Logging the numbers after the run is over**: `%exp_log` / `log_last()` attaches metrics post-hoc to this notebook's latest surviving run, always printing which run it chose.
 - **A run can name its own baseline (`variant_of`)**: an explicit target beats chronology in *both* resolvers; a stale link degrades to chronological.
 - **Run adoption**: `exptrack run` publishes its wrapper so a script's own bare `Experiment()` adopts it instead of spawning a phantom second run. Only a *bare* construction adopts, and only once.
 - **A run's code is the script *plus* the modules it imported**: `capture_module_snapshots` records the project-local modules `sys.modules` shows at finish, so editing `script.py` and rerunning `main.py` reads as a code change instead of "no code change"; bounded by `snapshot_max_files`, never the tracker's own package or a vendored path.
 - **Every run snapshots its own source, however it was started**: `Experiment._maybe_snapshot_script` is the single entry point, so plain `python train.py` captures source too — and `_install_capture_patches` arms argparse/savefig/TensorBoard capture there as well. Raw-argv capture only fires when `sys.argv[0]` is the run's own script.
+- **A notebook run ends where its result does**: a hyperparameter changed after the run logged a metric starts a new run (`split_for_hp_change`), never under Session Trees.
+- **One run, one output folder**: a folder not yet created follows the rename; once it exists, every writer uses the recorded `_output_dir`, not `outputs/<name>/`.
 - **Every way a run can end is an outcome**: Ctrl-C is recorded (`failed` + `_interrupted`, exit 130), never left `running`. A run's `script` is its identity and must not vary with its inputs.
 - **The mtime window is not ownership, and ownership expires with the run**: the finish-time output scan skips files owned by a run still *in flight* (`runs_in_flight_since`), so concurrent launches don't cross-contaminate — while a rerun still records the fixed path it overwrote, which is what keeps the delete's file-claim rule able to see a second claimant.
+- **The finish-time scan must recognise its own copy**: dedupe is by name+size+content, not path, or every savefig'd figure gets two artifact rows.
 - **"What changed" card**: auto-diffs this run against the previous run of the same script — params, metrics, and a lazily-fetched code diff.
 
 ### `docs/design/patterns/analysis.md` — reading a set of runs
@@ -216,16 +233,18 @@ one Read usually covers a task.
 - **A pinned reference is a target, not a lineage**: resolution stops at the project level and never falls through to an implicit substitute; a broken reference is stated, not silently absent. `exptrack vs-reference` reads the whole set against it.
 
 ### `docs/design/patterns/capture.md` — getting data in without user code changes
-- **Zero-friction capture**, **diff-only storage**, **content-addressed cell lineage** (magic-only cells excluded), **auto artifact linking**, **auto output detection**, **auto-resume detection**, **no-copy artifact tracking**, **dataset/input versioning**, **failure capture** (traceback, not just a message), **TensorBoard metric auto-capture** (the only auto-capture path for metrics), **notebook cell output capture**, param/metric **source tracking**, plugin system, per-project storage.
+- **Zero-friction capture**, **results files as metrics** (`auto_capture.results_files`), **imported package versions** (`core/environment.py`), **`%exp_log <variable>`**, **diff-only storage**, **content-addressed cell lineage** (magic-only cells excluded), **auto artifact linking**, **auto output detection**, **auto-resume detection**, **no-copy artifact tracking**, **dataset/input versioning**, **failure capture** (traceback, not just a message), **TensorBoard metric auto-capture** (the only auto-capture path for metrics), **notebook cell output capture**, param/metric **source tracking**, plugin system, per-project storage.
 
 ### `docs/design/patterns/metrics.md` — the only code inside the user's inner loop
 - **Metric thinning**: count points, **never** test the step value (`step % N` silently stored *zero* points at common cadences). `metric_keep_every` is a divisor, not a budget — finish states points stored vs logged.
 - **Metric write cost at loop scale**: a commit is an fsync. Time-windowed batching via `metric_commit_interval_ms`; never wrap metric writes in `with get_db()` — sqlite3's context manager commits on exit and defeats batching.
 - **Charts must render faster than the poll that refreshes them**: bucketing runs in SQL; `/api/metrics` is polled every 5s on live runs.
+- **Two metrics compared belong on one chart**: the Charts tab's *Overlay* draws ticked metrics on a linear step axis, sharing one y-axis unless a series is >10x off the first pick's scale (`_overlayAxisGroups`), opening on the primary metric's train/val pair.
 - **A chart has to leave the page**: `_chartsSheetCanvas` composites *Show All* into one captioned image (opaque, at the canvases' own pixel size), and `⧉ Copy` puts it on the clipboard — stating why when the context is not secure enough to allow it.
 
 ### `docs/design/patterns/storage.md` — bytes, deletion and reclaim
 - **Knowing where the bytes went**: per-table figures are *exact* (dbstat); anything below a table is apportioned and labelled **estimated**.
+- **A composite byte total COALESCEs every SUM**: a SUM over all-NULL rows *is* NULL, so `value + source_diff` sized the whole timeline at 0 B — the table finalizing a session fills.
 - **Reclaiming metric resolution (prune)**: first, last, min and max always survive; preview and delete share one selection function.
 - **Exports are summaries, `--full` is the way back**: every format, JSON included; truncation is always reported.
 - **A delete that reclaims nothing visible is indistinguishable from one that failed**: every delete reports what it freed and names `clean --vacuum`.
@@ -233,16 +252,21 @@ one Read usually covers a task.
 - **A file another run still references is not this delete's to remove**: `artifact_claims_by_others` is the file-level half of the claim rule the directory helpers already applied; the preview marks it `shared`, names every holder and excludes its bytes.
 - **A shared file is a question, not a rule**: `delete_shared_files` is a *second* answer, defaulting to keep — `exptrack rm` prompts (`--shared-files keep|delete`), the dashboard confirms show the list with an unticked box, and `--yes` never answers it. A file whose mtime is newer than the run's end (`file_modified_after_run`) counts as shared too, which is how pre-fix runs with no second row are covered.
 - **The claim is editable**: `exptrack unlink-artifact` drops an artifact record without touching the file, `log-artifact` adds one — the manual override for a claim that protects the wrong file or none at all. The dashboard's Artifacts row carries the same action (**unlink**) plus an **also in N runs** badge (`linked_by`), and the delete confirm offers *Unlink and delete this experiment* / *Delete both* rather than a tick-box.
-- **Deleted files stay restorable**: `_trash_or_local` is the only way exptrack removes a file.
+- **Deleted files stay restorable**: `_trash_or_local` is the only way exptrack removes a file. It refuses anything in (or holding) a Python environment, found by `pyvenv.cfg`/`conda-meta`, not by name.
 - **Soft-delete (Trash) with an explicit permanent path**: `deleted_at` marks trashed; every list filters it; single-run lookups deliberately do not. Reachable from the CLI too (`rm --trash`, `trash`, `restore-run`).
 - **One confirmation prompt**: `cli/formatting.confirm` — EOF/Ctrl-C is a refusal, `--yes` is the scripted path. An id prefix is user input, so its LIKE wildcards are escaped.
+- **Output survives a console that can't spell its glyphs**: `cli/formatting.harden_stdio()` (called first in `main()`) maps an unencodable glyph to ASCII instead of raising — `session show` and `notebook-guard` used to die with `UnicodeEncodeError` on a Windows cp1252 console. `NOTEBOOK_GUARD` is pure ASCII: it is pasted into the user's file.
 
 ### `docs/design/patterns/sessions.md` — Session Trees
 - **Session Trees**: the opt-in exploratory tree — checkpoints, branches, `%%scratch`/`%%setup`, promote/materialize, the git-graph rail, node trash. **Every magic is idempotent under a Run-All** — this is the constraint most changes here break.
+- **A node says what it measured, and what defined it**: tree rows show the node's own metrics; a repo diff equal to the parent's is not the node's change.
 - **Per-branch metric attribution**: tag at write time (`metrics.session_node_id`), never infer from timestamps afterwards.
 - **A trashed thing that's still reachable must say it's trashed**.
 - **Run-All idempotency covers the paths that don't look like cells**: `%%setup`-first branches, promote-then-rerun, and `session end`.
 - **A session is active per kernel, not per run**: only metrics of a run the session owns get tagged.
+- **One magic, one git spawn per command**: `checkpoint`/`branch` run inside `core.git.git_memo()`, so leaving a branch and entering its sibling stop diffing the same tree twice (~95 ms → ~47 ms).
+- **The tree payload must not grow with the tree's shape**: the route serves `tree.compact_payload` — each shared diff body once, no per-node lineage — and `js/sessions.js` `_fetchTree`/`_hydrateTree` is the one path that puts them back. `build_tree` itself stays hydrated for the CLI.
+- **An inherited ancestor cell carries identity, not results**: a materialized node's own cells keep preview + output; ancestor cells store only `cell_hash` plus one line, because the body already lives once in `cell_lineage`.
 
 ### `docs/design/patterns/dashboard-views.md` — views and selection *(read before touching Compare)*
 - **One canvas, one way to take it**: `releaseCanvas()` is the single teardown; every view switcher calls it first. Two views suppress their neighbours with CSS `!important`, so a partial teardown makes a button silently do nothing.
@@ -250,18 +274,35 @@ one Read usually covers a task.
 - **Searchable Compare pickers**: one cached run list feeds all three pickers; a partial cache always renders a truncation notice.
 - **One way to answer "which runs?"**: `openRunPicker` (js/run_picker.js) is the shared picker for Compare and the matrix's analysed set — rows carry each run's parameters and the search matches them, so a run is reachable without knowing its name. It reads the Compare cache, so no two surfaces can search different sets.
 - **A run list must be narrowable without knowing what to type**: the picker's facet chips (`_rpFacetGroups`) are values the runs actually hold — OR inside a group, AND across groups, each count saying what clicking it would leave. `_rpFiltered` is the single answer to "what is listed"; picks and filters clear separately.
-- **Leaving a view is as reachable as entering it**: Compare's Back returns to its `_compareOrigin`; `_pushViewHash`/`_onPopView` (js/sidebar.js) give `#matrix` and `#compare=` a history position so the browser's Back steps back a view instead of leaving the page; and **Compare n here** renders the comparison inside the matrix so the common case needs no navigation.
+- **Leaving a view is as reachable as entering it**: Compare's Back returns to its `_compareOrigin`; `_pushViewHash`/`_onPopView` (js/sidebar.js) give `#matrix`, `#compare=` and `#run=<id>&tab=` a history position so the browser's Back steps back a view instead of leaving the page, and `_restoreViewFromHash` reopens that view on reload; and **Compare n here** renders the comparison inside the matrix so the common case needs no navigation.
+- **Compare is the only cross-project surface, and a bare id means the current project**: run ids may be qualified `<project-id>:<run-id>` (`projects.split_qualified_id` — ids, never paths); `api_multi_compare` serves the current project's group first on the connection it was handed, then scopes into each foreign root and **reopens `get_db()` afterwards**, because the first switch closed that handle. A foreign project that is unknown or schema-skewed is refused, never silently dropped from the set.
+- **The project selector is opt-in, and only Compare's picker opts in**: `openRunPicker({crossProject: true})`; `_rpQualify` is the one place an id becomes qualified, and the run list is cached per project (`_loadProjectRuns`). A run's own data is fetched with *its* project — `api(path, projectId)`, `fileUrl(path, projectId)` (query, because an `<img>` sends no headers) — and a cross-project pair states which panels it cannot serve.
 - **Pairing two runs' images is a claim**: `_assign_image_groups` decides it server-side — an exact shared filename wins, else a digit-normalized family, and never a merge that would hide a run's second image; two runs on one path are marked `shared`, because the file has one content.
+- **One image is one row, however many paths point at it**: the savefig copy under `outputs/` and the original the script wrote are one image — `drop_protected_copy_duplicates` collapses that shape only (same content, one inside `outputs/` and one outside), because two same-named images inside one run defeat the pairing rules entirely.
+- **A series is one row; a plot is one row per plot**: a family whose members differ only in an index (`IMAGE_FAMILY_MIN`, 4 per run) becomes one row with a strip per run — the only rule that outranks an exact filename match, and it works only because the client keeps every member per (run, group).
+- **Picking one image out of nine hundred is a search problem**: the Images tab and both Compare picker columns take a debounced file-name query that keeps focus and caret; the modal steps each side through the list the picker is showing (`opts.listA`/`listB`, arrows, jump-to-name).
+- **A crossfade hides the differences it exists to show**: Overlay mode tints each side (`IMG_CMP_TINTS`, SVG `feColorMatrix` + `screen`, plus a strict Difference blend) so agreement reads neutral grey and only a real difference is coloured.
+- **The backdrop an image is judged against is a choice**: `MODAL_BACKDROPS` (dark default, light, grey, checkerboard) is picked in either image modal's header and remembered in `localStorage` — all modal chrome reads `--modal-fg` and friends, never a literal `#fff`.
+- **A modal opened to look closer must not show less than the grid behind it**: `fitModalImages` upscales a small image to the space the modal has (one shared scale, 1.25x floor, 4x cap, nearest-neighbour past 2x) — `max-width` alone rendered a 128x128 image smaller in the overlay than in its thumbnail.
+- **A reserved box must not be a painted box**: image cells reserve 4/3 so the grid cannot collapse, but paint nothing — a filled box reads as a slab around every plot.
+- **A side-by-side names the run each image came from**: both runs write the same file name, so the file name alone identifies nothing; `openCompareModal` carries `run1`/`run2`.
 - **A comparison column must keep the end of a run name**: auto-generated names differ in their tail — every compare surface uses `midEllipsis`, never a head truncation.
 
 ### `docs/design/patterns/dashboard-ui.md` — the list and detail view
-- **Scannable experiment table at scale**: `param:<key>` columns, empty-column collapse, middle-ellipsis names.
+- **Scannable experiment table at scale**: `param:<key>` columns (varying ones on by default until the user picks), empty-column collapse, auto names shown as their params (`tableNameHtml`), user names middle-ellipsized. The selection bar floats; it must not move the rows.
 - **Polarity-aware metric deltas**: green means *better*, not bigger.
 - **Failures are visible, never a silently blank view**: `_json_list` server-side, `_showApiError` client-side; `api()` can return `null`, so every caller guards.
 - **A live run's detail view keeps the view state you set**: the 5s poll must not reset the tab, scroll, chart picker or axis inputs; charts update **in place**.
 - **The page scroller clamps when content shrinks**: `_holdMainScroll()` (js/core.js) is the one helper; an image grid inside `#main-content` must reserve its boxes (`aspect-ratio`) or a dropped decode moves the reader to the top.
 - **A selection change repaints in place**: a handler that changes what is *selected* must not call the loader. Compare Within (`_cwRepaintSelection`) and the Images tab's compare picks (`_imgCmpRepaint`) both rebuilt their whole tab for a badge, collapsing `#main-content` so the browser clamped the scroll to the top.
-- **Export and copy are one answer at two distances**: `copyDiff` puts the same server-rendered markdown `exportDiff` downloads on the clipboard; every Export site has a Copy beside it.
+- **A placeholder must not eat the thing you are typing into**: the Images tab's `Loading…` wipe destroyed the search box mid-keystroke and clamped the page scroll — view-only controls repaint from `_imgDataCache` via `repaintImages`, and the placeholder is for an empty container only.
+- **The tab is the question, not a property of the run**: `currentDetailTab` survives moving to another run, falling back to Overview only if that tab is absent.
+- **A failed run is a result, and a filter withholding one says how many**: failed runs are listed by default; the control flips between **Hide failed** and **Show failed (N)**, N counted against the view as it stands, and it defers to the Failed status chip.
+- **A filter must be reachable from every surface it narrows**: the sidebar rail carries the same date-range chips as the group bar, driving one `setDateRange`.
+- **The rail ships collapsed and says how to open it**: `class="collapsed"` in the markup (not applied by JS alone), state read/written through `_storageGet`/`_storageSet` so a throwing `localStorage` cannot take the boot down, and the 44px strip is a labelled control.
+- **The project on screen is named in the header**: `_projectSelectHtml` is the one picker renderer for the header and the rail, so `switchProject` has one path and a stale project is shown-with-its-reason in both.
+- **Export and copy are one answer at two distances**: `copyDiff` puts the same server-rendered markdown `exportDiff` downloads on the clipboard, minus the patch (`patch=False`) — every Copy leaves that to an **Export .patch** beside it; every Export site has a Copy beside it.
+- **A copy lands as what the paste target can read**: markdown copies go through `copyRich(text, html)` — markdown and its server-rendered HTML (`core/export_render.py`) in one clipboard item, so OneNote/Word get tables. Text and HTML renderers are server-side only, shared with `exptrack export --format text|html` and `compare --format`. Readable must not drop data.
 - **Inline editing**: exactly one cell editor open at a time; closing commits; the editor is an anchored panel, not laid out in the cell.
 - **A saved command is a template, and the template is never rewritten**: `{{var}}` tokens render editable inputs; substitution happens at render, an unfilled token stays visible, and date-like variables re-default rather than persist.
 - **A bulk action counts what it can act on**: `Finish (n)` counts only the *running* runs in the selection and is absent when there are none; the result separates finished / already-done / failed.
@@ -283,6 +324,13 @@ one Read usually covers a task.
 - **Serving a user file must not cost the size of that file**: stream it, window the text, state the truncation.
 - **Keep-alive and the undrained-body hazard**: a response written without draining the body must close the connection.
 - **Secrets stay out of the committable config**: `config.json` is documented as safe to commit, so the dashboard token lives in `.exptrack/dashboard_token`.
+- **A thread's project must not outlive its request**: the handler binds the thread to the requested project (`X-Exptrack-Project`, or a `project=` query where an `<img>` can send no header) and calls `cfg.reset_project()` in the `finally` of `handle_one_request`, never at the end of a handler. A client names a project by a server-issued id and never by a path; an unknown id is a 400 that never falls back to the default project, and a schema-skewed one is a 409.
+- **Discovery reads a project's schema stamp; it never migrates it**: `get_db()` migrates on any mismatch in *either* direction and re-stamps to its own version, so `projects.probe_status` uses a `mode=ro` connection and a mismatch refuses rather than opens. A refused or unreadable project stays listed with its reason.
+- **An absence you can confirm is acted on; one you cannot is listed**: a registered project with no `.exptrack/` is dropped *and* pruned from the registry (`_prune_registry`); `.exptrack/` present but no database stays listed `stale`; an unmountable anchor (`_absence_confirmed`) is never pruned. `discover(prune=False)` is what the request path (`discover_cached`) calls — only the surfaces that *show* the list write.
+- **The URL `exptrack ui` prints names its project** (`?project=`), so a tab never opens on the browser's remembered one.
+- **One dashboard per machine, not per checkout**: `~/.exptrack/dashboard.json` records the live server plus its `root`, so `ui start` in a second worktree hands back a `?project=` URL instead of spawning a second one. The token is the *serving* project's; `clear_state` drops the global slot only when it owns it.
+- **The project is per tab, so the page URL carries it**: `?project=<id>` is the binding, `localStorage` only the default; `_setUrlProject` is the single writer, and `/` is activation-exempt so a bookmark naming a dead project still loads.
+- **Worktrees are grouped for display and nothing else**: `annotate_worktree_groups` (called by `api_projects` alone, never `discover`) spends one `worktree list --porcelain` per *repository*, keys on the main worktree, labels siblings by branch, and skips a group of one and everything past 24 projects.
 - Plus: scan-path editing, suggestions, and bounded listing (`readable_project_path` is the one containment rule).
 
 ## Database Schema

@@ -290,3 +290,14 @@ def test_file_route_percent_decodes(tmp_project):
     served = []
     _dispatch("/api/file/outputs/my%20plot.png", serve_file=served.append)
     assert served == ["outputs/my plot.png"]
+
+
+def test_api_stats_reports_the_version(db_conn):
+    """With several checkouts and a remote box, the page must say which
+    version it is. /api/stats already runs on boot and after every mutation,
+    so it costs no extra request."""
+    import exptrack
+    from exptrack.dashboard.routes import read_routes
+
+    stats = read_routes.api_stats(db_conn)
+    assert stats["version"] == exptrack.__version__

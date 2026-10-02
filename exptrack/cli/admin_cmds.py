@@ -6,6 +6,7 @@ init, run, stale, upgrade, storage, ui
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -16,15 +17,14 @@ from ..core import get_db
 from ..core.db import (
     COMPACT_PREFIX,
     accumulated_duration,
-    is_diff_sentinel,
     resolve_git_diff,
 )
 from ..core.queries import find_experiment
 from ..core.storage import compact_git_diffs, preview_git_diff_compact
+from ..core.utils import json_dumps
 from .formatting import (
     C,
     G,
-    R,
     W,
     Y,
     bold,
@@ -49,11 +49,11 @@ def cmd_init(args):
 # ip.register_magic_function(...) — the same API exptrack itself uses — so custom
 # magic names register reliably across IPython versions.
 NOTEBOOK_GUARD = '''\
-# ── exptrack guard ──────────────────────────────────────────────────────────
+# --- exptrack guard --------------------------------------------------------
 # Makes this notebook run with OR without exptrack installed. Paste at the top.
-# Installed  → loads normally (full tracking).
-# Not there  → %%scratch / %%setup / %%pin and %exptrack lines become no-ops;
-#              the cell bodies still run, so the notebook stays portable.
+# Installed: loads normally (full tracking).
+# Not there: %%scratch / %%setup / %%pin and %exptrack lines become no-ops;
+#            the cell bodies still run, so the notebook stays portable.
 try:
     get_ipython().run_line_magic("load_ext", "exptrack")
 except Exception:
@@ -67,7 +67,7 @@ except Exception:
             _exptrack_passthrough, magic_kind="cell", magic_name=_name)
     _ip.register_magic_function(
         _exptrack_noop, magic_kind="line", magic_name="exptrack")
-    print("[exptrack-guard] exptrack not loaded — session magics are no-ops, "
+    print("[exptrack-guard] exptrack not loaded - session magics are no-ops, "
           "cells still run.")
 '''
 
@@ -89,6 +89,46 @@ def cmd_notebook_guard(args):
     )
 
 
+def cmd_fix_perms(args):
+    """Tighten ``.exptrack/`` to 0700, the one thing the user had to do by hand.
+
+    ``warn_if_world_readable`` reports a group- or world-accessible project
+    directory, and the fix it named was a raw ``chmod 700 <path>``. That is a
+    poor answer for two reasons: the directory is usually 0755 because an
+    older exptrack created it that way (a bare mkdir taking the process
+    umask), so the user is being asked to repair someone else's bug by hand;
+    and a tool that can detect a problem exactly should not make the person
+    retype its remedy.
+
+    Still an explicit command rather than something a run does silently:
+    ``exptrack_dir()`` deliberately never tightens a directory that already
+    exists, because a directory the user chose to share is theirs to decide
+    about. This is how they say yes.
+    """
+    d = cfg.project_root() / ".exptrack"
+    if not d.exists():
+        die(f"No .exptrack directory at {cfg.readable_project_path(d)} — "
+            f"run `exptrack init` first.")
+    if os.name == "nt":
+        print(col("POSIX file modes do not apply on Windows; nothing to fix. ", G)
+              + dim("Access here is governed by NTFS permissions, which "
+                    "inherit from your user profile."), file=sys.stderr)
+        return
+    before = d.stat().st_mode & 0o777
+    if not before & 0o077:
+        print(col(f"Already private (mode {oct(before)[-3:]}).", G), file=sys.stderr)
+        return
+    try:
+        d.chmod(0o700)
+    except OSError as e:
+        die(f"Could not change the mode of {d}: {e}")
+    after = d.stat().st_mode & 0o777
+    print(col(f"{d} is now {oct(after)[-3:]} (was {oct(before)[-3:]}).", G),
+          file=sys.stderr)
+    print(dim("Only your account can read the runs database and the dashboard "
+              "token from here now."), file=sys.stderr)
+
+
 def cmd_run(args):
     """Hand off to __main__.py logic inline."""
     script = args.script
@@ -98,6 +138,24 @@ def cmd_run(args):
 
 
 def cmd_ui(args):
+    """Dispatch for `exptrack ui [start|stop|status|logs]`.
+
+    Bare `exptrack ui` keeps its foreground behaviour: the subparser is
+    optional so `exptrack ui --port 8000` still means "serve here, now".
+    """
+    sub = getattr(args, "ui_sub", None)
+    if sub == "start":
+        return cmd_ui_start(args)
+    if sub == "stop":
+        return cmd_ui_stop(args)
+    if sub == "status":
+        return cmd_ui_status(args)
+    if sub == "logs":
+        return cmd_ui_logs(args)
+    return cmd_ui_foreground(args)
+
+
+def cmd_ui_foreground(args):
     from ..dashboard.app import main as ui_main
     host = getattr(args, "host", "127.0.0.1")
     port = getattr(args, "port", 7331)
@@ -128,51 +186,142 @@ def cmd_ui(args):
               file=sys.stderr)
         return
 
-    ui_main(host=host, port=port, no_auth=no_auth)
+    ui_main(host=host, port=port, no_auth=no_auth,
+            open_browser=not getattr(args, "no_browser", False))
+
+
+def cmd_ui_start(args):
+    """Start the dashboard detached and print how to reach it."""
+    from ..dashboard import daemon
+    try:
+        result = daemon.start(host=getattr(args, "host", "127.0.0.1"),
+                              port=getattr(args, "port", 7331))
+    except daemon.DaemonError as e:
+        die(str(e))
+    served_by = result.get("served_by")
+    if served_by:
+        # Nothing was started, and saying "already running" alone would read
+        # as a no-op in a checkout the user has never started a dashboard in.
+        # One server serves every project the switcher lists; the URL below
+        # names this one.
+        print(col(f"Dashboard already running (pid {result['pid']}), started "
+                  f"from '{served_by}' — it serves this project too.", G),
+              file=sys.stderr)
+    else:
+        verb = ("already running" if result["status"] == "already-running"
+                else "started")
+        print(col(f"Dashboard {verb} (pid {result['pid']}).", G), file=sys.stderr)
+    print(f"  {result['url']}", file=sys.stderr)
+    print(dim("  Stop it with: exptrack ui stop"), file=sys.stderr)
+    # Opened here, in the parent, once the child is known to be serving — the
+    # detached child has no terminal and runs main() with the browser off.
+    # Also when it was already running: the tab is how you get back to it.
+    if not getattr(args, "no_browser", False):
+        from ..dashboard.app import open_in_browser
+        open_in_browser(result["url"])
+
+
+def _current_project_id() -> str:
+    """The id of the project this command was run in, for a dashboard URL.
+
+    One dashboard serves every project the switcher lists, so a URL without
+    `?project=` opens whichever project the server was started from — not the
+    checkout the user is standing in. Degrades to "" rather than raising: a
+    URL missing the query still reaches the dashboard.
+    """
+    from .. import projects
+    from ..core.utils import safe_call
+    return safe_call(lambda: projects.project_id(cfg.project_root()),
+                     default="", context="ui project id") or ""
+
+
+def cmd_ui_status(args):
+    """Report whether a detached dashboard is running, and its URL."""
+    from ..dashboard import daemon
+
+    # daemon.running_state (not a reimplemented pid+port check) is what makes
+    # a dead-pid state file get reported as not-running *and removed* — this
+    # used to reimplement the liveness check inline and never clean up.
+    # `ui status` has no --host/--port of its own (unlike start/stop) — it
+    # reports on whatever is recorded, so port=0 disables running_state's
+    # port filter rather than reading args.port/args.host, which are only
+    # defined (and default-populated) on the parent `ui` parser for its
+    # foreground mode and would otherwise mismatch the recorded dashboard's
+    # actual port.
+    state = daemon.running_state("127.0.0.1", 0)
+    running = bool(state)
+    if getattr(args, "json", False):
+        payload = {"running": running}
+        if running:
+            payload.update(daemon.describe_state(state, status="running",
+                                                 project=_current_project_id()))
+        print(json_dumps(payload))
+        return
+    if not running:
+        print(dim("Dashboard is not running."), file=sys.stderr)
+        return
+    # The URL names the project the command was run in, not the one that
+    # started the dashboard: `ui status` in a worktree is asked from that
+    # worktree, and the browser binds a tab to the `?project=` it is opened
+    # with. `exptrack tunnel` reads this same URL, so it is forwarded intact.
+    info = daemon.describe_state(state, status="running",
+                                 project=_current_project_id())
+    print(col(f"Dashboard running (pid {info['pid']}, "
+              f"version {info['version']}).", G), file=sys.stderr)
+    print(f"  {info['url']}", file=sys.stderr)
+
+
+def cmd_ui_logs(args):
+    """Print the detached dashboard's log."""
+    import time
+
+    from ..dashboard import daemon
+
+    path = daemon.log_file_path()
+    if not path.is_file():
+        print(dim(f"No log yet at {path}."), file=sys.stderr)
+        return
+    print(daemon.tail_log(lines=getattr(args, "lines", 20)))
+    if not getattr(args, "follow", False):
+        return
+    # Implemented in Python rather than shelling out to `tail -f`, which does
+    # not exist on Windows.
+    with open(path, errors="replace") as f:
+        f.seek(0, 2)
+        try:
+            while True:
+                line = f.readline()
+                if line:
+                    print(line, end="")
+                else:
+                    time.sleep(0.25)
+        except KeyboardInterrupt:
+            pass
 
 
 def cmd_ui_stop(args):
-    """Kill any process listening on the dashboard port."""
-    import os
-    import signal
-    import subprocess
-    port = getattr(args, "port", 7331)
-
-    # Both fuser (Linux) and lsof -ti (macOS/BSD) print PIDs to stdout
-    # whitespace-separated; fuser's "<port>/tcp:" header goes to stderr.
-    candidates = (
-        ["fuser", f"{port}/tcp"],
-        ["lsof", "-ti", f"tcp:{port}"],
-    )
-    for argv in candidates:
-        try:
-            result = subprocess.run(argv, capture_output=True, text=True, timeout=5)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-
-        pids = sorted({p for p in result.stdout.split() if p.isdigit()})
-        if not pids:
-            print(dim(f"No process is listening on port {port}."), file=sys.stderr)
-            return
-
-        killed = []
-        for pid in pids:
-            try:
-                os.kill(int(pid), signal.SIGTERM)
-                killed.append(pid)
-            except ProcessLookupError:
-                pass
-            except PermissionError:
-                print(col(f"Permission denied killing PID {pid}.", R), file=sys.stderr)
-
-        if killed:
-            print(col(f"Sent SIGTERM to {', '.join(killed)} on port {port}.", G),
-                  file=sys.stderr)
+    """Stop the background dashboard, verifying the port was released."""
+    from ..dashboard import daemon
+    if getattr(args, "_subcmd", None) == "ui-stop":
+        print(col("`exptrack ui-stop` is deprecated; use `exptrack ui stop`.", Y),
+              file=sys.stderr)
+    try:
+        result = daemon.stop(force=getattr(args, "force", False),
+                             port=getattr(args, "port", None))
+    except daemon.DaemonError as e:
+        die(str(e))
+    if not result["stopped"]:
+        print(dim(result["reason"]), file=sys.stderr)
         return
-
-    print(col("Neither 'fuser' nor 'lsof' is available on this system. "
-              f"Find and kill the process manually (listening on port {port}).", Y),
-          file=sys.stderr)
+    pids = ", ".join(str(p) for p in result["pids"])
+    line = f"Dashboard stopped (pid {pids})."
+    # `reason` carries information the user needs even on a success path
+    # (e.g. "already stopped (port was already free)", or "stopped, but
+    # could not signal <pid>" after a partial refusal) — printing it only on
+    # failure would drop that at the API boundary.
+    if result.get("reason"):
+        line += f" ({result['reason']})"
+    print(col(line, G), file=sys.stderr)
 
 
 def cmd_stale(args):
@@ -775,23 +924,10 @@ def _export_one_diff(row, out_path):
     safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)[:60]
     filename = f"{safe_name}__{exp_id[:8]}.md"
 
-    lines = [
-        f"# Diff: {name}",
-        "",
-        f"- **Experiment ID:** `{exp_id}`",
-        f"- **Branch:** `{branch}`",
-        f"- **Commit:** `{commit}`",
-        "",
-    ]
-    # A sentinel is a status, not a diff — writing it inside a ```diff fence
-    # produced a lab-notebook file whose body was the literal marker. Matches
-    # what api_export_diff reports for the same run.
-    if is_diff_sentinel(diff):
-        lines.append(f"_No diff body is available for this run: `{diff}`_")
-    else:
-        lines += ["```diff", diff, "```"]
-    lines.append("")
-    (out_path / filename).write_text("\n".join(lines), encoding="utf-8")
+    from ..core.queries import _export_git_web, format_diff_markdown
+    (out_path / filename).write_text(
+        format_diff_markdown(name, exp_id, branch, commit, diff, _export_git_web()),
+        encoding="utf-8")
 
 
 def cmd_backup(args):
@@ -974,7 +1110,13 @@ def _storage_cell_stats(conn):
     """Notebook cell sources and timeline diffs — the 'deep compact' targets."""
     timeline_size, tl_diff_total = _qrow(
         conn,
-        "SELECT SUM(LENGTH(value)) + SUM(LENGTH(source_diff)), "
+        # Each SUM is COALESCEd on its own: a SUM over rows that are all NULL
+        # is NULL, and `value_bytes + NULL` made the whole size NULL — so a
+        # project whose timeline rows carry no `source_diff` (every materialized
+        # session node, every pipeline run) reported its timeline as 0 bytes,
+        # hiding the table that finalizing a session fills.
+        "SELECT COALESCE(SUM(LENGTH(value)), 0) "
+        "       + COALESCE(SUM(LENGTH(source_diff)), 0), "
         "       COALESCE(SUM(CASE WHEN source_diff IS NOT NULL "
         "                         THEN LENGTH(source_diff) ELSE 0 END), 0) "
         "FROM timeline",

@@ -746,18 +746,26 @@ def test_materialize_folds_in_ancestor_code(tmp_project):
         "SELECT id FROM session_nodes WHERE label='try 0.7'").fetchone()["id"]
     res = materialize_experiment(bid)
     assert res["ok"]
-    srcs = [
-        json.loads(r["value"]).get("source_preview", "")
-        for r in conn.execute(
-            "SELECT value FROM timeline WHERE exp_id=? AND event_type='cell_exec' "
-            "ORDER BY seq", (res["id"],)).fetchall()
-    ]
-    joined = "\n".join(srcs)
+    # An inherited ancestor cell carries its identity (cell_hash → the body in
+    # cell_lineage, stored once) plus a one-line label; the node's own cell
+    # carries its full preview. Read the chain the way the dashboard's
+    # view-source button does, so "is the ancestor code here?" is answered
+    # against where the code actually lives.
+    rows = conn.execute(
+        "SELECT t.cell_hash, t.value, cl.source FROM timeline t "
+        "LEFT JOIN cell_lineage cl ON cl.cell_hash = t.cell_hash "
+        "WHERE t.exp_id=? AND t.event_type='cell_exec' ORDER BY t.seq",
+        (res["id"],)).fetchall()
+    joined = "\n".join(
+        r["source"] or json.loads(r["value"]).get("source_preview", "")
+        for r in rows)
     # The ancestor's helper def AND the branch's own line are both present.
     assert "def run_pipeline" in joined
     assert "threshold=0.7" in joined
     # Ordered: setup code comes before the branch code.
     assert joined.index("def run_pipeline") < joined.index("threshold=0.7")
+    # And the ancestor row still says, in one line, what it was.
+    assert json.loads(rows[0]["value"])["source_preview"] == "import random"
 
 
 def test_materialize_attributes_window_metrics(tmp_project):

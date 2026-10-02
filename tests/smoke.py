@@ -17,6 +17,15 @@ import tempfile
 import textwrap
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _isolation import isolate_home
+
+# Every child process runs against a throwaway HOME: `exptrack init` registers
+# the project in the user-global ~/.exptrack/projects.json, and a smoke test
+# must not leave its temp directory in the developer's project switcher. Set
+# on this process, so every child inherits it without a per-call env=.
+_HOME = isolate_home("exptrack-smoke-home-")
+
 # A tiny bootstrap so we invoke exptrack's CLI regardless of whether the
 # `exptrack` console script is on PATH — we drive exptrack.cli.main directly
 # with an injected argv, in a fresh subprocess per command (real isolation).
@@ -48,7 +57,8 @@ def main():
         # A real git repo so git-state capture has something to read.
         subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
         subprocess.run(
-            ["git", "config", "user.email", "smoke@example.com"], cwd=proj, check=True
+            ["git", "config", "user.email", "smoke@example.com"], cwd=proj,
+            check=True
         )
         subprocess.run(
             ["git", "config", "user.name", "smoke"], cwd=proj, check=True

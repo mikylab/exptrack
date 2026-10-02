@@ -188,7 +188,8 @@ def test_rename_never_escapes_outputs_dir(tmp_project):
     assert not (tmp_project.parent / "evil").exists()
     assert not (tmp_project / "evil").exists()
     row = conn.execute("SELECT output_dir FROM experiments WHERE id='e1'").fetchone()
-    assert row["output_dir"].startswith(str(outputs) + "/")
+    # Containment by path parts, not a "/" suffix — Windows separates with backslashes.
+    assert outputs in Path(row["output_dir"]).parents
 
 
 def test_rename_refuses_absolute_and_dot_names(tmp_project):
@@ -233,7 +234,12 @@ def test_safe_output_dir_unit(tmp_path):
     assert _db._safe_output_dir(base, "") is None
     # A symlink out of outputs/ is caught by the realpath check even though the
     # name itself is a single clean component.
-    (base / "link").symlink_to(tmp_path / "outputs_evil")
+    try:
+        (base / "link").symlink_to(tmp_path / "outputs_evil")
+    except OSError:
+        # Windows refuses unprivileged symlinks (WinError 1314); the checks
+        # above are everything that can be exercised without one.
+        pytest.skip("creating a symlink needs privilege on this platform")
     assert _db._safe_output_dir(base, "link") is None
 
 

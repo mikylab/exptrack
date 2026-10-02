@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # Schema creation
@@ -549,3 +552,42 @@ def test_set_wal_mode_degrades_when_database_is_held(tmp_path):
     finally:
         holder.rollback()
         holder.close()
+
+
+def test_get_db_does_not_create_the_project_dir_behind_exptrack_dirs_back(
+        tmp_path, monkeypatch):
+    """`.exptrack/` must come into being in exactly one place.
+
+    `get_db()` used to create the database's parent with a bare mkdir, which
+    takes the process umask (022 on a normal POSIX account) rather than the
+    0700 `config.exptrack_dir()` applies — so a fresh project whose database
+    was the first thing written got a world-readable runs database, and
+    `warn_if_world_readable` then told the user to chmod a directory they
+    never knowingly created.
+
+    Asserting "exptrack_dir was called" would prove nothing: `config_path()`
+    calls it too, so that test passes with the fix reverted (it did). Instead
+    the directory-creating half of `exptrack_dir` is stubbed out — if `get_db`
+    still has a mkdir of its own, `.exptrack/` appears anyway and this fails.
+    The mode itself is asserted in tests/test_dashboard_perms.py, which skips
+    on Windows; this runs everywhere.
+    """
+    from exptrack import config as cfg
+    from exptrack.core import db as _db
+
+    monkeypatch.setattr(cfg, "_root_cache", tmp_path)
+    monkeypatch.setattr(cfg, "_cache", None)
+    monkeypatch.setattr(cfg, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(cfg, "exptrack_dir", lambda: tmp_path / ".exptrack")
+    _db._local.conn = None
+    _db._local.db_path = None
+
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            _db.get_db()
+        assert not (tmp_path / ".exptrack").exists(), (
+            "get_db created .exptrack itself instead of leaving it to "
+            "exptrack_dir(), so it never gets the 0700")
+    finally:
+        _db._local.conn = None
+        _db._local.db_path = None

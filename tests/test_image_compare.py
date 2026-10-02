@@ -143,6 +143,116 @@ def test_swipe_pointer_events():
     print("  [PASS] test_swipe_pointer_events")
 
 
+def test_side_by_side_names_the_run_each_image_came_from():
+    """Both runs usually write the same file name, so a cross-run overlay that
+    labelled each panel with the file name alone said nothing about which side
+    was which."""
+    from exptrack.dashboard.static_parts.scripts import JS_COMPARE, JS_IMAGE_COMPARE
+    from exptrack.dashboard.static_parts.styles import CSS_IMAGE_COMPARE
+
+    assert "function openCompareModal(src1, name1, src2, name2, run1, run2, opts)" in (
+        JS_IMAGE_COMPARE), "the modal must accept the run each image is from"
+    assert "_imgCmpPanel" in JS_IMAGE_COMPARE
+    assert "img-cmp-run" in JS_IMAGE_COMPARE
+    assert "img-cmp-run" in CSS_IMAGE_COMPARE
+    assert "crossCmpA.run" in JS_IMAGE_COMPARE, (
+        "doCrossCompare must pass the run names through")
+    assert "selectCrossImg" in JS_COMPARE
+    assert "escJsAttr(name)" in JS_COMPARE, (
+        "the compare grid must tell selectCrossImg which run a thumbnail is from")
+
+    print("  [PASS] test_side_by_side_names_the_run_each_image_came_from")
+
+
+def test_the_modal_can_flip_through_a_runs_images():
+    """Picking two of 900 images by closing the modal, scrolling and picking
+    again is the cost this removes: each side steps through its own list, and
+    a name query jumps straight to one."""
+    from exptrack.dashboard.static_parts.scripts import JS_IMAGE_COMPARE, JS_TIMELINE
+    from exptrack.dashboard.static_parts.styles import CSS_IMAGE_COMPARE
+
+    for fn in ("function stepCompareImage(", "function jumpCompareImage(",
+               "function _renderCmpNav("):
+        assert fn in JS_IMAGE_COMPARE, fn
+    assert "ArrowLeft" in JS_IMAGE_COMPARE and "ArrowRight" in JS_IMAGE_COMPARE, (
+        "arrow keys must step the sides")
+    assert "img-cmp-nav" in CSS_IMAGE_COMPARE
+    assert "_intraImgList" in JS_TIMELINE, (
+        "the Images tab must hand the modal the gallery it is showing")
+
+    print("  [PASS] test_the_modal_can_flip_through_a_runs_images")
+
+
+def test_both_image_pickers_can_be_searched_by_name():
+    from exptrack.dashboard.static_parts.scripts import JS_COMPARE, JS_TIMELINE
+    from exptrack.dashboard.static_parts.styles import CSS_IMAGE_COMPARE, CSS_IMAGES
+
+    assert "_onCmpImgSearch" in JS_COMPARE and "cmp-img-search" in JS_COMPARE
+    assert "cmp-img-search" in CSS_IMAGE_COMPARE
+    assert "_onImageSearch" in JS_TIMELINE and "img-search-input" in JS_TIMELINE
+    assert "img-search-input" in CSS_IMAGES
+
+    print("  [PASS] test_both_image_pickers_can_be_searched_by_name")
+
+
+def test_a_small_image_is_enlarged_by_the_modal_not_shrunk():
+    """`max-width`/`max-height` only shrink, so a 128x128 image rendered at
+    128px inside a full-screen overlay while the gallery thumb upscaled it to
+    the cell width — clicking to enlarge made it smaller. Both modals scale a
+    small image up to the space they have, and every image in one modal takes
+    the same scale so an overlay compare still aligns."""
+    from exptrack.dashboard.static_parts.scripts import JS_CORE, JS_IMAGE_COMPARE, JS_TIMELINE
+
+    assert "function fitModalImages(" in JS_CORE
+    assert "MODAL_IMAGE_MAX_UPSCALE" in JS_CORE, (
+        "an upscale has to be capped, or a tiny icon becomes a wall of blur")
+    assert "pixelated" in JS_CORE, (
+        "past 2x a smooth upscale reads as out of focus, not as pixels")
+    assert "MODAL_IMAGE_MIN_UPSCALE" in JS_CORE, (
+        "an image already near the window size must be left alone")
+    assert "fitModalImages(" in JS_TIMELINE, "the single-image modal must fit"
+    assert "_fitCompareBody" in JS_IMAGE_COMPARE, "the compare modal must fit"
+    assert "_imgCmpAvail" in JS_IMAGE_COMPARE, (
+        "side-by-side splits the window, overlay and swipe do not")
+
+    print("  [PASS] test_a_small_image_is_enlarged_by_the_modal_not_shrunk")
+
+
+def test_the_image_modals_offer_more_than_one_backdrop():
+    """Dark suits a matplotlib plot and fights a dark mask or a light-on-white
+    sample. The default is unchanged; the alternatives are one click away, the
+    choice is remembered, and the modal chrome takes its colour from the same
+    tokens so a light backdrop is not white text on white."""
+    from exptrack.dashboard.static_parts.scripts import (
+        JS_CORE,
+        JS_IMAGE_COMPARE,
+        JS_TIMELINE,
+    )
+    from exptrack.dashboard.static_parts.styles import CSS_IMAGE_COMPARE, CSS_IMAGES
+
+    assert "MODAL_BACKDROPS" in JS_CORE
+    for preset in ("'dark'", "'light'", "'grey'", "'checker'"):
+        assert preset in JS_CORE, preset
+    assert "exptrack-modal-backdrop" in JS_CORE, "the choice must be remembered"
+    assert "function setModalBackdrop(" in JS_CORE
+    assert "function applyModalBackdrop(" in JS_CORE
+    assert "escJsAttr(b.id)" in JS_CORE, (
+        "the swatch writes an inline handler, so the value must be escaped for one")
+    assert "modalBackdropPickerHtml()" in JS_TIMELINE, "single-image modal"
+    assert "modalBackdropPickerHtml()" in JS_IMAGE_COMPARE, "comparison modal"
+    assert "applyModalBackdrop()" in JS_TIMELINE and "applyModalBackdrop()" in (
+        JS_IMAGE_COMPARE), "a modal must open on the backdrop already chosen"
+
+    assert "--modal-bg" in CSS_IMAGE_COMPARE and "--modal-fg" in CSS_IMAGE_COMPARE
+    assert 'data-backdrop="checker"' in CSS_IMAGE_COMPARE
+    assert "var(--modal-bg)" in CSS_IMAGES, (
+        "the single-image modal must use the shared backdrop token too")
+    assert "#fff" not in CSS_IMAGES.split(".img-modal-header")[1].split("}")[0], (
+        "modal chrome must not hardcode white, or a light backdrop is unreadable")
+
+    print("  [PASS] test_the_image_modals_offer_more_than_one_backdrop")
+
+
 def test_overlay_range_slider():
     """Overlay mode has a range slider for opacity control."""
     from exptrack.dashboard.static_parts.scripts import JS_IMAGE_COMPARE
@@ -152,6 +262,37 @@ def test_overlay_range_slider():
     assert 'max="100"' in JS_IMAGE_COMPARE, "Range should go to 100"
 
     print("  [PASS] test_overlay_range_slider")
+
+
+def test_overlay_can_tint_each_side_so_differences_show():
+    """A 50% crossfade answers "are these different?" only when the difference
+    is large: both images are half-drawn, so a shifted boundary or a handful of
+    wrong pixels is invisible. Tinting each side and adding them makes
+    agreement neutral and disagreement coloured."""
+    from exptrack.dashboard.static_parts.scripts import JS_IMAGE_COMPARE
+    from exptrack.dashboard.static_parts.styles import CSS_IMAGE_COMPARE
+
+    assert "IMG_CMP_TINTS" in JS_IMAGE_COMPARE
+    for t in ("'none'", "'yellowblue'", "'redcyan'", "'difference'"):
+        assert t in JS_IMAGE_COMPARE, t
+    assert "function setOverlayTint(" in JS_IMAGE_COMPARE
+    assert "exptrack-overlay-tint" in JS_IMAGE_COMPARE, "the choice must persist"
+    assert "_tintSvgDefs" in JS_IMAGE_COMPARE and "feColorMatrix" in JS_IMAGE_COMPARE, (
+        "the tints must be exact channel projections — a sepia+hue-rotate chain "
+        "lands near a hue, and near-yellow plus near-blue sums to pink, which "
+        "makes an identical pair look like a difference")
+    assert "url(#imgCmpTintYellow)" in CSS_IMAGE_COMPARE
+    assert "mix-blend-mode: screen" in CSS_IMAGE_COMPARE, (
+        "the tinted pair is added, not faded")
+    assert "mix-blend-mode: difference" in CSS_IMAGE_COMPARE
+    assert "isolation: isolate" in CSS_IMAGE_COMPARE, (
+        "the blend must not reach past the stack into the chosen backdrop")
+    assert "tinted ? '1' : '0.5'" in JS_IMAGE_COMPARE, (
+        "a tinted top image is drawn at full strength; half of each sums to mud")
+    assert "img-cmp-tint-help" in JS_IMAGE_COMPARE, (
+        "an unexplained colour scheme is just a strangely coloured image")
+
+    print("  [PASS] test_overlay_can_tint_each_side_so_differences_show")
 
 
 def test_escape_closes_modal():
@@ -197,6 +338,12 @@ if __name__ == "__main__":
         test_intra_run_compare_in_load_images,
         test_swipe_pointer_events,
         test_overlay_range_slider,
+        test_the_image_modals_offer_more_than_one_backdrop,
+        test_a_small_image_is_enlarged_by_the_modal_not_shrunk,
+        test_side_by_side_names_the_run_each_image_came_from,
+        test_the_modal_can_flip_through_a_runs_images,
+        test_both_image_pickers_can_be_searched_by_name,
+        test_overlay_can_tint_each_side_so_differences_show,
         test_escape_closes_modal,
         test_dashboard_html_contains_image_compare,
     ]

@@ -10,7 +10,8 @@ them directly without spinning up an HTTP server.
 import json
 import os
 import sys
-import tempfile
+
+from _isolation import project_tempdir
 
 
 def _reset_config():
@@ -28,8 +29,7 @@ def _make_experiment(script="train.py", params=None, tags=None, notes=""):
 
 def test_api_stats():
     """api_stats returns correct experiment counts."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -65,8 +65,7 @@ def test_api_stats():
 
 def test_api_experiments_list():
     """api_experiments returns a list of experiments."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -98,8 +97,7 @@ def test_api_experiments_list():
 
 def test_api_experiments_filter_by_status():
     """api_experiments filters by status query param."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -130,8 +128,7 @@ def test_api_experiment_detail():
     underlying query layer directly to verify it once that bug is fixed.
     For now we test via the lower-level find_experiment + manual queries.
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -178,8 +175,7 @@ def test_api_experiment_detail():
 
 def test_api_experiment_not_found():
     """api_experiment returns error for unknown ID."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -195,8 +191,7 @@ def test_api_experiment_not_found():
 
 def test_api_add_tag():
     """api_add_tag adds a tag to an experiment."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -221,8 +216,7 @@ def test_api_add_tag():
 
 def test_api_add_tag_no_duplicates():
     """api_add_tag does not add duplicate tags."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -243,8 +237,7 @@ def test_api_add_tag_no_duplicates():
 
 def test_api_delete_tag():
     """api_delete_tag removes a tag from an experiment."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -265,8 +258,7 @@ def test_api_delete_tag():
 
 def test_api_rename():
     """api_rename renames an experiment."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -292,8 +284,7 @@ def test_api_rename():
 
 def test_api_rename_empty():
     """api_rename rejects empty name."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -312,8 +303,7 @@ def test_api_rename_empty():
 
 def test_api_all_tags():
     """api_all_tags returns tag names with usage counts."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -345,8 +335,7 @@ def test_api_all_tags():
 
 def test_api_export_json():
     """api_export produces structured JSON data."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -383,8 +372,7 @@ def test_api_export_json():
 
 def test_api_export_markdown():
     """api_export with format=markdown returns markdown text."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -406,8 +394,7 @@ def test_api_export_markdown():
 
 def test_api_add_note():
     """api_add_note appends a note to an experiment."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -428,8 +415,7 @@ def test_api_add_note():
 
 def test_api_save_export_no_overwrite():
     """api_save_export writes to <project>/exports/ and suffixes on conflict."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir() as tmp:
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -472,8 +458,7 @@ def test_api_save_export_no_overwrite():
 
 def test_api_finish():
     """api_finish marks a running experiment as done."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -494,8 +479,7 @@ def test_api_finish():
 
 def test_api_delete():
     """api_delete soft-deletes (moves to Trash); row still exists with deleted_at set."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -522,8 +506,7 @@ def test_api_delete():
 
 def test_api_restore():
     """api_restore clears deleted_at."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -549,8 +532,7 @@ def test_api_restore():
 def test_api_delete_permanent_keeps_files_by_default():
     """api_delete_permanent removes the DB row; with delete_files=False, files are kept."""
     from pathlib import Path
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir() as tmp:
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -589,8 +571,7 @@ def test_api_delete_permanent_keeps_files_by_default():
 def test_api_delete_permanent_sends_files_to_trash():
     """With delete_files=True, files move to OS Trash (or local fallback) — never unlinked outright."""
     from pathlib import Path
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir() as tmp:
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -635,8 +616,7 @@ def test_api_delete_permanent_sends_files_to_trash():
 
 def test_api_delete_preview_counts():
     """api_delete_preview reports metric/param/artifact counts."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -661,8 +641,7 @@ def test_api_delete_preview_counts():
 
 def test_list_experiments_hides_trashed():
     """list_experiments filters out trashed experiments by default."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")
@@ -687,8 +666,7 @@ def test_list_experiments_hides_trashed():
 
 def test_api_edit_notes():
     """api_edit_notes replaces experiment notes."""
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)
+    with project_tempdir():
         _reset_config()
         from exptrack import config as cfg
         cfg.init("test")

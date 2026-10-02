@@ -230,8 +230,12 @@ def _compact_timeline_sources(conn, exp_ids: list) -> int:
         return 0
 
 
-def api_export_diff(conn, exp_id: str) -> dict:
-    """Return the git diff for an experiment as downloadable markdown."""
+def api_export_diff(conn, exp_id: str, body: dict | None = None) -> dict:
+    """Return the git diff for an experiment as downloadable markdown.
+
+    ``{"patch": false}`` is Copy: the markdown leaves the patch blocks out and
+    names Export .patch, which downloads ``patch`` from this same answer.
+    """
     exp = find_experiment(conn, exp_id, "id, name, git_branch, git_commit, git_diff")
     if not exp:
         return {"error": "not found"}
@@ -246,10 +250,16 @@ def api_export_diff(conn, exp_id: str) -> dict:
     if kind == "unavailable":
         return {"error": "the stored diff for this run is no longer available",
                 "unavailable": True}
+    from exptrack.core.export_render import markdown_to_html
+    from exptrack.core.queries import format_diff_markdown
     name = exp["name"] or exp["id"][:8]
-    md = (f"# Diff: {name}\n\n"
-          f"- **Experiment ID:** `{exp['id']}`\n"
-          f"- **Branch:** `{exp['git_branch'] or ''}`\n"
-          f"- **Commit:** `{exp['git_commit'] or ''}`\n\n"
-          f"```diff\n{diff}\n```\n")
-    return {"ok": True, "markdown": md, "filename": f"{name}__{exp['id'][:8]}.md"}
+    from exptrack.core.queries import _export_git_web
+    md = format_diff_markdown(name, exp["id"], exp["git_branch"],
+                              exp["git_commit"], diff, _export_git_web(),
+                              patch=(body or {}).get("patch", True) is not False)
+    # `patch` is the diff verbatim — what the dashboard's Patch download
+    # writes and `git apply` takes, same as `exptrack diff <id> --patch`.
+    return {"ok": True, "markdown": md, "html": markdown_to_html(md),
+            "patch": diff.rstrip("\n") + "\n",
+            "filename": f"{name}__{exp['id'][:8]}.md",
+            "patch_filename": f"{name}__{exp['id'][:8]}.patch"}

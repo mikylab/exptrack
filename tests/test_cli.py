@@ -195,3 +195,19 @@ def test_tag_exits_nonzero_on_unknown_id(tmp_project):
     with pytest.raises(SystemExit) as e:
         _capture_output(cmd_tag, SimpleNamespace(id=["zzzznope", "mytag"]))
     assert e.value.code != 0
+
+
+def test_fix_perms_is_reachable_from_the_cli():
+    """The warning tells the user to run `exptrack fix-perms`, so it has to
+    exist as a command — a warning naming a command that does not parse is
+    worse than the raw chmod it replaced.
+
+    The behaviour itself is asserted in tests/test_dashboard_perms.py, which
+    skips on Windows because POSIX modes are inert there; this runs
+    everywhere.
+    """
+    from exptrack.cli.main import _DISPATCH, _build_parser
+
+    assert "fix-perms" in _DISPATCH
+    args = _build_parser().parse_args(["fix-perms"])
+    assert args._subcmd == "fix-perms"

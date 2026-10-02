@@ -179,8 +179,7 @@ def _register_and_protect(exp, orig_path, fig_title=""):
     # the timeline already tracks every cell execution.
     protected_path = orig_path
     try:
-        from ..core.naming import output_path as _output_path
-        dest = _output_path(orig_path.name, exp.name)
+        dest = exp.output_path(orig_path.name)
         if dest.resolve() != orig_path.resolve():
             shutil.copy2(str(orig_path), str(dest))
             protected_path = dest

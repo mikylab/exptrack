@@ -823,6 +823,13 @@ details.cell-block.setup-cell > summary { border-left: 2px solid var(--border-st
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* A node's own metrics: the result the branch was tried for. */
+.node-metrics-mini {
+    font-family: var(--font-mono); font-size: var(--text-xs);
+    color: var(--text-1); margin-top: 2px;
+}
+.node-metrics-mini .nmm-k, .node-metrics-mini .nmm-more { color: var(--text-2); }
+
 /* ── Per-node plot thumbnails (savefig captured by reference) ──────────── */
 .node-img-grid {
     display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 4px;

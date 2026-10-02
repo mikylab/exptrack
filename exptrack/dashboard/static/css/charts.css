@@ -85,3 +85,19 @@
     text-overflow: ellipsis; white-space: nowrap;
   }
   .artifact-path-cell:hover { white-space: normal; word-break: break-all; }
+  /* Overlay: one toggle chip per metric, coloured as its line is drawn. */
+  .chart-overlay-bar {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    padding: 0 14px; margin: -4px 0 6px;
+  }
+  .chart-overlay-bar .scale-label {
+    font-size: 12px; color: var(--muted); font-weight: 500; margin-right: 4px;
+  }
+  .chart-overlay-chip {
+    font-family: var(--font-mono); font-size: 12px; padding: 3px 10px;
+    background: var(--code-bg); color: var(--muted);
+    border: 1px solid var(--border); border-left: 3px solid var(--chip-color, var(--border));
+    border-radius: 4px; cursor: pointer;
+  }
+  .chart-overlay-chip:hover { color: var(--fg); border-color: var(--fg); border-left-color: var(--chip-color); }
+  .chart-overlay-chip.on { color: var(--fg); background: var(--card-bg); font-weight: 600; }
