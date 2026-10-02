@@ -20,7 +20,7 @@ exptrack/
     param_study.py            Reading a set of runs as a parameter search — see the **What varies is a property of the set**, **Three answers to "I already ran this"** and **Descriptive means descriptive** patterns. `analyze_params` (varying vs constant, values + counts), `build_matrix`, `parameter_effects`, `load_params`, the `MISSING` sentinel, `_norm` (the one value-identity rule), and the duplicate layer (`config_fingerprint`, `code_fingerprint`, `dataset_fingerprint`, `_agreement`, `_duplicate_kind`, `classify_duplicates`, `find_equivalent_runs`, `duplicate_notice`). Also `consensus_metric`/`scored_values`/`off_metric_runs` — the one answer to "which metric is *this set* judged by", shared with `leaderboard`
     leaderboard.py            Which runs won, and whether the search is still finding anything — `top_runs`, `best_so_far` and `pareto_front`, all **views over** `param_study.build_matrix` so eligibility, exclusion accounting, the set's metric and the tie-break have exactly one answer across every ranking surface (a "best run" panel disagreeing with the matrix's own best row would make both untrustworthy). See the **Ranking a search, and knowing when it stopped paying** and **Two objectives, and the honesty a frontier needs** patterns
     primary_metric.py         Which metric a run is judged by — see the **One primary metric, four levels of saying so** pattern. Resolution (`resolve_spec`), values (`primary_metric_batch` / `primary_metric_for_run`), and the three setters. Lives in `core/` because `queries` calls it on both the list and detail paths
-    naming.py                 Run name generation (readable: {MonDD}_{script}__{params}__{uid}; legacy "numeric" style via `naming.date_style`) + `looks_auto_named` fingerprint helper. `make_run_name` skips internal `_`-prefixed bookkeeping params (`_var/…`, `_code_change/…`, `_cells_ran`) before picking the top N keys, and path-sanitizes every component (`_path_safe`) so a value with slashes/spaces can never produce a name that breaks the on-disk output-folder rename
+    naming.py                 Run name generation (`{script}__{params}__{uid}`, long multi-word keys as initials; an optional `MonDD_` prefix or legacy "numeric" style via `naming.date_style`) + `looks_auto_named` fingerprint helper. `make_run_name` skips internal `_`-prefixed bookkeeping params (`_var/…`, `_code_change/…`, `_cells_ran`) before picking the top N keys, and path-sanitizes every component (`_path_safe`) so a value with slashes/spaces can never produce a name that breaks the on-disk output-folder rename
     hashing.py                File integrity hashing (SHA-256, partial for large files)
     dataset.py                Dataset/input versioning — `capture_dataset_manifest(exp)` scans captured params for dataset-shaped values (existing data files by extension, or dataset-shaped keys like `--data_dir`/`--train` pointing at an existing path), fingerprints each (files via partial content hash, dirs via sorted `(relpath, size)` listing — no byte reads), and logs the result as the `_dataset_manifest` param. Lives in `core/` (only depends on `core.hashing`/`core.utils`) so `Experiment.finish()` calling it isn't a core→capture inversion; `capture/dataset.py` re-exports it for back-compat. Best-effort (never raises)
     environment.py            Which library versions a run used: `__version__` of each third-party module in `sys.modules` at finish, stored content-addressed in `code_snapshots` (`kind='environment'`) and referenced from `_environment`. Imported, not installed: a full `importlib.metadata` scan was ~2.3 s cold per run
@@ -100,20 +100,26 @@ exptrack/
         table.py              Table rendering, sorting, column resizing
         experiments.py        Experiment list filtering, grouping
         inline_edit.py        Double-click inline editing
-        detail.py             Detail panel, tabs, overview preview, export
+        detail.py             Detail panel: loads a run and assembles the page; auto-refresh
+        detail_tabs.py        Run tabs (Overview/Charts/Files/Code), Files/Code sub-views, split view,
+                              Tools views, Files counts/folders/filter, Code Changes/Env
+        detail_header.py      Run navigator, header and Export/Tools/⋯ menus, vs-previous /
+                              vs-reference strips, primary-metric picker, reference run
+        detail_overview.py    Overview cards: capped params, run card, layout
         charts.py             Charts tab: single/all view, scale controls, downsampling
         compare.py            Compare view, diff rendering, metric comparison
-        mutations.py          Tag/note/name/delete/pin mutation helpers
-        timeline.py           Timeline rendering, cell lineage viewer, and the run-source fold
-                              (`_runSourceFoldHtml`/`loadRunSource` — the captured source is a
-                              collapsible section of the Timeline tab, not a tab of its own;
-                              fetched on open and rendered even when a run has no events)
+        mutations.py          Tag/name/delete/pin mutation helpers
+        notes.py              Run notes: markdown editor (toolbar, Tab indent, list
+                              continuation, template) and the rendered view
+        timeline.py           Timeline rendering (Code › Timeline), cell lineage viewer, the
+                              captured source (Code › Source, `loadRunSource`), Files › Images
+                              and Files › Data listings and their scan folders
         image_compare.py      Image diff viewer with slider overlay
         studies.py            Study management UI
         stage.py              Stage/pipeline state tracking
         manual.py             Manual experiment creation modal
         matrix.py             Parameter matrix — the analysis view over the filtered run set (see the **What varies is a property of the set** pattern)
-        confusion.py          Confusion matrix calculator tab (per-experiment)
+        confusion.py          Confusion matrix calculator (a Tools view, per-experiment)
         sessions.py           Session Trees tab — list + tree renderer + node detail
         trash.py              Trash view + delete-confirm modal (Move-to-Trash / Permanent)
         init.py               Page initialization, event binding
@@ -158,7 +164,7 @@ The dashboard has been fully modularized. `static.py` assembles the JS/CSS bundl
 **Current structure:**
 - **`static/js/*.js` + `static/css/*.css`** — the actual dashboard JS (23 files) and CSS (17 files) content
 - **`static_parts/css/`** — 16 loader-shim modules (reset, layout, cards, table, detail, charts, code, timeline, compare, components, studies, images→[images,image_compare], toolbox, sessions, trash). Each binds a `CSS_*` constant loaded from `static/css/`. `get_all_css()` assembles them
-- **`static_parts/js/`** — 22 loader-shim modules (core, highlight, owl, sidebar, table, experiments, inline_edit, detail, charts, compare, mutations, timeline, image_compare, studies, stage, manual, todos, commands, confusion, sessions, trash, init). Each binds a `JS_*` constant loaded from `static/js/`. `get_all_js()` assembles them
+- **`static_parts/js/`** — 22 loader-shim modules (core, highlight, owl, sidebar, table, experiments, inline_edit, detail, charts, compare, mutations, notes, timeline, image_compare, studies, stage, manual, todos, commands, confusion, sessions, trash, init). Each binds a `JS_*` constant loaded from `static/js/`. `get_all_js()` assembles them
 - **`static_parts/_loader.py`** — `_load_js`/`_load_css` file readers (lru_cache)
 - **`static_parts/html.py`** — HTML_HEAD, HTML_BODY, HTML_FOOTER
 - **`static_parts/styles.py`** and **`static_parts/scripts.py`** — thin re-export shims for backward compatibility

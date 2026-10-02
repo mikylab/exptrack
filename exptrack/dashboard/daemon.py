@@ -209,7 +209,7 @@ def _pid_alive_windows(pid: int) -> bool:
     probe liveness at all: CPython routes it to
     ``GenerateConsoleCtrlEvent``, which only works within the caller's own
     console process group. Every dashboard is spawned with
-    ``DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`` (see ``spawn_detached``),
+    ``CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`` (see ``spawn_detached``),
     so it is *always* outside that group — ``os.kill(pid, 0)`` on a live,
     detached dashboard fails with ERROR_INVALID_PARAMETER (87), the exact
     error a genuinely dead pid produces, so the two cases were
@@ -366,7 +366,14 @@ def spawn_detached(host: str, port: int) -> int:
     kwargs = {"stdout": log, "stderr": subprocess.STDOUT,
               "stdin": subprocess.DEVNULL, "cwd": str(cfg.project_root())}
     if os.name == "nt":
-        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS
+        # A hidden console, not none: a DETACHED_PROCESS has no console, so
+        # Windows gave every console program it started — each `git` call for
+        # project discovery and diffs — a new visible console window, and a
+        # dashboard left open filled the screen with them. CREATE_NO_WINDOW
+        # gives the dashboard its own invisible console, which those children
+        # share. It is still not the caller's console, so closing the terminal
+        # that ran `ui start` does not take the dashboard with it.
+        kwargs["creationflags"] = (subprocess.CREATE_NO_WINDOW
                                    | subprocess.CREATE_NEW_PROCESS_GROUP)
     else:
         kwargs["start_new_session"] = True

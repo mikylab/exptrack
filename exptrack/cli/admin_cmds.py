@@ -932,30 +932,18 @@ def _export_one_diff(row, out_path):
 
 def cmd_backup(args):
     """Create a backup of the experiment database using sqlite3.backup()."""
-    import sqlite3
+    from ..core.db import backup_database
 
     conn = get_db()
-    root = cfg.project_root()
+    dest = Path(args.path) if args.path else None
 
-    if args.path:
-        dest = Path(args.path)
-    else:
-        backup_dir = root / ".exptrack" / "backups"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        dest = backup_dir / f"{timestamp}.db"
-
-    if dest.exists() and not getattr(args, "force", False):
+    if dest is not None and dest.exists() and not getattr(args, "force", False):
         # die(), not print+return: a nightly `exptrack backup || alert` that
         # exits 0 on every failure is a backup that silently stops existing.
         die(f"Backup file already exists: {dest}\nUse --force to overwrite.")
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-
     try:
-        backup_conn = sqlite3.connect(str(dest))
-        conn.backup(backup_conn)
-        backup_conn.close()
+        dest = backup_database(conn, dest)
     except Exception as e:
         die(f"Backup failed: {e}")
 

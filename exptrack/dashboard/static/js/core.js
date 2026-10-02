@@ -365,9 +365,10 @@ function getColumnDef(colId) {
 
 // Param keys present across the loaded runs, each flagged with whether its
 // value actually varies — the varying ones are what you want as columns.
-function paramColCandidates() {
+function paramColCandidates(exps) {
   const seen = new Map();   // key -> Set of JSON-stringified values
-  for (const e of (Array.isArray(allExperiments) ? allExperiments : [])) {
+  const rows = exps || (Array.isArray(allExperiments) ? allExperiments : []);
+  for (const e of rows) {
     for (const [k, v] of Object.entries(e.params || {})) {
       if (!isParamColCandidate(k)) continue;
       if (!seen.has(k)) seen.set(k, new Set());
@@ -518,12 +519,24 @@ function midEllipsis(text, max) {
 // Middle-ellipsizing the whole string kept the date and the id and cut the
 // params, so a sweep rendered as a screen of `Sep24_train..._6aba210a` rows
 // that differed only in a hex suffix.
+// The date is optional: new runs are named without it (`naming.date_style`
+// defaults to "none"), and runs named before that keep their `Oct01_` prefix.
 // `_{2}` rather than two literal underscores before a group: the bundle's
 // helper check (test_dashboard_js_integrity) reads that as a function call.
-const _AUTO_NAME_RE = /^([A-Z][a-z]{2}\d{1,2})_(.+?)(?:_{2}(.+))?_{2}([0-9a-f]{8})$/;
+const _AUTO_NAME_RE = /^(?:([A-Z][a-z]{2}\d{1,2})_)?(.+?)(?:_{2}(.+))?_{2}([0-9a-f]{8})$/;
 function autoNameParts(name) {
   const m = _AUTO_NAME_RE.exec(String(name || ''));
-  return m ? {date: m[1], script: m[2], params: m[3] || '', uid: m[4]} : null;
+  return m ? {date: m[1] || '', script: m[2], params: m[3] || '', uid: m[4]} : null;
+}
+
+// A run's name for a place too small for all of it (a filmstrip card, a
+// Compare chip): an auto name as its params, without the date the run already
+// records — `lr0.001_bs128_wd0.0001` rather than `Oct01_train__lr0.00…`, which
+// was 172 identical-looking cards. A chosen name is returned as written.
+function shortRunLabel(name, isAuto) {
+  const parts = isAuto === false ? null : autoNameParts(name);
+  if (!parts) return String(name || '');
+  return parts.params || parts.script;
 }
 
 // The Name cell's text for a run: a user's own name as written; an auto name
@@ -606,6 +619,9 @@ function toggleColumnSettings() {
 // padding, which leaves the panel open with nothing left to close it — and it
 // forces the anchor button to carry an `event.stopPropagation()`, putting
 // dismissal logic in the markup, a file away from the panel it dismisses.
+// Returns a disposer, for a panel that also closes some other way (Save,
+// Cancel, Esc): without it the listener outlived the panel until the next
+// click anywhere on the page.
 function _dismissOnOutsideClick(panel, anchorSelector, onClose) {
   function close(ev) {
     if (panel.contains(ev.target)) return;
@@ -614,7 +630,8 @@ function _dismissOnOutsideClick(panel, anchorSelector, onClose) {
     if (onClose) onClose(); else panel.style.display = 'none';
   }
   // Deferred so the click that opened the panel doesn't immediately close it.
-  setTimeout(() => document.addEventListener('click', close), 0);
+  const t = setTimeout(() => document.addEventListener('click', close), 0);
+  return () => { clearTimeout(t); document.removeEventListener('click', close); };
 }
 
 function resetColumnDefaults() {
@@ -1144,8 +1161,12 @@ function fileUrl(path, projectId) {
   // An <img src> can carry no headers at all — which is exactly why the token
   // already rides in the query here. The project travels the same way, for the
   // same reason: an image belonging to a run in another project has no other
-  // way to say so.
-  if (projectId) q.push('project=' + encodeURIComponent(projectId));
+  // way to say so. With no projectId the file is the page's project's, and
+  // that has to be said too: api() names it in a header, which an <img> cannot
+  // send, so leaving it off resolved the path against the server's *startup*
+  // project and every image in a switched-to project 404'd.
+  const project = projectId || _activeProjectId;
+  if (project) q.push('project=' + encodeURIComponent(project));
   return q.length ? base + '?' + q.join('&') : base;
 }
 
@@ -2443,6 +2464,70 @@ function _orphanFilesPrompt(removedRows, orphans) {
     '(' + fmtBytes(totalBytes) + '):\n\n' + shown + more +
     '\n\nMove them to the Trash? They stay recoverable from your OS Trash.\n' +
     'Runs you deleted while choosing to keep their files appear here too.';
+}
+
+// Settings → Export all runs. The server picks "all" (every run not in the
+// Trash): the list is paginated, so the ids the page has loaded are not all of
+// them. Markdown/HTML open with the set's summary before each run's report —
+// the same export the CLI's `exptrack export --all` writes.
+async function settingsExportAll(fmt) {
+  const ext = {markdown: '.md', html: '.html', csv: '.csv', json: '.json'}[fmt] || '.txt';
+  const mime = {html: 'text/html', json: 'application/json', csv: 'text/csv'}[fmt] || 'text/markdown';
+  owlSay('Exporting every run…');
+  const d = await postApi('/api/bulk-export', {all: true, format: fmt});
+  if (!d || d.error) { owlSay('Export failed' + (d && d.error ? ': ' + d.error : '.')); return; }
+  const text = fmt === 'json' ? JSON.stringify(d, null, 2) : (d.content || '');
+  const stamp = new Date().toISOString().slice(0, 10);
+  await saveOrDownload(text, 'exptrack_all_runs_' + stamp + ext, mime);
+}
+
+// The printable report: the HTML export opened in a new tab, where the page's
+// own Save as PDF button (or Ctrl+P) gives a PDF — a summary first, one run per
+// page. The tab is opened before the request so a popup blocker sees it come
+// from the click; the report is written into it when it arrives. `scope` is
+// {all: true} or {ids: [...]}.
+async function openPrintableReport(scope) {
+  const w = window.open('', '_blank');
+  if (w) w.document.write('<p style="font-family:sans-serif;padding:24px">Building the report…</p>');
+  // patch: false, as every Copy does: a report is for reading, and the raw
+  // +/- patch repeats the before/after table above it (Export .patch has it).
+  const d = await postApi('/api/bulk-export', Object.assign({format: 'html', patch: false}, scope));
+  if (!d || d.error || !d.content) {
+    if (w) w.close();
+    owlSay('Could not build the report' + (d && d.error ? ': ' + d.error : '.'));
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([d.content], {type: 'text/html'}));
+  if (w) { w.location = url; } else { window.open(url, '_blank'); }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+// Settings → Back up database: a copy in .exptrack/backups/, then a Download
+// button for it. The download is fetched with the auth header and handed to the
+// browser as a file — a plain link could not carry the token.
+async function settingsBackupDb() {
+  const status = document.getElementById('settings-backup-status');
+  if (status) status.textContent = 'Backing up…';
+  const d = await postApi('/api/backup-db');
+  if (!d || !d.ok) {
+    if (status) status.textContent = (d && d.error) || 'Backup failed.';
+    return;
+  }
+  if (status) {
+    status.innerHTML = 'Saved <code>' + esc(d.path) + '</code> (' + esc(fmtBytes(d.size)) + ') '
+      + '<button onclick="downloadBackup(\'' + escJsAttr(d.name) + '\')">Download</button>';
+  }
+}
+
+async function downloadBackup(name) {
+  try {
+    const r = await fetch('/api/backup-file?name=' + encodeURIComponent(name),
+                          {headers: _projectHeaders()});
+    if (!r.ok) { owlSay('Download failed (' + r.status + ').'); return; }
+    downloadBlob(await r.blob(), 'exptrack-' + name, 'application/vnd.sqlite3');
+  } catch (e) {
+    owlSay('Download failed: ' + e.message);
+  }
 }
 
 async function settingsVacuumDb() {

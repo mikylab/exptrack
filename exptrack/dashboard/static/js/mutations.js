@@ -152,6 +152,91 @@ async function bulkCompact() {
   }
 }
 
+// ── Prune selected runs ──────────────────────────────────────────────────────
+//
+// The Charts tab's prune, for a selection from the list: the same controls
+// (which metric, keep 1 of every N), a dry-run that states what would go, and
+// a delete of exactly that previewed set (preview_token). Many runs cannot be
+// drawn as one preview, so this one is counts; the panel says where to see a
+// single run's points. The shared pieces live in js/charts.js.
+
+let _bulkPrune = null;   // {ids, keys, every, token}
+
+function _bulkPruneKeys(ids) {
+  const keys = new Set();
+  const want = new Set(ids);
+  for (const e of (Array.isArray(allExperiments) ? allExperiments : [])) {
+    if (want.has(e.id)) Object.keys(e.metrics || {}).forEach(k => keys.add(k));
+  }
+  return [...keys].sort();
+}
+
+function openBulkPrune() {
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+  closeBulkPrune();
+  _bulkPrune = {ids};
+  const keyOpts = '<option value="">all metrics</option>'
+    + _bulkPruneKeys(ids).map(k => '<option value="' + esc(k) + '">' + esc(k) + '</option>').join('');
+  const panel = document.createElement('div');
+  panel.id = 'bulk-prune-panel';
+  panel.className = 'bulk-prune-panel';
+  panel.innerHTML = '<div class="bulk-prune-head"><strong>Prune stored points</strong> '
+    + '<span class="bulk-prune-sub">' + ids.length + ' selected run' + (ids.length === 1 ? '' : 's') + '</span>'
+    + '<button class="close-btn" onclick="closeBulkPrune()" title="Close">&times;</button></div>'
+    + '<div class="chart-prune-bar bulk-prune-row">'
+    +   '<div class="chart-scale-pair"><label for="bulk-prune-key">Metric</label>'
+    +     '<select id="bulk-prune-key">' + keyOpts + '</select></div>'
+    +   '<div class="chart-scale-pair"><label for="bulk-prune-every">Keep 1 of every</label>'
+    +     _pruneEveryHtml('bulk-prune-every') + '</div>'
+    +   '<button class="action-btn" onclick="previewBulkPrune()">Preview</button>'
+    + '</div>'
+    + '<div class="chart-prune-status" id="bulk-prune-status">To see which points go on one run, use its Charts tab.</div>';
+  document.body.appendChild(panel);
+  _wirePruneEvery(panel, 'bulk-prune-every', previewBulkPrune);
+  // Sit above whichever selection bar is on screen; it wraps to two rows on
+  // a narrow window, so a fixed offset covered its buttons.
+  const bar = [document.getElementById('table-actions-bar'), document.getElementById('sidebar-actions-bar')]
+    .find(b => b && b.getClientRects().length);  // fixed: no offsetParent
+  if (bar) panel.style.bottom = (window.innerHeight - bar.getBoundingClientRect().top + 10) + 'px';
+}
+
+function closeBulkPrune() {
+  const el = document.getElementById('bulk-prune-panel');
+  if (el) el.remove();
+  _bulkPrune = null;
+}
+
+async function previewBulkPrune() {
+  const st = _bulkPrune;
+  const status = document.getElementById('bulk-prune-status');
+  if (!st || !status) return;
+  const every = _readPruneEvery(document.getElementById('bulk-prune-every'), status);
+  if (!every) return;
+  const key = (document.getElementById('bulk-prune-key') || {}).value || '';
+  const keys = key ? [key] : [];
+  const what = (key || 'all metrics') + ' across ' + st.ids.length
+    + ' run' + (st.ids.length === 1 ? '' : 's');
+  const pre = await _previewPrune({ids: st.ids, keys, keep_every: every}, status, what, every);
+  if (!pre || _bulkPrune !== st) return;
+  Object.assign(st, {keys, every, token: pre.preview_token});
+  _showPruneConfirm(status, what, pre, pre.scope_points != null ? pre.scope_points : pre.total_points,
+                    'The first, last, min and max of every series are kept.',
+                    applyBulkPrune, closeBulkPrune);
+}
+
+async function applyBulkPrune() {
+  const st = _bulkPrune;
+  if (!st || !st.token) return;
+  const res = await _applyPrune({ids: st.ids, keys: st.keys || [], keep_every: st.every,
+                                 preview_token: st.token},
+                                document.getElementById('bulk-prune-status'));
+  if (!res) return;
+  closeBulkPrune();
+  await loadExperiments();
+  if (currentDetailId) await refreshDetail(currentDetailId);
+}
+
 // ── Add artifact ─────────────────────────────────────────────────────────────
 
 async function addArtifact(id) {
@@ -179,40 +264,6 @@ async function deleteTagInline(id, tag) {
   }
   const d = await postApi('/api/experiment/' + id + '/delete-tag', {tag});
   if (d.ok) { loadAllTags(); loadTodos(); loadCommands(); loadExperiments().then(() => refreshDetail(id)); }
-}
-
-function startDetailNoteEdit(id, el) {
-  const currentText = el.textContent.trim();
-  const isPlaceholder = el.querySelector('span[style]') !== null;
-  const textarea = document.createElement('textarea');
-  textarea.className = 'notes-edit-area';
-  textarea.value = isPlaceholder ? '' : currentText;
-  textarea.style.cssText = 'width:100%;box-sizing:border-box;min-height:70px;font-size:13px;font-family:inherit;border:1px solid var(--blue);border-radius:4px;padding:7px 9px';
-  el.innerHTML = '';
-  el.appendChild(textarea);
-  // The field opens on a single click, so the handler has to come off while
-  // the editor is up — a click into the textarea bubbles back to this element
-  // and would rebuild the editor under the cursor. refreshDetail re-renders
-  // the span (handler and all) when the edit finishes.
-  el.onclick = null;
-  el.removeAttribute('onclick');
-  textarea.focus();
-
-  let saved = false;
-  async function doSave() {
-    if (saved) return;
-    saved = true;
-    const notes = textarea.value;
-    await postApi('/api/experiment/' + id + '/edit-notes', {notes});
-    const exp = allExperiments.find(e => e.id === id);
-    if (exp) exp.notes = notes;
-    refreshDetail(id);
-  }
-  textarea.addEventListener('blur', doSave);
-  textarea.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); textarea.blur(); }
-    if (ev.key === 'Escape') { saved = true; refreshDetail(id); }
-  });
 }
 
 

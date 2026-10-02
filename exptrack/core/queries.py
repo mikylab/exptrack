@@ -436,7 +436,13 @@ def find_previous_by_script(conn, exp_id: str) -> dict | None:
     A run that declared a ``_variant_of`` target compares against *that* run
     instead: re-running one notebook with a different model is the case where
     "the previous run of this script" is the wrong baseline.
+
+    *exp_id* may be a prefix. The dashboard opens a pasted ``#run=1444548b``
+    link with exactly that, and the ``cur.id = ?`` join below matched nothing,
+    so the Overview's "What changed" card silently vanished for any run reached
+    by a short id.
     """
+    exp_id = resolve_experiment_id(conn, exp_id) or exp_id
     explicit = _explicit_baseline(conn, exp_id)
     if explicit:
         return {
@@ -2493,7 +2499,8 @@ def append_note(conn, exp_id_prefix: str, text: str) -> dict:
     if not exp:
         return {"error": "not found"}
     existing = exp["notes"] or ""
-    new_notes = (existing + "\n" + text).strip() if existing else text.strip()
+    from .utils import join_notes
+    new_notes = join_notes(existing, text)
     conn.execute(
         "UPDATE experiments SET notes=?, updated_at=? WHERE id=?",
         (new_notes, datetime.now(timezone.utc).isoformat(), exp["id"])
@@ -2538,8 +2545,10 @@ def get_batch_export_data(conn, exp_ids: list[str] | None = None,
                           artifact_limit: int = ARTIFACT_LIST_LIMIT) -> list[dict]:
     """Get export data for multiple experiments (see ``get_export_data``)."""
     if export_all:
+        # Every list filters the Trash (storage.md); "export everything" is a
+        # list, and exported trashed runs as if they were live.
         rows = conn.execute(
-            "SELECT id FROM experiments ORDER BY created_at DESC"
+            "SELECT id FROM experiments WHERE deleted_at IS NULL ORDER BY created_at DESC"
         ).fetchall()
     elif exp_ids:
         rows = []
@@ -2567,6 +2576,26 @@ def export_metric_summaries(data: dict) -> dict:
         return data["metrics"]
     return {k: summarize_metric_series(pts)
             for k, pts in (data.get("metrics_series") or {}).items()}
+
+
+def single_value_metrics(summaries: dict) -> bool:
+    """True when every metric holds one value (an evaluation, a results.json).
+
+    Its last, min and max are then the same number, so the exports print one
+    Value column, and the printed report can put that narrow table two-up.
+    """
+    return bool(summaries) and all(s.get("count") == 1 for s in summaries.values())
+
+
+def metric_table(summaries: dict, cell=str) -> tuple[list[str], list[list], str]:
+    """``(header, rows, align)`` of a run's Metrics table — the one shape the
+    markdown and plain-text exports both render. *cell* formats a value."""
+    if single_value_metrics(summaries):
+        return (["Metric", "Value"],
+                [[k, cell(s.get("last"))] for k, s in summaries.items()], "lr")
+    return (["Metric", "Last", "Min", "Max", "Points"],
+            [[k, cell(s.get("last")), cell(s.get("min")), cell(s.get("max")), s.get("count")]
+             for k, s in summaries.items()], "lrrrr")
 
 
 def _m(value) -> str:
@@ -2889,7 +2918,8 @@ def format_export_markdown(data: dict, artifact_limit: int = ARTIFACT_LIST_LIMIT
     lines += _md_table(["Field", "Value"], [[k, _md_cell(v)] for k, v in fields])
     lines.append("")
     if data.get("notes"):
-        lines += ["## Notes", "", data["notes"], ""]
+        from .export_render import nest_headings
+        lines += ["## Notes", "", nest_headings(data["notes"], 3), ""]
     if data.get("params"):
         lines += ["## Parameters", ""]
         lines += _md_table(["Parameter", "Value"],
@@ -2905,10 +2935,8 @@ def format_export_markdown(data: dict, artifact_limit: int = ARTIFACT_LIST_LIMIT
     summaries = export_metric_summaries(data)
     if summaries:
         lines += ["## Metrics", ""]
-        lines += _md_table(["Metric", "Last", "Min", "Max", "Points"],
-                           [[_md_cell(k), _m(s['last']), _m(s['min']),
-                             _m(s['max']), s['count']]
-                            for k, s in summaries.items()], "lrrrr")
+        header, rows, align = metric_table(summaries, _m)
+        lines += _md_table(header, [[_md_cell(r[0]), *r[1:]] for r in rows], align)
         lines.append("")
     art = data.get("artifacts_summary")
     if art or data.get("artifacts"):
@@ -3072,10 +3100,23 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
     """Format batch export data as CSV/TSV string.
 
     Includes all the same data as JSON export: metadata, params, variables,
-    metrics (last value), code_changes, artifacts, and timeline summary.
+    metrics, code_changes, artifacts, and timeline summary.
+
+    Each metric is four columns: ``metric:<key>`` (its last value, as it always
+    was), then ``metric:<key>:best`` — the min or max by the key's goal — and
+    ``:min`` / ``:max``. The last value alone made a run that peaked and then
+    overfit look like its worst epoch, and the spreadsheet had no way back to
+    the number the run is usually judged by.
+
+    ``script``, ``command`` and ``output_dir`` are relative to
+    ``project_root``, which has its own column: the same absolute prefix on
+    every row was most of each cell, and the markdown export already states the
+    root once the same way.
     """
     import csv as csv_mod
     import io
+
+    from .primary_metric import GOAL_MIN, goal_for_key
 
     if not experiments:
         return ""
@@ -3103,10 +3144,12 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
     # Header — all fields from get_export_data()
     header = ["id", "name", "project", "status", "created_at", "duration_s",
               "script", "command", "python_ver", "git_branch", "git_commit",
-              "hostname", "tags", "studies", "stage", "stage_name", "notes", "output_dir"]
+              "hostname", "tags", "studies", "stage", "stage_name", "notes", "output_dir",
+              "project_root"]
     header += [f"param:{k}" for k in param_keys]
     header += [f"var:{k}" for k in var_keys]
-    header += [f"metric:{k}" for k in metric_keys]
+    for k in metric_keys:
+        header += [f"metric:{k}", f"metric:{k}:best", f"metric:{k}:min", f"metric:{k}:max"]
     header += ["artifacts", "code_changes",
                "timeline_total", "timeline_cells", "timeline_vars", "timeline_artifacts"]
     writer.writerow(header)
@@ -3118,6 +3161,7 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
         artifacts = data.get("artifacts", [])
         code_changes = data.get("code_changes", {})
         ts = data.get("timeline_summary", {})
+        root = data.get("project_root") or ""
 
         row = [
             data.get("id", ""),
@@ -3126,8 +3170,8 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
             data.get("status", ""),
             data.get("created_at", ""),
             data.get("duration_s", "") or "",
-            data.get("script", "") or "",
-            data.get("command", "") or "",
+            _rel_path_for(data.get("script", "") or "", root),
+            _rel_command(data.get("command", "") or "", root),
             data.get("python_ver", "") or "",
             data.get("git_branch", "") or "",
             data.get("git_commit", "") or "",
@@ -3137,13 +3181,16 @@ def format_export_csv(experiments: list[dict], delimiter: str = ",") -> str:
             data.get("stage", "") if data.get("stage") is not None else "",
             data.get("stage_name", "") or "",
             data.get("notes", "") or "",
-            data.get("output_dir", "") or "",
+            _rel_path_for(data.get("output_dir", "") or "", root),
+            root,
         ]
         row += [str(params.get(k, "")) for k in param_keys]
         row += [str(variables.get(k, "")) for k in var_keys]
         for k in metric_keys:
-            s = summaries.get(k)
-            row.append("" if not s or s.get("last") is None else str(s["last"]))
+            sm = summaries.get(k) or {}
+            lo, hi = sm.get("min"), sm.get("max")
+            best = lo if goal_for_key(k) == GOAL_MIN else hi
+            row += ["" if v is None else str(v) for v in (sm.get("last"), best, lo, hi)]
         # Artifacts as semicolon-separated label:path pairs. The list is capped
         # upstream, so say how many were left out rather than implying this is
         # everything the run wrote.

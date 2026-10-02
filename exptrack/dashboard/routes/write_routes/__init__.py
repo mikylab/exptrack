@@ -16,6 +16,7 @@ for no benefit.
 from __future__ import annotations
 
 from .admin import (
+    api_backup_db,
     api_clean_db,
     api_prune_metrics,
     api_reset_db,
@@ -111,6 +112,7 @@ from .settings import (
     api_manage_result_types,
     api_set_capture_settings,
     api_set_metric_settings,
+    api_set_primary_metric,
     api_set_timezone,
 )
 from .studies import (  # noqa: F401
@@ -151,6 +153,7 @@ __all__ = [
     "api_add_to_study",
     "api_add_todo",
     "api_all_studies",
+    "api_backup_db",
     "api_best_so_far",
     "api_bulk_add_to_study",
     "api_bulk_delete",
@@ -224,6 +227,7 @@ __all__ = [
     "api_session_restore_node",
     "api_set_capture_settings",
     "api_set_metric_settings",
+    "api_set_primary_metric",
     "api_set_reference",
     "api_set_stage",
     "api_set_timezone",

@@ -403,6 +403,11 @@ def _build_parser():
                           help="markdown/text/html are the readable forms; html "
                                "is a page that opens in a browser or imports into "
                                "OneNote/Word with real tables")
+    p_export.add_argument("-o", "--output", default=None, metavar="FILE",
+                          help="Write to FILE (UTF-8) instead of stdout")
+    p_export.add_argument("--summary-only", action="store_true", dest="summary_only",
+                          help="With several runs in markdown/text/html: the summary of "
+                               "the set without each run's report")
     p_export.add_argument("--all", action="store_true", dest="export_all",
                           help="Export all experiments (batch export)")
     p_export.add_argument("--max-artifacts", type=int, default=None, metavar="N",
@@ -861,7 +866,7 @@ def main():
     # an unmappable glyph would otherwise raise UnicodeEncodeError mid-command
     # — `session show` died on the tree's first `├──`. See harden_stdio.
     from .formatting import harden_stdio
-    harden_stdio()
+    harden_stdio(redirected_utf8=True)
     _rewrite_bare_tunnel_connect()
 
     # run-start accepts arbitrary --key value user params — handle before argparse

@@ -757,12 +757,21 @@ async function refreshDetail(id, opts) {
   // Images — the tab is the question you are asking, and it does not change
   // because the run did. The tab now survives the move; the restore below
   // falls back to Overview if the new run has no such tab.
+  // A rebuild would delete an open notes editor with the draft in it.
+  _commitOpenNoteEdit();
+  // Another run: its params card starts collapsed and unfiltered. A poll of
+  // the same run keeps what the reader opened.
+  if (currentDetailId !== id) {
+    _paramsExpanded = false; _paramsFilter = ''; _notesCapOpen = false;
+    _filesCounts = {expId: '', images: null, data: null, artifacts: 0};
+    _filesFilter = ''; imageSearch = '';
+  }
   currentDetailId = id;
   showDetailView();
   // An address, so a reload reopens this run instead of the experiments list,
   // and the browser's Back steps out of it. Lateral moves replace the entry so
   // Back leaves the run view rather than walking the filmstrip.
-  if (isInitialEntry) _pushViewHash(_runViewHash(id, currentDetailTab), lateral);
+  if (isInitialEntry) _pushViewHash(_currentRunHash(id), lateral);
   renderExpList();
 
   // Show a loading skeleton only on first entry to this experiment, so an
@@ -794,6 +803,14 @@ async function refreshDetail(id, opts) {
   if (!exp || exp.error) {
     if (_panel) _panel.innerHTML = _detailErrorHtml(id, (exp && exp.error) || 'Experiment not found.');
     return;
+  }
+  // Opened as `#run=<prefix>` (a pasted link, a reload), the run was so far
+  // named by that prefix, and every `currentDetailId === exp.id` check — the
+  // sidebar highlight, stage/study/inline-edit refreshes, the notes repaint —
+  // silently missed. From here on it is named by its full id.
+  if (exp.id !== id) {
+    currentDetailId = exp.id;
+    _pushViewHash(_currentRunHash(exp.id), true);
   }
 
   const regularParams = {};
@@ -831,7 +848,7 @@ async function refreshDetail(id, opts) {
     const delBtn = isManual
       ? `<span class="result-del-x" onclick="event.stopPropagation();deleteParam('${exp.id}','${escJsAttr(k)}')" title="Delete">&times;</span>`
       : '';
-    return `<tr><td style="color:${keyColor}"${keyAttrs}>${esc(k)}</td><td${valAttrs}>${esc(JSON.stringify(v))}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
+    return `<tr class="param-row" data-pkey="${esc(k)}" data-pval="${esc(JSON.stringify(v))}"><td style="color:${keyColor}"${keyAttrs}>${esc(k)}</td><td${valAttrs}>${esc(JSON.stringify(v))}</td><td><span class="source-badge ${src}">${src}</span> ${delBtn}</td></tr>`;
   }).join('');
 
   // "What changed" card — auto-diffs params against the previous run of the
@@ -871,17 +888,15 @@ async function refreshDetail(id, opts) {
     const prevAge = relEarlier(prevByScript.created_at, exp.created_at);
     const prevWhen = prevAge || fmtDt(prevByScript.created_at);
     whatChangedHtml = `<div class="what-changed-card">
-      <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">What changed <span style="font-weight:normal;font-size:12px;color:var(--muted)" title="Started ${esc(fmtDtFull(prevByScript.created_at))}">vs "${esc(prevByScript.name)}" — ${esc(prevWhen)}</span>${_baselineFailedTag(prevByScript.status)}
-        <span class="section-actions" onclick="event.stopPropagation()"><button class="copy-btn" onclick="compareWithPrevious('${prevByScript.id}','${exp.id}')" title="Open full side-by-side compare">Compare</button></span>
+      <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">What changed <span style="font-weight:normal;font-size:12px;color:var(--muted)" title="${esc(prevByScript.name)} — started ${esc(fmtDtFull(prevByScript.created_at))}">vs "${esc(shortRunLabel(prevByScript.name))}" — ${esc(prevWhen)}</span>${_baselineFailedTag(prevByScript.status)}
+        <span class="section-actions" onclick="event.stopPropagation()"><button class="copy-btn" onclick="copyWhatChanged('${escJsAttr(prevByScript.id)}','${escJsAttr(exp.id)}')" title="Copy what changed — pastes as tables into OneNote or Word, as markdown elsewhere">Copy</button><button class="copy-btn" onclick="exportWhatChanged('${escJsAttr(prevByScript.id)}','${escJsAttr(exp.id)}')" title="Download what changed as markdown, with the code patch">Export</button><button class="copy-btn" onclick="compareWithPrevious('${prevByScript.id}','${exp.id}')" title="Open full side-by-side compare">Compare</button></span>
       </h2>
       <div class="section-body">${_baselineFailedNote(prevByScript.status, metricRows.length)}${paramsBody}${metricsBody}
-        <div class="wc-code" id="wc-code-${esc(exp.id)}">
-          <button class="copy-btn" onclick="loadWhatChangedCode('${escJsAttr(prevByScript.id)}','${escJsAttr(exp.id)}',this)"
-            title="Diff this run's code against the previous run's — the script snapshot, or the notebook cells that differ">Show code changes</button>
-        </div>
+        <div class="wc-code" id="wc-code-${esc(exp.id)}">${_wcCodeBlockHtml(prevByScript.id, exp.id)}</div>
       </div>
     </div>`;
   }
+  if (!whatChangedHtml) whatChangedHtml = _whatChangedEmptyHtml(exp);
 
   const addParamForm = `<div class="artifact-add-form" style="margin-top:8px" id="add-param-form-${exp.id}">
     <input type="text" id="param-key-${exp.id}" placeholder="Key" style="width:160px" onkeydown="if(event.key==='Enter')addParam('${exp.id}')">
@@ -966,9 +981,6 @@ async function refreshDetail(id, opts) {
     artRows = '<tbody>' + exp.artifacts.map(artRowHtml).join('') + '</tbody>';
   }
 
-  const artFilterHtml = artTotal > 10
-    ? `<div style="margin-bottom:6px"><input type="text" class="artifact-filter-input" id="art-filter-${exp.id}" placeholder="Filter artifacts..." oninput="filterArtifacts('${exp.id}', this.value)"></div>`
-    : '';
   const artTruncateNotice = artTruncated
     ? `<div class="artifact-truncate-notice" id="art-truncate-${exp.id}">
          <span>Showing ${ARTIFACT_TRUNCATE_THRESHOLD} of ${artTotal} artifacts.</span>
@@ -1110,6 +1122,18 @@ async function refreshDetail(id, opts) {
   ) : '';
 
   const _restoreRename = _preserveActiveRename('detail-panel');
+  // A same-run rebuild (a live run's poll, an edit) rewrites the whole panel.
+  // The panes on screen beside Overview hold state a rebuild would wipe — a
+  // scrolled data table, an open Folders popover, a loaded timeline — so their
+  // nodes are carried across, and `_showDetailTab` does not reload them.
+  _keptPanes = {};
+  if (!isInitialEntry) {
+    for (const t of [currentDetailTab, _resolveSplit(currentDetailTab, detailSplit)]) {
+      const el = t && t !== 'overview' && document.getElementById('detail-tab-' + t);
+      if (el) _keptPanes[t] = el;
+    }
+  }
+  const _restoreFocus = _holdDetailFocus();
   // #main-content is the scroller, and emptying the panel below collapses its
   // content — the browser then clamps scrollTop to 0. On a running experiment
   // that happens every metric poll, so anything below the fold scrolls itself
@@ -1124,24 +1148,10 @@ async function refreshDetail(id, opts) {
   const _restoreScroll = () => { if (_keptScroll) _scroller.scrollTop = _keptScroll; };
   document.getElementById('detail-panel').innerHTML = `
     <div class="detail" style="border:none;padding:4px 16px;margin:0">
-      <!-- Filmstrip: flip through runs in the current list -->
-      <div id="detail-filmstrip" class="detail-filmstrip"></div>
+      <!-- Run navigator: flip through runs in the current list -->
+      <div id="detail-nav" class="run-nav"></div>
 
-      <!-- Summary bar -->
-      <div class="detail-summary">
-        <span class="sum-item"><strong class="status-${esc(exp.status||'')}">${esc(exp.status||'--')}</strong>${exp.status === 'running' ? ' <span class="live-badge" id="live-badge"><span class="live-dot"></span>live</span>' : ''}</span>
-        ${_primaryMetricSummary(exp)}
-        <span class="sum-sep">|</span>
-        <span class="sum-item">Branch: <strong>${esc(exp.git_branch||'--')}</strong></span>
-        <span class="sum-item">Commit: <strong>${_commitHtml(exp)}</strong></span>
-        <span class="sum-sep">|</span>
-        <span class="sum-item">Started: <strong>${fmtDt(exp.created_at)}</strong></span>
-        <span class="sum-item">Duration: <strong>${fmtDur(exp.duration_s)}</strong></span>
-        <span class="sum-sep">|</span>
-        <span class="sum-item">${Object.keys(regularParams).length} params</span>
-        <span class="sum-item">${exp.metrics.length} metrics</span>
-        <span class="sum-item">${exp.artifacts.length} artifacts</span>
-      </div>
+      ${_detailHeaderHtml(exp, prevByScript && prevByScript.id)}
 
       <!-- "What changed vs the previous run of this script" strip (L2) -->
       <div id="vs-prev-strip" class="vs-prev-strip" style="display:none"></div>
@@ -1150,114 +1160,55 @@ async function refreshDetail(id, opts) {
            and each names its own baseline. -->
       <div id="vs-ref-strip" class="vs-prev-strip vs-ref-strip" style="display:none"></div>
 
-      <!-- Header with name + actions -->
-      <div class="detail-header">
-        <h2 id="detail-name" class="editable-hint" data-rename-slot="${exp.id}" ondblclick="startInlineRename('${exp.id}',this)" title="Double-click to rename">${esc(exp.name)}</h2>
-        <div class="detail-actions">
-          ${exp.status === 'running' ? `<button class="action-btn primary" onclick="finishExp('${exp.id}')">Finish Run</button>` : ''}
-          <span style="position:relative;display:inline-block">
-            <button class="action-btn primary" onclick="toggleDetailExport(this)">Export ▼</button>
-            <div class="export-dropdown-menu" style="display:none">
-              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','json')" title="Summary: one line per metric key, artifact list capped with a by-directory summary">JSON</button>
-              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','json-full')" title="Every metric point and every artifact — for round-tripping">JSON (full)</button>
-              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','markdown')">Markdown</button>
-              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','csv')">CSV</button>
-              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','tsv')">TSV</button>
-              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','plain')">Plain Text</button>
-              <button class="action-btn" onclick="closeDetailExport(this);downloadExportFmt('${exp.id}','html')" title="A page with real tables — opens in a browser, imports into OneNote or Word">HTML</button>
-            </div>
-          </span>
-          <span style="position:relative;display:inline-block">
-            <button class="action-btn" onclick="toggleDetailExport(this)">Copy ▼</button>
-            <div class="export-dropdown-menu" style="display:none">
-              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json')">JSON</button>
-              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','json-full')">JSON (full)</button>
-              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','markdown')" title="Pastes as tables in OneNote, Word and Outlook; as markdown in GitHub, Obsidian or a text editor">Markdown / tables</button>
-              <button class="action-btn" onclick="closeDetailExport(this);copyExportFmt('${exp.id}','plain')">Plain Text</button>
-            </div>
-          </span>
-          ${_referenceBtnHtml(exp)}
-          ${diffData.diff && !diffCompacted ? `<button class="action-btn" onclick="exportDiff('${exp.id}')">Export Diff</button><button class="action-btn" onclick="copyDiff('${exp.id}')" title="Copy the diff as markdown (without the patch — use Export .patch for that)">Copy Diff</button><button class="action-btn" onclick="exportPatch('${exp.id}')" title="Download the raw diff as a .patch file for git apply">Export .patch</button>` : ''}
-          ${_compactBtnHtml(exp)}
-          <button class="action-btn danger" onclick="deleteExp('${exp.id}','${escJsAttr(exp.name)}')">Delete</button>
-          <button class="close-btn" onclick="showWelcome()" title="Back to list">&times;</button>
-        </div>
-      </div>
-
       ${sessionOriginHtml}
       ${branchContextHtml}
       ${errorHtml}
 
       <div class="tabs" id="detail-tabs">
-        <button class="tab active" onclick="switchDetailTab('overview','${exp.id}')">Overview</button>
-        <button class="tab" onclick="switchDetailTab('timeline','${exp.id}')" title="What ran, in order — with the run's captured source folded in">Timeline</button>
-        <button class="tab" onclick="switchDetailTab('charts','${exp.id}')">Charts</button>
-        <button class="tab" onclick="switchDetailTab('images','${exp.id}')">Images</button>
-        <button class="tab" onclick="switchDetailTab('logs','${exp.id}')">Data Files</button>
-        <button class="tab" onclick="switchDetailTab('compare-within','${exp.id}')">Compare Within</button>
-        <button class="tab" onclick="switchDetailTab('confusion','${exp.id}')" title="Calculate accuracy, precision, recall, F1 from a confusion matrix">Confusion Matrix</button>
+        <button class="tab" data-tab="overview" onclick="switchDetailTab('overview','${escJsAttr(exp.id)}')">Overview</button>
+        <button class="tab" data-tab="charts" onclick="switchDetailTab('charts','${escJsAttr(exp.id)}')">Charts</button>
+        <button class="tab" data-tab="files" onclick="switchDetailTab('files','${escJsAttr(exp.id)}')">Files</button>
+        <button class="tab" data-tab="code" onclick="switchDetailTab('code','${escJsAttr(exp.id)}')">Code</button>
+        <button class="tab-split" onclick="toggleDetailSplit('${escJsAttr(exp.id)}')" title="Show a second tab beside this one">⫼ Split</button>
       </div>
+      <div class="detail-panes" id="detail-panes">
+      <div id="split-head" class="split-head"></div>
 
-      <div id="detail-tab-overview">
-        ${whatChangedHtml}
-        <!-- Two-column grid -->
-        <div class="detail-grid">
-          <!-- Left column: info + params -->
-          <div>
-            <div class="info-grid">
-              <span class="label">ID</span><span>${exp.id}</span>
-              <span class="label">Script</span><span id="detail-script" class="editable-hint" ondblclick="startDetailScriptEdit('${exp.id}',this)" title="Double-click to edit" style="font-size:12px">${esc(exp.script||'--')}</span>
-              <span class="label">Host</span><span>${esc(exp.hostname||'--')}</span>
-              <span class="label">Python</span><span>${esc(exp.python_ver||'--')}</span>
-              <span class="label">Tags</span><span class="tag-list" id="detail-tags">${tagsHtml}</span>
-              <span class="label">Studies</span><span class="tag-list" id="detail-studies">${studiesDetailHtml}</span>
-              <span class="label">Stage</span><span id="detail-stage" class="editable-hint" onclick="startDetailStageEdit('${exp.id}',this)" title="Click to edit stage">${exp.stage != null ? esc(String(exp.stage)) + (exp.stage_name ? ' (' + esc(exp.stage_name) + ')' : '') : '<span style="color:var(--muted)">click to set stage</span>'}</span>
-              <span class="label">Notes</span><span id="detail-notes" class="detail-notes-inline editable-hint" onclick="startDetailNoteEdit('${exp.id}',this)" title="Click to edit">${exp.notes ? esc(exp.notes) : '<span style="color:var(--muted)">click to add notes</span>'}</span>
-              <span class="label">Uncommitted</span><span>${diffData.diff ? (diffCompacted ? '<span style="color:var(--yellow)">' + esc(diffData.diff.split(' — ')[1] || 'compacted') + '</span>' : '<span style="color:var(--green)">' + exp.diff_lines + ' lines</span> <button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:6px" onclick="exportDiff(\'' + exp.id + '\')">Export</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="copyDiff(\'' + exp.id + '\')" title="Copy the diff as markdown">Copy</button><button class="action-btn" style="font-size:11px;padding:1px 8px;margin-left:4px" onclick="compactDiff(\'' + exp.id + '\')">Compact</button>') : '<span style="color:var(--muted)">none (all changes were committed)</span>'}</span>
-            </div>
-            ${reproHtml}
-            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Params (${Object.keys(regularParams).length})<span class="section-actions" onclick="event.stopPropagation()"><button class="copy-btn" title="Copy as a markdown table — pastes into lab notebooks, Obsidian, GitHub, Jupyter markdown cells" onclick="copyExportFmt('${exp.id}','params-md')">Copy</button></span></h2>
-            <div class="section-body">
-            ${paramRows ? '<table class="params-table"><tr><th>Key</th><th>Value</th><th>Source</th></tr>'+paramRows+'</table>' : '<p style="color:var(--muted);font-size:13px">No params yet.</p>'}
-            ${addParamForm}
-            </div>
-            ${datasetsHtml}
-            ${varHtml}
-          </div>
-          <!-- Right column: metrics + charts + artifacts -->
-          <div>
-            <h2 class="section-toggle" onclick="this.classList.toggle('collapsed')">Metrics (${exp.metrics.length})</h2>
-            <div class="section-body">
-            ${metricRows || '<p style="color:var(--muted);font-size:13px">No metrics yet.</p>'}
-            ${logResultForm}
-            <div id="overview-chart-preview" style="margin-top:12px"></div>
-            </div>
-            <h2 class="${artSectionClass}" onclick="this.classList.toggle('collapsed')">Artifacts (${exp.artifacts.length})<span class="section-sub">${esc(artTypeSummary)}</span></h2>
-            <div class="section-body">
-            ${artTotal ? artFilterHtml + '<table class="' + artTableClass + '" id="artifact-table-' + exp.id + '"><thead><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr></thead>' + artRows + '</table>' + artTruncateNotice : '<p style="color:var(--muted);font-size:13px">No artifacts yet.</p>'}
-            ${addArtifactForm}
-            </div>
-          </div>
-        </div>
-        <!-- Full-width sections below the grid -->
-        <div style="margin-top:20px">
-          ${codeHtml}
-        </div>
-      </div>
+      <div id="detail-tab-overview">${_overviewHtml(exp, {
+        whatChangedHtml, metricRows, logResultForm, reproHtml, tagsHtml, studiesHtml: studiesDetailHtml, diffData, diffCompacted,
+        paramsCard: _paramsCardHtml(exp, paramRows, addParamForm, Object.keys(regularParams).length),
+      })}</div>
 
-      <div id="detail-tab-timeline" style="display:none"></div>
       <div id="detail-tab-charts" style="display:none"></div>
-      <div id="detail-tab-images" style="display:none"></div>
-      <div id="detail-tab-logs" style="display:none"></div>
-      <div id="detail-tab-compare-within" style="display:none"></div>
-      <div id="detail-tab-confusion" style="display:none"></div>
+      <div id="detail-tab-files" style="display:none">${_filesShellHtml(exp)}</div>
+      <div id="detail-tab-code" style="display:none">${_codeShellHtml(exp)}</div>
+      ${_toolShellHtml('compare-within', 'Compare within', exp)}
+      ${_toolShellHtml('confusion', 'Confusion matrix', exp)}
+      </div>
     </div>
   `;
+  for (const t in _keptPanes) {
+    const fresh = document.getElementById('detail-tab-' + t);
+    if (fresh) fresh.replaceWith(_keptPanes[t]);
+  }
   _restoreScroll();
   _restoreRename();
 
-  // Filmstrip of the current run list, active card centered.
-  renderFilmstrip(exp.id);
+  // What left Overview: the diff and what-changed card to Code › Changes,
+  // variables / datasets / environment to Code › Env, artifacts to Files.
+  const _chEl = document.getElementById('detail-code-changes');
+  if (_chEl) _chEl.innerHTML = _codeChangesHtml(exp, codeHtml, prevByScript && prevByScript.id);
+  const _envEl = document.getElementById('detail-code-env');
+  if (_envEl) _envEl.innerHTML = _codeEnvHtml(exp, varHtml, datasetsHtml);
+  const _artEl = document.getElementById('detail-files-artifacts');
+  _filesCounts.artifacts = exp.artifacts.length;
+  if (_artEl) _artEl.innerHTML = (artTotal ? '<table class="' + artTableClass + '" id="artifact-table-' + esc(exp.id)
+    + '"><thead><tr><th>File</th><th>Path</th><th style="width:80px"></th></tr></thead>' + artRows + '</table>' + artTruncateNotice
+    : '<p class="muted-note">No artifacts yet.</p>') + addArtifactForm;
+  _applyParamsCap();
+
+  // Prev / N of M / next through the current run list.
+  renderRunNavigator(exp.id);
 
   // Populate the two baseline strips (async; guarded against navigation).
   loadVsPrevious(exp.id);
@@ -1290,16 +1241,16 @@ async function refreshDetail(id, opts) {
 
   // Cache metrics data for Charts tab and render overview preview
   _chartsMetricsData = metricsData;
-  renderOverviewChartPreview(metricsData);
 
-  // Put the user back on the tab they were reading (see the reset above). Runs
-  // after _chartsMetricsData is cached so a restored Charts tab renders against
-  // this refresh's data, not the previous one's.
-  if (currentDetailTab !== 'overview') {
-    const tabEl = document.getElementById('detail-tab-' + currentDetailTab);
-    switchDetailTab(tabEl ? currentDetailTab : 'overview', exp.id);
-  }
+  // Put the reader back on the tab and sub-view they were on (a poll rebuild
+  // wrote fresh markup). Runs after _chartsMetricsData is cached so a restored
+  // Charts tab renders against this refresh's data, not the previous one's.
+  // Names were already resolved, so an unknown tab is Overview by now.
+  _detailExp = exp;
+  _showDetailTab(currentDetailTab, exp.id);
+  _keptPanes = {};
   _restoreScroll();
+  _restoreFocus();
 
   // Populate result type dropdown
   populateResultTypeDropdown(exp.id);
@@ -1312,145 +1263,33 @@ async function refreshDetail(id, opts) {
   }
 }
 
-// ── Experiment filmstrip ─────────────────────────────────────────────────────
-// A horizontal strip of the runs in the current filtered+sorted list, rendered
-// at the top of the detail view so you can flip between runs without going back
-// to the table. The open run is highlighted and centered; each card shows a
-// primary-metric value + a delta vs its older neighbor so the change reads at a
-// glance. Reuses getFilteredExperiments() (same order as the table/sidebar) and
-// the shared metricDelta() helper — no new fetch.
 
-// Primary metric key: the active "Sort by metric" key when set, else the first
-// metric key present on any run in the list.
-// Which metric the filmstrip shows. An explicit metric sort wins — the user
-// just said what they are looking at — then the set's consensus primary metric
-// (the shared rule, so the strip and the Result column can never label the same
-// list differently), and only then the old fallback of "the first key any run
-// happened to log", which is arbitrary and was picking a different metric from
-// every other surface.
-function _filmstripMetricKey(exps) {
-  if (typeof sortCol === 'string' && sortCol.startsWith('metric:')) return sortCol.slice(7);
-  const consensus = consensusMetricKey(exps);
-  if (consensus) return consensus;
-  for (const e of exps) {
-    const mk = e.metrics ? Object.keys(e.metrics) : [];
-    if (mk.length) return mk[0];
+// "What changed" as a document: the pair's comparison, rendered server-side by
+// the same route Compare's Copy and Export use, so the card, Compare and the
+// file can never disagree about what changed between the two runs. Older run
+// first, matching the card's Previous / This run columns.
+async function _whatChangedDocument(prevId, curId, patch) {
+  const d = await postApi('/api/multi-compare',
+                          {ids: [prevId, curId], metric_goals: metricPolarityGoals(),
+                           document: true, patch: patch});
+  if (!d || d.error || !d.markdown) {
+    owlSay('Could not build what changed' + (d && d.error ? ': ' + d.error : '.'));
+    return null;
   }
-  return null;
+  return d;
 }
 
-function _fsMetricValue(e, key) {
-  if (!key || !e.metrics || !e.metrics[key]) return null;
-  const v = Number(e.metrics[key].value);
-  return isNaN(v) ? null : v;
+async function copyWhatChanged(prevId, curId) {
+  const d = await _whatChangedDocument(prevId, curId, false);
+  if (d) await copyRich(d.markdown, d.html || '', 'what changed');
 }
 
-// Compact delta badge for a filmstrip card (arrow + percent, or a short absolute
-// delta when the baseline is 0). The full metricDelta() form used by Compare and
-// the "What changed" card is too wide for a 150px card, so this trims it to fit.
-// Direction/colour semantics come from the shared _deltaVisual(), so a
-// lower-is-better metric (loss) colours the same here as everywhere else.
-function _fsDeltaHtml(prev, val, key, dir) {
-  const d = val - prev;
-  // Gate on the shared float-noise epsilon, not `d === 0`: a 1e-16 difference
-  // between two arithmetically-equal values is not a move, and treating it as
-  // one made the filmstrip badge contradict the "What changed" card, which has
-  // always used metricMoved().
-  if (!metricMoved(prev, val)) return '';
-  const vis = _deltaVisual(key, d, dir);
-  const txt = prev !== 0
-    ? (d > 0 ? '+' : '') + (d / Math.abs(prev) * 100).toFixed(1) + '%'
-    : (d > 0 ? '+' : '') + d.toFixed(3);
-  return '<span style="color:' + vis.color + '" title="' + esc(vis.title) + '">'
-    + vis.arrow + ' ' + txt + '</span>';
-}
-
-// The delta on each card is "vs the chronologically previous run", so the
-// baseline must be picked by time — not by list position. `exps[i+1]` is only
-// the older run under the default created_at-desc sort; with "Sort by metric"
-// on (or any pin reordering the list) it becomes an arbitrary run while the
-// badge still reads as a chronological delta. Resolve every run's predecessor in
-// one time-ordered pass (a per-card scan would be O(N^2) over the whole list).
-function _fsPrevByTime(exps) {
-  const dated = [];
-  for (const e of exps) {
-    const d = expDate(e.created_at);
-    if (d && !isNaN(d)) dated.push({exp: e, t: d.getTime()});
-  }
-  dated.sort((a, b) => a.t - b.t);
-  const prev = new Map();
-  for (let i = 1; i < dated.length; i++) {
-    // Skip back over runs sharing this timestamp — the baseline must be strictly
-    // older, or two runs logged in the same second would each be the other's.
-    let j = i - 1;
-    while (j >= 0 && dated[j].t === dated[i].t) j--;
-    if (j >= 0) prev.set(dated[i].exp.id, dated[j].exp);
-  }
-  return prev;
-}
-
-function renderFilmstrip(currentId) {
-  const strip = document.getElementById('detail-filmstrip');
-  if (!strip) return;
-  const exps = getFilteredExperiments();
-  // A single run has nothing to flip through.
-  if (exps.length < 2) { strip.innerHTML = ''; strip.style.display = 'none'; return; }
-  strip.style.display = '';
-  const mkey = _filmstripMetricKey(exps);
-  const curIdx = exps.findIndex(e => e.id === currentId);
-  // Every card shares one metric, so resolve its polarity (a localStorage read)
-  // and each run's chronological predecessor once for the whole strip.
-  const mdir = mkey ? metricGoodDirection(mkey) : 1;
-  const prevByTime = mkey ? _fsPrevByTime(exps) : null;
-
-  const cards = exps.map((e, i) => {
-    const active = e.id === currentId;
-    const val = _fsMetricValue(e, mkey);
-    // Delta vs the chronologically previous run (not merely the next card —
-    // list order changes with sorting/pinning, run order doesn't).
-    let deltaHtml = '';
-    if (mkey && val !== null) {
-      const prevExp = prevByTime.get(e.id);
-      const prev = prevExp ? _fsMetricValue(prevExp, mkey) : null;
-      if (prev !== null) deltaHtml = _fsDeltaHtml(prev, val, mkey, mdir);
-    }
-    const metricLine = mkey
-      ? '<span class="fs-metric">' + esc(abbrevMetric(mkey)) + ' ' + (val !== null ? fmtMetricVal(val) : '--') + '</span>'
-      : '<span class="fs-metric fs-metric-none">no metrics</span>';
-    return '<div class="fs-card' + (active ? ' active' : '') + '" data-fs-id="' + esc(e.id) + '"' +
-      ' onclick="refreshDetail(\'' + escJsAttr(e.id) + '\',{keepSidebar:true})" title="' + escJsAttr(e.name) + '">' +
-      '<div class="fs-card-top"><span class="status-dot status-' + esc(e.status) + '"></span>' +
-      '<span class="fs-name">' + esc(e.name) + '</span></div>' +
-      '<div class="fs-card-bot">' + metricLine +
-        (deltaHtml ? '<span class="fs-delta">' + deltaHtml + '</span>' : '') + '</div>' +
-      '</div>';
-  }).join('');
-
-  const counter = curIdx >= 0
-    ? '<span class="fs-counter">' + (curIdx + 1) + ' / ' + exps.length + '</span>' : '';
-  strip.innerHTML =
-    '<button class="fs-nav" onclick="filmstripStep(-1)" title="Previous run (←)" aria-label="Previous run">‹</button>' +
-    '<div class="fs-track" id="fs-track">' + cards + '</div>' +
-    '<button class="fs-nav" onclick="filmstripStep(1)" title="Next run (→)" aria-label="Next run">›</button>' +
-    counter;
-
-  // Center the active card within the track only (no page scroll).
-  const track = document.getElementById('fs-track');
-  const activeEl = strip.querySelector('.fs-card.active');
-  if (track && activeEl) {
-    track.scrollLeft = activeEl.offsetLeft - (track.clientWidth - activeEl.clientWidth) / 2;
-  }
-}
-
-// Step to the adjacent run in the current list. dir = -1 (previous/left) or
-// +1 (next/right). No-op at either end.
-function filmstripStep(dir) {
-  const exps = getFilteredExperiments();
-  const idx = exps.findIndex(e => e.id === currentDetailId);
-  if (idx < 0) return;
-  const next = idx + dir;
-  if (next < 0 || next >= exps.length) return;
-  refreshDetail(exps[next].id, {keepSidebar: true});
+async function exportWhatChanged(prevId, curId) {
+  const d = await _whatChangedDocument(prevId, curId, true);
+  if (!d) return;
+  await saveOrDownload(d.markdown, 'exptrack_what_changed_' + String(curId).slice(0, 8) + '.md',
+                       'text/markdown');
+  owlSay('What changed exported.');
 }
 
 // ── "vs previous run" strip (L2) ─────────────────────────────────────────────
@@ -1460,304 +1299,77 @@ function filmstripStep(dir) {
 // common edit in the tweak-one-line loop is to the code itself. Fetched on
 // demand (a run's snapshot can be hundreds of KB, and most visits don't open
 // it) and rendered with the same word-level diff renderer the Compare view uses.
-async function loadWhatChangedCode(prevId, curId, btn) {
-  const box = btn.parentElement;
-  const restore = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Loading…';
+// The code diff against the previous run, as a section like every other: an
+// arrow header (click to open or close) with Copy diff and Export .patch on its
+// right, over a body the diff opens into. Used on the Overview card and in
+// Code › Changes. It was a Show/Hide button beside the arrow sections, two
+// different controls for the same job.
+function _wcCodeBlockHtml(prevId, curId) {
+  return '<div class="wc-code-block">'
+    + '<h2 class="section-toggle collapsed wc-code-head" onclick="loadWhatChangedCode(\'' + escJsAttr(prevId) + '\',\'' + escJsAttr(curId) + '\',this)"'
+    + ' title="Diff this run&#39;s code against the previous run&#39;s — the script snapshot, or the notebook cells that differ">'
+    + 'Code changes since the previous run<span class="section-sub wc-code-sub"></span>'
+    + '<span class="section-actions" onclick="event.stopPropagation()">' + _wcCodeActionsHtml(prevId, curId) + '</span></h2>'
+    + '<div class="wc-code-body" style="display:none"></div></div>';
+}
+
+async function loadWhatChangedCode(prevId, curId, head) {
+  const body = head.closest('.wc-code-block').querySelector('.wc-code-body');
+  const open = head.classList.toggle('collapsed') === false;
+  body.style.display = open ? '' : 'none';
+  if (!open || body.dataset.loaded) return;       // fetched once, then just shown/hidden
+  const sub = head.querySelector('.wc-code-sub');
+  sub.textContent = 'loading…';
   const data = await api('/api/compare?id1=' + encodeURIComponent(prevId)
     + '&id2=' + encodeURIComponent(curId));
+  sub.textContent = '';
   if (!data || data.error) {
-    btn.disabled = false;
-    btn.textContent = restore;
+    body.innerHTML = _apiFailedHtml('the code changes');
     return;
   }
-  // '' means neither run captured code to compare (no script snapshot, no
-  // notebook cells) — say so rather than collapsing to an empty box.
-  box.innerHTML = _renderCompareCodeDiff(data.code_diff, data.exp1, data.exp2)
+  // The renderer is Compare's, which brings its own "Code changes" summary;
+  // here the arrow header is that summary, so its count moves up and the
+  // inner one is hidden (CSS). '' means neither run captured code to compare.
+  body.innerHTML = _renderCompareCodeDiff(data.code_diff, data.exp1, data.exp2)
     || '<p style="color:var(--muted);font-size:13px">No code captured for one of '
      + 'these runs, so there is nothing to diff. Scripts are snapshotted at run '
      + 'time; notebook runs compare their executed cells.</p>';
+  body.querySelectorAll(':scope > details').forEach(d => { d.open = true; });
+  const count = body.querySelector(':scope > details > summary .cmp-code-count, :scope > details > summary .cmp-code-none');
+  if (count) sub.textContent = count.textContent;
+  body.dataset.loaded = '1';
 }
 
-// The code chip. `source_changed` is this run's own code (the same snapshots and
-// cells the Code-changes panel diffs); `code_changed` is the wider repository
-// state, which moves when *any* tracked file differs. Reporting the wide one as
-// "code changed" put an amber chip on a byte-identical rerun and contradicted
-// the panel directly below it, so the two facts get two different chips.
-function _vsCodeChip(d) {
-  if (d.source_changed) {
-    return '<span class="vs-chip vs-chip-code" title="This run\'s code differs from'
-      + ' the previous run\'s — see Code changes below">code changed</span>';
-  }
-  if (!d.code_changed) return '';
-  if (d.source_changed === false) {
-    return '<span class="vs-chip vs-chip-repo" title="This run\'s own code is'
-      + ' identical. Something else in the repository differed — another file, or a'
-      + ' different commit.">repo changed elsewhere</span>';
-  }
-  // source_changed === null: neither run captured code to compare, so the
-  // repository signal is all we have. Say only what it supports.
-  return '<span class="vs-chip vs-chip-repo" title="The repository state differed.'
-    + ' Neither run captured code, so exptrack cannot say whether this run\'s own'
-    + ' code changed.">repo changed</span>';
+// Copy and Export for the code diff against the previous run, on their own —
+// the card's Copy/Export carry the whole write-up, and the uncommitted-diff
+// buttons in Code › Changes only show when the tree was dirty. The patch is
+// the pair's, the same one Compare's Export .patch writes.
+function _wcCodeActionsHtml(prevId, curId) {
+  const a = escJsAttr(prevId), b = escJsAttr(curId);
+  return '<span class="wc-code-actions">'
+    + '<button class="copy-btn" onclick="copyWhatChangedDiff(\'' + a + '\',\'' + b + '\')" title="Copy the code diff against the previous run">Copy diff</button>'
+    + '<button class="copy-btn" onclick="exportWhatChangedPatch(\'' + a + '\',\'' + b + '\')" title="Download the diff as a .patch for git apply to the previous run&#39;s code">Export .patch</button>'
+    + '</span>';
 }
 
-// "Previous" means the next-older run of the same script — spelled out here
-// because the newest-first list puts that run below the current one.
-const _VS_PREV_LABEL = '<span class="vs-prev-label" title="Compared against the'
-  + ' last run of this script started before this one">vs previous run</span>';
-
-// The chips for a delta payload — shared by the "vs previous" and "vs
-// reference" strips, which differ only in which baseline they name. Two copies
-// would be two places for the polarity colouring and the precision widening to
-// drift, on the one surface whose whole job is stating a comparison accurately.
-// Returns '' when nothing moved, so the caller can render its own empty note.
-function _vsChipsHtml(d) {
-  const pcs = d.param_changes || [];
-  const mcs = d.metric_changes || [];
-  if (pcs.length === 0 && mcs.length === 0 && !d.code_changed) return '';
-  let chips = '';
-  for (const c of pcs.slice(0, 6)) {
-    chips += '<span class="vs-chip vs-chip-param">' + esc(c.key) + ' '
-      + esc(_vsFmt(c.from)) + '→' + esc(_vsFmt(c.to)) + '</span>';
-  }
-  if (pcs.length > 6) chips += '<span class="vs-chip">+' + (pcs.length - 6) + ' params</span>';
-  chips += _vsCodeChip(d);
-  for (const c of mcs.slice(0, 6)) {
-    // Colour by better/worse (polarity-aware), not by the sign of the change —
-    // a rising loss is a regression and must not read green.
-    let cls = 'vs-chip vs-chip-metric', arrow = '', title = '';
-    if (c.delta != null && c.delta !== 0) {
-      const vis = _deltaVisual(c.key, c.delta);
-      cls += vis.better ? ' vs-chip-better' : ' vs-chip-worse';
-      arrow = c.delta > 0 ? ' ▲' : ' ▼';
-      title = ' title="' + esc(vis.title) + '"';
-    }
-    // Chips round to 4dp, which prints a genuine 1e-7 move as "0.5→0.5" next to
-    // an arrow claiming it moved — widen just that chip until the two differ.
-    const [sf, st] = _vsFmtPair(c.from, c.to);
-    chips += '<span class="' + cls + '"' + title + '>' + esc(c.key) + ' '
-      + esc(sf) + '→' + esc(st) + arrow + '</span>';
-  }
-  return chips;
+async function _whatChangedPatch(prevId, curId) {
+  const d = await _whatChangedDocument(prevId, curId, true);
+  if (d && !d.patch) owlSay('No code diff against the previous run (no code change, or no code captured).');
+  return d && d.patch ? d : null;
 }
 
-async function loadVsPrevious(id) {
-  let d;
-  try {
-    d = await api('/api/run-delta/' + id);
-  } catch (e) { return; }
-  // Bail if the user navigated away while we were fetching.
-  if (currentDetailId !== id) return;
-  const strip = document.getElementById('vs-prev-strip');
-  if (!strip) return;
-  if (!d || d.error || !d.previous) { strip.style.display = 'none'; return; }
-  const chips = _vsChipsHtml(d)
-    || '<span class="vs-prev-none">no params, code, or metrics changed</span>';
-  strip.innerHTML = _VS_PREV_LABEL + chips
-    + _vsPrevLink(d.previous, d.current_created_at);
-  strip.style.display = '';
+async function copyWhatChangedDiff(prevId, curId) {
+  const d = await _whatChangedPatch(prevId, curId);
+  if (d) await copyRich(d.patch, '<pre>' + esc(d.patch) + '</pre>', 'code diff');
 }
 
-// ── vs the reference run ─────────────────────────────────────────────────────
-// A second, deliberately separate comparison. "vs previous" is lineage — what
-// changed since last time; this is a fixed target — is it better than the thing
-// I am trying to beat. They are shown as two strips rather than one switchable
-// one precisely because they answer different questions and routinely disagree.
-//
-// Every state names its own baseline and where that choice was made. A number
-// whose origin the reader has to guess is the failure this whole feature exists
-// to avoid, so there is no state here that renders a bare delta.
-
-// The number this run is judged by, in the header line — with where that choice
-// came from, since a heuristic pick is exptrack's guess and should read as one.
-// A configured-but-unlogged metric says so rather than borrowing another key.
-function _primaryMetricSummary(exp) {
-  const p = exp.primary_metric || {};
-  if (!p.key) return '';
-  if (p.missing) {
-    return '<span class="sum-sep">|</span><span class="sum-item sum-primary"'
-      + ' title="' + esc(p.key) + ' is this project\'s metric, but this run never'
-      + ' logged it">' + esc(p.key) + ': <strong class="primary-missing">not logged</strong></span>';
-  }
-  const guess = p.source === 'heuristic';
-  const note = guess
-    ? 'Picked from this run\'s own metrics. Make it explicit with `exptrack primary-metric '
-      + p.key + '`.'
-    : 'The metric set for this ' + p.source + '.';
-  return '<span class="sum-sep">|</span><span class="sum-item sum-primary" title="'
-    + esc(note) + '">' + esc(p.key) + ': <strong>' + esc(fmtMetricVal(p.final)) + '</strong>'
-    + (guess ? '<span class="primary-guess-tag">guessed</span>' : '') + '</span>';
+async function exportWhatChangedPatch(prevId, curId) {
+  const d = await _whatChangedPatch(prevId, curId);
+  if (!d) return;
+  await saveOrDownload(d.patch, 'exptrack_code_changes_' + String(curId).slice(0, 8) + '.patch', 'text/x-diff');
+  owlSay('Saved the patch — apply it with git apply to the previous run\'s code.');
 }
 
-// The pin lives in the run header, because deciding a reference happens while
-// looking at a run — either "this is the one to beat" or "this is no longer it".
-// A run that is the reference by way of a *study* setting is not offered an
-// unpin here: the button would clear the project level and appear to do
-// nothing, since the study setting still shadows it.
-function _referenceBtnHtml(exp) {
-  const ref = exp.reference;
-  const isRef = ref && !ref.stale && ref.id === exp.id;
-  if (isRef && ref.source === 'study') {
-    return '<button class="action-btn" disabled title="This run is the reference'
-      + ' for study “' + esc(ref.study) + '”. Change it with'
-      + ' `exptrack reference --study ' + esc(ref.study) + '`.">reference ✓</button>';
-  }
-  if (isRef) {
-    return '<button class="action-btn" onclick="setAsReference(\'' + escJsAttr(exp.id)
-      + '\', true)" title="Stop measuring runs against this one">Unpin reference</button>';
-  }
-  return '<button class="action-btn" onclick="setAsReference(\'' + escJsAttr(exp.id)
-    + '\', false)" title="Measure every run against this one — a fixed target,'
-    + ' separate from each run\'s own previous-run comparison">Set as reference</button>';
-}
-
-// Plain text, escaped at each insertion point — the codebase rule. Returning
-// pre-escaped markup meant the tooltip had to strip tags back out of it, which
-// double-escaped the study name and made a no-op regex look like sanitizing.
-function _refSourceNote(ref) {
-  return ref.source === 'study'
-    ? 'set for study “' + ref.study + '”'
-    : 'set for this project';
-}
-
-async function loadVsReference(id) {
-  let d;
-  try {
-    d = await api('/api/reference-delta/' + id);
-  } catch (e) { return; }
-  if (currentDetailId !== id) return;
-  const strip = document.getElementById('vs-ref-strip');
-  if (!strip) return;
-  // No reference configured: the strip is absent rather than empty. Nothing is
-  // substituted for an unset reference — that is the point of the feature.
-  if (!d || d.error || !d.reference) { strip.style.display = 'none'; return; }
-  const ref = d.reference;
-
-  // A stale reference is stated, not hidden. Rendering nothing here would read
-  // as "no reference set" and quietly conceal that the comparison the user has
-  // been reading stopped happening.
-  if (ref.stale) {
-    strip.innerHTML = _VS_REF_LABEL + '<span class="vs-ref-stale">' +
-      (ref.stale === 'trashed'
-        ? 'the reference run is in the Trash — restore it, or pick another'
-        : 'the reference run no longer exists — pick another') +
-      ' <span class="vs-ref-where">(' + esc(_refSourceNote(ref)) + ')</span></span>';
-    strip.style.display = '';
-    return;
-  }
-
-  if (d.is_reference) {
-    strip.innerHTML = _VS_REF_LABEL +
-      '<span class="vs-ref-self">this run <em>is</em> the reference ' +
-      '<span class="vs-ref-where">(' + esc(_refSourceNote(ref)) + ')</span></span>';
-    strip.style.display = '';
-    return;
-  }
-
-  const chips = _vsChipsHtml(d)
-    || '<span class="vs-prev-none">identical to the reference</span>';
-  strip.innerHTML = _VS_REF_LABEL + chips + _vsRefLink(ref, d.current_created_at);
-  strip.style.display = '';
-}
-
-const _VS_REF_LABEL = '<span class="vs-prev-label vs-ref-label" title="Compared'
-  + ' against the run pinned as this project\'s reference — a fixed target, not'
-  + ' the previous run">vs reference</span>';
-
-function _vsRefLink(ref, curCreatedAt) {
-  const label = ref.name || ref.id.slice(0, 6);
-  const when = relEarlier(ref.created_at, curCreatedAt);
-  return '<a class="vs-prev-open" href="#" onclick="showDetail(\'' + escJsAttr(ref.id)
-    + '\');return false" title="Open the reference run — ' + esc(_refSourceNote(ref))
-    + '">' + esc(label)
-    + (when ? ' <span class="vs-prev-when">' + esc(when) + '</span>' : '')
-    + _baselineFailedTag(ref.status)
-    + '</a><span class="vs-ref-where">' + esc(_refSourceNote(ref)) + '</span>';
-}
-
-// Pin / unpin from the run's own header — the two places you decide a reference
-// are while looking at a strong run and while looking at the current one.
-async function setAsReference(id, clear) {
-  const r = await postApi('/api/experiment/' + id + '/set-reference',
-                          {study: '', clear: !!clear});
-  if (!r || r.error) { alert((r && r.error) || 'Could not set the reference.'); return; }
-  refreshDetail(id, {keepSidebar: true});
-}
-
-// A failed baseline is still the right baseline — "it broke, I fixed it, what
-// changed?" is the loop this card exists for — but its metrics stop wherever it
-// crashed, so an unqualified "acc 0.41 → 0.87" reads as a result that was never
-// measured. Both surfaces say so instead of hiding the comparison.
-function _baselineFailedTag(status) {
-  if (status !== 'failed') return '';
-  return '<span class="wc-baseline-failed" title="The run being compared against'
-    + ' failed. Its parameters and code are exact; its metrics stop where it'
-    + ' crashed.">failed</span>';
-}
-
-function _baselineFailedNote(status, metricRowCount) {
-  if (status !== 'failed' || !metricRowCount) return '';
-  return '<p class="wc-baseline-warn">The previous run failed, so the metric'
-    + ' values below are wherever it stopped — not a finished result. Parameter'
-    + ' and code changes are unaffected.</p>';
-}
-
-// The baseline chip carries its start time, not just its name. "Previous" is
-// ambiguous on its own: the run list is newest-first, so the run this compares
-// against sits *below* the current row and reads as the next one — the date is
-// what makes it checkable at a glance.
-function _vsPrevLink(prev, curCreatedAt) {
-  if (!prev || !prev.id) return '';
-  const label = prev.name || prev.id.slice(0, 6);
-  const when = relEarlier(prev.created_at, curCreatedAt);
-  const full = prev.created_at ? ' (' + fmtDtFull(prev.created_at) + ')' : '';
-  return '<a class="vs-prev-open" href="#" onclick="showDetail(\'' + escJsAttr(prev.id)
-    + '\');return false" title="Open this run — the last run of this script started before'
-    + ' the one you\'re viewing' + esc(full) + '">'
-    + esc(label) + (when ? ' <span class="vs-prev-when">' + esc(when) + '</span>' : '')
-    + _baselineFailedTag(prev.status)
-    + '</a>';
-}
-
-// How much earlier the baseline ran, e.g. "2 min earlier", "2 days earlier".
-// An absolute timestamp can't answer the question this needs to answer: `fmtDt`
-// only resolves to the minute, so two runs launched seconds apart print the same
-// string, and the newest-first list puts the older run *below* the current row —
-// leaving no way to tell which direction the comparison runs. A relative age
-// can't be misread.
-function relEarlier(prevIso, curIso) {
-  if (!prevIso || !curIso) return '';
-  const a = expDate(prevIso), b = expDate(curIso);
-  if (!a || !b || isNaN(a) || isNaN(b)) return '';
-  const secs = Math.round((b.getTime() - a.getTime()) / 1000);
-  if (secs < 0) return 'started LATER — not a previous run';   // never expected
-  const units = [['day', 86400], ['hr', 3600], ['min', 60]];
-  for (const [name, size] of units) {
-    if (secs >= size) {
-      const n = Math.round(secs / size);
-      return n + ' ' + name + (n === 1 || name === 'min' || name === 'hr' ? '' : 's') + ' earlier';
-    }
-  }
-  // Sub-second gaps ("0s earlier" reads as a contradiction) — back-to-back runs.
-  return secs >= 1 ? secs + 's earlier' : 'just before';
-}
-
-// Both sides of a chip, at enough precision to differ (see fmtMetricPair).
-function _vsFmtPair(a, b) {
-  const sa = _vsFmt(a), sb = _vsFmt(b);
-  if (sa !== sb || typeof a !== 'number' || typeof b !== 'number') return [sa, sb];
-  return fmtMetricPair(a, b);
-}
-
-function _vsFmt(v) {
-  if (v === null || v === undefined) return '∅';
-  if (typeof v === 'number') return (Math.abs(v) >= 1e-4 && Math.abs(v) < 1e6)
-    ? String(Math.round(v * 10000) / 10000) : v.toExponential(2);
-  const s = String(v);
-  return s.length <= 20 ? s : s.slice(0, 18) + '…';
-}
 
 // ── Auto-refresh for running experiments ────────────────────────────────────
 
@@ -1770,19 +1382,26 @@ let _autoRefreshMetricCount = 0;
 // re-rendering the panel underneath the last.
 let _autoRefreshInFlight = false;
 
+// Restarting only clears the timer. It used to call stopAutoRefresh, which
+// also removes #live-badge — so a running run lost its badge the moment the
+// panel that drew it finished rendering.
 function startAutoRefresh(expId) {
-  stopAutoRefresh();
+  _clearAutoRefreshTimer();
   _autoRefreshExpId = expId;
   _autoRefreshMetricCount = 0;
   _autoRefreshInFlight = false;
   autoRefreshTimer = setInterval(() => _autoRefreshPoll(), 5000);
 }
 
-function stopAutoRefresh() {
+function _clearAutoRefreshTimer() {
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer);
     autoRefreshTimer = null;
   }
+}
+
+function stopAutoRefresh() {
+  _clearAutoRefreshTimer();
   _autoRefreshExpId = null;
   const badge = document.getElementById('live-badge');
   if (badge) badge.remove();
@@ -1909,10 +1528,15 @@ async function _autoRefreshPoll() {
       // container — a full refreshDetail would rebuild the entire panel (and
       // every other tab's DOM) to update one chart.
       // Awaited so the in-flight guard covers the render, not just the fetch.
-      if (currentDetailTab === 'charts') {
-        await loadChartsTab(_autoRefreshExpId);
-      } else if (currentDetailTab === 'overview') {
+      // In a split both may be on screen; the Overview rebuild re-shows
+      // both panes, so Charts is reloaded on its own only without it.
+      if (_detailTabVisible('overview') && !_noteEdit) {
+        // Not while notes are being written on this page: the rebuild commits
+        // and closes the editor, which on a live run meant every few seconds.
+        // The next poll after the editor closes catches up.
         await refreshDetail(_autoRefreshExpId);
+      } else if (_detailTabVisible('charts')) {
+        await loadChartsTab(_autoRefreshExpId);
       }
     }
   } catch (e) {

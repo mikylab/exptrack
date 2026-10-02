@@ -59,7 +59,7 @@ function _pointLabels(points) {
 //
 // Display-only: the stored points are never touched, so smoothing is free to
 // undo and a smoothed chart still deletes the real point you click. To actually
-// shrink a noisy series on disk, use Settings → Prune (or `exptrack prune`).
+// shrink a noisy series on disk, use the Prune bar below it (or `exptrack prune`).
 function _clampSmoothing(v) {
   return Math.min(0.95, Math.max(0, parseFloat(v) || 0));
 }
@@ -499,6 +499,10 @@ function renderOverlayChart(container, metricsData, scaleOpts) {
 // leaving the caller to rebuild.
 function updateChartsInPlace(container, metricsData, expId, mode) {
   if (expId !== _chartsExpId || mode !== _chartsViewMode) return false;
+  // A prune preview on screen is a picture of a decision — a poll redrawing
+  // the normal charts under it would take the removed points away while the
+  // "Remove N points" button still offers to delete them.
+  if (_prunePreview && _prunePreview.expId === expId) return true;
   if (!container.querySelector('.charts-tab-content')) return false;
 
   const keys = chartMetricKeys(metricsData);
@@ -599,9 +603,11 @@ function buildChartsTabContent(metricsData, viewMode) {
     +         'Display only — the stored data is unchanged.">'
     + '<span class="chart-smooth-val" id="chart-smoothing-val">'
     +   (_chartSmoothing ? _chartSmoothing.toFixed(2) : 'off') + '</span>'
-    + '<span class="chart-smooth-note">display only — use Settings → Prune to '
-    +   'shrink the stored series</span>'
+    + '<span class="chart-smooth-note">display only — the stored points are '
+    +   'unchanged; Prune below thins them</span>'
     + '</div>';
+
+  html += _pruneBarHtml(metricKeys, viewMode);
 
   if (viewMode === 'overlay') {
     html += '<div class="chart-overlay-bar" id="chart-overlay-picks"></div>';
@@ -666,6 +672,7 @@ function initChartsTab(container, metricsData, viewMode, initScale) {
 
   const smooth = container.querySelector('#chart-smoothing');
   if (smooth) smooth.addEventListener('input', () => setChartSmoothing(smooth.value));
+  _initPruneBar(container, viewMode);
 
   if (viewMode === 'all') {
     renderAllCharts(container, metricsData, initScale);
@@ -753,9 +760,265 @@ async function loadChartsTab(expId, viewMode) {
 
   destroyTabCharts();
   _chartsExpId = expId;
+  _prunePreview = null;
   container.innerHTML = buildChartsTabContent(metricsData, mode);
   applyChartScaleInputs(keptScale);
   initChartsTab(container, metricsData, mode, keptScale);
+}
+
+// ── Prune: what every prune surface shares ───────────────────────────────────
+//
+// Three places thin stored points — the Charts tab, the Overview chart and the
+// list's selection — and each had its own copy of the input, the number check,
+// the confirm line and the delete, which had already drifted ("removing…" in
+// one, "Removing…" in the next). One copy here. The delete always sends the
+// dry-run's `preview_token`, so what is removed is what was previewed.
+
+const PRUNE_PRESETS = [10, 100, 1000];
+
+// The "keep 1 of every N" input and its one-click presets.
+function _pruneEveryHtml(inputId) {
+  return '<input type="number" id="' + inputId + '" min="2" step="1" value="100" '
+    + 'title="Any whole number of 2 or more">'
+    + '<span class="chart-prune-presets" data-prune-input="' + inputId + '">'
+    + PRUNE_PRESETS.map(n => '<button type="button" class="chart-prune-preset" data-n="' + n
+      + '">' + n + '</button>').join('')
+    + '</span>';
+}
+
+// Presets fill the input; Enter in it runs `preview`.
+function _wirePruneEvery(root, inputId, preview) {
+  const input = root.querySelector('#' + inputId);
+  root.querySelectorAll('[data-prune-input="' + inputId + '"] .chart-prune-preset')
+    .forEach(b => b.addEventListener('click', () => { if (input) input.value = b.dataset.n; }));
+  if (input) input.addEventListener('keydown', ev => { if (ev.key === 'Enter') preview(); });
+}
+
+// N from the input, or null after saying what a usable N is.
+function _readPruneEvery(input, status) {
+  const n = Math.floor(Number(input && input.value));
+  if (Number.isFinite(n) && n >= 2) return n;
+  if (status) status.textContent = 'Enter a whole number of 2 or more — 1 of every N points is kept.';
+  if (input) input.focus();
+  return null;
+}
+
+// A run still logging is not pruned from the dashboard: its points are still
+// arriving, so a preview would describe a set that is already out of date.
+function _disableIfRunning(btn) {
+  const row = (Array.isArray(allExperiments) ? allExperiments : [])
+    .find(e => e.id === currentDetailId);
+  if (!row || row.status !== 'running') return false;
+  btn.disabled = true;
+  btn.title = 'This run is still logging — prune it once it has finished';
+  return true;
+}
+
+// The confirm line: what would go, and the two named outcomes.
+function _showPruneConfirm(status, what, pre, total, note, onApply, onCancel) {
+  status.innerHTML = '<span class="chart-prune-summary">' + esc(what) + ': would remove <strong>'
+    + pre.points.toLocaleString() + '</strong> of ' + total.toLocaleString()
+    + ' points (~' + esc(fmtBytes(pre.freed)) + '). ' + note + '</span>'
+    + '<button class="action-btn danger" data-prune="apply">Remove '
+    + pre.points.toLocaleString() + ' points permanently</button>'
+    + '<button class="action-btn" data-prune="cancel">Keep everything</button>';
+  status.querySelector('[data-prune="apply"]').addEventListener('click', onApply);
+  status.querySelector('[data-prune="cancel"]').addEventListener('click', onCancel);
+}
+
+// Delete the previewed set. The response on success, else null (and said).
+async function _applyPrune(body, status, what) {
+  if (status) status.textContent = 'Removing…';
+  const res = await postApi('/api/prune-metrics', body);
+  if (!res || res.error) {
+    if (status) status.textContent = 'Prune failed' + (res && res.error ? ': ' + res.error : '');
+    return null;
+  }
+  owlSay('Removed ' + res.deleted.toLocaleString() + ' points' + (what ? ' from ' + what : '')
+         + ' (~' + fmtBytes(res.freed) + '). Settings → Vacuum returns the space to disk.');
+  return res;
+}
+
+// The dry-run, or null after reporting why it gave nothing to confirm.
+async function _previewPrune(body, status, what, every) {
+  if (status) status.textContent = 'Previewing…';
+  const pre = await postApi('/api/prune-metrics', Object.assign({dry_run: true}, body));
+  if (!pre || pre.error) {
+    if (status) status.textContent = 'Preview failed' + (pre && pre.error ? ': ' + pre.error : '');
+    return null;
+  }
+  if (!pre.points) {
+    if (status) status.textContent = 'Nothing to remove from ' + what + ' at 1 of every '
+      + every + ' — the series already has that few points.';
+    return null;
+  }
+  return pre;
+}
+
+// ── Prune from the chart ─────────────────────────────────────────────────────
+//
+// The stored series thinned where it is being looked at. Settings → Prune
+// asked for a number in a prompt() and answered with a count; here the
+// preview is the chart itself — the points that stay drawn as the curve, the
+// ones that would go as faded rings — so "keep 1 of every 100" is something you
+// see before you agree to it. First, last, min and max of every series always
+// survive (core/storage.prune_metrics).
+
+let _prunePreview = null;   // {expId, every, keys, token, series}
+
+// Which series a prune covers: in Single view the chart on screen by default,
+// otherwise every metric — or any one metric picked from the list. Pruning is
+// per series (core/storage._prune_target_ids), so one noisy train/loss can be
+// thinned without touching a 40-point val/acc beside it.
+const PRUNE_ALL = '__all__';
+const PRUNE_CURRENT = '__current__';
+
+function _pruneBarHtml(metricKeys, viewMode) {
+  const scopeOpts = (viewMode === 'single'
+      ? '<option value="' + PRUNE_CURRENT + '" selected>this chart</option>'
+        + '<option value="' + PRUNE_ALL + '">all metrics</option>'
+      : '<option value="' + PRUNE_ALL + '" selected>all metrics</option>')
+    + metricKeys.map(k => '<option value="' + esc(k) + '">' + esc(k) + '</option>').join('');
+  return '<div class="chart-scale-bar chart-prune-bar" id="chart-prune-bar">'
+    + '<span class="scale-label">Prune stored points</span>'
+    + '<div class="chart-scale-pair"><label for="chart-prune-scope">Metric</label>'
+    +   '<select id="chart-prune-scope">' + scopeOpts + '</select></div>'
+    + '<div class="chart-scale-pair"><label for="chart-prune-every">Keep 1 of every</label>'
+    +   _pruneEveryHtml('chart-prune-every') + '</div>'
+    + '<div class="chart-scale-actions">'
+    +   '<button class="action-btn" id="chart-prune-preview" '
+    +     'title="Show which points would be removed — nothing is deleted yet">Preview</button>'
+    + '</div>'
+    + '<div class="chart-prune-status" id="chart-prune-status"></div>'
+    + '</div>';
+}
+
+function _initPruneBar(container, viewMode) {
+  const btn = container.querySelector('#chart-prune-preview');
+  if (!btn) return;
+  const preview = () => previewChartPrune(container, viewMode);
+  _wirePruneEvery(container, 'chart-prune-every', preview);
+  if (_disableIfRunning(btn)) {
+    container.querySelector('#chart-prune-status').textContent = 'Available once the run finishes.';
+    return;
+  }
+  btn.addEventListener('click', preview);
+}
+
+// The metric keys a prune covers, or null for every metric.
+function _pruneScopeKeys(container) {
+  const scope = container.querySelector('#chart-prune-scope');
+  const v = scope ? scope.value : PRUNE_ALL;
+  if (v === PRUNE_ALL) return null;
+  if (v === PRUNE_CURRENT) {
+    const sel = container.querySelector('#chart-metric-select');
+    return sel && sel.value ? [sel.value] : null;
+  }
+  return [v];
+}
+
+async function previewChartPrune(container, viewMode) {
+  const expId = _chartsExpId;
+  const status = container.querySelector('#chart-prune-status');
+  const every = _readPruneEvery(container.querySelector('#chart-prune-every'), status);
+  if (!every) return;
+  const keys = _pruneScopeKeys(container);
+  const what = keys ? keys.join(', ') : 'all metrics';
+  _prunePreview = null;
+  const pre = await _previewPrune({ids: [expId], keys: keys || [], keep_every: every,
+                                   include_points: true}, status, what, every);
+  if (!pre || expId !== _chartsExpId) return;
+  const series = pre.series || {};
+  const total = Object.values(series).reduce((n, s) => n + s.kept_n + s.removed_n, 0);
+  _prunePreview = {expId, every, keys, token: pre.preview_token, series};
+  _showPruneConfirm(status, what, pre, total,
+    'Removed points are the grey rings; the first, last, min and max of every series are kept.',
+    () => applyChartPrune(container), cancelChartPrune);
+  _renderPrunePreview(container, viewMode);
+}
+
+// The preview charts: a linear step axis (the kept and removed halves are two
+// different point sets, so they cannot share the category labels the normal
+// chart uses). Kept points are the metric's own line; removed ones are hollow
+// grey rings — told apart by shape and lightness, not by a red/green hue pair
+// that a colour-blind reader (and anyone, on a green metric) cannot separate.
+function _createPruneChart(canvas, key, s, colorIdx) {
+  const color = CHART_COLORS[colorIdx % CHART_COLORS.length];
+  const xy = pts => pts.map(p => ({x: p[0], y: p[1]}));
+  const chart = new Chart(canvas, {
+    type: 'line',
+    data: {datasets: [
+      {label: 'kept (' + s.kept_n.toLocaleString() + ')', data: xy(s.kept),
+       borderColor: color, backgroundColor: color, borderWidth: 2,
+       pointRadius: s.kept.length > 400 ? 0 : 3, fill: false, tension: 0, order: 0},
+      {label: 'removed (' + s.removed_n.toLocaleString() + ')', data: xy(s.removed),
+       showLine: false, pointRadius: 3, pointStyle: 'circle', borderWidth: 1,
+       borderColor: CHART_MUTED, backgroundColor: 'transparent', order: 1},
+    ]},
+    options: {
+      responsive: true, animation: false,
+      plugins: {legend: {display: true, labels: {font: {family: "'IBM Plex Mono'"},
+                                                 usePointStyle: true}}},
+      scales: {
+        x: Object.assign({type: 'linear'}, buildChartScaleConfig('Step', null, 'x')),
+        y: buildChartScaleConfig(key, null, 'y'),
+      },
+    },
+  });
+  chart.$title = key + ' (prune preview)';
+  return chart;
+}
+
+function _renderPrunePreview(container, viewMode) {
+  const p = _prunePreview;
+  if (!p) return;
+  const data = _chartsMetricsData || {};
+  const keys = chartMetricKeys(data);
+  if (viewMode === 'all') {
+    // Every chart stays on the grid; only the ones in the prune's scope
+    // switch to the preview.
+    destroyTabCharts();
+    const grid = container.querySelector('.charts-all-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (const key of keys) {
+      const div = document.createElement('div');
+      div.className = 'chart-container' + (p.series[key] ? ' chart-prune-target' : '');
+      const canvas = document.createElement('canvas');
+      div.appendChild(canvas);
+      grid.appendChild(div);
+      charts['all_' + key] = p.series[key]
+        ? _createPruneChart(canvas, key, p.series[key], keys.indexOf(key))
+        : createChart(canvas, key, data[key], keys.indexOf(key), getChartScaleOpts());
+    }
+    return;
+  }
+  // Single and Overlay show one chart: the pruned metric (switching the
+  // Single dropdown to it when a different one was picked in the scope).
+  const sel = container.querySelector('#chart-metric-select');
+  const key = [p.keys && p.keys[0], sel && sel.value, ..._overlayPicks, ...keys]
+    .find(k => k && p.series[k]);
+  if (!key) return;
+  if (sel && sel.value !== key) { sel.value = key; _chartsSelectedKey = key; }
+  const canvas = _freshChartCanvas(container);
+  if (canvas) charts._active = _createPruneChart(canvas, key, p.series[key], keys.indexOf(key));
+}
+
+// Back to the real charts: a forced rebuild, since in-place updates were frozen
+// for the preview.
+function cancelChartPrune() {
+  _prunePreview = null;
+  _chartsExpId = null;
+  loadChartsTab(currentDetailId, _chartsViewMode);
+}
+
+async function applyChartPrune(container) {
+  const p = _prunePreview;
+  if (!p) return;
+  const res = await _applyPrune({ids: [p.expId], keys: p.keys || [], keep_every: p.every,
+                                 preview_token: p.token},
+                                container.querySelector('#chart-prune-status'));
+  if (res) cancelChartPrune();
 }
 
 // ── Chart PNG export ─────────────────────────────────────────────────────────
@@ -909,10 +1172,14 @@ function renderOverviewChartPreview(metricsData) {
 
   container.innerHTML = selHtml
     + '<span class="chart-preview-link" onclick="switchDetailTab(\'charts\',currentDetailId)">Open Charts tab</span>'
-    + '<div class="chart-preview-container"><canvas id="overview-chart-canvas"></canvas></div>';
+    + '<div class="chart-preview-container"><canvas id="overview-chart-canvas"></canvas></div>'
+    + _overviewPruneHtml();
 
   function drawPreview(key) {
     if (charts._preview) { charts._preview.destroy(); delete charts._preview; }
+    _overviewPrune = null;
+    const st = document.getElementById('ov-prune-status');
+    if (st) st.textContent = '';
     const canvas = document.getElementById('overview-chart-canvas');
     if (!canvas) return;
     const points = metricsData[key];
@@ -937,4 +1204,59 @@ function renderOverviewChartPreview(metricsData) {
     });
   }
   drawPreview(initialKey);
+  _initOverviewPrune(metricsData, () => _overviewPreviewKey, drawPreview);
+}
+
+// ── Prune the Overview's chart ───────────────────────────────────────────────
+//
+// The Overview shows one metric at a time, which is where a noisy series is
+// noticed, so it can be thinned there: the metric on screen, keep 1 of every
+// N, the same grey-ring preview and the same delete-by-token as the Charts tab.
+
+let _overviewPrune = null;   // {expId, key, every, token}
+
+function _overviewPruneHtml() {
+  return '<div class="chart-prune-bar ov-prune-bar">'
+    + '<div class="chart-scale-pair"><label for="ov-prune-every">Prune this metric: keep 1 of every</label>'
+    +   _pruneEveryHtml('ov-prune-every') + '</div>'
+    + '<button class="action-btn" id="ov-prune-preview" '
+    +   'title="Show which points would be removed — nothing is deleted yet">Preview</button>'
+    + '<div class="chart-prune-status" id="ov-prune-status"></div>'
+    + '</div>';
+}
+
+function _initOverviewPrune(metricsData, currentKey, redraw) {
+  const btn = document.getElementById('ov-prune-preview');
+  if (!btn || _disableIfRunning(btn)) return;
+  const preview = () => previewOverviewPrune(metricsData, currentKey(), redraw);
+  _wirePruneEvery(btn.parentElement, 'ov-prune-every', preview);
+  btn.addEventListener('click', preview);
+}
+
+async function previewOverviewPrune(metricsData, key, redraw) {
+  const expId = currentDetailId;
+  const status = document.getElementById('ov-prune-status');
+  const every = _readPruneEvery(document.getElementById('ov-prune-every'), status);
+  if (!status || !key || !every) return;
+  const pre = await _previewPrune({ids: [expId], keys: [key], keep_every: every,
+                                   include_points: true}, status, key, every);
+  const s = pre && (pre.series || {})[key];
+  if (!s || expId !== currentDetailId) return;
+  _overviewPrune = {expId, key, every, token: pre.preview_token};
+  if (charts._preview) { charts._preview.destroy(); delete charts._preview; }
+  const canvas = document.getElementById('overview-chart-canvas');
+  if (canvas) charts._preview = _createPruneChart(canvas, key, s, chartMetricKeys(metricsData).indexOf(key));
+  _showPruneConfirm(status, key, pre, s.kept_n + s.removed_n, 'Shown as grey rings.',
+                    applyOverviewPrune, () => redraw(key));
+}
+
+async function applyOverviewPrune() {
+  const p = _overviewPrune;
+  if (!p) return;
+  const res = await _applyPrune({ids: [p.expId], keys: [p.key], keep_every: p.every,
+                                 preview_token: p.token},
+                                document.getElementById('ov-prune-status'), p.key);
+  if (!res) return;
+  _overviewPrune = null;
+  if (currentDetailId === p.expId) refreshDetail(p.expId);
 }

@@ -120,7 +120,19 @@ def test_render_runs_joins_a_batch_per_format():
     assert "\n\n---\n\n" in render_runs(two, "markdown")
     assert "=" * 60 in render_runs(two, "text")
     page = render_runs(two, "html")
-    assert page.startswith("<!doctype html>") and "<hr>" in page
+    # A run-break rule: a rule on screen, a page break when printed.
+    assert page.startswith("<!doctype html>") and '<hr class="run-break">' in page
+
+
+def test_the_html_page_prints_as_a_report():
+    """The PDF path is the browser's Save as PDF from this page: header rows
+    repeated, no row split across pages, short sections two-up."""
+    two = [FULL, dict(FULL, id="zzz999", name="other")]
+    page = render_runs(two, "html")
+    assert "@media print" in page and "<thead>" in page and "display: table-header-group" in page
+    # Short sections sit two-up, and long cell content wraps inside the page.
+    assert 'class="run-cols"' in page and "overflow-wrap: anywhere" in page
+    assert "window.print()" in page and 'class="no-print"' in page
 
 
 # ── the CLI and the routes print the same thing ─────────────────────────────
@@ -169,3 +181,85 @@ def test_the_diff_export_route_carries_html():
     from exptrack.core.queries import format_diff_markdown
     md = format_diff_markdown("r", "id", "main", "c", "diff --git a/x b/x\n+y")
     assert "<table" in markdown_to_html(md) and "<pre" in markdown_to_html(md)
+
+
+# ── a run's notes ───────────────────────────────────────────────────────────
+# Notes are markdown a person wrote in the dashboard's editor: Tab-indented
+# sub-points, numbered steps and `- [ ]` tasks. Each export must keep that
+# structure rather than flatten it or show it as syntax.
+
+NOTES = """# Question
+Does label smoothing help at `noise=0.2`?
+
+## Result
+- best_val_acc **+0.0065**
+  - seed 0 only
+- second point
+1. rerun with seeds
+2. compare
+- [ ] try ls=0.4
+- [x] baseline
+> looks like noise
+```
+# a comment, not a heading
+```"""
+
+
+def test_html_nests_indented_list_items():
+    h = markdown_to_html("- a\n  - b\n    - c\n- d")
+    assert h == "<ul><li>a<ul><li>b<ul><li>c</li></ul></li></ul></li><li>d</li></ul>"
+
+
+def test_html_numbered_list_is_its_own_list_and_keeps_its_start():
+    h = markdown_to_html("- a\n3. three\n4. four")
+    assert h == '<ul><li>a</li></ul><ol start="3"><li>three</li><li>four</li></ol>'
+
+
+def test_html_tasks_quotes_and_rules():
+    h = markdown_to_html("- [ ] todo\n- [x] done\n\n> said\n\n---")
+    assert "<li>☐ todo</li><li>☑ done</li>" in h
+    assert "<blockquote" in h and ">said</blockquote>" in h
+    assert "<hr>" in h
+
+
+def test_a_changed_line_outside_a_fence_is_not_a_list():
+    assert "<ul>" not in markdown_to_html("+ added line")
+
+
+def test_notes_headings_nest_under_the_exports_notes_section():
+    from exptrack.core.export_render import nest_headings
+    out = nest_headings(NOTES, 3)
+    assert "### Question" in out and "#### Result" in out
+    assert "\n# a comment, not a heading\n" in out, "fenced lines are not headings"
+    assert nest_headings("### deep\ntext", 3) == "### deep\ntext"
+
+
+def test_markdown_export_keeps_notes_below_their_section(tmp_project):
+    from exptrack.core.queries import format_export_markdown
+    md = format_export_markdown({**FULL, "notes": NOTES})
+    notes = md[md.index("## Notes"):]
+    assert notes.startswith("## Notes\n\n### Question")
+    assert "\n  - seed 0 only\n" in notes, "indentation is structure"
+
+
+def test_text_export_reads_notes_without_their_syntax():
+    text = format_export_text({**FULL, "notes": NOTES})
+    body = text[text.index("Notes"):]
+    for needle in ["  Question\n  --------", "  Result\n", "    - seed 0 only",
+                   "  [ ] try ls=0.4", "  Does label smoothing help at noise=0.2?",
+                   "      # a comment, not a heading"]:
+        assert needle in body, needle
+    assert "## Result" not in body and "**" not in body
+
+
+def test_the_notes_copy_format_is_the_notes_and_their_html(tmp_project):
+    from exptrack.core import get_db
+    from exptrack.core.queries import replace_notes
+    from exptrack.dashboard.routes.read_routes import api_export
+
+    exp = _run(tmp_project)
+    replace_notes(get_db(), exp.id, NOTES)
+    got = api_export(get_db(), exp.id, {"format": "notes-md"})
+    assert got["notes_text"] == NOTES
+    assert got["html"] == markdown_to_html(NOTES)
+    assert "<ol>" in got["html"] and "☐ try ls=0.4" in got["html"]

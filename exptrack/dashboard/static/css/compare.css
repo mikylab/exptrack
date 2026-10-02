@@ -217,6 +217,7 @@
   color: var(--text-2); background: var(--surface-2);
   padding: 1px 6px; border-radius: 3px; white-space: nowrap;
 }
+.cmp-key-chip.common { color: var(--text-3); background: transparent; padding-inline: 3px; }
 
 /* "Label series by": the control that makes a legend of auto-named runs
    readable. Sits directly above the charts it relabels. */
@@ -254,3 +255,49 @@
   color: var(--text-1); background: var(--surface);
 }
 .cmp-failure strong { color: var(--red); }
+
+  /* Metric spread (js/compare.js _multiSpreadHtml): one row per metric, a dot
+     per run placed between that metric's lowest and highest value. */
+  .spread-list { display: flex; flex-direction: column; margin: 8px 0 16px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); }
+  .spread-row {
+    display: grid; grid-template-columns: minmax(150px, 1.2fr) 70px minmax(160px, 3fr) 70px minmax(160px, 1.4fr);
+    align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 12px;
+  }
+  .spread-row:hover { background: var(--code-bg); }
+  .spread-key { font-family: var(--font-mono); color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spread-goal, .spread-partial { font-family: inherit; font-size: 10px; color: var(--text-3); margin-left: 4px; }
+  .spread-lo, .spread-hi { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+  .spread-lo { text-align: right; }
+  .spread-track { position: relative; height: 16px; border-radius: 8px; background: var(--code-bg); }
+  .spread-track::before { content: ''; position: absolute; left: 0; right: 0; top: 7px; height: 2px; background: var(--border); }
+  .spread-dot { position: absolute; top: 3px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; opacity: 0.75; background: var(--muted); transition: opacity 0.1s, transform 0.1s; }
+  .spread-dot.best { top: 1px; width: 14px; height: 14px; margin-left: -7px; opacity: 1; background: var(--status-success); box-shadow: 0 0 0 2px var(--card-bg), 0 0 0 4px var(--status-success); }
+  .spread-best { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .spread-best strong { color: var(--status-success); font-family: var(--font-mono); }
+  .spread-chart { padding: 8px 12px 12px; border-bottom: 1px solid var(--border); }
+  .spread-same { padding: 8px 12px; font-size: 11px; color: var(--muted); line-height: 1.9; }
+  .spread-same-label { margin-right: 6px; }
+  .spread-same code { font-size: 11px; background: var(--code-bg); padding: 1px 6px; border-radius: 3px; margin-right: 4px; white-space: nowrap; }
+  .spread-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 8px 0 6px; font-size: 12px; color: var(--muted); }
+  .spread-controls select {
+    font-family: inherit; font-size: 12px; padding: 4px 8px; margin-left: 4px;
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; color: var(--fg);
+  }
+  .spread-legend-item { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 11px; color: var(--fg); }
+  .spread-legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+  /* Hovering a dot lights that run up in every row and fades the rest. */
+  .spread-wrap.hl .spread-dot { opacity: 0.15; }
+  .spread-wrap.hl .spread-dot.on { opacity: 1; transform: scale(1.5); z-index: 2; box-shadow: 0 0 0 2px var(--card-bg), 0 0 0 3px var(--fg); }
+
+  /* Multi Compare's tables: the key column is the row's name, so it keeps one
+     line and stays in view while the runs scroll sideways. It was squeezed to
+     55px, which broke `202390/leave_rate_high` into one-letter lines and made
+     each row ~120px tall — 45 metrics came to 6,900px. */
+  #multi-compare-result .metrics-table th:first-child,
+  #multi-compare-result .metrics-table td:first-child,
+  #multi-compare-result .params-table th:first-child,
+  #multi-compare-result .params-table td:first-child {
+    position: sticky; left: 0; z-index: 1; min-width: 190px; max-width: 280px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    background: var(--card-bg); box-shadow: 1px 0 0 var(--border);
+  }

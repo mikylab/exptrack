@@ -1083,7 +1083,22 @@ def cmd_watch(args):
 
 
 def cmd_export(args):
-    """Export experiment data: exptrack export <id> [--format json|markdown|text|html|csv|tsv|params|params-flags|params-json]"""
+    """Export experiment data: exptrack export <id> [--format json|markdown|text|html|csv|tsv|params|params-flags|params-json] [-o FILE]"""
+    out_path = getattr(args, "output", None)
+    if out_path:
+        import contextlib
+        try:
+            fh = open(out_path, "w", encoding="utf-8", newline="")
+        except OSError as e:
+            die(f"Cannot write {out_path}: {e}")
+        with fh, contextlib.redirect_stdout(fh):
+            _cmd_export(args)
+        print(dim(f"Wrote {out_path}"), file=sys.stderr)
+        return
+    _cmd_export(args)
+
+
+def _cmd_export(args):
     from ..core.export_render import READABLE_FORMATS, render_runs
     from ..core.queries import (
         PARAMS_EXPORT_FORMATS,
@@ -1098,7 +1113,8 @@ def cmd_export(args):
 
     if export_all or (fmt in ("csv", "tsv") and not args.id):
         _export_batch(conn, fmt, export_all, getattr(args, "id", None),
-                      _artifact_limit(args), full)
+                      _artifact_limit(args), full,
+                      summary_only=bool(getattr(args, "summary_only", False)))
         return
 
     if not args.id:
@@ -1121,7 +1137,7 @@ def cmd_export(args):
 
 
 def _export_batch(conn, fmt, export_all, exp_id_prefix, artifact_limit=None,
-                  full=False):
+                  full=False, summary_only=False):
     """Export one or all experiments in CSV/TSV/JSON/markdown/params batch format."""
     from ..core.export_render import READABLE_FORMATS, render_runs
     from ..core.queries import (
@@ -1152,7 +1168,9 @@ def _export_batch(conn, fmt, export_all, exp_id_prefix, artifact_limit=None,
         delimiter = "\t" if fmt == "tsv" else ","
         print(format_export_csv(batch, delimiter=delimiter), end="")
     elif fmt in READABLE_FORMATS:
-        print(render_runs(batch, fmt, limit), end="")
+        from ..core.export_render import build_runs_summary
+        summary = build_runs_summary(conn, batch) if len(batch) > 1 else None
+        print(render_runs(batch, fmt, limit, summary=summary, summary_only=summary_only), end="")
     elif fmt in PARAMS_EXPORT_FORMATS:
         style = PARAMS_EXPORT_FORMATS[fmt]
         if style == "json":

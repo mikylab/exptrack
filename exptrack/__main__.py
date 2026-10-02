@@ -20,6 +20,8 @@ import sys
 import traceback
 from pathlib import Path
 
+from ._console import harden_stdio
+
 
 class _TeeWriter:
     """Write to both the original stream and a log file."""
@@ -61,6 +63,7 @@ class _TeeWriter:
         return getattr(self._original, name)
 
 def main(resume=None):
+    harden_stdio()
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print("Usage: python -m exptrack <script.py> [args...]")
         print("       exptrack run <script.py> [args...]")

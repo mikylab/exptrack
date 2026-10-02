@@ -108,15 +108,7 @@
   .var-changes .var-type { color: var(--muted); font-size: 12px; }
   .var-section-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 6px; }
 
-  /* ── Run source (folded into the Timeline tab) ─────────────────────────── */
-  .tl-source-fold { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 14px; }
-  .tl-source-fold > summary {
-    display: flex; align-items: baseline; gap: 10px; cursor: pointer;
-    padding: 8px 12px; background: var(--surface-2); user-select: none;
-    font-size: var(--text-sm); color: var(--text-1);
-  }
-  .tl-source-fold > summary .tl-source-hint { color: var(--text-3); font-size: var(--text-xs); }
-  .tl-source-fold > #tl-source-body { padding: 12px; }
+  /* ── Run source (Code › Source) ─────────────────────────────────────── */
   .source-tab-note { color: var(--text-2); font-size: var(--text-xs); margin-bottom: 10px; }
   .source-file { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 10px; }
   .source-file > summary {

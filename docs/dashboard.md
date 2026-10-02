@@ -118,6 +118,26 @@ committable and shared with whoever clones the project.
 - **Metric deltas are coloured by whether they are better, not bigger** — a
   falling loss is green.
 
+## A run
+
+A run opens on **Overview**: what changed since the last run of the same script (params, metric
+deltas, and **Show code changes** for the code diff), then the metrics with a chart, notes and the
+command to reproduce it beside the params and the run's details. Params show about a screenful,
+the ones that changed since the last run first and marked ●; **Show all** and the filter reach the
+rest.
+
+| Tab | What is there |
+|---|---|
+| **Overview** | What changed, metrics, notes, reproduce, params, run details |
+| **Charts** | Every logged metric: single, all or overlay; scales, axis bounds, smoothing, prune |
+| **Files** | **Images** (gallery, lightbox, compare), **Data** (logs, CSV, JSON), **Artifacts**; **⚙ Folders** sets what is scanned |
+| **Code** | **Timeline** (what ran, in order — where a notebook run opens), **Changes** (uncommitted diff with Export / Copy / .patch), **Source** (the code as captured), **Env** (host, Python, variables, datasets, packages) |
+
+**Tools ▾** opens Compare within and the Confusion matrix calculator; **⋯** holds Compact and Delete;
+**Export ▾** has Download and Copy for each format. **⫼ Split** shows a second tab beside the
+first — Overview next to Charts, say — and stays on as you move between runs. ‹ › at the top (or
+← / →) step through the runs in the list, and **N of M** jumps to one.
+
 ## Compare
 
 One view, any number of runs. **Choose runs…** opens the searchable picker;

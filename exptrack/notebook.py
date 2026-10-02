@@ -36,8 +36,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ._console import harden_stdio
 from .capture import attach_notebook, detach_notebook, patch_savefig, patch_tensorboard
 from .core import Experiment
+
+# The magics print arrows and rails too, and a terminal IPython on Windows has
+# a cp1252 stdout: `%exp_log acc` logged the metric, then died printing the
+# `→` in its own confirmation, so the cell reported an error for a write that
+# had succeeded. The CLI hardens in main(); a notebook never goes through it,
+# and `log_last()` can run before any Experiment exists to harden it. A
+# kernel's own stream is UTF-8 and is left alone.
+harden_stdio()
 
 _active: Experiment | None = None
 

@@ -21,9 +21,18 @@ async function exportExp(id) {
     '</div><pre id="export-content" style="display:none"></pre></div>';
 }
 
+// The run header has three of these menus; each used to stay open until its
+// own button was clicked again, so they stacked on top of one another.
 function toggleDetailExport(btn) {
   const menu = btn.nextElementSibling;
-  menu.style.display = menu.style.display === 'none' ? 'flex' : 'none';
+  const open = menu.style.display === 'none';
+  _closeDetailMenus();
+  if (!open) return;
+  menu.style.display = 'flex';
+  _dismissOnOutsideClick(menu, null, () => { menu.style.display = 'none'; });
+}
+function _closeDetailMenus() {
+  document.querySelectorAll('.detail-actions .export-dropdown-menu').forEach(m => { m.style.display = 'none'; });
 }
 function closeDetailExport(btn) {
   btn.closest('.export-dropdown-menu').style.display = 'none';
@@ -35,7 +44,8 @@ async function _fetchExportText(id, fmt, opts) {
   const ext = {json:'.json', 'json-full':'.full.json', markdown:'.md', csv:'.csv',
                tsv:'.tsv', plain:'.txt', html:'.html',
                params:'.params.txt', 'params-flags':'.params.txt', 'params-json':'.params.json',
-               'params-md':'.params.md', 'params-tsv':'.params.tsv'};
+               'params-md':'.params.md', 'params-tsv':'.params.tsv',
+               'notes-md':'.notes.md'};
   // 'json-full' is the same endpoint asked for the complete (round-trippable)
   // payload — every metric point, every artifact — rather than the summary.
   const full = fmt === 'json-full';
@@ -61,6 +71,10 @@ async function _fetchExportText(id, fmt, opts) {
       html = data.html || '';
     }
     else if (fmt === 'plain' || fmt === 'html') text = data.content || '';
+    else if (fmt === 'notes-md') {
+      text = data.notes_text || '';
+      html = data.html || '';
+    }
     else if (fmt.startsWith('params')) {
       text = data.params_text != null ? data.params_text : JSON.stringify(data, null, 2);
       html = data.html || '';
@@ -391,6 +405,7 @@ async function _fetchPairExtras(id1, id2, projectId) {
 // still-useful reading, so it stays available.
 function _pairParamsHtml(pair) {
   const e1 = pair.cmp.exp1, e2 = pair.cmp.exp2;
+  const lk = _cmpLabelKeysFor([e1, e2]);
   const keys = [...new Set([...Object.keys(e1.params || {}),
                             ...Object.keys(e2.params || {})])].filter(isUserParamKey).sort();
   if (!keys.length) return '';
@@ -399,8 +414,8 @@ function _pairParamsHtml(pair) {
     + '<label class="only-differs-toggle"><input type="checkbox" ' + (onlyDiffers ? 'checked' : '')
     + ' onchange="setOnlyDiffers(this.checked)"> Show only differences</label>'
     + '<table class="params-table"><tr><th>Key</th><th title="' + esc(e1.name) + '">'
-    + esc(_cmpColName(e1.name)) + '</th><th title="' + esc(e2.name) + '">'
-    + esc(_cmpColName(e2.name)) + '</th></tr>';
+    + esc(_cmpRunLabel(e1, false, lk)) + '</th><th title="' + esc(e2.name) + '">'
+    + esc(_cmpRunLabel(e2, false, lk)) + '</th></tr>';
   for (const k of keys) {
     const row = paramDiffRow(k, e1.params, e2.params);
     if (onlyDiffers && !row.differs) continue;
@@ -412,13 +427,14 @@ function _pairParamsHtml(pair) {
 // Final variable state from each notebook run's execution timeline.
 function _pairVariablesHtml(pair) {
   const e1 = pair.cmp.exp1, e2 = pair.cmp.exp2;
+  const lk = _cmpLabelKeysFor([e1, e2]);
   const keys = [...new Set([...Object.keys(pair.vars1), ...Object.keys(pair.vars2)])].sort();
   if (!keys.length) return '';
   let h = '<details><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">'
     + 'Variables <span class="help-icon" title="Final variable state from the execution '
     + 'timeline of each experiment.">?</span></summary><table class="params-table">'
-    + '<tr><th>Variable</th><th title="' + esc(e1.name) + '">' + esc(_cmpColName(e1.name))
-    + '</th><th title="' + esc(e2.name) + '">' + esc(_cmpColName(e2.name)) + '</th></tr>';
+    + '<tr><th>Variable</th><th title="' + esc(e1.name) + '">' + esc(_cmpRunLabel(e1, false, lk))
+    + '</th><th title="' + esc(e2.name) + '">' + esc(_cmpRunLabel(e2, false, lk)) + '</th></tr>';
   for (const k of keys) {
     // Compare the full values, truncate only for display. Comparing the 60-char
     // prefixes made two long reprs that differ past char 60 read as equal — and
@@ -440,12 +456,13 @@ function _pairVariablesHtml(pair) {
 // these two, superimposed", and only exists for a pair.
 function _pairImagesHtml(pair) {
   const e1 = pair.cmp.exp1, e2 = pair.cmp.exp2;
+  const lk = _cmpLabelKeysFor([e1, e2]);
   if (!pair.imgs1.length && !pair.imgs2.length) return '';
   return '<details><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">'
     + 'Overlay two images <span class="cmp-bestkey">pick one from each run</span></summary>'
     + '<div class="compare-images-section"><div class="compare-images-cols">'
-    + _cmpImageCol(_cmpColName(e1.name), pair.imgs1, 1)
-    + _cmpImageCol(_cmpColName(e2.name), pair.imgs2, 2)
+    + _cmpImageCol(_cmpRunLabel(e1, false, lk), pair.imgs1, 1)
+    + _cmpImageCol(_cmpRunLabel(e2, false, lk), pair.imgs2, 2)
     + '</div><div class="compare-select-bar" id="cross-cmp-bar">'
     + '<span class="cmp-sel-a">A: (none)</span>'
     + '<span style="color:var(--muted)">vs</span>'
@@ -580,12 +597,13 @@ function _repaintCmpImageCols(focusSide) {
       || !_lastComparison.data._pair) return;
   const pair = _lastComparison.data._pair;
   const e1 = pair.cmp.exp1, e2 = pair.cmp.exp2;
+  const lk = _cmpLabelKeysFor([e1, e2]);
   const caret = (() => {
     const el = document.getElementById('cmp-img-search-' + focusSide);
     return el ? el.selectionStart : null;
   })();
-  wrap.innerHTML = _cmpImageCol(_cmpColName(e1.name), pair.imgs1, 1)
-    + _cmpImageCol(_cmpColName(e2.name), pair.imgs2, 2);
+  wrap.innerHTML = _cmpImageCol(_cmpRunLabel(e1, false, lk), pair.imgs1, 1)
+    + _cmpImageCol(_cmpRunLabel(e2, false, lk), pair.imgs2, 2);
   const box = document.getElementById('cmp-img-search-' + focusSide);
   if (box) {
     box.focus();
@@ -700,10 +718,11 @@ function _multiConfigTable(exps, varyingKeys) {
 // scanned for *where* it changed instead of read value by value.
 function _multiConfigRowsHtml(exps, varying, scripts, showScript) {
   const spans = _cmpSpansProjects(exps);
+  const lk = _multiRankedLabelKeys(exps, (varying || []).filter(isUserParamKey));
   let h = '<div style="overflow-x:auto"><table class="params-table"><tr><th>Key</th>';
   for (const e of exps) {
     h += '<th title="' + esc(_cmpRunTitle(e, spans)) + '">'
-          + esc(_cmpRunLabel(e, spans)) + '</th>';
+          + esc(_cmpRunLabel(e, spans, lk)) + '</th>';
   }
   h += '</tr>';
   if (showScript) {
@@ -940,9 +959,32 @@ function _cmpSpansProjects(exps) {
 // Middle-ellipsis on the name, never a head truncation: auto-generated names
 // differ in their *tail*, so cutting the end hides the difference the column
 // exists to show. The project name leads, because that is what disambiguates.
-function _cmpRunLabel(e, spans) {
-  const name = _cmpColName(e.name);
+//
+// A column is headed by what tells the runs apart, not by the name: two
+// columns headed `SEP28_TRAIN__…_013C1B26` and `SEP28_TRAIN__…_366A8603` said
+// nothing about the one setting being compared (`label_smoothing 0.1` vs
+// `0.3`). The header is the charts' own series label (`_multiSeriesLabel`), so
+// the table and the legend name each run the same way and "Label series by"
+// relabels both. The name is the fallback, still middle-ellipsized, and the
+// full name stays on the title.
+//
+// *labelKeys* comes from the caller's own set (`_cmpLabelKeysFor(exps)`): the
+// label must describe the runs in *this* table. Read from whichever comparison
+// rendered last, the matrix's inline compare and the write-up draft were
+// labelled with another set's parameters.
+function _cmpRunLabel(e, spans, labelKeys) {
+  const name = labelKeys && labelKeys.use.length
+    ? _multiSeriesLabel(e, labelKeys) : _cmpColName(e.name);
   return spans && e.project_name ? e.project_name + ' / ' + name : name;
+}
+
+// The ranked label keys for a set: its user parameters whose values differ.
+function _cmpLabelKeysFor(exps) {
+  const keys = [...new Set([].concat(...exps.map(e => Object.keys(e.params || {}))))]
+    .filter(isUserParamKey)
+    .filter(k => new Set(exps.map(e => JSON.stringify((e.params || {})[k]))).size > 1)
+    .sort();
+  return _multiRankedLabelKeys(exps, keys);
 }
 
 // The hover title, which is where the *untruncated* name lives — so it has to
@@ -976,8 +1018,10 @@ function _cmpSeriesKeyHtml(entries) {
       '<span class="cmp-key-name">' + esc(midEllipsis(e.name, 34)) + '</span>' +
       '<span class="cmp-key-id">' + esc(String(e.id).slice(0, 6)) + '</span>' +
       (e.params.length
-        ? '<span class="cmp-key-params">' + e.params.map(([k, v]) =>
-            '<span class="cmp-key-chip">' + esc(paramColLabel(k)) + '=' +
+        ? '<span class="cmp-key-params">' + e.params.map(([k, v, common]) =>
+            '<span class="cmp-key-chip' + (common ? ' common' : '') + '"'
+            + (common ? ' title="Same as most of these runs"' : '') + '>'
+            + esc(paramColLabel(k)) + '=' +
             esc(midEllipsis(String(v), 16)) + '</span>').join('') + '</span>'
         : '') +
     '</a>').join('') + '</div>';
@@ -987,15 +1031,38 @@ function _cmpSeriesKeyHtml(entries) {
 // from when they are enough to tell the runs apart, and every varying key when
 // they are not — the key is the surface that must never be ambiguous, so it
 // does not inherit the label's three-key cap.
+//
+// Each run's chips lead with where it departs from the set's most common value
+// and dim the rest. Thirteen varying settings drawn identically on 39 runs was
+// 500 chips of `age_feature=false asof=09-28 …` to scan for the one that said
+// `asof_cancel=false`; the common values are still there, just quiet.
 function _multiSeriesKeyHtml(exps, ranked) {
   const keys = (ranked && ranked.all) || [];
-  return _cmpSeriesKeyHtml(exps.map((e, j) => ({
-    color: MULTI_COLORS[j % MULTI_COLORS.length],
-    name: e.name,
-    id: e.id,
-    params: keys.filter(k => (e.params || {})[k] !== undefined)
-                .map(k => [k, (e.params || {})[k]]),
-  })));
+  const mode = _cmpModeValues(exps, keys);
+  return _cmpSeriesKeyHtml(exps.map((e, j) => {
+    const params = keys.filter(k => (e.params || {})[k] !== undefined)
+      .map(k => [k, (e.params || {})[k], exps.length > 2 && mode[k] === JSON.stringify(e.params[k])]);
+    params.sort((a, b) => Number(a[2]) - Number(b[2]));
+    return {color: MULTI_COLORS[j % MULTI_COLORS.length], name: e.name, id: e.id, params};
+  }));
+}
+
+// key -> JSON of its most common value across the runs (first seen wins a tie).
+function _cmpModeValues(exps, keys) {
+  const mode = {};
+  for (const k of keys) {
+    const counts = new Map();
+    for (const e of exps) {
+      const v = (e.params || {})[k];
+      if (v === undefined) continue;
+      const t = JSON.stringify(v);
+      counts.set(t, (counts.get(t) || 0) + 1);
+    }
+    let best = null, n = 0;
+    for (const [t, c] of counts) if (c > n) { best = t; n = c; }
+    mode[k] = best;
+  }
+  return mode;
 }
 
 // ── What a chart series is called ────────────────────────────────────────────
@@ -1245,10 +1312,11 @@ function _multiMetricTableHtml(exps, keys) {
   // one thing the old pair tab's metric table had that this one did not.
   const pair = exps.length === 2;
   const spans = _cmpSpansProjects(exps);
+  const lk = _cmpLabelKeysFor(exps);
   let html = '<div style="overflow-x:auto"><table class="metrics-table"><tr><th>Key</th>';
   for (const e of exps) {
     html += '<th title="' + esc(_cmpRunTitle(e, spans)) + '">'
-          + esc(_cmpRunLabel(e, spans)) + '</th>';
+          + esc(_cmpRunLabel(e, spans, lk)) + '</th>';
   }
   if (pair) html += '<th>Delta</th>';
   html += '</tr>';
@@ -1359,19 +1427,11 @@ function _renderMultiComparison(data, ids, token, cachedSeries) {
       + '<div class="compare-charts-grid" id="multi-curve-grid"></div></details>';
   }
 
-  // Bar charts
+  // One row per metric rather than one bar chart per metric (see
+  // _multiSpreadHtml).
   if (keys.length) {
-    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Bar Charts</summary><div class="compare-charts-grid">';
-    // Id by *index*, never by a sanitized key: `val/acc` and `val_acc` both
-    // sanitize to `val_acc`, and in the multi view the keys are the union
-    // across runs — exactly the different-models case. The second
-    // `new Chart(...)` on a canvas already owning one throws, and the
-    // unhandled rejection killed every remaining chart while the table above
-    // still looked healthy.
-    keys.forEach((k, i) => {
-      html += '<div class="chart-container"><canvas id="' + multiChartId(i) + '"></canvas></div>';
-    });
-    html += '</div></details>';
+    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;margin:12px 0">Metric spread</summary>'
+      + _multiSpreadHtml(exps, keys, labelKeys) + '</details>';
   }
 
   // Image comparison — one row per plot, one cell per run.
@@ -1405,7 +1465,7 @@ function _renderMultiComparison(data, ids, token, cachedSeries) {
       html += '<div class="multi-compare-image-row">';
       for (const e of exps) {
         const img = byExp.get(e.id);
-        const name = _cmpRunLabel(e, spans);
+        const name = _cmpRunLabel(e, spans, labelKeys);
         html += '<div class="multi-compare-image-cell">';
         html += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + esc(name) + '</div>';
         if (img) {
@@ -1433,35 +1493,196 @@ function _renderMultiComparison(data, ids, token, cachedSeries) {
   _writeCompareHash('multi', exps.map(e => e.qualified_id || e.id));
   document.getElementById('multi-compare-result').innerHTML = html;
 
-  // Create bar charts
   _renderMultiCurves(exps, keys, token, cachedSeries, labelKeys);
+  _multiSpreadState = {exps, keys, labelKeys};
+}
 
+// ── Metric spread ────────────────────────────────────────────────────────────
+//
+// One row per metric: a strip from that metric's lowest to highest value with a
+// dot per run, the best run named beside it. It replaced a grid of bar charts —
+// one 400px chart per metric, every bar drawn up from zero, so when the runs
+// differed in the third decimal (auc 0.739 vs 0.751) the difference was a pixel
+// at the top of near-identical bars, under 39 rotated labels nobody could read.
+// The strip's axis is the runs' own range, so the spread fills the width; the
+// full chart is still there, a click away, sorted best first. Metrics every run
+// agrees on (a dataset size, a held-out base rate) are listed once at the end
+// instead of drawn as a row of equal bars.
+
+let _multiSpreadState = null;   // {exps, keys, labelKeys} of the comparison on screen
+let _spreadCmap = null;         // the colour map the spread on screen was drawn with
+
+function _spreadFmt(v) {
+  if (typeof v !== 'number' || !isFinite(v)) return '--';
+  if (Number.isInteger(v)) return v.toLocaleString();
+  const a = Math.abs(v);
+  return (a !== 0 && (a < 1e-3 || a >= 1e5)) ? v.toExponential(2) : String(Number(v.toPrecision(4)));
+}
+
+function _spreadPoints(exps, k) {
+  return exps.map((e, j) => ({j, v: e.metrics[k]}))
+    .filter(p => typeof p.v === 'number' && isFinite(p.v));
+}
+
+// Colour is opt-in. A dot per run in its own colour was 39 colours from a
+// 10-colour palette, so the colour said nothing and the eye went looking for
+// a pattern that was not there. By default every dot is the same grey and only
+// the best is marked; "Colour by" paints by one setting instead (model, seed,
+// a flag), which is the question a colour can answer: do the hgb runs sit to
+// the right of the rf ones? Hovering a dot lights that run up in every row.
+const SPREAD_MAX_COLOURS = 8;
+let _spreadColorBy = _storageGet('exptrack-spread-colorby') || '';
+
+function _spreadValueText(v) {
+  return v === undefined ? '(not set)' : (typeof v === 'string' ? v : JSON.stringify(v));
+}
+
+// The settings worth colouring by: the ones the server says vary (`labelKeys`
+// from `_multiLabelKeys`), with few enough values to tell apart.
+function _spreadColorKeys(exps, varying) {
+  return (varying || []).filter(k => {
+    const vals = new Set(exps.map(e => _spreadValueText((e.params || {})[k])));
+    return vals.size > 1 && vals.size <= SPREAD_MAX_COLOURS;
+  }).sort();
+}
+
+// value text -> colour for the chosen setting, in first-seen order; null when
+// nothing is chosen (or the choice no longer applies to this set).
+function _spreadColorMap(exps, colorKeys) {
+  if (!_spreadColorBy || !colorKeys.includes(_spreadColorBy)) return null;
+  const map = new Map();
+  for (const e of exps) {
+    const t = _spreadValueText((e.params || {})[_spreadColorBy]);
+    if (!map.has(t)) map.set(t, MULTI_COLORS[map.size % MULTI_COLORS.length]);
+  }
+  return map;
+}
+
+function _spreadRunColor(e, cmap) {
+  return cmap ? cmap.get(_spreadValueText((e.params || {})[_spreadColorBy])) : null;
+}
+
+function _spreadControlsHtml(keys, cmap) {
+  if (!keys.length) return '';
+  const opts = '<option value="">— (best only)</option>'
+    + keys.map(k => '<option value="' + esc(k) + '"' + (k === _spreadColorBy && cmap ? ' selected' : '')
+      + '>' + esc(paramColLabel(k)) + '</option>').join('');
+  const legend = cmap ? [...cmap.entries()].map(([t, c]) =>
+    '<span class="spread-legend-item"><span class="spread-legend-dot" style="background:' + c + '"></span>'
+    + esc(t) + '</span>').join('') : '';
+  return '<div class="spread-controls"><label>Colour by <select onchange="setSpreadColorBy(this.value)">'
+    + opts + '</select></label>' + legend + '</div>';
+}
+
+function _multiSpreadHtml(exps, keys, labelKeys) {
+  const labels = exps.map(e => _multiSeriesLabel(e, labelKeys));
+  const colorKeys = _spreadColorKeys(exps, (labelKeys || {}).all);
+  const cmap = _spreadColorMap(exps, colorKeys);
+  _spreadCmap = cmap;
+  let rows = '';
+  const same = [];
   keys.forEach((k, i) => {
-    const canvas = document.getElementById(multiChartId(i));
-    if (!canvas) return;
-    const labels = exps.map(e => _multiSeriesLabel(e, labelKeys));
-    const values = exps.map(e => e.metrics[k] ?? null);
-    const colors = exps.map((_, j) => MULTI_COLORS[j % MULTI_COLORS.length]);
-    multiCharts[k] = new Chart(canvas, {
-      type: 'bar',
-      data: {
-        labels: labels,
-        datasets: [{
-          label: k,
-          data: values,
-          backgroundColor: colors.map(c => c + '33'),
-          borderColor: colors,
-          borderWidth: 1.5,
-        }]
+    const pts = _spreadPoints(exps, k);
+    if (!pts.length) return;
+    const vals = pts.map(p => p.v);
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    if (!metricMoved(lo, hi)) { same.push(k + ' = ' + _spreadFmt(lo)); return; }
+    const dir = metricGoodDirection(k);
+    const best = pts.reduce((a, b) => ((dir < 0 ? b.v < a.v : b.v > a.v) ? b : a));
+    const dots = pts.map(p => {
+      // Inset by the largest dot's radius at both ends: placed on the track's
+      // own edges, the lowest and highest runs' dots sat on the min and max
+      // numbers beside it.
+      const f = ((p.v - lo) / (hi - lo)).toFixed(4);
+      const c = _spreadRunColor(exps[p.j], cmap);
+      return '<span class="spread-dot' + (p === best ? ' best' : '') + '" data-run="' + p.j
+        + '" style="left:calc(9px + (100% - 18px) * ' + f + ')' + (c ? ';background:' + c : '') + '" title="'
+        + esc(labels[p.j]) + ': ' + esc(_spreadFmt(p.v)) + '"></span>';
+    }).join('');
+    const partial = pts.length < exps.length
+      ? ' <span class="spread-partial" title="Only these runs logged it">' + pts.length + ' of ' + exps.length + ' runs</span>' : '';
+    rows += '<div class="spread-row" data-spread="' + i + '" onclick="toggleSpreadChart(' + i + ')"'
+      + ' title="Click for the full chart, best first">'
+      + '<span class="spread-key" title="' + esc(k) + '">' + esc(abbrevMetric(k))
+      + ' <span class="spread-goal">' + (dir < 0 ? '↓ lower is better' : '↑ higher is better') + '</span>' + partial + '</span>'
+      + '<span class="spread-lo">' + esc(_spreadFmt(lo)) + '</span>'
+      + '<span class="spread-track">' + dots + '</span>'
+      + '<span class="spread-hi">' + esc(_spreadFmt(hi)) + '</span>'
+      + '<span class="spread-best">best <strong>' + esc(_spreadFmt(best.v)) + '</strong> '
+      + esc(labels[best.j]) + '</span>'
+      + '</div><div class="spread-chart" id="spread-chart-' + i + '" style="display:none">'
+      + '<canvas id="' + multiChartId(i) + '"></canvas></div>';
+  });
+  if (same.length) {
+    rows += '<div class="spread-same"><span class="spread-same-label">Same for every run (' + same.length + ')</span> '
+      + same.map(t => '<code>' + esc(t) + '</code>').join(' ') + '</div>';
+  }
+  return '<div class="spread-wrap" id="spread-wrap" onmouseover="spreadHover(event)" onmouseout="spreadHover(null)">'
+    + _spreadControlsHtml(colorKeys, cmap) + '<div class="spread-list">' + rows + '</div></div>';
+}
+
+function setSpreadColorBy(key) {
+  _spreadColorBy = key || '';
+  _storageSet('exptrack-spread-colorby', _spreadColorBy);
+  const st = _multiSpreadState;
+  const wrap = document.getElementById('spread-wrap');
+  if (!st || !wrap) return;
+  for (const k of Object.keys(multiCharts)) {
+    if (k.startsWith('spread:')) { multiCharts[k].destroy(); delete multiCharts[k]; }
+  }
+  wrap.outerHTML = _multiSpreadHtml(st.exps, st.keys, st.labelKeys);
+}
+
+// One run, lit up in every row: where does the run that won auc land on
+// recall? The class goes on the wrapper so a single rule dims the rest.
+function spreadHover(ev) {
+  const wrap = document.getElementById('spread-wrap');
+  if (!wrap) return;
+  const dot = ev && ev.target && ev.target.closest ? ev.target.closest('.spread-dot') : null;
+  // mouseover fires on every element crossed; repaint only when the run changes.
+  const run = dot ? dot.dataset.run : null;
+  if (run === wrap.dataset.hlRun) return;
+  wrap.dataset.hlRun = run || '';
+  wrap.querySelectorAll('.spread-dot.on').forEach(d => d.classList.remove('on'));
+  if (!dot) { wrap.classList.remove('hl'); return; }
+  wrap.classList.add('hl');
+  wrap.querySelectorAll('.spread-dot[data-run="' + dot.dataset.run + '"]')
+    .forEach(d => d.classList.add('on'));
+}
+
+// The full chart for one metric: horizontal bars, best run on top, the run's
+// settings as the row label — readable however many runs there are.
+function toggleSpreadChart(i) {
+  const st = _multiSpreadState;
+  const box = document.getElementById('spread-chart-' + i);
+  if (!st || !box) return;
+  const k = st.keys[i];
+  if (box.style.display !== 'none') {
+    box.style.display = 'none';
+    if (multiCharts['spread:' + k]) { multiCharts['spread:' + k].destroy(); delete multiCharts['spread:' + k]; }
+    return;
+  }
+  box.style.display = '';
+  const canvas = document.getElementById(multiChartId(i));
+  if (!canvas) return;
+  const dir = metricGoodDirection(k);
+  const pts = _spreadPoints(st.exps, k).sort((a, b) => (dir < 0 ? a.v - b.v : b.v - a.v));
+  const colors = pts.map(p => _spreadRunColor(st.exps[p.j], _spreadCmap) || '#8a8a8a');
+  box.style.height = Math.max(120, 22 * pts.length + 50) + 'px';
+  multiCharts['spread:' + k] = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: pts.map(p => _multiSeriesLabel(st.exps[p.j], st.labelKeys)),
+      datasets: [{label: k, data: pts.map(p => p.v),
+                  backgroundColor: colors.map(c => c + '33'), borderColor: colors, borderWidth: 1.5}],
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {legend: {display: false}},
+      scales: {
+        x: {title: {display: true, text: k, font: {family: "'IBM Plex Mono'"}}},
+        y: {ticks: {font: {family: "'IBM Plex Mono'", size: 11}}},
       },
-      options: {
-        responsive: true,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { ticks: { font: { family: "'IBM Plex Mono'", size: 11 } } },
-          y: { title: { display: true, text: k, font: { family: "'IBM Plex Mono'" } } }
-        }
-      }
-    });
+    },
   });
 }

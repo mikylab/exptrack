@@ -159,28 +159,45 @@ def api_bulk_delete_preview(conn, body: dict) -> dict:
 
 
 def api_bulk_export(conn, body: dict) -> dict | list:
-    from exptrack.core.export_render import markdown_to_html, render_runs
+    from exptrack.core.export_render import (
+        READABLE_FORMATS,
+        build_runs_summary,
+        markdown_to_html,
+        render_runs,
+    )
     from exptrack.core.queries import (
         format_export_csv,
         get_batch_export_data,
     )
     ids = body.get("ids", [])
     fmt = body.get("format", "json")
-    if not ids:
+    # `all`: every run in the project (not in the Trash), chosen server-side —
+    # the dashboard's list is paginated, so the ids it has loaded are not "all".
+    export_all = body.get("all") is True
+    if not ids and not export_all:
         return {"error": "no ids provided"}
-    batch = get_batch_export_data(conn, exp_ids=ids, full=bool(body.get("full")))
+    batch = get_batch_export_data(conn, exp_ids=None if export_all else ids,
+                                  export_all=export_all, full=bool(body.get("full")))
     if not batch:
         return {"error": "no experiments found"}
+    # Several runs open with a summary of the set (what varied, which won, per
+    # metric spread) ahead of each run's own report.
+    summary = None
+    summary_only = body.get("summary_only") is True
+    if len(batch) > 1 and fmt in READABLE_FORMATS:
+        summary = build_runs_summary(conn, batch)
     if fmt in ("csv", "tsv"):
         delimiter = "\t" if fmt == "tsv" else ","
         return {"format": fmt, "content": format_export_csv(batch, delimiter=delimiter)}
     # `patch: false` is Copy — each run's patch is left to Export .patch.
     patch = body.get("patch", True) is not False
     if fmt == "markdown":
-        md = render_runs(batch, "markdown", patch=patch)
+        md = render_runs(batch, "markdown", patch=patch, summary=summary,
+                         summary_only=summary_only)
         return {"format": "markdown", "content": md, "html": markdown_to_html(md)}
     elif fmt in ("text", "html"):
-        return {"format": fmt, "content": render_runs(batch, fmt, patch=patch)}
+        return {"format": fmt, "content": render_runs(batch, fmt, patch=patch, summary=summary,
+                                                      summary_only=summary_only)}
     else:
         return batch
 

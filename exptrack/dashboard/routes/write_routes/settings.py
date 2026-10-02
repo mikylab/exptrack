@@ -116,3 +116,22 @@ def api_manage_result_types(body: dict) -> dict:
     save(conf)
     reload()
     return {"ok": True, "types": types, "prefixes": prefixes}
+
+
+def api_set_primary_metric(conn, body: dict) -> dict:
+    """Set or clear the metric runs are judged by, at the level the reader chose.
+
+    Body: ``{"key", "goal": "" | "max" | "min", "level": "project" | "study" |
+    "run", "study", "run"}``; an empty *key* clears that level. The level is
+    named rather than inferred, as `exptrack primary-metric` does it: writing
+    the wrong one leaves a setting that appears to do nothing because a more
+    specific level shadows it. This used to be reachable from the terminal
+    only, while every ranking in the dashboard ran on the guess.
+    """
+    from exptrack.core import primary_metric as pm
+    goal = body_str(body, "goal")
+    if goal not in ("", pm.GOAL_MAX, pm.GOAL_MIN):
+        return {"error": "goal must be max or min"}
+    return pm.set_primary_metric(conn, body_str(body, "level") or "project",
+                                 body_str(body, "key"), goal,
+                                 study=body_str(body, "study"), run=body_str(body, "run"))

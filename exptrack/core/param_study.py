@@ -448,6 +448,7 @@ def build_matrix(conn, exp_ids: list[str], include_running: bool = False,
         "excluded": excluded,
         "rank_by": rank_by,
         "metric": {"key": metric_key, "goal": goal},
+        "metric_source": consensus_source(primary_by_exp, metric_key),
         "off_metric_runs": off_metric_runs(primary_by_exp, metric_key),
         # Which metric keys each kept run logged. Carried so a caller wanting
         # the set's pickable metrics doesn't repeat the DISTINCT scan above.
@@ -501,6 +502,28 @@ def consensus_metric(primaries: dict) -> tuple[str, str]:
     key = min(counts, key=lambda k: (-counts[k], k))
     goal = pm.GOAL_MIN if pm.GOAL_MIN in goals[key] else pm.GOAL_MAX
     return key, goal
+
+
+def consensus_source(primaries: dict, key: str) -> dict:
+    """Where the set's metric *key* was chosen: ``{"source", "study"}``.
+
+    The broadest configured level among the runs judged by *key* — project,
+    then study, then run — else ``heuristic``. Broadest, because that is the
+    setting that decided the set: one run's own override does not make the
+    whole search "set for this run", and offering to clear it from the Matrix
+    would target a run the reader never named. The client used to guess this
+    from the first configured row, which named ``run`` for a mixed set and
+    then had no run to clear.
+    """
+    order = ("project", "study", "run")
+    found = {}
+    for p in primaries.values():
+        if (p or {}).get("key") == key and p.get("source") in order:
+            found.setdefault(p["source"], p.get("study") or "")
+    for level in order:
+        if level in found:
+            return {"source": level, "study": found[level]}
+    return {"source": "heuristic" if key else None, "study": ""}
 
 
 def scored_values(primaries: dict, metric_key: str, basis: str = "final") -> dict[str, float]:

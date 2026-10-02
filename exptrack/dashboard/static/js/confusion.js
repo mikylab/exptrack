@@ -89,7 +89,7 @@ async function _confFlushSave(expId) {
 }
 
 async function loadConfusionTab(expId) {
-  const container = document.getElementById('detail-tab-confusion');
+  const container = document.getElementById('detail-tool-confusion');
   if (!container) return;
   container.innerHTML = '<div class="conf-wrap"><p class="conf-hint">Loading…</p></div>';
 
@@ -128,7 +128,7 @@ async function loadConfusionTab(expId) {
 }
 
 function _confRenderTab(expId) {
-  const container = document.getElementById('detail-tab-confusion');
+  const container = document.getElementById('detail-tool-confusion');
   if (!container) return;
   const s = _confState[expId];
   if (!s) return;
@@ -396,7 +396,7 @@ function confSetName(expId, mid, val) {
   m.name = String(val).slice(0, 60);
   _confScheduleSave(expId);
   // Update tab label inline so we don't lose focus on the text input.
-  const bar = document.querySelector('#detail-tab-confusion .conf-tabs');
+  const bar = document.querySelector('#detail-tool-confusion .conf-tabs');
   if (bar) {
     const buttons = bar.querySelectorAll('.conf-tab');
     const idx = s.matrices.findIndex(x => x.id === mid);

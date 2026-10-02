@@ -93,3 +93,21 @@ def test_hardening_survives_a_stream_that_cannot_reconfigure(monkeypatch):
     monkeypatch.setattr(sys, "stdout", io.StringIO())
     monkeypatch.setattr(sys, "stderr", io.StringIO())
     formatting.harden_stdio()  # must not raise
+
+
+def test_notebook_logging_prints_on_an_ansi_console(tmp_project):
+    """`%exp_log` confirms with `logged acc → <run>`. In a terminal IPython on
+    Windows that arrow raised after the metric was written, so the cell
+    reported a failure for a write that had succeeded. The notebook module
+    never goes through the CLI's main(), so it hardens on its own."""
+    code = ("import exptrack.notebook as nb\n"
+            "nb.start(lr=0.1)\n"
+            "nb.log_last(acc=0.9)\n"
+            "nb.done()\n")
+    env = dict(os.environ, PYTHONIOENCODING="cp1252", NO_COLOR="1")
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, encoding="cp1252", errors="replace",
+                       cwd=str(tmp_project), env=env)
+    assert "UnicodeEncodeError" not in r.stderr, r.stderr[-400:]
+    assert r.returncode == 0, r.stderr[-400:]
+    assert "logged acc -> " in r.stdout

@@ -3,21 +3,24 @@ import re
 
 
 def test_make_run_name_basic(tmp_project):
-    """make_run_name produces the readable format: MonDD_<script>__<params>__<uid>."""
+    """make_run_name produces <script>__<params>__<uid> — no date by default.
+
+    Every run records when it started; a date in the name made a one-day sweep
+    a column of identical `Oct01_` prefixes ahead of the part that differed.
+    """
     from exptrack.core.naming import make_run_name
 
     name = make_run_name("train.py", {"lr": 0.01, "epochs": 10})
-    assert re.match(r"^[A-Z][a-z]{2}\d{2}_train__", name)  # readable date prefix
-    assert "lr" in name
+    assert name.startswith("train__lr0.01")
     assert re.search(r"__[a-f0-9]{8}$", name)  # short uid suffix
 
 
 def test_make_run_name_no_params(tmp_project):
-    """make_run_name works with no params: MonDD_<script>__<uid>."""
+    """make_run_name works with no params: <script>__<uid>."""
     from exptrack.core.naming import make_run_name
 
     name = make_run_name("train.py")
-    assert re.match(r"^[A-Z][a-z]{2}\d{2}_train__[a-f0-9]{8}$", name)
+    assert re.match(r"^train__[a-f0-9]{8}$", name)
 
 
 def test_make_run_name_no_script(tmp_project):
@@ -25,7 +28,42 @@ def test_make_run_name_no_script(tmp_project):
     from exptrack.core.naming import make_run_name
 
     name = make_run_name("")
-    assert re.match(r"^[A-Z][a-z]{2}\d{2}_exp__", name)
+    assert name.startswith("exp__")
+
+
+def test_make_run_name_readable_date_style(tmp_project):
+    """date_style='readable' puts the MonDD_ prefix back."""
+    from exptrack import config as cfg
+    from exptrack.core.naming import make_run_name
+
+    conf = cfg.load()
+    conf.setdefault("naming", {})["date_style"] = "readable"
+    cfg.save(conf)
+
+    name = make_run_name("train.py", {"lr": 0.01})
+    assert re.match(r"^[A-Z][a-z]{2}\d{2}_train__lr0.01__[a-f0-9]{8}$", name)
+
+
+def test_make_run_name_unknown_date_style_degrades_to_no_date(tmp_project):
+    """A hand-edited value that means nothing is the default, not a crash."""
+    from exptrack import config as cfg
+    from exptrack.core.naming import make_run_name
+
+    conf = cfg.load()
+    conf.setdefault("naming", {})["date_style"] = "fancy"
+    cfg.save(conf)
+
+    assert make_run_name("train.py", {"lr": 0.01}).startswith("train__lr0.01")
+
+
+def test_multi_word_keys_shorten_to_initials(tmp_project):
+    """`batch_size` is `bs`, not `batch_si` — the cut that made a sweep's names
+    read `batch_si128_weight_d0`."""
+    from exptrack.core.naming import make_run_name
+
+    name = make_run_name("train.py", {"lr": 0.001, "batch_size": 128,
+                                      "weight_decay": 0.0001, "dropout": 0.3})
+    assert name.startswith("train__lr0.001_bs128_wd0.0001_dropout0.3__")
 
 
 def test_make_run_name_numeric_date_style(tmp_project):
@@ -69,12 +107,12 @@ def test_make_run_name_bool_params(tmp_project):
 
 
 def test_make_run_name_truncates_keys(tmp_project):
-    """Long parameter keys are truncated to key_max_len."""
+    """A long single-word key is truncated to key_max_len; a long multi-word
+    key becomes its initials."""
     from exptrack.core.naming import make_run_name
 
-    name = make_run_name("train.py", {"learning_rate_warmup": 0.01})
-    # Default key_max_len is 8, so "learning" should be there
-    assert "learning" in name or "learning" in name[:50]
+    assert "regulari0.01" in make_run_name("train.py", {"regularization": 0.01})
+    assert "lrw0.01" in make_run_name("train.py", {"learning_rate_warmup": 0.01})
 
 
 def test_make_run_name_max_param_keys(tmp_project):

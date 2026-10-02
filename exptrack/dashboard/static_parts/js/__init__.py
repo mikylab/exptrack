@@ -11,6 +11,9 @@ from .compare import JS_COMPARE
 from .confusion import JS_CONFUSION
 from .core import JS_CORE
 from .detail import JS_DETAIL
+from .detail_header import JS_DETAIL_HEADER
+from .detail_overview import JS_DETAIL_OVERVIEW
+from .detail_tabs import JS_DETAIL_TABS
 from .experiments import JS_EXPERIMENTS
 from .highlight import JS_HIGHLIGHT
 from .image_compare import JS_IMAGE_COMPARE
@@ -19,6 +22,7 @@ from .inline_edit import JS_INLINE_EDIT
 from .manual import JS_MANUAL
 from .matrix import JS_MATRIX
 from .mutations import JS_MUTATIONS
+from .notes import JS_NOTES
 from .owl import JS_OWL
 from .projects import JS_PROJECTS
 from .run_picker import JS_RUN_PICKER
@@ -35,8 +39,9 @@ from .trash import JS_TRASH
 def get_all_js() -> str:
     """Concatenate all JavaScript sections in the correct order."""
     return (JS_CORE + JS_HIGHLIGHT + JS_OWL + JS_SIDEBAR + JS_TABLE +
-            JS_EXPERIMENTS + JS_INLINE_EDIT + JS_DETAIL + JS_CHARTS +
-            JS_RUN_PICKER + JS_COMPARE + JS_MUTATIONS + JS_TIMELINE +
+            JS_EXPERIMENTS + JS_INLINE_EDIT + JS_DETAIL + JS_DETAIL_TABS +
+            JS_DETAIL_HEADER + JS_DETAIL_OVERVIEW + JS_CHARTS +
+            JS_RUN_PICKER + JS_COMPARE + JS_MUTATIONS + JS_NOTES + JS_TIMELINE +
             JS_IMAGE_COMPARE + JS_STUDIES + JS_STAGE + JS_MANUAL +
             JS_MATRIX + JS_TODOS + JS_COMMANDS + JS_CONFUSION + JS_SESSIONS +
             JS_TRASH + JS_PROJECTS + JS_INIT)
@@ -49,6 +54,9 @@ __all__ = [
     "JS_CONFUSION",
     "JS_CORE",
     "JS_DETAIL",
+    "JS_DETAIL_HEADER",
+    "JS_DETAIL_OVERVIEW",
+    "JS_DETAIL_TABS",
     "JS_EXPERIMENTS",
     "JS_HIGHLIGHT",
     "JS_IMAGE_COMPARE",
@@ -57,6 +65,7 @@ __all__ = [
     "JS_MANUAL",
     "JS_MATRIX",
     "JS_MUTATIONS",
+    "JS_NOTES",
     "JS_OWL",
     "JS_PROJECTS",
     "JS_RUN_PICKER",

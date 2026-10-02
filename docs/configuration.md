@@ -110,11 +110,12 @@ exptrack stores config in `.exptrack/config.json`. Safe to commit — no secrets
   },
 
   // --- Run naming ---
-  // Controls the auto-generated run name: {MonDD}_{script}__{params}__{uid}
+  // Controls the auto-generated run name: {script}__{params}__{uid}
+  // (a long multi-word key is shortened to its initials: batch_size -> bs)
   "naming": {
     "max_param_keys": 4,          // max params included in name
     "key_max_len":    8,          // param key length limit in name
-    "date_style":     "readable"  // "readable" (Jul28) or "numeric" (legacy MMDD)
+    "date_style":     "none"      // "none", "readable" (Jul28_ prefix) or "numeric" (legacy MMDD)
   },
 
   // --- Plugins ---

@@ -150,6 +150,7 @@ async function loadProjects() {
     return {recovered: false, projects: null};
   }
   rememberProjects(data.projects);
+  _storageSet(_PROJECTS_CACHE_KEY, JSON.stringify(data.projects));
   const el = document.getElementById('project-switcher');
   // /api/projects never serves an unrecognized id's data: an unknown, stale
   // or schema-skewed stored id comes back with `current` pointing at the
@@ -218,16 +219,51 @@ async function loadProjects() {
   return {recovered: recovered, projects: data.projects};
 }
 
+// The last project list, kept so the header's project box can be drawn the
+// moment the page loads. Switching project reloads the page, and the box used
+// to stay empty until /api/projects answered — half a second or more with many
+// projects — so it vanished and came back on every switch. Per-viewer only;
+// the server's answer replaces it as soon as it arrives.
+const _PROJECTS_CACHE_KEY = 'exptrack_projects_cache';
+
+function _renderCachedProjectSwitcher() {
+  let list = null;
+  try { list = JSON.parse(_storageGet(_PROJECTS_CACHE_KEY) || 'null'); } catch (e) { list = null; }
+  const el = document.getElementById('header-project-switcher');
+  if (!Array.isArray(list) || !list.length || !el || el.firstChild) return;
+  // Only when this tab already names its project: guessing one would show the
+  // wrong name until the server's answer corrected it.
+  const current = _activeProjectId;
+  if (!current || !list.some(p => p.id === current)) return;
+  rememberProjects(list);
+  renderHeaderProjectSwitcher(list, current, '');
+}
+
 function toggleProjectManage() {
   _projectManageOpen = !_projectManageOpen;
   const panel = document.getElementById('project-manage-panel');
   if (panel) panel.style.display = _projectManageOpen ? '' : 'none';
 }
 
+// The view to reopen in the project being switched to. A view that names one
+// of the old project's items — a run, a comparison, a session — is dropped:
+// reloading with `#run=<id>` looked that id up in the other database and the
+// run panel came back "not found". Views without an id carry over.
+function _hashForProjectSwitch(hash) {
+  const h = String(hash || '');
+  if (h.startsWith('#run=') || h.startsWith('#compare=')) return '';
+  if (h.startsWith('#sessions=')) return '#sessions';
+  return h;
+}
+
 function switchProject(id) {
   _activeProjectId = id;
   _storageSet(_PROJECT_KEY, id);           // the default for the next new tab
   _setUrlProject(id);                      // ...and the binding for THIS one
+  const hash = _hashForProjectSwitch(location.hash);
+  if (hash !== location.hash) {
+    history.replaceState(history.state, '', location.pathname + location.search + hash);
+  }
   location.reload();                       // every view is project-scoped
 }
 

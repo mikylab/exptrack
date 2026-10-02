@@ -72,6 +72,25 @@ def api_clean_db(conn, body: dict | None = None) -> dict:
             "skipped_unconfirmed": skipped}
 
 
+def api_backup_db(conn) -> dict:
+    """Settings → Back up database: a timestamped copy in `.exptrack/backups/`.
+
+    Returns the file's ``name`` (what ``GET /api/backup-file?name=`` serves for
+    download), its path relative to the project, and its size.
+    """
+    from exptrack import config as cfg
+    from exptrack.core.db import backup_database
+    try:
+        dest = backup_database(conn)
+    except Exception as e:
+        return {"ok": False, "error": f"Backup failed: {e}"}
+    try:
+        rel = str(dest.relative_to(cfg.project_root()))
+    except ValueError:
+        rel = str(dest)
+    return {"ok": True, "name": dest.name, "path": rel, "size": dest.stat().st_size}
+
+
 def api_vacuum_db(conn) -> dict:
     """Checkpoint WAL and VACUUM the database to reclaim space."""
     try:
@@ -241,6 +260,8 @@ def api_prune_metrics(conn, body: dict) -> dict:
     body.keys: metric keys to limit to (default: all)
     body.max_points / body.keep_every: the thinning target
     body.dry_run: preview only (returns ``preview_token``)
+    body.include_points: with dry_run and exactly one id, also return
+        ``series`` — that run's kept and removed points, for drawing
     body.preview_token: delete exactly the previewed set (see above)
     """
     from exptrack.core.db import checkpoint_truncate
@@ -259,6 +280,11 @@ def api_prune_metrics(conn, body: dict) -> dict:
         return {"error": "pass max_points or keep_every"}
 
     ids = [i for i in (body.get("ids") or []) if i] or None
+    if ids:
+        # The selection matches ids exactly, so a short id (a `#run=` link)
+        # would select nothing and report "nothing to prune".
+        from exptrack.core.queries import resolve_experiment_rows
+        ids = [r["id"] for r in resolve_experiment_rows(conn, ids)] or ids
     keys = [k for k in (body.get("keys") or []) if k] or None
     protect = body.get("protect_extremes", True)
 
@@ -268,8 +294,25 @@ def api_prune_metrics(conn, body: dict) -> dict:
         table_bytes = table_byte_sizes(conn)
         res = preview_metric_prune(conn, ids, keys, keep_every, max_points,
                                    protect, table_bytes)
-        res["preview_token"] = _stash_prune_preview(res.pop("_ids", []),
-                                                   table_bytes)
+        doomed = res.pop("_ids", [])
+        # `total_points` is the whole table; a scoped preview also says how
+        # many points its own runs and metrics hold, so "remove X of Y" is
+        # about the selection being pruned.
+        if ids:
+            where = f"exp_id IN ({','.join('?' * len(ids))})"
+            args = list(ids)
+            if keys:
+                where += f" AND key IN ({','.join('?' * len(keys))})"
+                args += list(keys)
+            res["scope_points"] = conn.execute(
+                f"SELECT COUNT(*) FROM metrics WHERE {where}", args).fetchone()[0]
+        # One run's preview can be drawn: the Charts tab shows what stays and
+        # what goes before the confirm. Never for a project-wide prune, whose
+        # point set is the whole table.
+        if body.get("include_points") and ids and len(ids) == 1:
+            from exptrack.core.storage import prune_preview_points
+            res["series"] = prune_preview_points(conn, ids[0], doomed, keys)
+        res["preview_token"] = _stash_prune_preview(doomed, table_bytes)
         res["ok"] = True
         return res
 

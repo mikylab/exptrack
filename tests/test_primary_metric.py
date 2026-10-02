@@ -356,3 +356,74 @@ def test_clearing_returns_to_the_heuristic(tmp_project):
     pm.set_project_primary_metric("")
     out = pm.primary_metric_for_run(get_db(), exp_id, metric_keys=["accuracy"])
     assert out["source"] == "heuristic" and out["key"] == "accuracy"
+
+
+# ---------------------------------------------------------------------------
+# The dashboard's picker
+# ---------------------------------------------------------------------------
+
+def test_a_study_answer_names_its_study(tmp_project):
+    """The picker's Clear removes the level that answered, so a study answer
+    has to say which study."""
+    from exptrack.core import get_db
+    from exptrack.core import primary_metric as pm
+
+    exp_id = _run(metrics={"f1": [(1, 0.8)]}, studies=["sweep-a"])
+    pm.set_study_primary_metric("sweep-a", "f1")
+    out = pm.primary_metric_for_run(get_db(), exp_id, studies=["sweep-a"],
+                                    metric_keys=["f1"])
+    assert out["source"] == "study" and out["study"] == "sweep-a"
+    assert "study" not in pm.primary_metric_for_run(get_db(), exp_id, metric_keys=["f1"])
+
+
+def test_the_route_sets_each_level_it_is_told_to(tmp_project):
+    """Every ranking in the dashboard runs on this, and it used to be settable
+    from the terminal only. The level is named, never inferred. Each call gets
+    its own connection, as each request does: saving the config reloads it,
+    which closes the handle a previous call held."""
+    from exptrack import config
+    from exptrack.core import get_db
+    from exptrack.core import primary_metric as pm
+    from exptrack.dashboard.routes.write_routes import api_set_primary_metric
+
+    exp_id = _run(metrics={"val_acc": [(1, 0.9)], "loss": [(1, 0.2)]},
+                  studies=["sweep-a"])
+    assert api_set_primary_metric(get_db(), {"key": "val_acc", "goal": "max"})["ok"]
+    assert config.load()["primary_metric"] == {"key": "val_acc", "goal": "max"}
+    assert api_set_primary_metric(get_db(), {"key": "loss", "level": "study",
+                                         "study": "sweep-a"})["ok"]
+    assert config.load()["primary_metric_by_study"]["sweep-a"]["key"] == "loss"
+    r = api_set_primary_metric(get_db(), {"key": "val_acc", "level": "run", "run": exp_id[:8]})
+    assert r["ok"] and pm.run_primary_metric(get_db(), exp_id)["key"] == "val_acc"
+    # clearing is an empty key at the named level
+    assert api_set_primary_metric(get_db(), {"key": "", "level": "project"})["ok"]
+    assert not config.load().get("primary_metric")
+
+
+def test_the_route_refuses_what_it_cannot_place(tmp_project):
+    from exptrack.core import get_db
+    from exptrack.dashboard.routes.write_routes import api_set_primary_metric
+
+    conn = get_db()
+    _run(metrics={"acc": [(1, 0.9)]})
+    assert "error" in api_set_primary_metric(conn, {"key": "acc", "goal": "up"})
+    assert "error" in api_set_primary_metric(conn, {"key": "acc", "level": "study"})
+    assert "error" in api_set_primary_metric(conn, {"key": "acc", "level": "galaxy"})
+    # an empty run id would match every run and set the first one
+    assert "error" in api_set_primary_metric(conn, {"key": "acc", "level": "run", "run": ""})
+
+
+def test_the_matrix_states_where_its_metric_was_chosen():
+    """The Matrix's "Judged by" used to guess this client-side from the first
+    configured row, naming `run` for a mixed set and then having no run to
+    clear. The broadest configured level is what decided the set."""
+    from exptrack.core.param_study import consensus_source
+
+    guess = {"a": {"key": "acc", "source": "heuristic"}}
+    assert consensus_source(guess, "acc") == {"source": "heuristic", "study": ""}
+    mixed = {"a": {"key": "acc", "source": "run"},
+             "b": {"key": "acc", "source": "study", "study": "s1"},
+             "c": {"key": "loss", "source": "project"}}
+    assert consensus_source(mixed, "acc") == {"source": "study", "study": "s1"}
+    mixed["d"] = {"key": "acc", "source": "project"}
+    assert consensus_source(mixed, "acc")["source"] == "project"

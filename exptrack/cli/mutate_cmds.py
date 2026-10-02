@@ -128,7 +128,6 @@ def cmd_primary_metric(args):
     setting that appears to do nothing because a more specific level shadows it.
     """
     from ..core import primary_metric as pm
-    from ..core.queries import find_experiment
 
     key = (args.key or "").strip()
     goal = (args.goal or "").strip()
@@ -138,21 +137,13 @@ def cmd_primary_metric(args):
         _print_primary_metrics(args, pm)
         return
 
-    if args.run:
-        conn = get_db()
-        exp = find_experiment(conn, args.run, "id, name")
-        if not exp:
-            die(f"Not found: {args.run}")
-        pm.set_run_primary_metric(conn, exp["id"], key, goal)
-        where = f"run {exp['name']}"
-    elif args.study:
-        result = pm.set_study_primary_metric(args.study, key, goal)
-        if result.get("error"):
-            die(result["error"])
-        where = f"study '{args.study}'"
-    else:
-        pm.set_project_primary_metric(key, goal)
-        where = "this project"
+    level = "run" if args.run else "study" if args.study else "project"
+    result = pm.set_primary_metric(get_db(), level, key, goal,
+                                   study=args.study or "", run=args.run or "")
+    if result.get("error"):
+        die(result["error"])
+    where = {"run": f"run {result.get('name')}", "study": f"study '{args.study}'",
+             "project": "this project"}[level]
 
     if not key:
         print(col(f"Primary metric cleared for {where}.", G), file=sys.stderr)

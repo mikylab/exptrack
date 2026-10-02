@@ -85,7 +85,7 @@ Your output directory flag name doesn't matter (`--output_dir`, `--results_direc
 
 **What's visible after a resume:**
 
-- A `resume` event in the timeline (visible in `exptrack timeline <id>` and the dashboard Timeline tab) showing the command that triggered it
+- A `resume` event in the timeline (visible in `exptrack timeline <id>` and the dashboard's Code › Timeline) showing the command that triggered it
 - Metrics from all runs plotted on a single chart — step numbers continue seamlessly
 - Artifacts from all runs listed together
 - Updated params if the resumed run changed any values (e.g. `--epochs 100` overwrites the original `--epochs 50`)

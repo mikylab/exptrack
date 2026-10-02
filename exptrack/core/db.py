@@ -259,6 +259,44 @@ def close_db(sweep: bool = True, checkpoint: bool = True) -> None:
         _local.db_path = None
 
 
+BACKUP_NAME_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z(?:_[0-9]+)?\.db$")
+
+
+def backups_dir() -> Path:
+    """`.exptrack/backups/` of the current project — where backups go by default."""
+    from .. import config as _cfg
+    return _cfg.project_root() / ".exptrack" / "backups"
+
+
+def backup_database(conn: sqlite3.Connection, dest: Path | None = None) -> Path:
+    """Copy the whole database to *dest* (default: a timestamped file in
+    ``backups_dir()``) with SQLite's online backup, and return the path.
+
+    The one implementation behind ``exptrack backup`` and the dashboard's
+    Settings → Back up database. ``sqlite3.backup`` copies a consistent
+    snapshot page by page while the database stays usable, so a dashboard or a
+    training run writing at the same time is fine. A default-named file never
+    overwrites: a second backup in the same second gets a ``_2`` suffix.
+    """
+    if dest is None:
+        d = backups_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest = d / f"{stamp}.db"
+        n = 2
+        while dest.exists():
+            dest = d / f"{stamp}_{n}.db"
+            n += 1
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    target = sqlite3.connect(str(dest))
+    try:
+        conn.backup(target)
+    finally:
+        target.close()
+    return dest
+
+
 def checkpoint_truncate(conn: sqlite3.Connection, timeout_ms: int = 250) -> bool:
     """Drain the WAL back into the database file *and* truncate it to zero.
 
@@ -1147,7 +1185,37 @@ def register_artifact(conn: sqlite3.Connection, exp_id: str, path,
         (exp_id, label or Path(str(path)).name, resolved, ts,
          timeline_seq, content_hash, size_bytes),
     )
+    _warn_if_overwrote_other_run(conn, exp_id, resolved, content_hash)
     return True
+
+
+def _warn_if_overwrote_other_run(conn, exp_id: str, resolved: str,
+                                 content_hash: str | None) -> None:
+    """Say so when this file is another run's recorded output, rewritten.
+
+    A script that saves `drift.png` to a fixed path rewrites it on every run,
+    so every run in a sweep pointed at one file holding the last run's plot —
+    found only when Compare showed 39 copies of the same image. Nothing is
+    refused (a shared file is legitimate: a dataset, a cache); the point is that
+    the overwrite is visible while the run is still going, not weeks later.
+    """
+    if not content_hash:
+        return
+    try:
+        row = conn.execute(
+            "SELECT a.exp_id AS exp_id, e.name AS name FROM artifacts a "
+            "JOIN experiments e ON e.id = a.exp_id "
+            "WHERE a.path = ? AND a.exp_id != ? AND e.deleted_at IS NULL "
+            "AND a.content_hash IS NOT NULL AND a.content_hash != ? "
+            "ORDER BY a.id DESC LIMIT 1",
+            (resolved, exp_id, content_hash)).fetchone()
+    except sqlite3.Error:
+        return
+    if row:
+        print(f"[exptrack] warning: {Path(resolved).name} overwrote the copy run "
+              f"{row['exp_id'][:8]} ({row['name']}) logged at the same path — "
+              f"that run now points at this run's file. Save per-run outputs "
+              f"under exp.output_path(name) to keep one each.", file=sys.stderr)
 
 
 # ── Deletion helpers ──────────────────────────────────────────────────────────

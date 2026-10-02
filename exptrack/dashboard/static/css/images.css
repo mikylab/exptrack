@@ -17,7 +17,6 @@
   .img-modal-header { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 8px 12px; color: var(--modal-fg); }
   .img-modal-name { font-size: 13px; }
   .img-modal-close { background: none; border: none; color: var(--modal-fg); font-size: 24px; cursor: pointer; padding: 0 8px; }
-  .img-paths-section { margin-bottom: 16px; }
   /* Scan-path rows and the add form. Sized to be typed in and clicked at:
      these were 25px tall with 12–13px text and the only way to edit a saved
      path was a double-click on the text with nothing indicating it. */
@@ -127,3 +126,15 @@
     border: 1px solid var(--border); border-radius: 3px;
     background: var(--bg); color: var(--text);
   }
+
+  /* Files tab: switch, filter and Folders popover on one bar */
+  #detail-tab-files { position: relative; }
+  .files-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .files-bar .subview-bar { margin: 10px 0; }
+  .files-tools { display: inline-flex; gap: 6px; align-items: center; margin-left: auto; }
+  .files-tools input { width: 170px; font-size: var(--text-xs); padding: 3px 6px; }
+  .files-folders-pop { position: absolute; right: 0; top: 44px; z-index: 30; width: min(560px, calc(100vw - 32px));
+    max-height: 65vh; overflow: auto; background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+  .files-folders-pop h3 { font-size: var(--text-sm); margin: 10px 0 6px; }
+  .ffp-head { display: flex; justify-content: space-between; align-items: center; }

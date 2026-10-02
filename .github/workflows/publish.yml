@@ -23,6 +23,12 @@ jobs:
       - name: Install build tools
         run: pip install build
 
+      # The README links its screenshots relatively so GitHub shows each
+      # branch's own images. PyPI cannot follow relative links, so the copy
+      # packaged here points them at this release tag's files instead.
+      - name: Pin README images to this release
+        run: sed -i 's#src="docs/images/#src="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/docs/images/#g' README.md
+
       - name: Build package
         run: python -m build
 

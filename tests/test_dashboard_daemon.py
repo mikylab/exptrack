@@ -65,7 +65,7 @@ def test_pid_alive_true_for_a_genuinely_detached_process():
 
     signal.CTRL_C_EVENT == 0, so os.kill(pid, 0) routes to
     GenerateConsoleCtrlEvent, which only reaches processes in the caller's
-    own console group. Every dashboard is spawned with DETACHED_PROCESS |
+    own console group. Every dashboard is spawned with CREATE_NO_WINDOW |
     CREATE_NEW_PROCESS_GROUP (spawn_detached), so it never shares that
     group — a same-process or same-console-group pid (the two prior tests)
     can't catch this. This spawns a real child the same way spawn_detached
@@ -74,7 +74,7 @@ def test_pid_alive_true_for_a_genuinely_detached_process():
     """
     kwargs = {}
     if os.name == "nt":
-        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS
+        kwargs["creationflags"] = (subprocess.CREATE_NO_WINDOW
                                    | subprocess.CREATE_NEW_PROCESS_GROUP)
     else:
         kwargs["start_new_session"] = True
@@ -736,3 +736,37 @@ def test_stop_leaves_a_shared_recording_for_a_dashboard_it_did_not_stop(
     daemon.stop(port=8000)
 
     assert daemon.read_global_state() is not None
+
+
+def test_windows_dashboard_has_a_hidden_console_not_none(tmp_project, monkeypatch):
+    """A DETACHED_PROCESS dashboard has no console, so Windows opened a new
+    visible console window for every `git` it ran — a dashboard left open
+    filled the screen with terminals. CREATE_NO_WINDOW gives it an invisible
+    console its children share."""
+    import subprocess as _sp
+
+    seen = {}
+
+    class _Proc:
+        pid = 4242
+
+    def fake_popen(argv, **kw):
+        seen.update(kw)
+        return _Proc()
+
+    import os as _os
+
+    class _NtOs:   # only the daemon's view of `os` says Windows
+        name = "nt"
+
+        def __getattr__(self, attr):
+            return getattr(_os, attr)
+
+    monkeypatch.setattr(daemon, "os", _NtOs())
+    monkeypatch.setattr(_sp, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
+    monkeypatch.setattr(daemon.subprocess, "Popen", fake_popen)
+    assert daemon.spawn_detached("127.0.0.1", 0) == 4242
+    flags = seen["creationflags"]
+    assert flags & 0x08000000, "CREATE_NO_WINDOW"
+    assert not flags & 0x00000008, "DETACHED_PROCESS would pop a window per child"

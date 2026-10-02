@@ -662,6 +662,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if handler is not None:
             self._json(handler(conn, qs, path))
+        elif path == "/api/backup-file":
+            self._serve_backup(qs.get("name", ""))
         elif path.startswith("/api/file/"):
             # The one GET that serves bytes rather than JSON, so it sits
             # outside the tables. Nothing else matches this prefix.
@@ -811,6 +813,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/config/timezone":      lambda: write_routes.api_set_timezone(body),
             "/api/config/metrics":       lambda: write_routes.api_set_metric_settings(body),
             "/api/config/capture":       lambda: write_routes.api_set_capture_settings(body),
+            "/api/primary-metric":       lambda: write_routes.api_set_primary_metric(conn, body),
             "/api/studies/create":       lambda: write_routes.api_create_study(conn, body),
             "/api/studies/add":          lambda: write_routes.api_add_to_study(conn, body),
             "/api/studies/remove":       lambda: write_routes.api_remove_from_study(conn, body),
@@ -831,6 +834,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/commands/reorder":     lambda: write_routes.api_reorder_commands(body),
             "/api/storage-info":         lambda: write_routes.api_storage_info(conn),
             "/api/prune-metrics":        lambda: write_routes.api_prune_metrics(conn, body),
+            "/api/backup-db":            lambda: write_routes.api_backup_db(conn),
             "/api/propagate-tag-rename": lambda: write_routes.api_propagate_tag_rename(body),
             "/api/propagate-study-rename": lambda: write_routes.api_propagate_study_rename(body),
             "/api/save-export":          lambda: write_routes.api_save_export(body),
@@ -926,8 +930,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _html(self):
+        # no-cache: the shell names the hash-versioned bundles, so it is the one
+        # response that must be revalidated. Sent with no Cache-Control at all,
+        # a browser heuristically reused yesterday's shell after an upgrade,
+        # which pointed at yesterday's bundle — the dashboard kept showing the
+        # old UI until a hard reload.
         self._send_bytes(DASHBOARD_HTML.encode(), "text/html; charset=utf-8",
-                         csp=_CSP_HTML)
+                         "no-cache", csp=_CSP_HTML)
 
     def _json(self, data):
         # json_dumps, not json.dumps: a bare Infinity token from one non-finite
@@ -987,6 +996,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             data = _vendor_cache[name] = path.read_bytes()
         self._send_bytes(data, "application/javascript", "max-age=86400")
+
+    def _serve_backup(self, name: str):
+        """A database backup from `.exptrack/backups/`, as a download.
+
+        `/api/file/` refuses everything under `.exptrack/` (the token lives
+        there), so backups get their own route that serves only names shaped
+        like the ones `backup_database` writes — no path, no other file.
+        """
+        import os
+
+        from exptrack.core.db import BACKUP_NAME_RE, backups_dir
+        if not BACKUP_NAME_RE.match(name or ""):
+            self.send_error(400, "Not a backup name")
+            return
+        path = backups_dir() / name
+        if not path.is_file():
+            self.send_error(404, "Backup not found")
+            return
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            self._send_stream(fh, size, "application/vnd.sqlite3", "no-store",
+                              extra_headers=[("Content-Disposition",
+                                              f'attachment; filename="exptrack-{name}"')])
 
     def _serve_file(self, rel_path: str):
         """Serve a file from the project root (images only, with path validation)."""

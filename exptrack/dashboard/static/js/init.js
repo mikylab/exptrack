@@ -7,7 +7,7 @@ syncHighlightCheckbox();
 syncFilterControls();
 renderTableHeader();
 
-// Filmstrip keyboard nav: ←/→ step through runs while the detail view is open.
+// Run navigator keyboard nav: ←/→ step through runs while the detail view is open.
 // Ignored while typing in a field so it never fights inline editing/search.
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
@@ -73,4 +73,7 @@ function _bootProjectData() {
 
 // Gate data-loading on auth so we don't fire ~8 requests that all 401 at once
 // and leave downstream renderers reading {} responses.
+// Drawn from the remembered list first, so a reload (every project switch is
+// one) does not blank the project box while /api/projects answers.
+_renderCachedProjectSwitcher();
 ensureAuth().then(ok => { if (ok) _bootDashboard(); });
