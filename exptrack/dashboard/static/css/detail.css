@@ -19,47 +19,32 @@
   .wc-code { margin-top: 10px; }
   .wc-code .cmp-code-block { margin-bottom: 8px; }
 
-  /* Filmstrip: flip through the runs in the current list from the detail view. */
-  .detail-filmstrip { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
-  .detail-filmstrip .fs-nav {
-    flex: none; font-family: inherit; font-size: 18px; line-height: 1;
-    width: 26px; height: 46px; padding: 0; cursor: pointer; color: var(--muted);
-    background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px;
-  }
-  .detail-filmstrip .fs-nav:hover { background: var(--code-bg); color: var(--blue); border-color: var(--blue); }
-  .fs-track { display: flex; gap: 6px; overflow-x: auto; scroll-behavior: smooth; padding: 2px; flex: 1 1 auto; }
-  .fs-track::-webkit-scrollbar { height: 6px; }
-  .fs-track::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-  .fs-card {
-    flex: 0 0 auto; width: 150px; box-sizing: border-box; cursor: pointer; overflow: hidden;
-    background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px;
-    padding: 6px 8px; transition: border-color 0.12s, background 0.12s;
-  }
-  .fs-card:hover { border-color: var(--blue); background: var(--code-bg); }
-  .fs-card.active { border-color: var(--accent); background: var(--accent-soft); border-left: 3px solid var(--accent); }
-  .fs-card-top { display: flex; align-items: center; gap: 5px; min-width: 0; }
-  .fs-card .fs-name {
-    font-size: 12px; color: var(--fg); font-weight: 500; min-width: 0; flex: 0 1 auto;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .fs-card-bot { display: flex; align-items: baseline; gap: 6px; margin-top: 3px; min-width: 0; }
-  .fs-card .fs-metric { font-family: var(--font-mono); font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
-  .fs-card .fs-metric-none { font-style: italic; opacity: 0.7; }
-  .fs-card .fs-delta { font-family: var(--font-mono); font-size: 10px; white-space: nowrap; flex: 0 0 auto; }
-  .detail-filmstrip .fs-counter { flex: none; font-size: 11px; color: var(--muted); white-space: nowrap; padding-left: 2px; }
+  /* Run navigator: prev / N of M / next through the current list */
+  .run-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin-bottom: 8px; font-size: var(--text-xs); color: var(--muted); }
+  .run-nav-side { flex: 1 1 0; min-width: 0; background: none; border: none; color: var(--muted);
+    cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 4px;
+    font: inherit; }
+  .run-nav-side .status-dot { margin-right: 5px; vertical-align: middle; }
+  .run-nav-prev { text-align: left; }
+  .run-nav-next { text-align: right; }
+  .run-nav-side:hover { color: var(--blue); }
+  .run-nav-side.disabled { visibility: hidden; }
+  .run-nav-pos { flex: 0 0 auto; background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1px 10px; color: var(--fg); cursor: pointer; font: inherit; }
+  .run-nav-pos:hover { border-color: var(--blue); color: var(--blue); }
 
-  .detail-summary { display: flex; gap: 12px; flex-wrap: wrap; padding: 10px 14px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 12px; align-items: center; }
-  .detail-summary .sum-item { font-size: 13px; color: var(--muted); }
-  .detail-summary .sum-item strong { color: var(--fg); }
-  .detail-summary .sum-sep { color: var(--border); }
-  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  /* Header: name + one status line (the old summary bar, minus its counts) */
+  .detail-title { min-width: 0; flex: 1 1 auto; }
+  .detail-subtitle { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; margin-top: 2px; }
+  .detail-subtitle .sum-item { font-size: var(--text-xs); color: var(--muted); }
+  .detail-subtitle .sum-item strong { color: var(--fg); }
+  .detail-menu { position: relative; display: inline-block; }
+  .export-grid { min-width: 240px; }
+  .export-row { display: flex; align-items: center; gap: 4px; }
+  .export-row-label { flex: 1; font-size: var(--text-xs); color: var(--fg); padding-left: 4px; white-space: nowrap; }
+  .export-row .action-btn { display: inline-block; width: auto; margin: 1px 0; padding: 2px 8px; font-size: var(--text-xs); }
   @media (max-width: 900px) { #exp-sidebar { display: none; } }
-  /* Stack detail sections when the main canvas (not the viewport) is narrow —
-     so a pinned Todos/Commands panel that squeezes the canvas also collapses
-     the two-up grid into a single column. */
-  @container main (max-width: 980px) {
-    .detail-grid { grid-template-columns: 1fr; }
-  }
   @container main (max-width: 600px) {
     .info-grid { grid-template-columns: 1fr; gap: 2px 0; }
     .info-grid .label { margin-top: 6px; }
@@ -134,6 +119,12 @@
   .vs-prev-open { margin-left: auto; color: var(--blue); text-decoration: none; font-size: 11.5px; border: 1px solid var(--blue); padding: 0 8px; border-radius: 9px; white-space: nowrap; }
   .vs-prev-open:hover { text-decoration: underline; }
   .vs-prev-when { color: var(--text-3); font-family: var(--font-mono); }
+  /* Header line, then one labelled row each for settings and results: the
+     strip reads as "against X: I changed these, and this happened". */
+  .vs-head, .vs-row { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+  .vs-head .vs-prev-open { margin-left: 4px; }
+  .vs-row-label { flex: none; width: 64px; font-size: 11px; color: var(--muted); }
+  .vs-chip-primary { font-weight: 600; border-width: 2px; }
 
   /* The reference strip is the same shape as "vs previous" but a different
      baseline, so it reads as a sibling rather than a repeat: the violet used
@@ -145,3 +136,89 @@
   .vs-ref-self { color: var(--text-2); font-style: italic; }
   .vs-ref-stale { color: var(--status-danger); }
 
+  /* Run tabs: Files / Code sub-view switch, Tools view bar */
+  .subview-bar { display: flex; margin: 10px 0 12px; border: 1px solid var(--border);
+    border-radius: 6px; width: max-content; max-width: 100%; overflow-x: auto; }
+  .subview-bar .seg { background: none; border: none; padding: 4px 12px; cursor: pointer; color: var(--muted);
+    font: inherit; font-size: var(--text-xs); white-space: nowrap; }
+  .subview-bar .seg + .seg { border-left: 1px solid var(--border); }
+  .subview-bar .seg { background: var(--code-bg); }
+  .subview-bar .seg:hover { background: var(--border); color: var(--fg); }
+  .subview-bar .seg.active { background: var(--fg); color: var(--bg); }
+  .subview-bar .seg.empty { opacity: .5; }
+  .seg-count { margin-left: 5px; color: var(--muted); font-weight: normal; }
+  .seg-count:empty { display: none; }
+  .tool-head { display: flex; justify-content: space-between; align-items: center;
+    font-weight: 600; font-size: var(--text-sm); margin: 10px 0; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .muted-note { color: var(--muted); font-size: var(--text-xs); }
+
+  /* Run Overview: two columns of cards sized to their content */
+  .ov-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; margin-top: 8px; }
+  .ov-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .ov-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; background: var(--card-bg); min-width: 0; }
+  .ov-card > h2.section-toggle:first-child, .ov-card-head { margin-top: 0; }
+  .ov-card-head { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); margin: 0 0 8px; }
+  .ov-card-head .section-actions { margin-left: auto; }
+  .params-filter { margin-left: auto; width: 130px; font-size: var(--text-xs); padding: 2px 6px; }
+  .params-filter + .section-actions { margin-left: 0; }
+  .params-more, .notes-more { background: none; border: none; color: var(--blue); cursor: pointer;
+    font: inherit; font-size: var(--text-xs); padding: 4px 0; }
+  tr.param-changed td:first-child::before { content: '\25CF\00a0'; color: var(--accent); }
+  .notes-capped { max-height: 15em; overflow: hidden; }
+  .notes-capped.open { max-height: none; }
+  .ov-chart-preview { margin-top: 12px; }
+  .ov-repro .reproduce-box { margin: 0; }
+  /* Overview stacks when its own pane is narrow — a narrow window, a pinned
+     side panel, or half of a split — one rule for all three. Stacked cards
+     must stretch, or they keep their content width. */
+  #detail-tab-overview { container: ovpane / inline-size; }
+  @container ovpane (max-width: 1000px) {
+    .ov-grid { display: flex; flex-direction: column; align-items: stretch; }
+    .ov-col { display: contents; }
+    .ov-metrics { order: 1; } .ov-params { order: 2; } .ov-notes { order: 3; } .ov-repro { order: 4; } .ov-run { order: 5; }
+  }
+  /* Reproduce is already a box; the card around it would be a second one */
+  .ov-card.ov-repro { padding: 0; border: none; background: none; }
+  /* Denser tables inside Overview cards: a screenful of params, not ten rows */
+  .ov-card .params-table th, .ov-card .params-table td,
+  .ov-card .metrics-table th, .ov-card .metrics-table td { padding: 4px 10px; }
+
+  /* Split view: a second tab beside the first */
+  #detail-tabs { align-items: flex-end; }
+  .tab-split { margin-left: auto; align-self: center; background: none; border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 10px; color: var(--muted); font: inherit; font-size: var(--text-xs); cursor: pointer; }
+  .tab-split:hover { color: var(--blue); border-color: var(--blue); }
+  .tab-split.active { color: var(--fg); background: var(--code-bg); border-color: var(--border-strong); }
+  .split-head:empty { display: none; }
+  /* Rows auto + 1fr: the tall left pane spans both, and its extra height must
+     go to row 2 — sized evenly, it pushed the right pane a screen down. */
+  .detail-panes.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto 1fr; column-gap: 20px; align-items: start; }
+  .detail-panes.split > .split-head { grid-column: 2; grid-row: 1; display: flex; align-items: center;
+    justify-content: space-between; gap: 8px; }
+  .detail-panes.split > .split-head .subview-bar { margin: 8px 0; }
+  .detail-panes.split > .pane-left { grid-column: 1; grid-row: 1 / span 2; min-width: 0; }
+  .detail-panes.split > .pane-right { grid-column: 2; grid-row: 2; min-width: 0;
+    border-left: 1px solid var(--border); padding-left: 20px; margin-left: -10px; }
+  @media (max-width: 1200px) {
+    .tab-split { display: none; }
+    .detail-panes.split { display: block; }
+    .detail-panes.split > .pane-right, .detail-panes.split > .split-head { display: none !important; }
+  }
+  .subview-bar .seg.active .seg-count { color: inherit; opacity: .75; }
+  /* What changed with nothing to compare: one line, same place as the card */
+  .what-changed-card.wc-empty { padding: 8px 14px; }
+  .wc-empty-head { margin: 0; font-size: var(--text-sm); }
+  .wc-empty-why { font-weight: normal; color: var(--muted); font-size: var(--text-xs); text-transform: none; letter-spacing: 0; }
+  /* Code › Changes: the two sections */
+  /* Same size as the Uncommitted changes heading beside it (a .detail h2) */
+  .cc-head { padding: 6px 0 6px 22px; margin: 10px 0 6px; }
+  #detail-code-changes > .cc-head:first-child { margin-top: 4px; }
+  /* Code diff vs the previous run: an arrow section like its neighbours */
+  .wc-code-block { margin-top: 6px; }
+  .wc-code-head { font-size: var(--text-sm); margin: 0; }
+  .wc-code-sub { font-weight: normal; color: var(--muted); font-size: var(--text-xs); margin-left: 6px; text-transform: none; letter-spacing: 0; }
+  .wc-code-actions { display: inline-flex; gap: 4px; }
+  /* Compare's renderer brings its own "Code changes" summary; the header is it here */
+  .wc-code-body > details > summary { display: none; }
+  .wc-code-body { padding-left: 22px; }

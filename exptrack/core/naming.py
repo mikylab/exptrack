@@ -46,18 +46,37 @@ def safe_filename(s: str, max_len: int = 80, default: str = "unnamed") -> str:
     return _FILENAME_UNSAFE_RE.sub("_", str(s or ""))[:max_len] or default
 
 
+def _short_key(key: str, key_len: int) -> str:
+    """A param key as it appears in a run name.
+
+    A multi-word key longer than ``key_len`` becomes its initials —
+    ``batch_size`` -> ``bs``, ``weight_decay`` -> ``wd`` — because cutting it to
+    the first ``key_len`` characters produced ``batch_si128_weight_d0``, which
+    reads as neither. A single word is still cut to ``key_len``.
+    """
+    k = key.split(".")[-1]
+    if len(k) <= key_len:
+        return k
+    words = [w for w in re.split(r"[_\-]+", k) if w]
+    if len(words) > 1:
+        return "".join(w[0] for w in words)
+    return k[:key_len]
+
+
 def make_run_name(script: str = "", params: dict | None = None, uid: str = "") -> str:
     """
-    Produces (readable, default):   May22_train__lr0.01_bs32__a3f25b1c
+    Produces (default):             train__lr0.01_bs32__a3f25b1c
+    Or (date_style="readable"):     May22_train__lr0.01_bs32__a3f25b1c
     Or (date_style="numeric"):      train__lr0.01_bs32__0312_a3f25b1c
 
-    Readable date + script stem + top N params + short uid.
-    Always unique, always tells you what it was and *when* you ran it.
+    Script stem + top N params + short uid. Always unique, always says what
+    was run.
 
-    The ``naming.date_style`` config key controls the date: ``"readable"``
-    (default, e.g. ``May22``) front-loads a friendly month/day so un-renamed
-    runs read chronologically; ``"numeric"`` keeps the terse legacy ``MMDD``
-    in the middle.
+    The ``naming.date_style`` config key controls a date in the name. The
+    default, ``"none"``, leaves it out: every run records when it started, and
+    a sweep run on one day was a column of identical ``Oct01_`` prefixes ahead
+    of the part that differed. ``"readable"`` (``May22``) front-loads a
+    month/day; ``"numeric"`` keeps the terse legacy ``MMDD`` in the middle.
 
     *uid* is the run's id prefix when the caller has one, so the suffix a user
     reads in the name is the id `exptrack show` takes — and stays the same
@@ -68,7 +87,7 @@ def make_run_name(script: str = "", params: dict | None = None, uid: str = "") -
     ncfg       = cfg.load().get("naming", {})
     max_keys   = ncfg.get("max_param_keys", 4)
     key_len    = ncfg.get("key_max_len", 8)
-    date_style = ncfg.get("date_style", "readable")
+    date_style = ncfg.get("date_style", "none")
 
     base  = _path_safe(Path(script).stem) if script else "exp"
     parts = []
@@ -80,7 +99,7 @@ def make_run_name(script: str = "", params: dict | None = None, uid: str = "") -
         # break the on-disk output-dir rename. Filter *before* taking the top N.
         real = [(k, v) for k, v in params.items() if not k.startswith("_")]
         for k, v in real[:max_keys]:
-            short_k = k.split(".")[-1][:key_len]
+            short_k = _short_key(k, key_len)
             if isinstance(v, bool):
                 val = str(int(v))
             elif isinstance(v, float):
@@ -101,7 +120,8 @@ def make_run_name(script: str = "", params: dict | None = None, uid: str = "") -
         return name
 
     # Readable layout: MonDD_base__params__uid  (e.g. May22_train__lr0.01__a3f2…)
-    name = f"{now.strftime('%b%d')}_{base}"
+    # An unknown value degrades to the default, no date.
+    name = f"{now.strftime('%b%d')}_{base}" if date_style == "readable" else base
     if parts:
         name += "__" + "_".join(parts)
     name += f"__{uid}"

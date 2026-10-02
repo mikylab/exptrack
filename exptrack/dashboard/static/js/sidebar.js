@@ -210,7 +210,11 @@ function renderSidebarActionsBar() {
   const bar = document.getElementById('sidebar-actions-bar');
   if (!bar) return;
   const n = selectedIds.size;
-  if (n === 0) {
+  // The list view floats its own bar with the same actions over the table;
+  // two bars for one selection put a second copy of every button on screen.
+  // The rail's bar is for the views that have none (a run, a comparison).
+  const welcome = document.getElementById('welcome-state');
+  if (n === 0 || (welcome && welcome.style.display !== 'none')) {
     bar.innerHTML = '';
     return;
   }
@@ -225,6 +229,7 @@ function renderSidebarActionsBar() {
   html += '<button class="export-btn" onclick="promptBulkAddToStudy()">Add to Study</button>';
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
+  html += '<button onclick="openBulkPrune()" title="Thin the stored metric points of the selected runs">Prune…</button>';
   html += '<button onclick="bulkCompact()">Compact</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   html += '</div>';
@@ -258,6 +263,8 @@ function releaseCanvas() {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
   });
+  // The list is down, so its floating selection bar went with it.
+  renderSidebarActionsBar();
 }
 
 // ── Browser history ──────────────────────────────────────────────────────────
@@ -272,8 +279,10 @@ function releaseCanvas() {
 // The two full-canvas views reachable by a deliberate click therefore push an
 // entry, and `popstate` puts the named view back up. Deliberately a hash: it
 // never reaches the server, so no run id or token lands in an access log, and
-// it needs no route. Run detail and the Sessions/Trash tabs are not addressed
-// yet — Back from those still leaves the page, as it always did.
+// it needs no route. Sessions (`#sessions`, `#sessions=<id>`) and Trash
+// (`#trash`) are addressed too: without them, a run opened from a session tree
+// pushed `#run=` on top of whatever came *before* Sessions, so Back skipped the
+// tree and landed on the comparison or list the reader had left long ago.
 // `replace` is for *returning* to a view rather than entering one: Compare's
 // Back going home to the matrix is a step back, so pushing an entry for it
 // would leave the browser's own Back bouncing between the two.
@@ -294,28 +303,55 @@ function _pushViewHash(hash, replace) {
 // come back to.
 function _clearViewHash() {
   try {
-    const h = String(window.location.hash || '');
-    if (h.startsWith('#compare=') || h === '#matrix' || h.startsWith('#run=')) {
+    if (_isViewHash(String(window.location.hash || ''))) {
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
     }
   } catch (e) { void e; }
 }
 
+// Every hash `_restoreViewFromHash` knows — so leaving a view clears exactly
+// what entering one can write, and a new view adds itself in one place.
+function _isViewHash(h) {
+  return ['#compare=', '#run=', '#sessions'].some(p => h.startsWith(p))
+    || h === '#matrix' || h === '#trash';
+}
+
+// Put the experiment list back up, with the selection bar that belongs to it.
+// The close paths (matrix, Sessions, Trash, showWelcome) each did this by
+// hand, and the matrix's left the rail's duplicate selection bar on screen.
+function _showListView() {
+  const welcome = document.getElementById('welcome-state');
+  if (welcome) welcome.style.display = '';
+  renderSidebarActionsBar();
+}
+
 // A run's detail view: `#run=<id>&tab=<tab>`. Run detail had no address, so a
 // reload — or the browser's Back out of a comparison opened from it — always
 // landed on the experiments list, however deep the reader had gone.
-function _runViewHash(id, tab) {
+function _runViewHash(id, tab, view, split) {
   let h = '#run=' + encodeURIComponent(id);
   if (tab && tab !== 'overview') h += '&tab=' + encodeURIComponent(tab);
+  if (tab && view) h += '&view=' + encodeURIComponent(view);
+  if (split) h += '&split=' + encodeURIComponent(split);
   return h;
 }
 
+// Resolved through `_resolveDetailTab`, so a pre-2.1 link (`tab=timeline`,
+// `tab=images`, `tab=logs`) lands on the tab that now holds that content.
 function _parseRunViewHash(hash) {
-  const m = /^#run=([^&]+)(?:&tab=([^&]+))?$/.exec(hash);
+  const m = /^#run=([^&]+)(?:&tab=([^&]+))?(?:&view=([^&]+))?(?:&split=([^&]+))?$/.exec(hash);
   if (!m) return null;
   try {
-    return {id: decodeURIComponent(m[1]), tab: m[2] ? decodeURIComponent(m[2]) : ''};
+    const r = _resolveDetailTab(m[2] ? decodeURIComponent(m[2]) : '',
+                                m[3] ? decodeURIComponent(m[3]) : '');
+    const split = _resolveSplit(r.tab, m[4] ? decodeURIComponent(m[4]) : '');
+    return {id: decodeURIComponent(m[1]), tab: r.tab, view: r.view, split: split};
   } catch (e) { return null; }
+}
+
+// The run's address as the page stands: tab, its view, and the split pane.
+function _currentRunHash(id) {
+  return _runViewHash(id, currentDetailTab, currentDetailView[currentDetailTab] || '', detailSplit);
 }
 
 // Put up the view the address names. The one parser for every view hash, so
@@ -326,11 +362,23 @@ async function _restoreViewFromHash() {
   // `restoreCompareFromUrl` owns the `#compare=` vocabulary.
   if (hash.startsWith('#compare=')) return restoreCompareFromUrl();
   if (hash === '#matrix') { openParamMatrix(); return true; }
+  if (hash === '#trash') { openTrashView(); return true; }
+  const sess = /^#sessions(?:=([^&]+))?$/.exec(hash);
+  if (sess) {
+    let sid = '';
+    try { sid = sess[1] ? decodeURIComponent(sess[1]) : ''; } catch (e) { sid = ''; }
+    // Restoring the address, not entering it: replace, never push.
+    if (sid) await openSessionNode(sid, null, {replaceHash: true});
+    else toggleSessionsTab({replaceHash: true});
+    return true;
+  }
   const run = _parseRunViewHash(hash);
   if (run) {
-    // The tab is restored *before* the render, which reopens whatever tab
-    // `currentDetailTab` names and falls back to Overview if this run has none.
-    if (run.tab && DETAIL_TABS.includes(run.tab)) currentDetailTab = run.tab;
+    // Restored *before* the render, which reopens whatever tab and view these
+    // name and falls back to Overview / the default view if this run has none.
+    currentDetailTab = run.tab;
+    if (run.view) currentDetailView[run.tab] = run.view;
+    detailSplit = run.split;
     await refreshDetail(run.id);
     return true;
   }
@@ -348,7 +396,7 @@ function showWelcome() {
   stopAutoRefresh();
   releaseCanvas();
   _clearViewHash();
-  document.getElementById('welcome-state').style.display = '';
+  _showListView();
   // However the reader left the rail — this used to force it shut on every
   // return to the list, undoing an explicit open.
   restoreSidebarState();

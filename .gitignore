@@ -48,3 +48,14 @@ node_modules/
 
 # Superpowers planning notes (brainstorm specs + plans) — local only
 docs/superpowers/
+
+# Tool caches (each also writes its own `*` .gitignore; listed so a deleted
+# inner file can't let them through)
+.pytest_cache/
+.ruff_cache/
+
+# Superpowers working state (visual companion, subagent scratch) — local only
+.superpowers/
+
+# This repo's own tracking data from dogfooding the dashboard — never commit
+/.exptrack/

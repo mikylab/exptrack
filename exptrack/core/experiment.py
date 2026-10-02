@@ -26,13 +26,14 @@ from pathlib import Path
 from typing import Any
 
 from .. import config as cfg
+from .._console import harden_stdio
 from ..plugins import registry as plugins
 from .db import flush_pending, get_db, rename_output_folder, store_git_diff
 from .git import git_info
 from .gpu import gpu_info
 from .naming import make_run_name, output_path
 from .script_snapshot import capture_script_snapshot
-from .utils import debug_log, resolve_script_identity, safe_call
+from .utils import debug_log, join_notes, resolve_script_identity, safe_call
 
 _VALID_STATUSES = {"running", "done", "failed"}
 
@@ -302,6 +303,10 @@ class Experiment:
         auto_capture: bool = True,
         _caller_depth: int = 1,
     ):
+        # A plain `python train.py` never passes through the CLI's main(), and
+        # the run prints `→`/`—` in its own messages; a cp1252 console must
+        # degrade them rather than kill the user's training run.
+        harden_stdio()
         if self._adopted:
             # This instance is the `exptrack run` wrapper, adopted by a script's
             # bare Experiment() (see __new__). It's already fully initialized —
@@ -867,7 +872,7 @@ class Experiment:
         """
         if dedupe and text.strip() in (self.notes or "").splitlines():
             return
-        self.notes = ((self.notes or "") + "\n" + text).strip()
+        self.notes = join_notes(self.notes, text)
         conn = get_db()
         conn.execute("UPDATE experiments SET notes=? WHERE id=?",
                      (self.notes, self.id))

@@ -530,6 +530,40 @@ def _prune_report(conn: sqlite3.Connection, doomed: list,
     }
 
 
+def prune_preview_points(conn: sqlite3.Connection, exp_id: str, doomed: list,
+                         keys: list | None = None, cap: int = 3000) -> dict:
+    """One run's series split into what a prune keeps and what it removes.
+
+    Backs the Charts tab's preview, which draws the kept points as the curve and
+    the removed ones as faded dots, so a prune is seen before it is confirmed
+    rather than read off a count. ``{key: {kept: [[x, y]…], removed: […],
+    kept_n, removed_n}}``; ``x`` is the step, or the point's position when the
+    series logs none. Each half is strided down to ``cap`` points for drawing —
+    the counts are always the full ones.
+    """
+    gone = set(doomed)
+    where, args = "exp_id=?", [exp_id]
+    if keys:
+        where += f" AND key IN ({','.join('?' * len(keys))})"
+        args += list(keys)
+    rows = conn.execute(
+        f"SELECT id, key, step, value FROM metrics WHERE {where} "
+        f"ORDER BY key, COALESCE(step, id), id", args).fetchall()
+    series: dict = {}
+    for r in rows:
+        s = series.setdefault(r["key"], {"kept": [], "removed": []})
+        x = r["step"] if r["step"] is not None else len(s["kept"]) + len(s["removed"])
+        s["removed" if r["id"] in gone else "kept"].append([x, r["value"]])
+    out = {}
+    for key, s in series.items():
+        out[key] = {"kept_n": len(s["kept"]), "removed_n": len(s["removed"])}
+        for half in ("kept", "removed"):
+            pts = s[half]
+            stride = max(1, -(-len(pts) // cap))
+            out[key][half] = pts[::stride] if stride > 1 else pts
+    return out
+
+
 def preview_metric_prune(conn: sqlite3.Connection, exp_ids: list | None = None,
                          keys: list | None = None, keep_every: int = 1,
                          max_points: int = 0, protect_extremes: bool = True,

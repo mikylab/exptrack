@@ -30,6 +30,8 @@ from .queries import (
     _md_table,
     _md_value,
     export_metric_summaries,
+    metric_table,
+    single_value_metrics,
 )
 from .utils import is_user_param_key, split_changed_lines
 
@@ -222,7 +224,7 @@ def format_export_text(data: dict, patch: bool = True) -> str:
     name = data.get("name", "")
     lines = [name, "=" * max(len(name), 3), "", *_text_fields(fields), ""]
     if data.get("notes"):
-        lines += [*_section("Notes"), *("  " + n for n in str(data["notes"]).splitlines()), ""]
+        lines += [*_section("Notes"), *(("  " + n).rstrip() for n in notes_plain(data["notes"])), ""]
     for title, key in (("Parameters", "params"), ("Variables", "variables")):
         if data.get(key):
             lines += _section(title)
@@ -231,10 +233,8 @@ def format_export_text(data: dict, patch: bool = True) -> str:
     summaries = export_metric_summaries(data)
     if summaries:
         lines += _section("Metrics")
-        lines += _text_table(["Metric", "Last", "Min", "Max", "Points"],
-                             [[k, _plain(s["last"]), _plain(s["min"]),
-                               _plain(s["max"]), s["count"]] for k, s in summaries.items()],
-                             align="lrrrr")
+        header, rows, align = metric_table(summaries, _plain)
+        lines += _text_table(header, rows, align=align)
         lines.append("")
     art = data.get("artifacts_summary")
     shown = data.get("artifacts") or []
@@ -418,9 +418,10 @@ def _comparison_code_section(exps: list[dict], code: dict | None,
 
 
 # ── Markdown → HTML ─────────────────────────────────────────────────────────
-# Exactly the subset the renderers above and in queries.py produce: headings,
-# pipe tables with alignment, fenced code (diff lines tinted), bullets,
-# paragraphs, **bold**, _italic_ and `code`. Styles are inline because that is
+# The subset the renderers above and in queries.py produce — headings, pipe
+# tables with alignment, fenced code (diff lines tinted), bullets, paragraphs,
+# **bold**, _italic_ and `code` — plus what a person writes in a run's notes:
+# nested and numbered lists, `- [ ]` tasks, `>` quotes and `---` rules. Styles are inline because that is
 # all a paste target keeps — OneNote and Word drop <style> blocks. The colours
 # are literal for the same reason: the dashboard's CSS tokens do not exist in
 # the document the HTML lands in.
@@ -437,7 +438,14 @@ _DIFF_ADD = 'style="background:#e6ffec;color:#116329"'
 _DIFF_DEL = 'style="background:#ffebe9;color:#a40e26"'
 
 _SPLIT_CELLS = re.compile(r"(?<!\\)\|")
-_BULLET = re.compile(r"^\s*[-*] ")
+# `+` is not a bullet here: a changed line reads `+ added`, and one that
+# landed outside a fence must stay a line, not become a list.
+_LIST_ITEM = re.compile(r"^(\s*)([-*]|(\d{1,9})[.)])\s+(.*)$")
+_TASK = re.compile(r"^\[([ xX])\](?:\s+(.*))?$")
+_RULE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
+_FENCE_OPEN = re.compile(r"^(`{3,})(\w*)\s*$")
+_QUOTE = ('style="border-left:3px solid #d0d7de;margin:4px 0 10px;padding:0 10px;'
+          'color:#57606a"')
 
 
 _LINK = re.compile(r"\[((?:`[^`]*`|[^\]])+)\]\((https?://[^)\s]+)\)")
@@ -514,16 +522,18 @@ def _table_html(rows: list[str]) -> str:
         aligns.append("right" if spec.endswith(":") and not spec.startswith(":")
                       else "center" if spec.startswith(":") and spec.endswith(":")
                       else "left")
-    out = [f"<table {_TABLE}><tr>"]
+    # <thead>/<tbody>: a printed table repeats its header row on each page
+    # only when that row is a <thead>.
+    out = [f"<table {_TABLE}><thead><tr>"]
     out += [f"<th {_TH.format(a=aligns[i] if i < len(aligns) else 'left')}>{_inline(c)}</th>"
             for i, c in enumerate(head)]
-    out.append("</tr>")
+    out.append("</tr></thead><tbody>")
     for r in rows[2:]:
         cells = _cells(r)
         out.append("<tr>" + "".join(
             f"<td {_TD.format(a=aligns[i] if i < len(aligns) else 'left')}>{_inline(c)}</td>"
             for i, c in enumerate(cells)) + "</tr>")
-    out.append("</table>")
+    out.append("</tbody></table>")
     return "".join(out)
 
 
@@ -558,7 +568,7 @@ def markdown_to_html(md: str) -> str:
 
     while i < len(lines):
         ln = lines[i]
-        fence = re.match(r"^(`{3,})(\w*)\s*$", ln)
+        fence = _FENCE_OPEN.match(ln)
         if fence:
             flush()
             end = fence.group(1)
@@ -585,14 +595,26 @@ def markdown_to_html(md: str) -> str:
                 i += 1
             out.append(_table_html(rows))
             continue
-        if re.match(r"^\s*[-*] ", ln):
+        if _LIST_ITEM.match(ln):
             flush()
             items = []
-            while i < len(lines) and re.match(r"^\s*[-*] ", lines[i]):
-                item = _inline(_BULLET.sub("", lines[i]))
-                items.append(f"<li>{item}</li>")
+            while i < len(lines) and _LIST_ITEM.match(lines[i]):
+                items.append(_LIST_ITEM.match(lines[i]))
                 i += 1
-            out.append("<ul>" + "".join(items) + "</ul>")
+            out.append(_list_html(items))
+            continue
+        if ln.lstrip().startswith(">"):
+            flush()
+            quoted = []
+            while i < len(lines) and lines[i].lstrip().startswith(">"):
+                quoted.append(_inline(re.sub(r"^\s*>\s?", "", lines[i])))
+                i += 1
+            out.append(f"<blockquote {_QUOTE}>" + "<br>".join(quoted) + "</blockquote>")
+            continue
+        if _RULE.match(ln):
+            flush()
+            out.append("<hr>")
+            i += 1
             continue
         if not ln.strip():
             flush()
@@ -603,12 +625,206 @@ def markdown_to_html(md: str) -> str:
     return "\n".join(out)
 
 
-def html_document(title: str, body: str) -> str:
-    """*body* as a standalone page — what `--format html` writes to a file."""
+def _list_item_html(body: str) -> str:
+    """One item's text; a `[ ]`/`[x]` task becomes a box a paste can show."""
+    task = _TASK.match(body)
+    if not task:
+        return _inline(body)
+    box = "☑" if task.group(1) in "xX" else "☐"
+    return f"{box} {_inline(task.group(2) or '')}"
+
+
+def _list_html(items: list[re.Match]) -> str:
+    """Consecutive list lines as nested ``<ul>``/``<ol>``, by indentation.
+
+    The notes editor indents with Tab, so a sub-point is its own list inside
+    its parent's item — flattening it lost which point it belonged to.
+    """
+    out: list[str] = []
+    stack: list[tuple[int, str]] = []   # (indent, tag) of each open list
+    for m in items:
+        indent = len(m.group(1).expandtabs(4))
+        ordered = m.group(3) is not None
+        tag = "ol" if ordered else "ul"
+        while stack and indent < stack[-1][0]:
+            out.append(f"</li></{stack.pop()[1]}>")
+        if stack and indent == stack[-1][0] and stack[-1][1] != tag:
+            out.append(f"</li></{stack.pop()[1]}>")   # `1.` after `-`: a new list
+        if not stack or indent > stack[-1][0]:
+            start = int(m.group(3)) if ordered else 1
+            out.append(f'<{tag} start="{start}">' if start != 1 else f"<{tag}>")
+            stack.append((indent, tag))
+        else:
+            out.append("</li>")
+        out.append("<li>" + _list_item_html(m.group(4)))
+    while stack:
+        out.append(f"</li></{stack.pop()[1]}>")
+    return "".join(out)
+
+
+def _fence_kinds(lines: list[str]) -> list[str]:
+    """Per line: ``"fence"`` (an opening/closing marker), ``"code"`` or ``"text"``.
+
+    The same rule `markdown_to_html` applies — a fence opens at column 0 and
+    closes on an identical line — so the heading shift and the plain-text
+    export can never read a line as code that the HTML export reads as text.
+    """
+    kinds, close = [], None
+    for ln in lines:
+        if close is None and (m := _FENCE_OPEN.match(ln)):
+            close = m.group(1)
+            kinds.append("fence")
+        elif close is not None and ln.rstrip() == close:
+            close = None
+            kinds.append("fence")
+        else:
+            kinds.append("text" if close is None else "code")
+    return kinds
+
+
+_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+
+
+def nest_headings(md: str, top: int) -> str:
+    """*md* with its headings shifted so the shallowest is level *top*.
+
+    A run's notes sit under the export's own ``## Notes``; a ``# Result`` the
+    user wrote there would otherwise outrank the section holding it, and a
+    reader of the document takes the notes' headings for the run's sections.
+    Lines inside a fenced block are not headings and are left alone.
+    """
+    lines = str(md).split("\n")
+    heads = {i: h for i, (ln, kind) in enumerate(zip(lines, _fence_kinds(lines)))
+             if kind == "text" and (h := _HEADING.match(ln))}
+    shallowest = min((len(h.group(1)) for h in heads.values()), default=top)
+    if shallowest >= top:
+        return str(md)
+    for i, h in heads.items():
+        lines[i] = "#" * min(len(h.group(1)) + top - shallowest, 6) + " " + h.group(2)
+    return "\n".join(lines)
+
+
+def notes_plain(md: str) -> list[str]:
+    """A run's notes as plain-text lines: the structure stays, the syntax goes.
+
+    A heading is its text underlined (as `_section` underlines the export's
+    own), bold and code markers drop, and a list keeps its indentation — a task
+    reads `[ ] rerun`, not `- [ ] rerun`.
+    """
+    lines = str(md).splitlines()
+    out = []
+    for ln, kind in zip(lines, _fence_kinds(lines)):
+        if kind != "text":
+            if kind == "code":
+                out.append("    " + ln)
+            continue
+        h = _HEADING.match(ln)
+        text = re.sub(r"\*\*(.+?)\*\*|`([^`]+)`",
+                      lambda m: m.group(1) or m.group(2), h.group(2) if h else ln)
+        out += _section(text) if h else [re.sub(r"^(\s*)[-*]\s+(\[[ xX]\])", r"\1\2", text)]
+    return out
+
+
+# The page's own stylesheet: how the export reads in a browser and how it
+# prints. A `<style>` block, not inline styles, because only a file opened in a
+# browser uses it — a paste into OneNote or Word takes markdown_to_html's
+# inline styles and drops this. Printing is the PDF path: exptrack writes no
+# PDF itself (the package is stdlib-only), and a browser's Save as PDF from
+# this page gives a cover summary, one run per page, header rows repeated on
+# each page and no row split across two.
+_PAGE_CSS = """
+@page { size: A4; margin: 10mm 9mm 12mm; }
+body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; font-size: 14px;
+  color: #1d2330; line-height: 1.45; max-width: 1120px; margin: 24px auto; padding: 0 20px; }
+h1 { font-size: 22px; margin: 18px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #2c5aa0;
+  overflow-wrap: anywhere; }
+h2 { font-size: 16px; margin: 16px 0 6px; color: #2c5aa0; }
+h3 { font-size: 14px; margin: 12px 0 4px; }
+.report-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+  font-size: 12px; color: #5f6878; border-bottom: 1px solid #dde1e8; padding-bottom: 8px; }
+.report-bar button { font: inherit; font-size: 13px; padding: 5px 14px; cursor: pointer;
+  border: 1px solid #2c5aa0; background: #2c5aa0; color: #fff; border-radius: 4px; }
+hr.run-break { border: 0; border-top: 1px solid #dde1e8; margin: 28px 0; }
+table { font-variant-numeric: tabular-nums; max-width: 100%; }
+td, th { overflow-wrap: anywhere; }
+.sec { min-width: 0; }
+@media (min-width: 900px) {
+  .run-cols { columns: 2; column-gap: 28px; }
+  .run-cols .sec { break-inside: avoid; }
+}
+@media print {
+  body { font-size: 9pt; line-height: 1.3; max-width: none; margin: 0; padding: 0; }
+  .no-print { display: none !important; }
+  .report-bar { font-size: 8pt; border-bottom: 1px solid #999; padding-bottom: 4px; }
+  h1 { font-size: 12.5pt; margin: 6px 0 4px; padding-bottom: 2px; border-bottom-width: 1.5px; }
+  h2 { font-size: 9.5pt; margin: 7px 0 2px; }
+  h3 { font-size: 9pt; margin: 6px 0 2px; }
+  p, ul, ol { margin: 2px 0 4px; }
+  h1, h2, h3 { break-after: avoid; }
+  hr.run-break { border: 0; border-top: 1px solid #b5bcc8; margin: 8px 0; }
+  hr.summary-break { break-after: page; border: 0; margin: 0; }
+  table { font-size: 7.5pt; margin: 2px 0 6px !important; }
+  th, td { padding: 1px 4px !important; }
+  thead { display: table-header-group; }
+  tr, pre, blockquote, img { break-inside: avoid; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 7pt !important; padding: 4px 6px !important; }
+  .run-cols { columns: 2; column-gap: 7mm; }
+  .run-cols .sec { break-inside: avoid; }
+  a { color: inherit; text-decoration: none; }
+}
+"""
+
+
+# Sections short enough to sit two-up. Metrics (full-precision values),
+# Artifacts and Code Changes (long paths, wide tables) stay full width.
+_NARROW_SECTIONS = ("Notes", "Parameters", "Variables", "Environment", "Timeline Summary",
+                    "Datasets", "Studies")
+
+
+def _run_layout_html(html: str, narrow_metrics: bool = False) -> str:
+    """One run's HTML with its short sections grouped into two columns.
+
+    Laid out one under another, a run's Parameters, Environment and Timeline
+    tables were each a narrow strip down the left of a full-width page — the
+    87-run report printed to 396 pages. Consecutive short sections are
+    wrapped in a ``.run-cols`` block (two columns in print and on a wide
+    screen); the rest keep the full width. Nothing is dropped or reordered.
+    """
+    parts = html.split("<h2>")
+    out, group = [parts[0]], []
+
+    def flush():
+        if group:
+            out.append('<div class="run-cols">' + "".join(group) + "</div>")
+            group.clear()
+
+    for part in parts[1:]:
+        title = part.split("</h2>", 1)[0]
+        sec = '<div class="sec"><h2>' + part + "</div>"
+        # A Metrics table of single values is two columns wide, so it can sit
+        # beside Parameters; the last/min/max form needs the full width.
+        if title.startswith(_NARROW_SECTIONS) or (title == "Metrics" and narrow_metrics):
+            group.append(sec)
+        else:
+            flush()
+            out.append(sec)
+    flush()
+    return "".join(out)
+
+
+def html_document(title: str, body: str, subtitle: str = "") -> str:
+    """*body* as a standalone page — what `--format html` writes to a file.
+
+    *subtitle* goes in the bar at the top (project, export date). The bar's
+    Save as PDF button opens the browser's print dialog and does not print.
+    """
+    bar = ('<div class="report-bar"><span>' + _html.escape(subtitle or title) + "</span>"
+           '<button class="no-print" onclick="window.print()" '
+           'title="Opens the print dialog: choose Save as PDF">Save as PDF</button></div>')
     page = ("<!doctype html>\n<html><head><meta charset=\"utf-8\">"
-            f"<title>{_html.escape(title)}</title></head>\n"
-            '<body style="font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:14px">\n'
-            f"{body}\n</body></html>\n")
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f"<title>{_html.escape(title)}</title><style>{_PAGE_CSS}</style></head>\n"
+            f"<body>\n{bar}\n{body}\n</body></html>\n")
     # ASCII with character references, so `> run.html` from a console whose
     # encoding cannot spell an em dash still writes the page it was asked for.
     return page.encode("ascii", "xmlcharrefreplace").decode("ascii")
@@ -625,24 +841,225 @@ READABLE_FORMATS = ("markdown", "text", "html")
 
 
 def render_runs(batch: list[dict], fmt: str, artifact_limit: int | None = None,
-                patch: bool = True) -> str:
+                patch: bool = True, summary: dict | None = None,
+                summary_only: bool = False) -> str:
     """One or more runs' export data in a READABLE_FORMATS format.
 
     Runs are separated the way each format reads best: a rule in markdown, a
     line of ``=`` in text, an ``<hr>`` in HTML — and HTML is a whole page, so
     the output can be written straight to a file and opened, or imported into
     OneNote. ``patch=False`` leaves each run's patch out (the dashboard's Copy).
+    *summary* (from ``build_runs_summary``) leads the export when given;
+    ``summary_only`` leaves the per-run reports out — an 87-run report printed
+    to 396 pages, and the first few were the ones read.
     """
     from .queries import ARTIFACT_LIST_LIMIT, format_export_markdown
     limit = ARTIFACT_LIST_LIMIT if artifact_limit is None else artifact_limit
+    reports = [] if summary_only and summary else batch
+    follow = bool(reports)
     if fmt == "text":
-        return ("\n" + "=" * 60 + "\n\n").join(format_export_text(d, patch) for d in batch)
-    mds = [format_export_markdown(d, limit, patch) for d in batch]
+        parts = ([_summary_text(summary)] if summary else []) + \
+            [format_export_text(d, patch) for d in reports]
+        return ("\n" + "=" * 60 + "\n\n").join(parts)
+    mds = ([_summary_markdown(summary, follow)] if summary else []) + \
+        [format_export_markdown(d, limit, patch) for d in reports]
     if fmt == "html":
+        from datetime import datetime, timezone
         title = batch[0]["name"] if len(batch) == 1 else f"{len(batch)} experiments"
-        return html_document(title, "\n<hr>\n".join(markdown_to_html(m) for m in mds))
+        projects = sorted({d.get("project") for d in batch if d.get("project")})
+        subtitle = " · ".join([
+            "exptrack report", *projects,
+            f"{len(batch)} run{'s' if len(batch) != 1 else ''}",
+            "exported " + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")])
+        # The summary ends its own printed page; runs then follow one another
+        # with a rule between them rather than a page each, which spent a
+        # whole sheet on a run that filled a third of it.
+        pages = [markdown_to_html(m) for m in mds]
+        start = 1 if summary else 0
+        pages[start:] = [_run_layout_html(h, single_value_metrics(export_metric_summaries(d)))
+                         for h, d in zip(pages[start:], reports)]
+        body = '\n<hr class="run-break">\n'.join(pages[start:])
+        if summary:
+            body = pages[0] + ('\n<hr class="summary-break">\n' + body if body else "")
+        return html_document(title, body, subtitle)
     return "\n\n---\n\n".join(mds) + "\n"
 
 
-__all__ = ["READABLE_FORMATS", "export_bundle", "format_comparison_markdown",
+# ── A summary ahead of a multi-run export ───────────────────────────────────
+#
+# An export of many runs was every run's full report, one after another: 172
+# runs came out as 684 KB of markdown with nothing on the first page saying
+# what the set was, what varied, or which run won. The summary answers those
+# first, and the per-run reports follow unchanged. Its ranking is
+# `leaderboard.top_runs` — a view over `param_study.build_matrix` — so the
+# export's "top run" is the Parameter Matrix's best row by construction.
+
+SUMMARY_TOP_N = 10
+SUMMARY_MAX_PARAM_COLS = 6
+
+
+def _short(v) -> str:
+    """A number at 4 significant figures, for a summary cell. The per-run
+    reports below keep every value at full precision."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return _md_value(v) if v is not None else "--"
+    if isinstance(v, int) or float(v).is_integer():
+        return f"{int(v):,}" if abs(v) < 1e15 else f"{v:.4g}"
+    return f"{v:.4g}"
+
+
+def _run_label(d: dict, varying: list[str] | None = None) -> str:
+    """A run as a summary row names it.
+
+    A name the user chose, with the short id. A generated name repeats the
+    settings (`train__lr0.001_batch_si128_…`) that the summary already gives
+    their own columns, so it is the short id alone — or, given *varying*, the
+    settings that tell the run apart, for a cell with no columns beside it.
+    """
+    from .naming import looks_auto_named
+    rid = str(d.get("id", ""))[:8]
+    name = str(d.get("name") or "")
+    if name and not looks_auto_named(name):
+        return f"{name} ({rid})"
+    params = d.get("params") or {}
+    bits = [f"{k}={_md_value(params[k])}" for k in (varying or []) if k in params]
+    return (" ".join(bits) + f" ({rid})") if bits else rid
+
+
+def build_runs_summary(conn, batch: list[dict]) -> dict:
+    """What a multi-run export leads with, as data — rendered by the formats.
+
+    ``fields`` (label, value) pairs; ``top`` the leaderboard rows with the
+    varying params; ``metrics`` one row per metric key across the runs;
+    ``notes`` (label, first line) for runs that have notes.
+    """
+    from collections import Counter
+    from statistics import median
+
+    from . import primary_metric as pm
+    from .leaderboard import top_runs
+
+    ids = [d["id"] for d in batch]
+    by_id = {d["id"]: d for d in batch}
+    status = Counter(d.get("status") or "unknown" for d in batch)
+    started = sorted(str(d.get("created_at") or "")[:16].replace("T", " ") for d in batch
+                     if d.get("created_at"))
+
+    try:
+        lb = top_runs(conn, ids, limit=SUMMARY_TOP_N)
+    except Exception:  # a summary must never be why an export fails
+        lb = {"metric": {}, "runs": [], "varying": [], "n_scored": 0, "unscored": [],
+              "excluded": {}}
+    metric = lb.get("metric") or {}
+    varying = [v["key"] for v in (lb.get("varying") or []) if is_user_param_key(v["key"])]
+    constant = {}
+    for d in batch:
+        for k, v in (d.get("params") or {}).items():
+            if is_user_param_key(k) and k not in varying:
+                constant.setdefault(k, set()).add(_md_value(v))
+    held = [f"{k}={next(iter(vs))}" for k, vs in sorted(constant.items()) if len(vs) == 1]
+
+    fields = [("Runs", f"{len(batch)} (" + ", ".join(f"{n} {s}" for s, n in status.most_common()) + ")")]
+    projects = sorted({d.get("project") for d in batch if d.get("project")})
+    if projects:
+        fields.append(("Project", ", ".join(projects)))
+    if started:
+        fields.append(("Started", started[0] + " to " + started[-1] + " UTC"))
+    if metric.get("key"):
+        goal = "lower is better" if metric.get("goal") == pm.GOAL_MIN else "higher is better"
+        fields.append(("Judged by", f"{metric['key']}, {goal} (final value)"))
+    if varying:
+        counts = {v["key"]: v.get("n_values") for v in lb.get("varying") or []}
+        fields.append(("Varied", ", ".join(f"{k} ({counts.get(k)} values)" for k in varying)))
+    if held:
+        fields.append(("Held constant", ", ".join(held)))
+    unscored = len(lb.get("unscored") or [])
+    if unscored:
+        fields.append(("Not ranked", f"{unscored} run(s) did not log {metric.get('key')}"))
+
+    # Columns are the settings that differ *among the top runs*, not the first
+    # ones that varied anywhere: seed and asof varied across the set but were
+    # identical in all ten top rows, so they filled the table with one value.
+    top_rows = lb.get("runs") or []
+    cols = [k for k in varying
+            if len({_md_value((r.get("params") or {}).get(k)) for r in top_rows}) > 1]
+    cols = (cols or varying)[:SUMMARY_MAX_PARAM_COLS]
+    top = []
+    for r in top_rows:
+        p = r.get("params") or {}
+        top.append([r["rank"], _run_label(by_id.get(r["id"], r)), r.get("status", "")]
+                   + [_md_value(p[k]) if k in p else "--" for k in cols]
+                   + [_short(r.get("value")), _short(r.get("delta_from_best"))])
+
+    metrics = []
+    keys = sorted({k for d in batch for k in (d.get("metrics") or {})})
+    for k in keys:
+        vals = [(d["metrics"][k].get("last"), d) for d in batch
+                if isinstance((d.get("metrics") or {}).get(k, {}).get("last"), (int, float))]
+        if not vals:
+            continue
+        nums = [v for v, _ in vals]
+        lower = goal_for_key(k) == pm.GOAL_MIN
+        # Ties go to the earlier run — leaderboard.top_runs' tie-break — so
+        # this row's best and the Top table's #1 are the same run.
+        best_v, best_d = min(vals, key=lambda t: ((t[0] if lower else -t[0]),
+                                                  str(t[1].get("created_at") or ""), t[1]["id"]))
+        same = max(nums) == min(nums)
+        metrics.append([k, "lower" if lower else "higher", len(nums), _short(min(nums)),
+                        _short(median(nums)), _short(max(nums)),
+                        "same for every run" if same
+                        else f"{_short(best_v)} {_run_label(best_d, varying)}"])
+
+    notes = []
+    for d in batch:
+        text = str(d.get("notes") or "").strip()
+        if text:
+            first = next((ln.strip(" #-*") for ln in text.splitlines() if ln.strip(" #-*")), "")
+            notes.append((_run_label(d, varying), first[:160]))
+
+    return {"fields": fields, "metric": metric.get("key") or "", "param_cols": cols,
+            "top": top, "metrics": metrics, "notes": notes, "n": len(batch)}
+
+
+def _summary_markdown(s: dict, reports_follow: bool = True) -> str:
+    out = [f"# Summary: {s['n']} runs", ""]
+    out += _md_table(["", ""], [[f"**{_md_cell(k)}**", _md_cell(v)] for k, v in s["fields"]])
+    if s["top"]:
+        out += ["", f"## Top {len(s['top'])} by {_md_cell(s['metric'])}", ""]
+        out += _md_table(["#", "Run", "Status"] + [_md_cell(c) for c in s["param_cols"]]
+                         + [_md_cell(s["metric"]), "vs best"],
+                         [[_md_cell(c) for c in r] for r in s["top"]],
+                         "rll" + "l" * len(s["param_cols"]) + "rr")
+    if s["metrics"]:
+        out += ["", "## Metrics across runs", "",
+                "Final value of each run. Goal is read from the metric's name.", ""]
+        out += _md_table(["Metric", "Better", "Runs", "Min", "Median", "Max", "Best"],
+                         [[_md_cell(c) for c in r] for r in s["metrics"]], "llrrrrl")
+    if s["notes"]:
+        out += ["", "## Runs with notes", ""]
+        out += [f"- **{_md_cell(label)}**: {_md_cell(first)}" for label, first in s["notes"]]
+    out += ["", "Each run's full report follows; its values are at full precision."
+            if reports_follow else
+            "Summary only — export without it for each run's full report.", ""]
+    return "\n".join(out)
+
+
+def _summary_text(s: dict) -> str:
+    out = [f"Summary: {s['n']} runs", "=" * (len(str(s["n"])) + 15), ""]
+    out += _text_fields(s["fields"])
+    if s["top"]:
+        out += ["", *_section(f"Top {len(s['top'])} by {s['metric']}")]
+        out += _text_table(["#", "Run", "Status"] + s["param_cols"] + [s["metric"], "vs best"],
+                           s["top"], align="rll" + "l" * len(s["param_cols"]) + "rr")
+    if s["metrics"]:
+        out += ["", *_section("Metrics across runs (final values)")]
+        out += _text_table(["Metric", "Better", "Runs", "Min", "Median", "Max", "Best"],
+                           s["metrics"], align="llrrrrl")
+    if s["notes"]:
+        out += ["", *_section("Runs with notes")]
+        out += [f"  {label}: {first}" for label, first in s["notes"]]
+    return "\n".join(out) + "\n"
+
+
+__all__ = ["READABLE_FORMATS", "build_runs_summary", "export_bundle", "format_comparison_markdown",
            "format_export_text", "html_document", "markdown_to_html", "render_runs"]

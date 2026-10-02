@@ -226,6 +226,14 @@ def test_api_response_is_not_loosened_by_an_earlier_shell_request(live_server):
     assert headers["Content-Security-Policy"] == "default-src 'none'; frame-ancestors 'none'"
 
 
+def test_the_shell_is_revalidated_so_an_upgrade_shows(live_server):
+    """The shell names the hash-versioned bundles. Served with no Cache-Control,
+    a browser reused the old shell after an upgrade and kept loading the old
+    bundle — the new UI only appeared after a hard reload."""
+    _, headers, _ = _get(live_server + "/")
+    assert headers["Cache-Control"] == "no-cache"
+
+
 # ── favicon ──────────────────────────────────────────────────────────────────
 
 def test_favicon_is_served_at_both_spellings(live_server):

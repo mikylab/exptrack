@@ -238,6 +238,7 @@ def resolve_spec(conn, exp_id: str, studies: Iterable[str] | None = None,
 
     spec = run_override
     source = SOURCE_RUN
+    from_study = ""
     if not spec:
         # First study that names a metric wins. Runs belong to few studies and
         # a run in two studies that disagree has no better answer available —
@@ -245,7 +246,7 @@ def resolve_spec(conn, exp_id: str, studies: Iterable[str] | None = None,
         for study in sorted(studies or []):
             spec = study_primary_metric(study, conf)
             if spec:
-                source = SOURCE_STUDY
+                source, from_study = SOURCE_STUDY, study
                 break
     if not spec:
         spec = project_primary_metric(conf)
@@ -256,11 +257,15 @@ def resolve_spec(conn, exp_id: str, studies: Iterable[str] | None = None,
             return {"key": "", "goal": GOAL_MAX, "source": None}
         spec, source = _spec(key), SOURCE_HEURISTIC
 
-    return {
+    out = {
         "key": spec["key"],
         "goal": spec["goal"] or goal_for_key(spec["key"]),
         "source": source,
     }
+    if from_study:
+        # Which study said so — the dashboard's picker clears that level.
+        out["study"] = from_study
+    return out
 
 
 # ── Values ────────────────────────────────────────────────────────────────────
@@ -409,6 +414,8 @@ def primary_metric_batch(conn, runs: Iterable[dict], conf: dict | None = None,
             "best_step": vals.get("best_step"),
             "missing": bool(spec["key"]) and not has_value,
         }
+        if spec.get("study"):
+            out[exp_id]["study"] = spec["study"]
     return out
 
 
@@ -490,9 +497,11 @@ def set_study_primary_metric(study: str, key: str, goal: str = "") -> dict:
     if not study:
         return {"error": "study name required"}
     conf = config.load()
+    # A copy: with nothing set yet, the dict `load()` hands back is the shared
+    # default itself, and writing into it changed the default for the rest of
+    # the process (every later project then "had" this study's setting).
     by_study = conf.get("primary_metric_by_study")
-    if not isinstance(by_study, dict):
-        by_study = {}
+    by_study = dict(by_study) if isinstance(by_study, dict) else {}
     spec = _spec(key, goal)
     if spec:
         by_study[study] = spec
@@ -502,3 +511,31 @@ def set_study_primary_metric(study: str, key: str, goal: str = "") -> dict:
     config.save(conf)
     config.reload()
     return {"ok": True, "study": study, "primary_metric": spec}
+
+
+LEVELS = ("project", "study", "run")
+
+
+def set_primary_metric(conn, level: str, key: str, goal: str = "",
+                       study: str = "", run: str = "") -> dict:
+    """Set (or clear, with a falsy *key*) the metric at the *named* level.
+
+    The one dispatch behind `exptrack primary-metric` and the dashboard's
+    picker. The level is always named, never inferred: they resolve run →
+    study → project, and a write at the wrong one is shadowed by a more
+    specific level and appears to do nothing. *run* is an id prefix; an empty
+    one is refused rather than handed to a prefix match that fits every run.
+    Returns the setter's answer plus ``level`` (and ``name`` for a run).
+    """
+    from .queries import find_experiment
+    if level == "project":
+        return {**set_project_primary_metric(key, goal), "level": level}
+    if level == "study":
+        return {**set_study_primary_metric(study, key, goal), "level": level}
+    if level == "run":
+        exp = find_experiment(conn, run, "id, name") if run else None
+        if not exp:
+            return {"error": f"run not found: {run}" if run else "run id required"}
+        return {**set_run_primary_metric(conn, exp["id"], key, goal),
+                "level": level, "name": exp["name"]}
+    return {"error": "level must be one of " + ", ".join(LEVELS)}

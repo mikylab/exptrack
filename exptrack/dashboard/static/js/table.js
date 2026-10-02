@@ -10,6 +10,12 @@ function _buildExportDropdown(n) {
   h += '<button class="action-btn" onclick="sidebarExportFmt(\'markdown\')">Markdown</button>';
   h += '<button class="action-btn" onclick="sidebarExportFmt(\'plain\')">Plain Text</button>';
   h += '<button class="action-btn" onclick="sidebarExportFmt(\'html\')" title="A page with real tables — opens in a browser, imports into OneNote or Word">HTML</button>';
+  // Summary or full: a full report is a page or more per run, so for a big
+  // selection the summary (a few pages) is usually the one wanted.
+  if (n > 1) {
+    h += '<button class="action-btn" onclick="openPrintableReport({ids: [...selectedIds], summary_only: true})" title="The summary of the selected runs — what varied, the top runs, each metric’s spread, notes. Opens in a new tab; use its Save as PDF button">PDF summary</button>';
+  }
+  h += '<button class="action-btn" onclick="openPrintableReport({ids: [...selectedIds]})" title="' + (n > 1 ? 'The summary, then each run’s report. ' : '') + 'Opens in a new tab; use its Save as PDF button">PDF ' + (n > 1 ? 'full report' : 'report') + '</button>';
   h += '</div></span>';
   return h;
 }
@@ -85,6 +91,7 @@ function renderTableActionsBar() {
   }
   html += _buildExportDropdown(n);
   html += _buildCopyDropdown(n);
+  html += '<button onclick="openBulkPrune()" title="Thin the stored metric points of the selected runs">Prune…</button>';
   html += '<button onclick="bulkCompact()">Compact</button>';
   html += '<button class="danger" onclick="sidebarBulkDelete()">Delete (' + n + ')</button>';
   bar.innerHTML = html;

@@ -1,36 +1,4 @@
 
-// ── Detail sub-tabs ──────────────────────────────────────────────────────────
-
-let currentDetailTab = 'overview';
-let currentDetailExpId = '';
-
-// Tab ids in the order the buttons are rendered in refreshDetail's template —
-// the class toggle below is index-coupled to that order, so the two must match.
-// Order is load-bearing: switchDetailTab pairs DETAIL_TABS[i] with the i-th
-// #detail-tabs button, so this array and the button row must stay in step.
-const DETAIL_TABS = ['overview','timeline','charts','images','logs','compare-within','confusion'];
-
-function switchDetailTab(tab, expId) {
-  currentDetailTab = tab;
-  currentDetailExpId = expId;
-  // The tab is part of the run's address, so a reload lands on the tab the
-  // reader was on. Replaced, never pushed: a tab is not a place Back returns to.
-  if (expId && expId === currentDetailId) _pushViewHash(_runViewHash(expId, tab), true);
-  document.querySelectorAll('#detail-tabs .tab').forEach((t,i) => {
-    t.classList.toggle('active', DETAIL_TABS[i] === tab);
-  });
-  DETAIL_TABS.forEach(t => {
-    const el = document.getElementById('detail-tab-'+t);
-    if (el) el.style.display = t === tab ? '' : 'none';
-  });
-  if (tab === 'overview') renderOverviewChartPreview(_chartsMetricsData);
-  if (tab === 'charts') loadChartsTab(expId);
-  if (tab === 'timeline') loadTimeline(expId);
-  if (tab === 'images') loadImages(expId);
-  if (tab === 'logs') loadLogs(expId);
-  if (tab === 'compare-within') loadCompareWithin(expId);
-  if (tab === 'confusion') loadConfusionTab(expId);
-}
 
 // ── Timeline visualization ───────────────────────────────────────────────────
 
@@ -59,41 +27,34 @@ function _isMagicOnlyCell(src) {
   return hasMagic;
 }
 
-// ── Run source (folded into the Timeline) ────────────────────────────────────
+// ── Run source (Code › Source) ────────────────────────────────────────────────
 // The code a run actually ran, read back from its snapshot (scripts) or cell
 // records (notebooks). This is independent of the file on disk, so it still
 // answers after the script has been edited or was never committed — which is
 // exactly when it is hardest to get any other way.
-let _sourceLoadedFor = '';
+// Fetched when the Code tab's Source view opens, not with the timeline: a
+// script snapshot can be hundreds of KB.
 
-// Fetched on open, not with the timeline: a script snapshot can be hundreds of
-// KB and most visits to this tab are about the events, not the source.
-function _runSourceFoldHtml(expId) {
-  _sourceLoadedFor = '';   // markup rebuilt ⇒ the body below is a fresh stub
-  return '<details class="tl-source-fold">' +
-    '<summary onclick="loadRunSource(\'' + escJsAttr(expId) + '\')">Source' +
-    '<span class="tl-source-hint">the code this run actually ran, as captured' +
-    ' — independent of the file on disk</span></summary>' +
-    '<div id="tl-source-body"><p style="color:var(--muted)">Loading source…</p>' +
-    '</div></details>';
-}
+// The last source rendered, so a live run's 5 s rebuild (which empties the
+// pane) repaints it without refetching a snapshot that cannot change.
+let _sourceHtmlFor = {id: '', html: ''};
 
 async function loadRunSource(expId) {
   const box = document.getElementById('tl-source-body');
-  if (!box || _sourceLoadedFor === expId) return;
-  _sourceLoadedFor = expId;
+  if (!box) return;
+  if (_sourceHtmlFor.id === expId) { box.innerHTML = _sourceHtmlFor.html; return; }
   const data = await api('/api/run-source/' + encodeURIComponent(expId));
   // api() returns null on failure (it has already raised the error bar); a bare
   // `.error` read would throw and leave the fold stuck on "Loading…".
-  if (!data || data.error) {
-    _sourceLoadedFor = '';                       // let a retry re-fetch
+  if (!data || data.error) {                     // not cached: a retry re-fetches
     box.innerHTML = _apiFailedHtml('source');
     return;
   }
 
   if (!data.kind || !data.files.length) {
-    box.innerHTML =
-      '<p style="color:var(--muted)">No source captured for this run.</p>' +
+    _sourceHtmlFor = {id: expId, html: ''};
+    box.innerHTML = _sourceHtmlFor.html =
+      '<p style="color:var(--muted)">This run didn&#39;t capture its code.</p>' +
       '<p style="color:var(--muted);font-size:var(--text-xs)">Scripts capture a ' +
       'full snapshot automatically; notebook runs capture executed cells. A run ' +
       'recorded before source capture, or a label-only pipeline run, has neither.</p>';
@@ -115,6 +76,7 @@ async function loadRunSource(expId) {
       '" onclick="event.preventDefault();event.stopPropagation();copySessionText(this)">⧉ Copy</span>' +
       '</summary><pre class="cell-code">' + code + '</pre></details>';
   }
+  _sourceHtmlFor = {id: expId, html: html};
   box.innerHTML = html;
 }
 
@@ -159,15 +121,11 @@ async function loadTimeline(expId, filter) {
   });
   html += '</div>';
 
-  // The run's captured source, folded in above the events: the timeline says
-  // what ran and in what order, the fold says what the code was. It renders
-  // before the empty-events return on purpose — a plain script run records no
-  // timeline events at all, and that is precisely a run whose source is the
-  // only thing the tab can show.
-  html += _runSourceFoldHtml(expId);
 
   if (!events.length) {
-    html += '<p style="color:var(--muted)">No timeline events recorded.</p>';
+    // A plain script run records no timeline events at all; its code is in
+    // the Source view, so say where to look rather than ending on a blank.
+    html += '<p style="color:var(--muted)">No timeline events recorded. The code this run ran is under <a href="#" onclick="switchDetailView(\'code\',\'source\',\'' + escJsAttr(expId) + '\');return false">Source</a>.</p>';
     container.innerHTML = html;
     return;
   }
@@ -524,9 +482,40 @@ async function loadImages(expId) {
   _renderImages(expId, data);
 }
 
-// Whether the Image folders panel is open: null until the user toggles it,
-// then their choice, so a repaint (search, sort) does not snap it shut.
-let _imgPathsOpen = null;
+// A run's scan folders: saved paths (click to edit), an add box, and the
+// suggestions. One builder for the image and data lists, which the Files tab's
+// Folders popover shows together — each view used to open on its own copy.
+function _scanFoldersHtml(expId, data, o) {
+  const id = escJsAttr(expId);
+  const paths = data.paths || [];
+  let html = '<p class="muted-note" style="margin-bottom:8px">' + o.blurb + ' Paths are relative to project root.</p>';
+  for (let i = 0; i < paths.length; i++) {
+    html += '<div class="img-path-row">'
+      + '<span class="img-path-val" data-path="' + esc(paths[i]) + '" onclick="' + o.edit + '(\'' + id + '\',' + i + ',this)" title="Click to edit">' + esc(paths[i]) + '</span>'
+      + '<button class="img-path-edit" onclick="' + o.edit + '(\'' + id + '\',' + i + ',this.parentNode.querySelector(&quot;.img-path-val&quot;))" title="Edit path">&#9998;</button>'
+      + '<button class="img-path-del" onclick="' + o.del + '(\'' + id + '\',' + i + ')" title="Remove path">&times;</button>'
+      + '</div>';
+  }
+  html += '<div class="img-path-add">'
+    + '<input type="text" id="' + o.inputId + '" placeholder="' + o.placeholder + '" style="flex:1" onkeydown="if(event.key===&quot;Enter&quot;)' + o.add + '(&quot;' + id + '&quot;)">'
+    + '<button onclick="' + o.add + '(\'' + id + '\')">Add Path</button></div>';
+  html += _scanSuggestionsHtml(data.suggested_paths || [], o.inputId, o.add, expId);
+  html += _scanTruncNotice(data, o.truncKind);
+  return html;
+}
+
+function _imgFoldersHtml(expId, data) {
+  return _scanFoldersHtml(expId, data, {
+    blurb: 'Folders to scan for images.', inputId: 'img-path-input', placeholder: 'e.g. outputs/samples',
+    edit: 'startEditImagePath', del: 'deleteImagePath', add: 'addImagePath', truncKind: 'images'});
+}
+
+function _logFoldersHtml(expId, data) {
+  return _scanFoldersHtml(expId, data, {
+    blurb: 'Folders to scan for logs, CSVs, JSON/JSONL, and TensorBoard event files.', inputId: 'log-path-input',
+    placeholder: 'e.g. outputs/logs or logs/tensorboard',
+    edit: 'startEditLogPath', del: 'deleteLogPath', add: 'addLogPath', truncKind: 'files'});
+}
 
 // Draw the tab from a payload. Split out of `loadImages` so a view change can
 // use it without a request — see repaintImages.
@@ -535,45 +524,11 @@ function _renderImages(expId, data) {
   if (!container) return;
 
   const paths = data.paths || [];
-  const suggestedPaths = data.suggested_paths || [];
   const images = (data.images || []).slice();
 
   mergeArtifactImages(images, data.artifact_images);
 
-  // Folded away once there are images to look at: the tab opened on a wall
-  // of folder-suggestion chips with the run's one plot below the fold. With
-  // no images it stays open, since adding a folder is how you get some.
-  const pathsOpen = _imgPathsOpen === null ? !images.length && !(data.artifact_images || []).length
-                                           : _imgPathsOpen;
-  let html = '<details class="img-paths-section"' + (pathsOpen ? ' open' : '')
-    + ' ontoggle="_imgPathsOpen=this.open">';
-  html += '<summary style="font-size:14px;font-weight:600;cursor:pointer;margin-bottom:8px">Image folders'
-    + (paths.length ? ' <span style="color:var(--muted);font-weight:normal">(' + paths.length + ' added)</span>' : '')
-    + '</summary>';
-  html += '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">Add folders to scan for images. Paths are relative to project root.</p>';
-
-  // Show saved paths
-  if (paths.length) {
-    for (let i = 0; i < paths.length; i++) {
-      const p = paths[i];
-      html += '<div class="img-path-row">';
-      html += '<span class="img-path-val" data-path="' + esc(p) + '" onclick="startEditImagePath(\'' + expId + '\',' + i + ',this)" title="Click to edit">' + esc(p) + '</span>';
-      html += '<button class="img-path-edit" onclick="startEditImagePath(\'' + expId + '\',' + i + ',this.parentNode.querySelector(&quot;.img-path-val&quot;))" title="Edit path">&#9998;</button>';
-      html += '<button class="img-path-del" onclick="deleteImagePath(\'' + expId + '\',' + i + ')" title="Remove path">&times;</button>';
-      html += '</div>';
-    }
-  }
-
-  // Add path form
-  html += '<div class="img-path-add">';
-  html += '<input type="text" id="img-path-input" placeholder="e.g. outputs/samples" style="flex:1" onkeydown="if(event.key===&quot;Enter&quot;)addImagePath(&quot;' + expId + '&quot;)">';
-  html += '<button onclick="addImagePath(\'' + expId + '\')">Add Path</button>';
-  html += '</div>';
-
-  // Suggested paths from output_dir or params
-  html += _scanSuggestionsHtml(suggestedPaths, 'img-path-input', 'addImagePath', expId);
-  html += _scanTruncNotice(data, 'images');
-  html += '</details>';
+  let html = '';
 
   // Show images if we have any
   if (images.length) {
@@ -629,17 +584,6 @@ function _renderImages(expId, data) {
 
     // Refresh button
     html += ' <button class="img-filter-select" onclick="loadImages(\'' + expId + '\')" title="Refresh images" style="cursor:pointer">&#x21bb; Refresh</button>';
-
-    // Search by file name. Debounced, and the box keeps focus and caret
-    // across the repaint -- retyping the query after every keystroke is what
-    // makes a search box useless on 900 files.
-    html += ' <input type="text" class="img-search-input" id="img-search-input"'
-      + ' placeholder="Search file name..." value="' + esc(imageSearch) + '"'
-      + ' oninput="_onImageSearch(this.value,\'' + expId + '\')">';
-    if (imageSearch) {
-      html += ' <button class="img-filter-select" onclick="imageSearch=\'\';repaintImages(\'' + expId + '\')"'
-        + ' title="Clear search" style="cursor:pointer">&times; Clear</button>';
-    }
 
     if (dirs.length > 1) {
       html += ' <select class="img-filter-select" onchange="imageFilter=this.value;repaintImages(\'' + expId + '\')">';
@@ -707,7 +651,9 @@ function _renderImages(expId, data) {
       html += '</div></div>';
     }
     html += '</div>';
-  } else if (paths.length) {
+  } else if (!paths.length) {
+    html += '<p class="muted-note" style="margin-top:12px">No images yet. Add a folder to scan with ⚙ Folders above.</p>';
+  } else {
     html += '<p style="color:var(--muted);margin-top:12px">No images found in the specified path(s).</p>';
     html += ' <button class="img-filter-select" onclick="loadImages(\'' + expId + '\')" title="Refresh images" style="cursor:pointer;margin-top:8px">&#x21bb; Refresh</button>';
   }
@@ -783,12 +729,12 @@ async function addImagePath(expId) {
   const path = input ? input.value.trim() : '';
   if (!path) return;
   await postApi('/api/experiment/' + expId + '/image-path', {action: 'add', path});
-  loadImages(expId);
+  _afterFolderChange(expId);
 }
 
 async function deleteImagePath(expId, index) {
   await postApi('/api/experiment/' + expId + '/image-path', {action: 'delete', index});
-  loadImages(expId);
+  _afterFolderChange(expId);
 }
 
 // Editing a saved scan path (Images + Data Files). One implementation for both
@@ -807,7 +753,7 @@ async function deleteImagePath(expId, index) {
 // (3) Clicks inside the editor never reach an ancestor handler.
 function _startEditScanPath(expId, index, el, kind) {
   const api = kind === 'image' ? '/image-path' : '/log-path';
-  const reload = () => (kind === 'image' ? loadImages(expId) : loadLogs(expId));
+  const reload = () => _afterFolderChange(expId);
 
   const existing = el.querySelector('input');
   if (existing) { existing.focus(); return; }   // already editing this row
@@ -917,6 +863,8 @@ let logSort = 'date';
 let logSortDir = 'desc';
 let logFilter = '';
 
+let _logDataCache = null;
+
 async function loadLogs(expId) {
   const container = document.getElementById('detail-tab-logs');
   if (!container) return;
@@ -928,36 +876,27 @@ async function loadLogs(expId) {
     container.innerHTML = '<p style="color:var(--muted)">Error: ' + esc(data.error) + '</p>';
     return;
   }
+  _logDataCache = {expId: expId, data: data};
+  _renderLogs(expId, data);
+}
 
-  const paths = data.paths || [];
-  const suggestedPaths = data.suggested_paths || [];
-  let files = data.files || [];
-
-  let html = '<div class="img-paths-section">';
-  html += '<h3 style="font-size:14px;margin-bottom:8px">Scan Paths</h3>';
-  html += '<p style="font-size:12px;color:var(--muted);margin-bottom:8px">Add folders to scan for logs, CSVs, JSON/JSONL, and TensorBoard event files. Paths are relative to project root.</p>';
-
-  // Show saved paths
-  if (paths.length) {
-    for (let i = 0; i < paths.length; i++) {
-      const p = paths[i];
-      html += '<div class="img-path-row">';
-      html += '<span class="img-path-val" data-path="' + esc(p) + '" onclick="startEditLogPath(\'' + expId + '\',' + i + ',this)" title="Click to edit">' + esc(p) + '</span>';
-      html += '<button class="img-path-edit" onclick="startEditLogPath(\'' + expId + '\',' + i + ',this.parentNode.querySelector(&quot;.img-path-val&quot;))" title="Edit path">&#9998;</button>';
-      html += '<button class="img-path-del" onclick="deleteLogPath(\'' + expId + '\',' + i + ')" title="Remove path">&times;</button>';
-      html += '</div>';
-    }
+// Paint Files › Data from the cached listing when it is this run's — the
+// counts fetch already has it, and a live run's rebuild must not refetch and
+// flash "Loading…" every 5 s. Refresh and a sort change still go to loadLogs.
+function repaintLogs(expId) {
+  if (_logDataCache && _logDataCache.expId === expId) {
+    _renderLogs(expId, _logDataCache.data);
+    return Promise.resolve();
   }
+  return loadLogs(expId);
+}
 
-  // Add path form
-  html += '<div class="img-path-add">';
-  html += '<input type="text" id="log-path-input" placeholder="e.g. outputs/logs or logs/tensorboard" style="flex:1" onkeydown="if(event.key===&quot;Enter&quot;)addLogPath(&quot;' + expId + '&quot;)">';
-  html += '<button onclick="addLogPath(\'' + expId + '\')">Add Path</button>';
-  html += '</div>';
-
-  html += _scanSuggestionsHtml(suggestedPaths, 'log-path-input', 'addLogPath', expId);
-  html += _scanTruncNotice(data, 'files');
-  html += '</div>';
+function _renderLogs(expId, data) {
+  const container = document.getElementById('detail-tab-logs');
+  if (!container) return;
+  const paths = data.paths || [];
+  const files = data.files || [];
+  let html = '';
 
   // Show files if we have any
   if (files.length) {
@@ -1012,7 +951,7 @@ async function loadLogs(expId) {
       const logExts = ['log', 'txt', 'out', 'err'];
       const csvExts = ['csv', 'tsv'];
       const badge = logExts.includes(ext) ? '<span class="artifact-type-badge log">log</span>' : csvExts.includes(ext) ? '<span class="artifact-type-badge data">csv</span>' : '<span class="artifact-type-badge data">data</span>';
-      html += '<tr>';
+      html += '<tr data-fname="' + esc(f.path || f.name) + '">';
       html += '<td><div class="artifact-row">' + badge + ' ' + esc(f.name);
       if (f.dir !== '.') html += ' <span style="color:var(--muted);font-size:11px">(' + esc(f.dir) + ')</span>';
       html += '</div></td>';
@@ -1022,12 +961,15 @@ async function loadLogs(expId) {
       html += '</tr>';
     }
     html += '</table>';
-  } else if (paths.length) {
+  } else if (!paths.length) {
+    html += '<p class="muted-note" style="margin-top:12px">No data files yet. Add a folder to scan with ⚙ Folders above.</p>';
+  } else {
     html += '<p style="color:var(--muted);margin-top:12px">No log files found in the specified path(s).</p>';
     html += ' <button class="img-filter-select" onclick="loadLogs(\'' + expId + '\')" title="Refresh" style="cursor:pointer;margin-top:8px">&#x21bb; Refresh</button>';
   }
 
   container.innerHTML = html;
+  filterFiles(_filesFilter);
 }
 
 async function addLogPath(expId) {
@@ -1035,12 +977,12 @@ async function addLogPath(expId) {
   const path = input ? input.value.trim() : '';
   if (!path) return;
   await postApi('/api/experiment/' + expId + '/log-path', {action: 'add', path});
-  loadLogs(expId);
+  _afterFolderChange(expId);
 }
 
 async function deleteLogPath(expId, index) {
   await postApi('/api/experiment/' + expId + '/log-path', {action: 'delete', index});
-  loadLogs(expId);
+  _afterFolderChange(expId);
 }
 
 // ── Result types management ──────────────────────────────────────────────────
@@ -1352,7 +1294,7 @@ function _cwSeqCellHtml(seq) {
 
 async function loadCompareWithin(expId) {
   const events = await api('/api/timeline/' + expId);
-  const container = document.getElementById('detail-tab-compare-within');
+  const container = document.getElementById('detail-tool-compare-within');
   if (!Array.isArray(events)) {
     if (container) container.innerHTML = _apiFailedHtml('the timeline');
     return;
@@ -1419,7 +1361,7 @@ async function loadCompareWithin(expId) {
 // page scroll to 0 as well -- the trap the detail refresh already documents
 // (js/detail.js). Choosing a point moved the point out from under the cursor.
 function _cwRepaintSelection() {
-  const container = document.getElementById('detail-tab-compare-within');
+  const container = document.getElementById('detail-tool-compare-within');
   if (!container) return;
   const scroller = document.getElementById('main-content');
   const keptPage = scroller ? scroller.scrollTop : 0;

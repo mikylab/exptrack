@@ -312,11 +312,23 @@ def api_run_source(conn, exp_id: str) -> dict:
 
 def api_export(conn, exp_id: str, qs: dict) -> dict:
     from ...core.queries import PARAMS_EXPORT_FORMATS, format_export_markdown, format_export_params
+    fmt = qs.get("format", "json")
+    if fmt == "notes-md":
+        # The notes on their own, for the Notes section's Copy: the markdown
+        # the user wrote, and its rendering for a paste into OneNote/Word.
+        # One column, so it reads one column — not the full export, which
+        # loads every metric point and the whole timeline.
+        from ...core.export_render import markdown_to_html
+        from ...core.queries import find_experiment
+        exp = find_experiment(conn, exp_id, "id, notes")
+        if not exp:
+            return {"error": "not found"}
+        text = exp["notes"] or ""
+        return {"notes_text": text, "html": markdown_to_html(text)}
     full = str(qs.get("full", "")).lower() in ("1", "true", "yes")
     data = get_export_data(conn, exp_id, full=full)
     if not data:
         return {"error": "not found"}
-    fmt = qs.get("format", "json")
     # `patch=0` is Copy: the patch goes out through Export .patch instead of
     # riding along in the pasted document.
     patch = str(qs.get("patch", "1")).lower() not in ("0", "false", "no")

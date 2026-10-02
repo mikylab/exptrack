@@ -22,19 +22,23 @@ exptrack ui        # open the web dashboard
 
 ## Dashboard
 
-<img alt="exptrack dashboard — experiment list grouped by script, with tags, studies, and metric sparklines" src="https://raw.githubusercontent.com/mikylab/exptrack/main/docs/images/dashboard.png" />
+<img alt="exptrack dashboard — experiment list grouped by script, with tags, studies, and metric sparklines" src="docs/images/dashboard.png" />
 
 Filter, compare, tag, and explore experiments from a local web UI. Runs on localhost with no accounts or internet needed. Runs group by script by default, so a burst of near-identical attempts reads as one block instead of a flat list.
 
 Start it in the background with `exptrack ui start` (it prints a URL with an auth token already in it), or in the foreground with plain `exptrack ui`. One dashboard serves every project this machine knows about — the switcher beside the page title moves between them without a second server on a second port. See [Dashboard Features](#dashboard-features) for the access and multi-project details.
 
-Every run's detail view opens with **what changed** since the last run of the same script — the params you edited, the metric deltas they produced, and the code diff behind them — plus a filmstrip for stepping between runs without going back to the list.
+Every run's detail view opens with **what changed** since the last run of the same script — the params you edited, the metric deltas they produced, and the code diff behind them. Four tabs hold the rest — **Overview**, **Charts**, **Files** and **Code** (where a notebook run's cell timeline lives) — and **⫼ Split** puts two of them side by side. ‹ › steps between runs without going back to the list.
 
-<img alt="Run detail — the What Changed card diffing params and metrics against the previous run of the same script" src="https://raw.githubusercontent.com/mikylab/exptrack/main/docs/images/dashboard-detail.png" />
+<img alt="Run Overview — What changed vs the previous run on top, then metrics and capped params side by side" src="docs/images/dashboard-detail.png" />
+
+**⫼ Split** puts a second tab beside the first, so what changed and the curves it produced read side by side.
+
+<img alt="Split view — Overview with What changed on the left, the Charts tab on the right" src="docs/images/dashboard-split.png" />
 
 The **Charts** tab plots every logged metric with linear/log scales, typed axis bounds, and a display-only smoothing slider (the raw series stays visible behind it). Charts on a live run update in place every 5 seconds without resetting your tab, zoom, or metric pick.
 
-<img alt="Charts tab — a training loss curve with axis-range controls and a smoothing slider" src="https://raw.githubusercontent.com/mikylab/exptrack/main/docs/images/dashboard-charts.png" />
+<img alt="Charts tab — a training loss curve with axis-range controls and a smoothing slider" src="docs/images/dashboard-charts.png" />
 
 ---
 
@@ -325,15 +329,15 @@ survives an SSH disconnect. Starting it when one is already running is success, 
 an error. `exptrack ui-stop` still works as a deprecated alias for `exptrack ui stop`.
 
 - **Experiment list** grouped by script (or study, branch, commit, day), with status filters, search, sparkline charts, and customizable columns — including any captured parameter as a sortable column, one click to add the ones that actually vary between runs
-- **Detail view** with a "what changed vs the previous run" strip, parameters, metrics, interactive charts, code changes, git diff, datasets, a **Run failed** traceback panel, and a reproducible command with one-click copy
-- **Filmstrip** across the top of the detail view — step between runs with ← / → without going back to the list
+- **Run page** in four tabs — **Overview** (what changed vs the previous run, metrics, notes, params, reproduce command), **Charts**, **Files** (images, data files, artifacts) and **Code** (timeline, uncommitted diff, captured source, environment) — with **⫼ Split** to read two side by side, a **Run failed** traceback panel, and one Export menu with Copy beside every format
+- **Run navigator** — step between runs with ‹ › or ← / →, or jump with **N of M**, without going back to the list
 - **Compare** experiments pair-wise (side-by-side with overlay charts, plus a code-diff panel) or across 3+ runs (bar charts)
 - **Charts tab** with single/all views, linear/log scales, typed axis bounds, downsampling, and a smoothing slider; live runs update in place every 5 seconds without resetting your view
-- **Timeline** showing cell executions, variable changes, captured cell output, and artifact creation (notebooks)
+- **Code › Timeline** showing cell executions, variable changes, captured cell output, and artifact creation (notebooks)
 - **Sessions** tab rendering Session Trees as a git-style graph — branch, compare, promote a node into an experiment, or finalize a whole session into a study
 - **Images** displayed in a gallery grid with lightbox and side-by-side/overlay/swipe comparison
 - **Data files** (CSV, JSON, JSONL, TSV) rendered as interactive sortable tables
-- **Confusion matrix** calculator per run — multiple named matrices, side-by-side compare, results saveable as metrics
+- **Confusion matrix** calculator per run (Tools menu) — multiple named matrices, side-by-side compare, results saveable as metrics
 - **Trash** with restore, plus an explicit permanent-delete step (files go to the OS Trash)
 - **Storage panel** showing bytes by metric key and the largest runs, with a **Prune…** action that previews before it deletes
 - **Toolbox** with a commands notepad (templated `{{variables}}`, exportable as a runnable `.sh`) and a todo list with due dates; pinnable as a side panel

@@ -94,6 +94,25 @@ HTML_BODY = r"""</style>
           </div>
         </div>
         <div class="settings-section">
+          <div class="settings-section-title">Export &amp; backup</div>
+          <span class="settings-export-label">Export all runs</span>
+          <div class="settings-actions settings-export-row">
+            <button onclick="settingsExportAll('markdown')" title="Every run: a summary of the set first (what varied, the top runs, each metric's spread, notes), then each run's report">Markdown</button>
+            <button onclick="settingsExportAll('html')" title="The same as Markdown, as a page that opens in a browser or imports into OneNote or Word">HTML</button>
+            <button onclick="settingsExportAll('csv')" title="One row per run: settings and each metric's last value">CSV</button>
+            <button onclick="settingsExportAll('json')" title="Everything, for scripts">JSON</button>
+          </div>
+          <span class="settings-export-label">Printable report (opens in a new tab; use its Save as PDF button)</span>
+          <div class="settings-actions settings-export-row">
+            <button onclick="openPrintableReport({all: true, summary_only: true})" title="The summary of every run: what varied, the top runs, each metric's spread, notes — a few pages">PDF summary</button>
+            <button onclick="openPrintableReport({all: true})" title="The summary, then every run's report, one run per page">PDF full report</button>
+          </div>
+          <div class="settings-actions">
+            <button onclick="settingsBackupDb()" title="Copy the whole database to .exptrack/backups/ — restore with exptrack restore &lt;file&gt;">&#x1F4BE; Back up database</button>
+            <span class="settings-backup-status" id="settings-backup-status"></span>
+          </div>
+        </div>
+        <div class="settings-section">
           <div class="settings-section-title">Database</div>
           <div class="settings-storage" id="settings-storage"></div>
           <div class="settings-actions">
@@ -179,8 +198,16 @@ exptrack run-finish $EXP_ID --metrics results.json</div>
         <p>Double-click any name, tag, or note field to edit it inline. Press Enter to save, Escape to cancel. Tags support autocomplete from previously used values.</p>
       </div>
       <div class="help-howto-item">
+        <strong>Write up what a run showed</strong>
+        <p>A run's <strong>Notes</strong> section takes markdown: <code>## heading</code>, <code>- list</code> (Tab indents a sub-point), <code>1. steps</code>, <code>- [ ] task</code>, <code>**bold**</code>, <code>`code`</code>. Enter continues a list, Ctrl+Enter or clicking outside saves, Esc discards. <strong>Start from template</strong> gives Question / Hypothesis / Result / Next. Tick a task in the rendered notes to check it off. The section's Copy pastes as formatted text into OneNote or Word, and every run export carries the notes with their structure.</p>
+      </div>
+      <div class="help-howto-item">
         <strong>Compare experiments</strong>
-        <p>Click the <strong>&#x2194; Compare</strong> button in the toolbar, then <strong>Choose runs&hellip;</strong>. Any number of runs can be compared: you get what differs, a metric table, training curves and bar charts. Pick exactly two and it adds the panels that only make sense for a pair &mdash; the code diff between the attempts, a delta column, the notebook variable table, and an image overlay.</p>
+        <p>Click the <strong>&#x2194; Compare</strong> button in the toolbar, then <strong>Choose runs&hellip;</strong>. Any number of runs can be compared: you get what differs, a metric table, training curves and bar charts. Pick exactly two and it adds the panels that only make sense for a pair &mdash; the code diff between the attempts, a delta column, the notebook variable table, and an image overlay. <strong>&#9998; Write up</strong> records what the comparison showed in the notes of every run in it, with a link back.</p>
+      </div>
+      <div class="help-howto-item">
+        <strong>Choose what "best" means</strong>
+        <p>Runs are ranked by one <em>primary metric</em>. Until you pick one, exptrack guesses and marks it <em>guessed</em>. Click the metric in a run's header, or <strong>Judged by</strong> in the Parameter Matrix, to choose the metric, whether higher or lower is better, and whether it applies to the project, a study, or one run.</p>
       </div>
       <div class="help-howto-item">
         <strong>Bulk actions</strong>
@@ -514,7 +541,10 @@ EVAL_ID=$EXP_ID; python eval.py; exptrack run-finish $EVAL_ID</div>
                   title="Download this comparison as CSV">Export CSV</button>
           <button onclick="copyComparisonLink()"
                   title="Copy a link that reopens this comparison">Copy link</button>
+          <button onclick="openCompareNote()"
+                  title="Write down what this comparison showed &mdash; added to the notes of every run in it, with a link back here">&#9998; Write up</button>
         </div>
+        <div id="compare-note"></div>
         <div id="multi-compare-result"></div>
       </div>
     </div>

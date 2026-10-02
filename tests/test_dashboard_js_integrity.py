@@ -302,31 +302,81 @@ def test_compare_picker_pages_instead_of_asking_for_one_huge_limit():
     assert "_loadProjectRuns('" in _js_function_body(js, "async function _loadCmpExps(")
 
 
-def test_detail_tabs_array_matches_the_button_row():
-    """`switchDetailTab` pairs DETAIL_TABS[i] with the i-th #detail-tabs button.
+def _tab_helpers() -> str:
+    js = get_all_js()
+    head = "\n".join(re.findall(r"^const (?:DETAIL_(?:TABS|TOOLS|VIEWS)|_LEGACY_TABS) = .*?;$", js, re.M | re.S))
+    return head + "\n" + _js_function_body(js, "function _resolveDetailTab(") + "\n}"
 
-    They are declared in two different files, and a mismatch does not error — it
-    silently shows the wrong panel and marks the wrong tab active, which is the
-    same shadowing hazard the GET-dispatch tables were restructured to remove.
-    """
-    import re
-    from pathlib import Path
 
-    static = Path(__file__).resolve().parents[1] / "exptrack" / "dashboard" / "static" / "js"
-    tabs_src = (static / "timeline.js").read_text(encoding="utf-8")
-    detail_src = (static / "detail.js").read_text(encoding="utf-8")
+def test_legacy_tab_names_resolve_to_their_new_home():
+    """Timeline, Images and Data Files were tabs before 2.1; a saved link to one
+    must land on the view that now holds it, not silently on Overview."""
+    got = _run_js(_tab_helpers() + """
+      console.log(JSON.stringify([
+        _resolveDetailTab('timeline', ''),
+        _resolveDetailTab('images', ''),
+        _resolveDetailTab('logs', ''),
+        _resolveDetailTab('charts', ''),
+        _resolveDetailTab('confusion', ''),
+        _resolveDetailTab('compare-within', ''),
+        _resolveDetailTab('code', 'source'),
+        _resolveDetailTab('code', 'bogus'),
+        _resolveDetailTab('files', ''),
+        _resolveDetailTab('nope', 'x'),
+        _resolveDetailTab('', ''),
+      ]));""")
+    assert got == [
+        {"tab": "code", "view": "timeline"},
+        {"tab": "files", "view": "images"},
+        {"tab": "files", "view": "data"},
+        {"tab": "charts", "view": ""},
+        {"tab": "confusion", "view": ""},
+        {"tab": "compare-within", "view": ""},
+        {"tab": "code", "view": "source"},
+        {"tab": "code", "view": ""},
+        {"tab": "files", "view": ""},
+        {"tab": "overview", "view": ""},
+        {"tab": "overview", "view": ""},
+    ]
 
-    arr = re.search(r"const DETAIL_TABS = \[(.*?)\];", tabs_src).group(1)
-    declared = [t.strip().strip("'\"") for t in arr.split(",") if t.strip()]
-    buttons = re.findall(r"switchDetailTab\('([a-z-]+)','\$\{exp\.id\}'\)", detail_src)
 
-    assert declared == buttons, (
-        f"DETAIL_TABS {declared} is out of step with the button row {buttons}"
-    )
-    # Every tab needs a container to show/hide, or switching to it blanks the view.
-    for t in declared:
-        assert f'id="detail-tab-{t}"' in detail_src or t == "overview", \
-            f"no #detail-tab-{t} container"
+def test_run_hash_round_trips_tab_and_view():
+    js = get_all_js()
+    src = _tab_helpers() + "\n" + "\n".join(
+        _js_function_body(js, d) + "\n}" for d in
+        ("function _resolveSplit(", "function _runViewHash(", "function _parseRunViewHash("))
+    got = _run_js(src + """
+      console.log(JSON.stringify([
+        _runViewHash('abc', 'overview', ''),
+        _runViewHash('abc', 'code', 'timeline'),
+        _runViewHash('p1:abc', 'files', ''),
+        _parseRunViewHash('#run=abc&tab=code&view=env'),
+        _parseRunViewHash('#run=abc&tab=timeline'),
+        _parseRunViewHash('#run=abc&tab=logs'),
+        _parseRunViewHash('#run=abc'),
+        _parseRunViewHash('#matrix'),
+      ]));""")
+    assert got[0] == "#run=abc"
+    assert got[1] == "#run=abc&tab=code&view=timeline"
+    assert got[2] == "#run=p1%3Aabc&tab=files"
+    assert got[3] == {"id": "abc", "tab": "code", "view": "env", "split": ""}
+    assert got[4] == {"id": "abc", "tab": "code", "view": "timeline", "split": ""}
+    assert got[5] == {"id": "abc", "tab": "files", "view": "data", "split": ""}
+    assert got[6] == {"id": "abc", "tab": "overview", "view": "", "split": ""}
+    assert got[7] is None
+
+
+def test_every_detail_tab_has_a_button_and_a_container():
+    """Buttons carry data-tab, so order no longer couples to DETAIL_TABS — but a
+    tab without a button or a container still silently blanks the view."""
+    js = get_all_js()
+    for t in ("overview", "charts", "files", "code"):
+        assert f'data-tab="{t}"' in js, f"no button for {t}"
+        assert f'id="detail-tab-{t}"' in js, f"no #detail-tab-{t} container"
+    # Tool views are built by one helper that names the container from its id.
+    assert "'<div id=\"detail-tab-' + tool + '\"" in js
+    for t in ("compare-within", "confusion"):
+        assert f"_toolShellHtml('{t}'" in js, f"no #detail-tab-{t} container"
 
 
 def test_a_compacted_summary_is_not_drawn_as_diff_content():
@@ -905,15 +955,16 @@ def test_a_run_has_an_address_a_reload_reopens():
     """
     js = get_all_js()
     detail = _js_function_body(js, "async function refreshDetail(")
-    assert "_pushViewHash(_runViewHash(id, currentDetailTab), lateral)" in detail
+    assert "_pushViewHash(_currentRunHash(id), lateral)" in detail
     tabs = _js_function_body(js, "function switchDetailTab(")
-    assert "_pushViewHash(_runViewHash(expId, tab), true)" in tabs
+    assert "_pushViewHash(_currentRunHash(expId), true)" in tabs
     restore = _js_function_body(js, "async function _restoreViewFromHash(")
     assert "_parseRunViewHash(hash)" in restore and "refreshDetail(run.id)" in restore
     start = js.index("function _bootProjectData(")
     assert "_restoreViewFromHash()" in js[start:js.index("\n}\n", start)]
     # Leaving to the list drops the address, or a reload would reopen the run.
-    assert "h.startsWith('#run=')" in _js_function_body(js, "function _clearViewHash(")
+    assert "_isViewHash(" in _js_function_body(js, "function _clearViewHash(")
+    assert "'#run='" in _js_function_body(js, "function _isViewHash(")
 
 
 def test_opening_a_run_leaves_the_rail_as_the_reader_left_it():
@@ -1872,3 +1923,608 @@ def test_overlay_keeps_its_picks_across_a_live_refresh():
     assert "mode === 'overlay'" in body
     assert "_applyOverlayPoints(" in body
     assert "_overlayPicks" in _js_function_body(js, "function _overlayInitialPicks(")
+
+
+# ── the vs-previous strip ───────────────────────────────────────────────────
+
+def test_vs_previous_prints_zero_as_zero():
+    """`seed 1→0` read `seed 1→0.00e+0`: zero is below every magnitude
+    threshold, so it fell through to exponential notation."""
+    js = get_all_js()
+    got = _run_js(_js_function_body(js, "function _vsFmt(") + "\n}\n"
+                  "console.log(JSON.stringify([_vsFmt(0), _vsFmt(1), _vsFmt(0.00001), _vsFmt(2.5e7)]))")
+    assert got == ["0", "1", "1.00e-5", "2.50e+7"]
+
+
+# ── run notes ───────────────────────────────────────────────────────────────
+
+def _notes_js() -> str:
+    from pathlib import Path
+
+    import exptrack.dashboard as dash
+    js = get_all_js()
+    helpers = "\n".join(_js_function_body(js, d) + "\n}" for d in (
+        "function esc(", "function escJs(", "function escJsAttr("))
+    notes = (Path(dash.__file__).parent / "static" / "js" / "notes.js").read_text(encoding="utf-8")
+    return helpers + "\n" + notes + "\n"
+
+
+def test_notes_js_is_in_the_bundle():
+    assert "function renderNotesMd(" in get_all_js()
+    # the old one-line editor lived in mutations.js; two definitions would
+    # leave whichever came last in the bundle silently winning
+    assert get_all_js().count("function startDetailNoteEdit(") == 1
+
+
+def test_notes_render_structure_and_escape_everything():
+    got = _run_js(_notes_js() + r"""
+      const md = [
+        '## Result', 'acc **up** by `0.01` <b>x</b>',
+        '- a', '  - nested', '- [ ] todo', '- [x] done',
+        '1. one', '2. two',
+        '[ok](https://x.org) [bad](javascript:alert(1))',
+        '```', '<script>', '```',
+      ].join('\n');
+      console.log(JSON.stringify(renderNotesMd(md)));""")
+    assert 'class="notes-h notes-h2"' in got and ">Result</div>" in got
+    assert "<strong>up</strong>" in got and "<code>0.01</code>" in got
+    assert "&lt;b&gt;x&lt;/b&gt;" in got and "<script>" not in got
+    assert "<li>a<ul><li>nested</li></ul></li>" in got
+    assert 'data-line="4"' in got and 'data-line="5" checked' in got
+    assert "<ol><li>one</li><li>two</li></ol>" in got
+    assert '<a href="https://x.org"' in got and "javascript:" not in got.split("[bad]")[0]
+    assert 'href="javascript' not in got
+
+
+def test_notes_summary_is_the_first_line_without_its_syntax():
+    got = _run_js(_notes_js() + r"""
+      console.log(JSON.stringify([
+        notesSummary('## Question\n\nDoes ls help?'),
+        notesSummary('## Only a heading'),
+        notesSummary('- [ ] **rerun** seeds'),
+        notesSummary('plain'),
+        notesSummary(''),
+      ]));""")
+    assert got == ["Does ls help?", "Only a heading", "rerun seeds", "plain", ""]
+
+
+def _fake_textarea() -> str:
+    # Just enough of a <textarea> for the editing helpers: value + selection.
+    return r"""
+      const document = {execCommand: () => false};
+      class Event { constructor(t) { this.type = t; } }
+      function ta(value, s, e) {
+        return {value, selectionStart: s, selectionEnd: e == null ? s : e,
+          focus() {}, dispatchEvent() {},
+          setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; },
+          setRangeText(t, a, b) { this.value = this.value.slice(0, a) + t + this.value.slice(b); }};
+      }
+    """
+
+
+def test_notes_enter_continues_and_ends_a_list():
+    got = _run_js(_notes_js() + _fake_textarea() + r"""
+      const out = [];
+      let t = ta('- first', 7); _notesContinueList(t); out.push(t.value);
+      t = ta('  3. step', 9); _notesContinueList(t); out.push(t.value);
+      t = ta('- [x] done', 10); _notesContinueList(t); out.push(t.value);
+      t = ta('- a\n- ', 6); _notesContinueList(t); out.push(t.value);
+      t = ta('plain', 5); out.push(_notesContinueList(t));
+      console.log(JSON.stringify(out));""")
+    assert got == ["- first\n- ", "  3. step\n  4. ", "- [x] done\n- [ ] ", "- a\n\n", False]
+
+
+def test_notes_tab_indents_and_outdents_every_selected_line():
+    got = _run_js(_notes_js() + _fake_textarea() + r"""
+      let t = ta('- a\n- b\nc', 0, 7); _notesIndent(t, false);
+      const a = t.value;
+      _notesIndent(t, true);
+      console.log(JSON.stringify([a, t.value]));""")
+    assert got == ["  - a\n  - b\nc", "- a\n- b\nc"]
+
+
+def test_notes_template_fills_empty_and_only_adds_missing_sections():
+    got = _run_js(_notes_js() + _fake_textarea() + r"""
+      const owlSay = () => {};
+      let t = ta('', 0); _notesApplyTemplate(t);
+      const empty = t.value;
+      t = ta('## Question\nwhy', 16); _notesApplyTemplate(t);
+      console.log(JSON.stringify([empty === NOTES_TEMPLATE, t.value]));""")
+    assert got[0] is True
+    assert got[1].count("## Question") == 1
+    assert "## Hypothesis" in got[1] and "## Next" in got[1]
+
+
+# ── Sessions and Trash have addresses ───────────────────────────────────────
+
+def test_sessions_and_trash_are_places_back_returns_to():
+    """A run opened from a session tree used to push `#run=` over whatever
+    came before Sessions, so Back skipped the tree entirely, and a reload on
+    Sessions landed on the list. Entering either view pushes its own hash; the
+    one parser restores both; leaving clears them."""
+    js = get_all_js()
+    restore = _js_function_body(js, "async function _restoreViewFromHash(", strip_comments=True)
+    assert "'#trash'" in restore and "openTrashView()" in restore
+    assert "#sessions" in restore and "openSessionNode(sid" in restore
+    assert "_pushViewHash('#sessions', opts && opts.replaceHash)" in _js_function_body(js, "function toggleSessionsTab(")
+    # a restore replaces rather than pushing a second entry for the same place
+    assert "{replaceHash: true}" in restore
+    assert "_pushViewHash(_sessionsHash(id), true)" in _js_function_body(js, "function selectSession(")
+    assert "_pushViewHash('#trash')" in _js_function_body(js, "function openTrashView(")
+    views = _js_function_body(js, "function _isViewHash(")
+    assert "'#sessions'" in views and "'#trash'" in views
+    for close in ("function closeSessionsTab(", "function closeTrashView("):
+        assert "_clearViewHash()" in _js_function_body(js, close), close
+
+
+def test_one_selection_bar_per_view():
+    """The list view floats its own bar; the rail's copy is for other views."""
+    body = _js_function_body(get_all_js(), "function renderSidebarActionsBar(", strip_comments=True)
+    assert "welcome-state" in body
+    js = get_all_js()
+    assert "renderSidebarActionsBar()" in _js_function_body(js, "function releaseCanvas(")
+    # every path back to the list goes through the one helper that re-renders it
+    assert "renderSidebarActionsBar()" in _js_function_body(js, "function _showListView(")
+    for close in ("function closeParamMatrix(", "function closeSessionsTab(",
+                  "function closeTrashView(", "function showWelcome("):
+        assert "_showListView()" in _js_function_body(js, close), close
+
+
+# ── what runs are judged by, and what a comparison concluded ────────────────
+
+def test_the_matrix_heads_its_metric_column_with_the_sets_metric():
+    """The header used to be the *first row's* key: two notebook runs judged by
+    `acc` listed first put `acc (final)` over ten rows of train_loss values."""
+    js = get_all_js()
+    head = _js_function_body(js, "function _metricHeaderLabel(", strip_comments=True)
+    assert "d.metric" in head and "rows" not in head
+    cell = _js_function_body(js, "function _metricCell(", strip_comments=True)
+    assert "p.key !== setKey" in cell, "a row judged by another metric must say so"
+
+
+def test_the_primary_metric_is_chosen_in_the_dashboard():
+    js = get_all_js()
+    assert "openPrimaryMetricPickerForRun(this)" in _js_function_body(js, "function _primaryMetricSummary(")
+    assert "openMatrixMetricPicker(this)" in _js_function_body(js, "function _matrixJudgedByHtml(")
+    save = _js_function_body(js, "async function _savePrimaryMetric(")
+    assert "'/api/primary-metric'" in save and "loadExperiments()" in save
+
+
+def test_compare_columns_are_headed_by_what_tells_the_runs_apart():
+    js = get_all_js()
+    label = _js_function_body(js, "function _cmpRunLabel(")
+    assert "_multiSeriesLabel(e, labelKeys)" in label and "_cmpColName(" in label
+    # each table labels from its own runs, never from the last render's set
+    assert "_cmpLabelKeys =" not in js
+    assert "_cmpLabelKeysFor(exps)" in _js_function_body(js, "function _multiMetricTableHtml(")
+    assert "_cmpLabelKeysFor(exps)" in _js_function_body(js, "function _compareNoteDraft(")
+
+
+def test_a_comparison_write_up_reaches_every_run_in_its_own_project():
+    js = get_all_js()
+    body = _js_function_body(js, "function openCompareNote(")
+    assert "'/note', {note: text}, e.project_id)" in body
+    assert "|| []).slice()" in body, "the runs are fixed when the editor opens"
+    from exptrack.dashboard.static import DASHBOARD_HTML
+    assert 'onclick="openCompareNote()"' in DASHBOARD_HTML
+
+
+def test_the_dashboard_and_the_exports_read_a_note_the_same_way():
+    """The rendered notes and every export come from two renderers — JS for
+    the page (theme colours, tickable tasks), Python for Copy/Export (inline
+    styles a paste keeps). They had drifted: `+ item` was a list in one and a
+    paragraph in the other. One fixture, the same structure out of both."""
+    import json
+    import re
+
+    from exptrack.core.export_render import markdown_to_html
+
+    fixture = "\n".join([
+        "# Question", "Does **ls** help at `noise=0.2`? _maybe_", "",
+        "- a", "  - nested", "- [ ] todo", "- [x] done", "1. one", "2. two",
+        "", "+ not a list", "> a quote", "---",
+        "| k | v |", "| --- | --- |", r"| a \| b | 1 |",
+        "```", "# code, not a heading", "```",
+        "",
+    ])
+    js_html = _run_js(_notes_js() + "console.log(JSON.stringify(renderNotesMd("
+                      + json.dumps(fixture) + ")));")
+    py_html = markdown_to_html(fixture)
+
+    def shape(h):
+        h = h.replace("<b>", "<strong>").replace("<i>", "<em>")
+        h = re.sub(r'<div class="notes-h notes-h(\d)"', r"<h\1", h)
+        return {t: len(re.findall(r"<" + t + r"[\s>]", h))
+                for t in ("h1", "ul", "ol", "li", "strong", "em", "code", "pre",
+                          "blockquote", "hr", "table", "td")}
+
+    assert shape(js_html) == shape(py_html)
+    assert "a | b" in js_html and "a | b" in py_html
+
+
+# ── Run page: navigator, header, tabs ───────────────────────────────────────
+
+def test_run_navigator_replaces_the_filmstrip():
+    """The card strip was unreadable past a few dozen runs; the navigator steps
+    with ‹ › and jumps through the one shared run picker."""
+    js = get_all_js()
+    assert "function renderFilmstrip(" not in js
+    body = _js_function_body(js, "function renderRunNavigator(", strip_comments=True)
+    assert "getFilteredExperiments()" in body
+    assert "filmstripStep(-1)" in body and "filmstripStep(1)" in body
+    assert "openRunNavigatorPicker()" in body
+    pick = _js_function_body(js, "function openRunNavigatorPicker(", strip_comments=True)
+    assert "openRunPicker(" in pick and "mode: 'single'" in pick
+    assert "keepSidebar: true" in pick
+
+
+def test_header_export_menu_pairs_download_with_copy():
+    """Export and Copy were two parallel menus; every format now has Copy
+    beside Download, diff buttons left for Code › Changes, and the summary bar
+    folded into the subtitle."""
+    js = get_all_js()
+    body = _js_function_body(js, "function _exportMenuHtml(", strip_comments=True)
+    assert "downloadExportFmt(" in body and "copyExportFmt(" in body
+    for fmt in ("json", "json-full", "markdown", "plain"):
+        assert re.search(rf"\['{re.escape(fmt)}', '[^']+', true\]", js), fmt
+    head = _js_function_body(js, "function _detailHeaderHtml(", strip_comments=True)
+    assert "Tools" in head
+    assert r"switchDetailTab(\'compare-within\'" in head
+    assert r"switchDetailTab(\'confusion\'" in head
+    assert "deleteExp(" in head          # in the ⋯ menu
+    assert "exportDiff(" not in head      # moved to Code › Changes
+    assert "detail-summary" not in js     # summary bar folded into the subtitle
+
+
+def test_tab_switch_restores_tab_and_view_after_a_rebuild():
+    """A live run's poll rebuilds the panel Overview-first; the reader's tab,
+    sub-view and scroll offset must come back, and a sub-view change replaces
+    the address rather than pushing."""
+    js = get_all_js()
+    body = _js_function_body(js, "async function refreshDetail(", strip_comments=True)
+    assert "_showDetailTab(currentDetailTab" in body, "a poll rebuild must reopen the tab"
+    assert body.count("_restoreScroll()") >= 2
+    show = _js_function_body(js, "function _showDetailTab(", strip_comments=True)
+    assert "_loadDetailTab(" in show
+    load = _js_function_body(js, "function _loadDetailTab(", strip_comments=True)
+    assert "_showSubview(" in load
+    for loader in ("loadChartsTab(", "loadCompareWithin(", "loadConfusionTab("):
+        assert loader in load
+    sub = _js_function_body(js, "function _showSubview(", strip_comments=True)
+    for loader in ("loadTimeline(", "repaintImages(", "repaintLogs(", "loadRunSource("):
+        assert loader in sub
+    sv = _js_function_body(js, "function switchDetailView(", strip_comments=True)
+    assert "_pushViewHash(" in sv and ", true)" in sv   # replace, never push
+
+
+def test_notebook_runs_are_recognised_without_a_script_capture():
+    """A notebook run's code is its executed cells, so Code opens on Timeline
+    for one; `script` is the notebook path or the literal 'notebook'."""
+    js = get_all_js()
+    got = _run_js(_js_function_body(js, "function _isNotebookRun(") + "\n}" + """
+      console.log(JSON.stringify([
+        _isNotebookRun({script: 'analysis.ipynb', has_script_capture: false}),
+        _isNotebookRun({script: 'notebook', has_script_capture: false}),
+        _isNotebookRun({script: 'train.py', has_script_capture: true}),
+        _isNotebookRun({script: 'train.py', has_script_capture: false}),
+        _isNotebookRun({script: 'NB.IPYNB'}),
+        _isNotebookRun(null),
+      ]));""")
+    assert got == [True, True, False, False, True, False]
+
+
+def test_files_default_view_is_the_first_nonempty():
+    js = get_all_js()
+    got = _run_js("let _filesCounts;\n" + _js_function_body(js, "function _filesDefaultView(") + "\n}" + """
+      const r = [];
+      for (const c of [{images: 3, data: 5, artifacts: 1}, {images: 0, data: 5, artifacts: 1},
+                       {images: 0, data: 0, artifacts: 1}, {images: 0, data: 0, artifacts: 0},
+                       {images: null, data: null, artifacts: 0}]) { _filesCounts = c; r.push(_filesDefaultView()); }
+      console.log(JSON.stringify(r));""")
+    assert got == ["images", "data", "artifacts", "images", "images"]
+
+
+def test_param_filter_matches_key_or_value_case_insensitively():
+    js = get_all_js()
+    got = _run_js(_js_function_body(js, "function _paramFilterMatch(") + "\n}" + """
+      console.log(JSON.stringify([
+        _paramFilterMatch('learning_rate', '0.01', 'LEARN'),
+        _paramFilterMatch('lr', '0.01', '0.0'),
+        _paramFilterMatch("a'b", '<x>', "'b"),
+        _paramFilterMatch('lr', '0.01', 'batch'),
+        _paramFilterMatch('lr', '0.01', ''),
+      ]));""")
+    assert got == [True, True, True, False, True]
+
+
+def test_params_card_is_capped_and_its_state_survives_a_poll():
+    """A long sweep config made Overview scroll for pages and left the other
+    column empty. The card shows a screenful, changed-vs-previous first, and
+    its expanded/filtered state is module-level so a poll rebuild keeps it."""
+    js = get_all_js()
+    card = _js_function_body(js, "function _paramsCardHtml(", strip_comments=True)
+    assert "_PARAMS_CAP" in card and "_paramsExpanded" in card and "_paramsFilter" in card
+    assert "toggleParamsCard()" in card
+    prev = _js_function_body(js, "async function loadVsPrevious(", strip_comments=True)
+    assert "_markChangedParams(" in prev
+    ov = _js_function_body(js, "function _overviewHtml(", strip_comments=True)
+    for gone in ("artifact-table-", "_buildVarSection(", "_buildDatasetsSection(", "_buildCodeSection("):
+        assert gone not in ov, f"{gone} belongs in Files/Code now"
+    notes = _js_function_body(js, "function notesSectionHtml(", strip_comments=True)
+    assert "notes-capped" in notes
+    detail = _js_function_body(js, "async function refreshDetail(", strip_comments=True)
+    assert "_applyParamsCap()" in detail
+
+
+def test_files_folder_settings_live_in_one_popover():
+    """Images and Data Files each opened on their own folder-settings block; the
+    two lists now share one ⚙ Folders popover, and the counts on the switch come
+    from one parallel fetch that guards a failed request."""
+    js = get_all_js()
+    imgs = _js_function_body(js, "function _renderImages(", strip_comments=True)
+    assert "img-paths-section" not in imgs, "image folders moved to the Folders popover"
+    pop = _js_function_body(js, "function _renderFilesFolders(", strip_comments=True)
+    assert "_imgFoldersHtml(" in pop and "_logFoldersHtml(" in pop
+    counts = _js_function_body(js, "async function loadFilesCounts(", strip_comments=True)
+    assert counts.count("api(") == 2 and "Promise.all" in counts
+    assert "!img" in counts and "!logs" in counts   # null guard on api()
+    shell = _js_function_body(js, "function _filesShellHtml(", strip_comments=True)
+    assert "toggleFilesFolders(" in shell and "filterFiles(" in shell
+
+
+def test_code_changes_view_holds_the_diff_and_its_actions():
+    """The diff buttons were in the header and again in the info grid; they now
+    sit once, above the diff, and an empty Changes view says why."""
+    js = get_all_js()
+    acts = _js_function_body(js, "function _diffActionsHtml(", strip_comments=True)
+    assert "exportDiff(" in acts and "copyDiff(" in acts and "exportPatch(" in acts
+    ch = _js_function_body(js, "function _codeChangesHtml(", strip_comments=True)
+    assert "Uncommitted changes" in ch and "matched its commit" in ch
+    env = _js_function_body(js, "function _codeEnvHtml(", strip_comments=True)
+    assert "python_ver" in env and "hostname" in env
+    assert 'id="tl-source-body"' in js        # the Source view owns the source body
+    detail = _js_function_body(js, "async function refreshDetail(", strip_comments=True)
+    assert "_codeChangesHtml(" in detail and "_codeEnvHtml(" in detail
+
+
+def test_source_view_does_not_refetch_on_every_poll():
+    js = get_all_js()
+    body = _js_function_body(js, "async function loadRunSource(", strip_comments=True)
+    assert "_sourceHtmlFor" in body
+
+
+def test_header_menus_close_each_other_and_on_outside_click():
+    """Three header menus that each stayed open until clicked again stacked on
+    top of one another."""
+    js = get_all_js()
+    tog = _js_function_body(js, "function toggleDetailExport(", strip_comments=True)
+    assert "_closeDetailMenus(" in tog
+    assert "function _closeDetailMenus(" in js
+    # Dismissed through the shared helper, not a page-wide listener of its own.
+    assert "_dismissOnOutsideClick(menu" in tog
+    pop = _js_function_body(js, "function toggleFilesFolders(", strip_comments=True)
+    assert "_dismissOnOutsideClick(pop" in pop
+
+
+def test_starting_the_poll_keeps_the_live_badge():
+    """startAutoRefresh called stopAutoRefresh, which removes #live-badge — so a
+    running run's badge was deleted the moment the panel finished rendering."""
+    js = get_all_js()
+    start = _js_function_body(js, "function startAutoRefresh(", strip_comments=True)
+    assert "stopAutoRefresh()" not in start
+    assert "_clearAutoRefreshTimer()" in start
+    stop = _js_function_body(js, "function stopAutoRefresh(", strip_comments=True)
+    assert "_clearAutoRefreshTimer()" in stop and "live-badge" in stop
+
+
+def test_what_changed_card_opens_the_overview():
+    """The README's promise — a run opens with what changed since the last run,
+    code diff included — so the card heads Overview, not a sub-view of Code."""
+    js = get_all_js()
+    ov = _js_function_body(js, "function _overviewHtml(", strip_comments=True)
+    assert ov.index("p.whatChangedHtml") < ov.index("ov-grid")
+    ch = _js_function_body(js, "function _codeChangesHtml(", strip_comments=True)
+    assert "whatChangedHtml" not in ch
+    detail = _js_function_body(js, "async function refreshDetail(", strip_comments=True)
+    assert "whatChangedHtml," in detail or "whatChangedHtml: whatChangedHtml" in detail
+
+
+# ── Run page: split view ────────────────────────────────────────────────────
+
+def test_split_pane_resolves_to_a_different_full_tab():
+    """The right pane shows any tab but the one on the left; a Tools view or an
+    unknown name turns the split off rather than showing a blank pane."""
+    js = get_all_js()
+    got = _run_js(_tab_helpers() + "\n" + _js_function_body(js, "function _resolveSplit(") + "\n}" + """
+      console.log(JSON.stringify([
+        _resolveSplit('overview', 'charts'),
+        _resolveSplit('overview', 'overview'),
+        _resolveSplit('confusion', 'charts'),
+        _resolveSplit('code', 'bogus'),
+        _resolveSplit('files', ''),
+        _resolveSplit('charts', 'timeline'),
+      ]));""")
+    assert got == ["charts", "", "", "", "", ""]
+
+
+def test_run_hash_carries_the_split():
+    js = get_all_js()
+    src = _tab_helpers() + "\n" + "\n".join(
+        _js_function_body(js, d) + "\n}" for d in
+        ("function _resolveSplit(", "function _runViewHash(", "function _parseRunViewHash("))
+    got = _run_js(src + """
+      console.log(JSON.stringify([
+        _runViewHash('abc', 'overview', '', 'charts'),
+        _runViewHash('abc', 'code', 'env', 'files'),
+        _runViewHash('abc', 'code', 'env', ''),
+        _parseRunViewHash('#run=abc&split=charts'),
+        _parseRunViewHash('#run=abc&tab=code&view=env&split=files'),
+        _parseRunViewHash('#run=abc&tab=charts&split=charts'),
+      ]));""")
+    assert got[0] == "#run=abc&split=charts"
+    assert got[1] == "#run=abc&tab=code&view=env&split=files"
+    assert got[2] == "#run=abc&tab=code&view=env"
+    assert got[3] == {"id": "abc", "tab": "overview", "view": "", "split": "charts"}
+    assert got[4] == {"id": "abc", "tab": "code", "view": "env", "split": "files"}
+    assert got[5]["split"] == ""
+
+
+def test_split_view_shows_and_refreshes_both_panes():
+    js = get_all_js()
+    show = _js_function_body(js, "function _showDetailTab(", strip_comments=True)
+    assert "_resolveSplit(" in show and "pane-right" in show
+    assert "_loadDetailTab(t, expId)" in show and "[tab, right]" in show
+    sw = _js_function_body(js, "function switchDetailTab(", strip_comments=True)
+    assert "detailSplit" in sw          # picking the right pane's tab swaps sides
+    poll = _js_function_body(js, "async function _autoRefreshPoll(", strip_comments=True)
+    assert "_detailTabVisible('charts')" in poll and "_detailTabVisible('overview')" in poll
+    assert "toggleDetailSplit(" in js and 'class="tab-split' in js
+
+
+def test_files_listings_are_fetched_once_and_folders_share_one_builder():
+    js = get_all_js()
+    after = _js_function_body(js, "async function _afterFolderChange(", strip_comments=True)
+    assert "loadFilesCounts(" in after and "loadImages(" not in after and "loadLogs(" not in after
+    for fn in ("function _imgFoldersHtml(", "function _logFoldersHtml("):
+        assert "_scanFoldersHtml(" in _js_function_body(js, fn)
+    assert "escJsAttr(expId)" in _js_function_body(js, "function _scanFoldersHtml(")
+    assert "_sourceLoadedFor" not in js and "currentDetailExpId" not in js
+
+
+# ── Final review fixes ──────────────────────────────────────────────────────
+
+def test_a_poll_rebuild_keeps_the_panes_beside_overview():
+    """With Overview in a split, a live run's poll rebuilt the Files or Code pane
+    from scratch every 5 s: refetch, "Loading…", scroll reset, popover shut.
+    A same-run rebuild now carries the other visible pane's node across."""
+    js = get_all_js()
+    body = _js_function_body(js, "async function refreshDetail(", strip_comments=True)
+    assert "_keptPanes" in body and ".replaceWith(" in body
+    show = _js_function_body(js, "function _showDetailTab(", strip_comments=True)
+    assert "_keptPanes" in show
+
+
+def test_a_poll_rebuild_keeps_focus_and_open_notes():
+    js = get_all_js()
+    body = _js_function_body(js, "async function refreshDetail(", strip_comments=True)
+    assert "_restoreFocus" in body
+    notes = _js_function_body(js, "function notesSectionHtml(", strip_comments=True)
+    assert "_notesCapOpen" in notes
+    assert "_notesCapOpen" in _js_function_body(js, "function toggleNotesCap(", strip_comments=True)
+
+
+def test_changes_does_not_claim_a_commit_matched_when_there_is_none():
+    js = get_all_js()
+    src = "\n".join(_js_function_body(js, d) + "\n}" for d in
+                    ("function _isNotebookRun(", "function _codeChangesHtml("))
+    stubs = "const esc = s => String(s); const escJsAttr = s => String(s); const _wcCodeBlockHtml = () => '[copy diff]';\n"
+    got = _run_js(stubs + src + r"""
+      console.log(JSON.stringify([
+        _codeChangesHtml({id: 'b', script: 'C:\\p\\nb.ipynb', git_commit: ''}, '', null),
+        _codeChangesHtml({id: 'b', script: '/p/train.py', git_commit: 'abc1234def'}, '', 'a'),
+      ]));""")
+    assert "Not in a git repository" in got[0] and "matched its commit" not in got[0]
+    assert "No earlier run of nb.ipynb" in got[0]          # Windows path cut to its name
+    assert "matched its commit, abc1234" in got[1]
+    assert "[copy diff]" in got[1] and "Since the previous run" in got[0]
+
+
+def test_params_filter_has_an_id_so_focus_can_come_back():
+    js = get_all_js()
+    assert 'id="ov-params-filter"' in _js_function_body(js, "function _paramsCardHtml(")
+
+
+def test_switching_project_drops_an_address_that_names_the_old_projects_items():
+    """switchProject reloaded with the old `#run=<id>` still in the address, so
+    the new project looked up a run from another database and the run panel
+    became "not found". Views without an id carry over; ids do not."""
+    js = get_all_js()
+    got = _run_js(_js_function_body(js, "function _hashForProjectSwitch(") + "\n}" + """
+      console.log(JSON.stringify([
+        _hashForProjectSwitch('#run=abc123&tab=code'),
+        _hashForProjectSwitch('#compare=a,b'),
+        _hashForProjectSwitch('#sessions=s1'),
+        _hashForProjectSwitch('#sessions'),
+        _hashForProjectSwitch('#matrix'),
+        _hashForProjectSwitch('#trash'),
+        _hashForProjectSwitch(''),
+      ]));""")
+    assert got == ["", "", "#sessions", "#sessions", "#matrix", "#trash", ""]
+    sw = _js_function_body(js, "function switchProject(", strip_comments=True)
+    assert "_hashForProjectSwitch(" in sw
+
+
+def test_what_changed_code_diff_has_its_own_copy_and_patch():
+    """The diff against the previous run had no Export or Copy of its own —
+    only the card's whole write-up — and the uncommitted-diff buttons live in
+    Code › Changes, shown only when the tree was dirty."""
+    js = get_all_js()
+    assert "exportWhatChangedPatch(" in js and "copyWhatChangedDiff(" in js
+    exp = _js_function_body(js, "async function exportWhatChangedPatch(", strip_comments=True)
+    assert "_whatChangedPatch(" in exp and "d.patch" in exp and "saveOrDownload(" in exp
+    cp = _js_function_body(js, "async function copyWhatChangedDiff(", strip_comments=True)
+    assert "copyRich(" in cp
+    block = _js_function_body(js, "function _wcCodeBlockHtml(", strip_comments=True)
+    assert "_wcCodeActionsHtml(" in block       # the buttons sit in the fixed bar
+
+
+def test_project_box_is_drawn_before_the_project_list_answers():
+    """Switching project reloads the page, and the header's project box stayed
+    empty until /api/projects answered (half a second or more with many
+    projects) — the box vanished and came back. The last list is remembered
+    and drawn at once, then replaced by the server's."""
+    js = get_all_js()
+    load = _js_function_body(js, "async function loadProjects(", strip_comments=True)
+    assert "_PROJECTS_CACHE_KEY" in load
+    init = _js_function_body(js, "function _renderCachedProjectSwitcher(", strip_comments=True)
+    assert "renderHeaderProjectSwitcher(" in init and "_storageGet(" in init
+    boot_start = js.index("ensureAuth().then(")
+    assert "_renderCachedProjectSwitcher()" in js[:boot_start]
+
+
+# ── Predictable diffs: say why, never just vanish ───────────────────────────
+
+def test_what_changed_is_always_on_overview():
+    """The card vanished for a script's first run and for notebooks, so the
+    Show code changes / Copy diff buttons came and went with no reason given."""
+    js = get_all_js()
+    detail = _js_function_body(js, "async function refreshDetail(", strip_comments=True)
+    assert "_whatChangedEmptyHtml(" in detail
+    empty = _js_function_body(js, "function _whatChangedEmptyHtml(", strip_comments=True)
+    assert "nothing to compare against" in empty and "what-changed-card" in empty
+
+
+def test_code_changes_always_has_both_sections_with_reasons():
+    js = get_all_js()
+    ch = _js_function_body(js, "function _codeChangesHtml(", strip_comments=True)
+    assert "Since the previous run" in ch and "_wcCodeBlockHtml(" in ch
+    assert "No earlier run of" in ch
+    assert "Uncommitted changes" in ch
+    assert "Not in a git repository" in ch and "matched its commit" in ch
+    detail = _js_function_body(js, "async function refreshDetail(", strip_comments=True)
+    assert "_codeChangesHtml(exp, codeHtml, prevByScript" in detail
+
+
+def test_source_says_plainly_why_it_is_empty():
+    js = get_all_js()
+    body = _js_function_body(js, "async function loadRunSource(", strip_comments=True)
+    assert "didn" in body and "capture its code" in body
+
+
+def test_show_code_changes_opens_below_a_button_row_that_stays_put():
+    """loadWhatChangedCode replaced the button's whole parent with the diff, so
+    the buttons jumped — and in Code › Changes, whose row is a flex line, the
+    diff landed beside them. The diff now opens in its own body under a fixed
+    bar, and the button toggles it."""
+    js = get_all_js()
+    load = _js_function_body(js, "async function loadWhatChangedCode(", strip_comments=True)
+    assert ".wc-code-body" in load and "parentElement" not in load
+    # One control, the arrow header like every other section — no Show/Hide
+    # button beside an arrow that also opens things.
+    assert "Hide code changes" not in js and "Show code changes</button>" not in js
+    assert "classList.toggle('collapsed'" in load
+    block = _js_function_body(js, "function _wcCodeBlockHtml(", strip_comments=True)
+    assert "section-toggle collapsed" in block and "section-actions" in block
+    for fn in ("function _codeChangesHtml(",):
+        assert "_wcCodeBlockHtml(" in _js_function_body(js, fn)
+    assert "_wcCodeBlockHtml(prevByScript.id, exp.id)" in js

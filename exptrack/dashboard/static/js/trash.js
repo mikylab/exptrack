@@ -407,6 +407,7 @@ function openTrashView() {
   document.body.classList.add('trash-active');
   const tv = document.getElementById('trash-view');
   if (tv) tv.style.display = '';
+  _pushViewHash('#trash');
   // Also close the Settings panel if it's open (this is usually how Trash is launched).
   const settings = document.getElementById('settings-panel');
   if (settings && settings.classList.contains('visible')) {
@@ -422,13 +423,14 @@ function closeTrashView() {
   // Return to the view Trash was opened from. The Sessions tab needs its own
   // teardown undone (openTrashView hid #sessions-tab + dropped sessions-active);
   // toggleSessionsTab() re-shows it (it opens, since the class was removed).
+  // Closing is a return, so it replaces `#trash` rather than adding an entry.
   if (_trashReturnView === 'sessions' && typeof toggleSessionsTab === 'function') {
     _trashReturnView = null;
-    toggleSessionsTab();
+    toggleSessionsTab({replaceHash: true});
     return;
   }
-  const welcome = document.getElementById('welcome-state');
-  if (welcome) welcome.style.display = '';
+  _clearViewHash();
+  _showListView();
 }
 
 async function loadTrashList() {

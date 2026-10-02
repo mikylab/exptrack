@@ -90,7 +90,9 @@ function _laneClass(nodeType, lane) {
   return 'tc-branch';
 }
 
-function toggleSessionsTab() {
+// `opts.replaceHash` for a return or a restore rather than an entry, as
+// openParamMatrix takes it: pushing there would make Back bounce in place.
+function toggleSessionsTab(opts) {
   // If already active, refresh instead of closing — closing is rarely what the
   // user wants and a stale list is the most common reason they re-click.
   const wasActive = document.body.classList.contains('sessions-active');
@@ -102,15 +104,24 @@ function toggleSessionsTab() {
   document.body.classList.add('sessions-active');
   const tab = document.getElementById('sessions-tab');
   if (tab) tab.style.display = 'flex';
+  // Entering Sessions is a place Back returns to.
+  if (!String(window.location.hash || '').startsWith('#sessions')) {
+    _pushViewHash('#sessions', opts && opts.replaceHash);
+  }
   loadSessionsList();
+}
+
+// `#sessions=<id>`: which session is open is part of where the reader is.
+function _sessionsHash(sid) {
+  return sid ? '#sessions=' + encodeURIComponent(sid) : '#sessions';
 }
 
 function closeSessionsTab() {
   document.body.classList.remove('sessions-active');
   const tab = document.getElementById('sessions-tab');
-  const welcome = document.getElementById('welcome-state');
   if (tab) tab.style.display = 'none';
-  if (welcome) welcome.style.display = '';
+  _clearViewHash();
+  _showListView();
 }
 
 // Auto-refresh the sessions list when the dashboard tab regains focus
@@ -151,6 +162,9 @@ async function loadSessionsList() {
   if (_sessionsCache.length && !_activeSessionId) {
     selectSession(_sessionsCache[0].id);
   } else if (_activeSessionId) {
+    if (document.body.classList.contains('sessions-active')) {
+      _pushViewHash(_sessionsHash(_activeSessionId), true);
+    }
     renderSessionTree(_activeSessionId);
   }
 }
@@ -310,6 +324,8 @@ async function confirmFinalizeSession(id) {
 
 function selectSession(id) {
   _activeSessionId = id;
+  // Picking another session is a move within the view, not a new place.
+  if (document.body.classList.contains('sessions-active')) _pushViewHash(_sessionsHash(id), true);
   _selectedNodeId = null;
   // Reset compare selection — node ids don't carry across sessions.
   _compareMode = false;
@@ -322,8 +338,9 @@ function selectSession(id) {
 // Open the Sessions tab focused on a specific session + node. Used by the
 // experiment detail view's "From session" back-link so exp → tree navigation
 // works (the link only existed tree → exp before).
-async function openSessionNode(sessionId, nodeId) {
-  if (!document.body.classList.contains('sessions-active')) toggleSessionsTab();
+async function openSessionNode(sessionId, nodeId, opts) {
+  if (!document.body.classList.contains('sessions-active')) toggleSessionsTab(opts);
+  _pushViewHash(_sessionsHash(sessionId), true);
   _activeSessionId = sessionId;
   _selectedNodeId = null;
   _compareMode = false;

@@ -53,7 +53,7 @@ instead of rejecting it. A text-defaulted key also accepts a dict, since a few
   "auto_capture": { "argparse": true, "argv": true, "notebook": true, "tensorboard": true,
                     "results_files": ["results.json", "metrics.json", "*_results.json", "*_metrics.json"],
                     "notebook_new_run_on_hp_change": true, "environment": true },
-  "naming": { "max_param_keys": 4, "key_max_len": 8, "date_style": "readable" },
+  "naming": { "max_param_keys": 4, "key_max_len": 8, "date_style": "none" },
   "plugins": { "enabled": [] }
 }
 ```

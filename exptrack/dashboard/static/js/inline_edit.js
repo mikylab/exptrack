@@ -476,14 +476,11 @@ function startInlineNote(id, el) {
   async function doSave() {
     if (saved) return;
     saved = true;
-    const newNotes = textarea.value.trim();
-    await postApi('/api/experiment/' + id + '/edit-notes', {notes: newNotes});
-    if (exp) exp.notes = newNotes;
+    // The one notes write path: it also keeps the detail view's copy in step
+    // and says so when the save fails, instead of caching text that never
+    // reached the server.
+    await _saveNotes(id, textarea.value.trim());
     _afterInlineEdit(editToken);
-    if (currentDetailId === id) {
-      const notesEl = document.getElementById('detail-notes');
-      if (notesEl) notesEl.innerHTML = newNotes ? '<div class="notes-display">'+esc(newNotes)+'<button class="notes-edit-btn" onclick="startDetailNoteEdit(\''+id+'\', document.getElementById(\'detail-notes\'))">edit</button></div>' : '<span style="color:var(--muted)">none</span>';
-    }
   }
   textarea.addEventListener('blur', doSave);
   textarea.addEventListener('keydown', (ev) => {

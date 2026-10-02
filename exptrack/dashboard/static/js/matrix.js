@@ -37,8 +37,7 @@ function closeParamMatrix() {
   releaseCanvas();
   _clearViewHash();
   if (currentDetailId) { refreshDetail(currentDetailId, {keepSidebar: true}); return; }
-  const welcome = document.getElementById('welcome-state');
-  if (welcome) welcome.style.display = '';
+  _showListView();
 }
 
 // An explicit set of runs to analyse, chosen in the run picker. Null means
@@ -296,10 +295,42 @@ function _th(col, label) {
     '" onclick="setMatrixSort(\'' + escJsAttr(col) + '\')">' + esc(label) + arrow + '</th>';
 }
 
+// The column is the set's metric — the one the ranking uses (d.metric, the
+// server's consensus) — not the first row's. With two notebook runs judged by
+// `acc` listed first, the header read `acc (final)` over ten rows of
+// train_loss values, and the best-row badge sat on a loss under an accuracy
+// heading.
 function _metricHeaderLabel(d) {
-  const first = (d.rows || []).map(r => (r.primary || {}).key).find(k => k);
-  if (!first) return 'Result';
-  return first + ' (' + _matrixRankBy + ')';
+  const key = (d.metric || {}).key;
+  if (!key) return 'Result';
+  return key + ' (' + _matrixRankBy + ')';
+}
+
+function _matrixJudgedByHtml(d) {
+  const key = (d.metric || {}).key;
+  if (!key) return '';
+  const src = d.metric_source || {};
+  const guess = src.source === 'heuristic';
+  return '<span class="mx-ctl-group"><label>Judged by</label>'
+    + '<button class="select-sm mx-pm-btn' + (guess ? ' mx-pm-guess' : '') + '"'
+    + ' onclick="openMatrixMetricPicker(this)" title="'
+    + (guess ? 'Guessed — nothing is set. Click to choose the metric runs are judged by.'
+             : 'Set for this ' + esc(src.source || 'project') + '. Click to change it.') + '">'
+    + esc(key) + ' · ' + (d.goal === 'min' ? 'lower' : 'higher') + ' is better'
+    + (guess ? ' <span class="primary-guess-tag">guessed</span>' : '') + ' ▾</button></span>';
+}
+
+function openMatrixMetricPicker(anchor) {
+  const d = _matrixData || {};
+  const keys = [].concat(...Object.values(d.metric_keys || {}));
+  const src = d.metric_source || {};
+  // A study level is offered when every analysed run shares that study.
+  const rowsById = new Set((d.rows || []).map(r => r.id));
+  const inSet = (allExperiments || []).filter(e => rowsById.has(e.id));
+  const shared = inSet.length
+    ? (inSet[0].studies || []).filter(s => inSet.every(e => (e.studies || []).includes(s))) : [];
+  openPrimaryMetricPicker(anchor, {keys, studies: shared,
+    current: {key: (d.metric || {}).key, goal: d.goal, source: src.source, study: src.study}});
 }
 
 // The metric cell states three different things and must not blur them: a real
@@ -308,6 +339,13 @@ function _metricHeaderLabel(d) {
 function _metricCell(row) {
   const p = row.primary || {};
   if (!p.key) return '<span class="mx-missing" title="this run logged no metrics">—</span>';
+  const setKey = ((_matrixData || {}).metric || {}).key;
+  if (setKey && p.key !== setKey) {
+    // Judged by another metric, so it is not in this ranking — say which,
+    // rather than printing its number under a heading it does not measure.
+    return '<span class="mx-missing mx-off-metric" title="' + esc('This run is judged by ' + p.key
+      + ', not ' + setKey + ', so it is not ranked here') + '">by ' + esc(p.key) + '</span>';
+  }
   if (p.missing) {
     return '<span class="mx-missing mx-metric-missing" title="' +
       esc(p.key + ' was never logged by this run') + '">not logged</span>';
@@ -322,7 +360,7 @@ function _metricCell(row) {
   if (p.source === 'heuristic') {
     out += '<span class="mx-guess" title="' + esc(
       'No primary metric is set, so ' + p.key + ' was guessed from this run’s metrics. ' +
-      'Set one with: exptrack primary-metric ' + p.key) + '">?</span>';
+      'Choose one with Judged by, above the table.') + '">?</span>';
   }
   return out;
 }
@@ -388,6 +426,7 @@ function _matrixControls() {
     '<span class="mx-ctl-group"><label><input type="checkbox"' +
       (_matrixIncludeRunning ? ' checked' : '') +
       ' onchange="setMatrixIncludeRunning(this.checked)"> Show running</label></span>' +
+    _matrixJudgedByHtml(d) +
     '<span class="mx-ctl-group">' + _matrixSetControls() + '</span>' +
     '<span class="mx-ctl-spacer"></span>' +
     '<span class="mx-count">' + (d.n_runs || 0) + ' runs · ' +

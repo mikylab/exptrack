@@ -64,6 +64,7 @@ Inspect
                                       CSV/TSV or params
                      [--full]       Every metric point + every artifact
                      [--max-artifacts N] Artifact list cap (0 = all)
+                     [-o FILE]      Write to FILE (UTF-8) instead of stdout
   exptrack verify [id] [--backfill] Check artifact file integrity
   exptrack source [id]              Read back the code a run actually ran
                  [--all] [--out DIR]  (from its snapshot, or its notebook cells)
@@ -311,7 +312,17 @@ Session Trees (see docs/session-trees.md)
 
 `exptrack export <id> --format <fmt>` supports `json` (default), `markdown`,
 `csv`, `tsv`, and the params-only forms `params`, `params-flags`, `params-json`,
-`params-md`, `params-tsv`. `--all` exports every run as a batch.
+`params-md`, `params-tsv`. `--all` exports every run as a batch; in
+`markdown`, `text` and `html` a batch of several runs opens with a summary of
+the set (what varied and what was held constant, the top 10 by the judged-by
+metric, each metric's min/median/max and best run, and the runs with notes)
+before each run's report (`--summary-only` leaves the reports out). `--format
+html` prints as a report: open the file in a browser and use its **Save as
+PDF** button (summary first, one run per page). In `csv`/`tsv`, every metric
+has its last value plus `:best`, `:min` and `:max` columns, and paths are
+relative to the `project_root` column. `-o FILE`
+writes the export to a file; an export redirected or piped to a file is UTF-8
+either way, whatever the console's codepage (so `pandas.read_csv` reads it).
 
 The three readable forms carry the same content, laid out as tables:
 

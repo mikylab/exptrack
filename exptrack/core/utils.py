@@ -482,3 +482,14 @@ def python_env_containing(path):
         if is_python_env_dir(d):
             return d
     return None
+
+
+def join_notes(existing: str, text: str) -> str:
+    """*text* appended to a run's notes — the one append rule for every path.
+
+    One newline between, which is enough for markdown: an ATX heading or a
+    bullet list may follow a paragraph line directly. The CLI/dashboard
+    append and ``Experiment.add_note`` (``%exp_note``) each had their own
+    join, and a change to one had already left the other behind.
+    """
+    return ((existing or "") + "\n" + (text or "")).strip() if existing else (text or "").strip()

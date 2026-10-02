@@ -52,6 +52,27 @@
     min-width: 30px; font-variant-numeric: tabular-nums;
   }
   .chart-smooth-note { font-size: 11px; color: var(--text-3); font-style: italic; }
+  /* Prune changes what is stored: the same card as Axis range (it is a
+     .chart-scale-bar), with its consequence on its own line under the inputs. */
+  .chart-prune-bar select {
+    font-family: inherit; font-size: 13px; padding: 5px 10px; max-width: 220px;
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--fg); cursor: pointer;
+  }
+  .chart-prune-bar select:focus { border-color: var(--blue); outline: none; }
+  .chart-prune-presets { display: inline-flex; gap: 4px; margin-left: 2px; }
+  .chart-prune-preset {
+    font-family: var(--font-mono); font-size: 11px; padding: 3px 8px; cursor: pointer;
+    background: transparent; border: 1px solid var(--border); border-radius: 10px; color: var(--muted);
+  }
+  .chart-prune-preset:hover { border-color: var(--blue); color: var(--blue); }
+  .chart-prune-status {
+    flex: 1 1 100%; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    font-size: 12px; color: var(--muted);
+  }
+  .chart-prune-status:empty { display: none; }
+  .chart-prune-summary strong { color: var(--fg); }
+  .chart-prune-target { outline: 2px dashed var(--border); outline-offset: 4px; border-radius: 4px; }
   .chart-container { max-width: 700px; margin: 16px 0; }
   .chart-empty {
     padding: 40px 20px; text-align: center;
@@ -101,3 +122,19 @@
   }
   .chart-overlay-chip:hover { color: var(--fg); border-color: var(--fg); border-left-color: var(--chip-color); }
   .chart-overlay-chip.on { color: var(--fg); background: var(--card-bg); font-weight: 600; }
+  /* Prune selected runs (js/mutations.js openBulkPrune): the chart's prune
+     controls in a card above the selection bar. */
+  .bulk-prune-panel {
+    position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%); z-index: 60;
+    width: min(760px, calc(100vw - 32px)); box-sizing: border-box; padding: 10px 14px 12px;
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+  }
+  .bulk-prune-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
+  .bulk-prune-head .close-btn { margin-left: auto; }
+  .bulk-prune-sub { font-size: 12px; color: var(--muted); }
+  .bulk-prune-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+
+  /* The Overview chart's prune row: the same controls, compact under the chart. */
+  .ov-prune-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; font-size: 12px; }
+  .ov-prune-bar input[type="number"] { width: 72px; }

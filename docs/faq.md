@@ -41,7 +41,7 @@ An experiment can have both.
 
 Pattern: `{MonDD}_{script}__{params}__{uid}` — e.g. `Jul28_train__lr0.01_bs32__2aac1081`.
 
-Override with `--name` on `exptrack run` or `run-start`. Customize param inclusion via `naming` in [config](configuration.md) (`naming.date_style: "numeric"` restores the older `MMDD` layout). A run that kept its generated name is flagged, so the dashboard's **Needs naming** filter can find it later.
+Override with `--name` on `exptrack run` or `run-start`. Customize param inclusion via `naming` in [config](configuration.md) (names carry no date by default — the run records when it started; `naming.date_style: "readable"` puts a `Jul28_` prefix back, `"numeric"` the older `MMDD` layout). A run that kept its generated name is flagged, so the dashboard's **Needs naming** filter can find it later.
 
 ### Does it capture plots automatically?
 
@@ -166,7 +166,7 @@ A new experiment is created each time. Old artifacts at conflicting paths are ar
 
 ### Can I view CSVs and data files in the dashboard?
 
-Yes. CSV, TSV, JSON, and JSONL artifacts appear under the **Data Files** tab as interactive sortable tables.
+Yes. CSV, TSV, JSON, and JSONL artifacts appear under a run's **Files › Data** as interactive sortable tables.
 
 ### How do I view images?
 

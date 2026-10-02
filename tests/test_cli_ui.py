@@ -100,7 +100,7 @@ def test_status_reports_running_for_a_real_detached_process(tmp_project):
 
     kwargs = {}
     if _sys.platform == "win32":
-        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS
+        kwargs["creationflags"] = (subprocess.CREATE_NO_WINDOW
                                    | subprocess.CREATE_NEW_PROCESS_GROUP)
     else:
         kwargs["start_new_session"] = True

@@ -265,7 +265,7 @@ function renderExpRow(e) {
     tags: '<td class="tags-cell wrap-cell editable-cell"' + editOn('startInlineTag') + '>' + chipCell(e.tags, 'startInlineTag', '#', '') + editIcon('startInlineTag') + '</td>',
     studies: '<td class="tags-cell wrap-cell editable-cell"' + editOn('startInlineStudy') + '>' + chipCell(e.studies, 'startInlineStudy', '', 'background:rgba(44,90,160,0.1);color:var(--blue)') + editIcon('startInlineStudy') + '</td>',
     stage: '<td class="wrap-cell stage-cell editable-cell"' + editOn('startInlineStage') + '>' + (e.stage != null ? '<span style="font-weight:600">' + esc(String(e.stage)) + '</span>' + (e.stage_name ? ' <span style="color:var(--muted)">\u00b7</span> <span style="color:var(--muted)">' + esc(e.stage_name) + '</span>' : '') : '<span style="color:var(--muted)">--</span>') + editIcon('startInlineStage') + '</td>',
-    notes: '<td class="truncate-cell notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '"' + editOn('startInlineNote', false) + '>' + (e.notes ? esc(e.notes.split('\n')[0].slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon('startInlineNote') + '</td>',
+    notes: '<td class="truncate-cell notes-cell-expanded editable-cell" title="' + esc(e.notes||'') + '"' + editOn('startInlineNote', false) + '>' + (e.notes ? esc(notesSummary(e.notes).slice(0,60)) : '<span style="color:var(--muted)">--</span>') + editIcon('startInlineNote') + '</td>',
     primary: _primaryCellHtml(e),
     metrics: (function() {
       const parts = [];
@@ -338,7 +338,7 @@ function _primaryCellHtml(e) {
   }
   const guess = p.source === 'heuristic';
   const title = p.key + ' = ' + fmtMetricVal(p.final)
-    + (guess ? ' — picked from this run\'s own metrics; set one with `exptrack primary-metric`'
+    + (guess ? ' — guessed from this run\'s own metrics; click the metric in the run\'s header to choose one'
              : ' — set for this ' + p.source);
   return '<td class="truncate-cell primary-cell" title="' + esc(title) + '">'
     + '<span class="primary-val">' + esc(fmtMetricVal(p.final)) + '</span>'
